@@ -7,6 +7,7 @@ const { CONTROL_KEY_HELP } = require('./shortcuts');
 const { stripAnsi } = require('./theme');
 const { renderWelcomePage } = require('./welcome');
 const { runCockpitAction } = require('./action-runner');
+const { findProjects } = require('./projects-finder');
 const {
   PANE_MENU_ITEMS,
   applyPaneMenuKey,
@@ -350,7 +351,12 @@ function openActionRow(state, actionId) {
     return normalizeControlState({ ...current, mode: 'logs', lastIntent: null });
   }
   if (actionId === 'projects') {
-    return normalizeControlState({ ...current, mode: 'projects', lastIntent: null });
+    const withProjects = loadProjectsState(current);
+    return normalizeControlState({
+      ...withProjects,
+      mode: 'projects',
+      lastIntent: null,
+    });
   }
   return normalizeControlState({ ...current, lastIntent: null });
 }
@@ -469,6 +475,20 @@ function applyKey(state, rawKey) {
         lastIntent: buildIntent(current, 'terminal:open'),
       });
     }
+    if (mode === 'projects') {
+      const projects = Array.isArray(current.projects) ? current.projects : [];
+      const project = projects[current.projectsIndex] || null;
+      if (!project) return current;
+      return normalizeControlState({
+        ...current,
+        mode: 'main',
+        lastIntent: {
+          type: 'project:switch',
+          path: project.path,
+          name: project.name,
+        },
+      });
+    }
     if (current.sessions.length === 0 && current.selectedScope === 'action') {
       return openSelectedActionRow(current);
     }
@@ -485,6 +505,12 @@ function applyKey(state, rawKey) {
     if (mode === 'settings') {
       return normalizeControlState({ ...current, settingsIndex: current.settingsIndex + 1, lastIntent: null });
     }
+    if (mode === 'projects') {
+      const projects = Array.isArray(current.projects) ? current.projects : [];
+      if (projects.length === 0) return current;
+      const next = (current.projectsIndex + 1) % projects.length;
+      return normalizeControlState({ ...current, projectsIndex: next, lastIntent: null });
+    }
     return moveSelection(current, 1);
   }
   if (key === 'up' || key === 'k') {
@@ -494,7 +520,17 @@ function applyKey(state, rawKey) {
     if (mode === 'settings') {
       return normalizeControlState({ ...current, settingsIndex: current.settingsIndex - 1, lastIntent: null });
     }
+    if (mode === 'projects') {
+      const projects = Array.isArray(current.projects) ? current.projects : [];
+      if (projects.length === 0) return current;
+      const next = (current.projectsIndex - 1 + projects.length) % projects.length;
+      return normalizeControlState({ ...current, projectsIndex: next, lastIntent: null });
+    }
     return moveSelection(current, -1);
+  }
+  if (mode === 'projects' && key === 'r') {
+    const refreshed = loadProjectsState(current, { refresh: true });
+    return normalizeControlState({ ...refreshed, lastIntent: null });
   }
 
   return current;
@@ -689,20 +725,53 @@ function renderLogsPanel(state) {
   ].join('\n');
 }
 
+function loadProjectsState(current, options = {}) {
+  if (Array.isArray(current.projects) && current.projects.length > 0 && options.refresh !== true) {
+    return current;
+  }
+  const result = findProjects({
+    repoRoot: current.repoPath,
+    env: options.env || process.env,
+    fs: options.fs,
+  });
+  return {
+    ...current,
+    projects: result.projects,
+    projectsRoots: result.roots,
+    projectsIndex: 0,
+  };
+}
+
 function renderProjectsPanel(state) {
   const current = normalizeControlState(state);
-  return [
+  const projects = Array.isArray(current.projects) ? current.projects : [];
+  const roots = Array.isArray(current.projectsRoots) ? current.projectsRoots : [];
+  const index = Math.max(0, Math.min(current.projectsIndex || 0, Math.max(projects.length - 1, 0)));
+  const lines = [
     'projects',
     '',
     `current: ${current.repoPath || '(none)'}`,
+    `roots:   ${roots.join(' | ') || '(none)'}`,
     '',
-    'Enter: switch to selected project',
-    'Esc:   back to main',
-    '',
-    'Picker scans for git repos under your workspace and switches the',
-    'cockpit target to the chosen one.',
-    '',
-  ].join('\n');
+  ];
+
+  if (projects.length === 0) {
+    lines.push('  no git repos found under any configured root');
+    lines.push('  set GUARDEX_PROJECT_ROOTS=/path/a:/path/b to override');
+  } else {
+    projects.forEach((project, i) => {
+      const cursor = i === index ? '>' : ' ';
+      const here = project.path === current.repoPath ? '*' : ' ';
+      lines.push(`${cursor} ${here} ${project.name}`);
+    });
+  }
+
+  lines.push('');
+  lines.push('Enter: switch to selected project');
+  lines.push('r:     rescan');
+  lines.push('Esc:   back to main');
+  lines.push('');
+  return lines.join('\n');
 }
 
 function renderMenuPanel(state) {
