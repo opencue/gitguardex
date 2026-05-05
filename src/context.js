@@ -75,12 +75,26 @@ function resolveGithubCliBin(env = process.env) {
 }
 
 const GH_BIN = resolveGithubCliBin();
+const RTK_BIN = process.env.GUARDEX_RTK_BIN || 'rtk';
+const FFF_MCP_BIN = process.env.GUARDEX_FFF_MCP_BIN || 'fff-mcp';
 const REQUIRED_SYSTEM_TOOLS = [
   {
     name: 'gh',
     displayName: GH_BIN === 'ghx' ? 'GitHub (ghx proxy)' : 'GitHub (gh)',
     command: GH_BIN,
     installHint: 'https://cli.github.com/',
+  },
+  {
+    name: 'rtk',
+    displayName: 'RTK (rtk)',
+    command: RTK_BIN,
+    installHint: 'Install RTK and ensure `rtk` is on PATH.',
+  },
+  {
+    name: 'fff-mcp',
+    displayName: 'FFF MCP (fff-mcp)',
+    command: FFF_MCP_BIN,
+    installHint: 'https://github.com/dmtrKovalenko/fff.nvim',
   },
 ];
 const MAINTAINER_RELEASE_REPO = path.resolve(

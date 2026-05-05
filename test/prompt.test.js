@@ -164,6 +164,8 @@ test('prompt --snippet prints the managed AGENTS template with token budget and 
   assert.match(result.stdout, /### RTK command compression/);
   assert.match(result.stdout, /rtk git status/);
   assert.match(result.stdout, /Do not wrap machine-readable commands with RTK/);
+  assert.match(result.stdout, /### FFF file search/);
+  assert.match(result.stdout, /Use the fff MCP tools for all file search operations instead of default tools\./);
   assert.match(result.stdout, /### Caveman style/);
   assert.match(result.stdout, /Answer order stays fixed: answer first, cause next, fix or next step last\./);
 });

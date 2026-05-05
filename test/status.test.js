@@ -562,6 +562,23 @@ test('status reports gh dependency as inactive when gh is unavailable', () => {
   assert.equal(ghService.status, 'inactive');
 });
 
+test('status reports rtk and fff-mcp dependencies as inactive when unavailable', () => {
+  const repoDir = initRepo();
+  const result = runNodeWithEnv(['status', '--target', repoDir, '--json'], repoDir, {
+    GUARDEX_RTK_BIN: 'rtk-command-not-found-for-test',
+    GUARDEX_FFF_MCP_BIN: 'fff-mcp-command-not-found-for-test',
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  const rtkService = payload.services.find((service) => service.name === 'rtk');
+  const fffService = payload.services.find((service) => service.name === 'fff-mcp');
+  assert.ok(rtkService, 'rtk service should be included in status payload');
+  assert.ok(fffService, 'fff-mcp service should be included in status payload');
+  assert.equal(rtkService.status, 'inactive');
+  assert.equal(fffService.status, 'inactive');
+});
+
 
 test('unknown command suggests nearest valid command', () => {
   const repoDir = initRepo();

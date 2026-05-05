@@ -2400,6 +2400,10 @@ function doctor(rawArgs) {
     target: topRepoRoot,
   };
 
+  if (!singleRepoOptions.json) {
+    printRequiredSystemToolStatus();
+  }
+
   const blocked = protectedBaseWriteBlock(singleRepoOptions, { requireBootstrap: false });
   if (blocked) {
     doctorModule.runDoctorInSandbox(singleRepoOptions, blocked, {
@@ -3007,18 +3011,7 @@ function setup(rawArgs) {
 
   maybePromptInstallVscodeExtension(options);
 
-  const requiredSystemTools = toolchainModule.detectRequiredSystemTools();
-  const missingSystemTools = requiredSystemTools.filter((tool) => tool.status !== 'active');
-  if (missingSystemTools.length === 0) {
-    console.log(`[${TOOL_NAME}] ✅ Required system tools available (${requiredSystemTools.map((tool) => tool.name).join(', ')}).`);
-  } else {
-    const names = missingSystemTools.map((tool) => tool.name).join(', ');
-    console.log(`[${TOOL_NAME}] ⚠️ Missing required system tool(s): ${names}`);
-    for (const tool of missingSystemTools) {
-      const reasonText = tool.reason ? ` (${tool.reason})` : '';
-      console.log(`[${TOOL_NAME}] Install ${tool.name}: ${tool.installHint}${reasonText}`);
-    }
-  }
+  printRequiredSystemToolStatus();
 
   const topRepoRoot = resolveRepoRoot(options.target);
   const discoveredRepos = options.recursive
@@ -3129,6 +3122,22 @@ function setup(rawArgs) {
       errors: aggregateErrors,
       warnings: aggregateWarnings,
     });
+  }
+}
+
+function printRequiredSystemToolStatus() {
+  const requiredSystemTools = toolchainModule.detectRequiredSystemTools();
+  const missingSystemTools = requiredSystemTools.filter((tool) => tool.status !== 'active');
+  if (missingSystemTools.length === 0) {
+    console.log(`[${TOOL_NAME}] ✅ Required system tools available (${requiredSystemTools.map((tool) => tool.name).join(', ')}).`);
+    return;
+  }
+
+  const names = missingSystemTools.map((tool) => tool.name).join(', ');
+  console.log(`[${TOOL_NAME}] ⚠️ Missing required system tool(s): ${names}`);
+  for (const tool of missingSystemTools) {
+    const reasonText = tool.reason ? ` (${tool.reason})` : '';
+    console.log(`[${TOOL_NAME}] Install ${tool.name}: ${tool.installHint}${reasonText}`);
   }
 }
 
