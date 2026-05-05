@@ -8,6 +8,7 @@ const { stripAnsi } = require('./theme');
 const { renderWelcomePage } = require('./welcome');
 const { runCockpitAction } = require('./action-runner');
 const { findProjects } = require('./projects-finder');
+const { readLogs, filterEntries, LEVELS: LOG_LEVELS } = require('./logs-reader');
 const {
   PANE_MENU_ITEMS,
   applyPaneMenuKey,
@@ -348,7 +349,12 @@ function openActionRow(state, actionId) {
     return normalizeControlState({ ...current, mode: 'shortcuts', lastIntent: null });
   }
   if (actionId === 'logs') {
-    return normalizeControlState({ ...current, mode: 'logs', lastIntent: null });
+    const withLogs = loadLogsState(current);
+    return normalizeControlState({
+      ...withLogs,
+      mode: 'logs',
+      lastIntent: null,
+    });
   }
   if (actionId === 'projects') {
     const withProjects = loadProjectsState(current);
@@ -532,6 +538,19 @@ function applyKey(state, rawKey) {
     const refreshed = loadProjectsState(current, { refresh: true });
     return normalizeControlState({ ...refreshed, lastIntent: null });
   }
+  if (mode === 'logs') {
+    if (Object.prototype.hasOwnProperty.call(LOGS_FILTER_KEYS, key)) {
+      return normalizeControlState({
+        ...current,
+        logsFilter: LOGS_FILTER_KEYS[key],
+        lastIntent: null,
+      });
+    }
+    if (key === 'r') {
+      const refreshed = loadLogsState(current, { refresh: true });
+      return normalizeControlState({ ...refreshed, lastIntent: null });
+    }
+  }
 
   return current;
 }
@@ -708,21 +727,83 @@ function renderTerminalPanel(state) {
   ].join('\n');
 }
 
+const LOGS_FILTER_KEYS = {
+  '1': 'all',
+  '2': 'info',
+  '3': 'warning',
+  '4': 'error',
+  '5': 'by-pane',
+};
+
+function loadLogsState(current, options = {}) {
+  if (current.logs && options.refresh !== true) {
+    return current;
+  }
+  const result = readLogs({
+    repoRoot: current.repoPath,
+    fs: options.fs,
+    sources: options.sources,
+    limit: options.limit,
+    tailBytes: options.tailBytes,
+  });
+  return {
+    ...current,
+    logs: result.entries,
+    logsCounts: result.counts,
+    logsSources: result.sources,
+    logsFilter: current.logsFilter || 'all',
+  };
+}
+
+function logsFilterLabel(filter) {
+  switch (filter) {
+    case 'info': return 'Info';
+    case 'warning': return 'Warnings';
+    case 'error': return 'Errors';
+    case 'by-pane': return 'By Pane';
+    default: return 'All';
+  }
+}
+
 function renderLogsPanel(state) {
   const current = normalizeControlState(state);
-  const sessions = current.sessions.length;
-  return [
+  const counts = current.logsCounts || { all: 0 };
+  const filter = current.logsFilter || 'all';
+  const entries = filterEntries(current.logs || [], filter);
+  const sources = Array.isArray(current.logsSources) ? current.logsSources : [];
+  const summary = `${counts.all || 0} total`
+    + `  ${counts.info || 0} info`
+    + `  ${counts.warning || 0} warn`
+    + `  ${counts.error || 0} err`;
+
+  const lines = [
     'gitguardex logs',
     '',
-    `repo: ${current.repoPath || '-'}`,
-    `active lanes: ${sessions}`,
+    summary,
+    `filter: ${logsFilterLabel(filter)}`,
+    `sources: ${sources.length}`,
     '',
     '[1] All  [2] Info  [3] Warnings  [4] Errors  [5] By Pane',
     '',
-    'Live tail of `apps/logs/*.log` and lane heartbeats lands here.',
-    'Esc: back to main',
-    '',
-  ].join('\n');
+  ];
+
+  if (entries.length === 0) {
+    lines.push('  no log entries (filter or no log files yet)');
+  } else {
+    const tail = entries.slice(-20);
+    for (const entry of tail) {
+      const tag = entry.level === 'error' ? '[ERR]'
+        : entry.level === 'warning' ? '[WRN]'
+        : entry.level === 'debug' ? '[DBG]'
+        : '[INF]';
+      lines.push(`${tag} ${entry.source} · ${entry.line}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('r: rescan   Esc: back to main');
+  lines.push('');
+  return lines.join('\n');
 }
 
 function loadProjectsState(current, options = {}) {
