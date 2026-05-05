@@ -1433,14 +1433,13 @@ exit 1
     GUARDEX_HOME_DIR: fakeHome,
     GUARDEX_GH_BIN: 'gh-command-not-found-for-test',
     GUARDEX_RTK_BIN: 'rtk-command-not-found-for-test',
-    GUARDEX_FFF_MCP_BIN: 'fff-mcp-command-not-found-for-test',
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /Missing required system tool\(s\): gh, rtk, fff-mcp/);
+  assert.match(result.stdout, /Missing required system tool\(s\): gh, rtk/);
   assert.match(result.stdout, /https:\/\/cli\.github\.com\//);
   assert.match(result.stdout, /Install rtk: Install RTK and ensure `rtk` is on PATH\./);
-  assert.match(result.stdout, /Install fff-mcp: https:\/\/github\.com\/dmtrKovalenko\/fff\.nvim/);
+  assert.doesNotMatch(result.stdout, /fff-mcp/);
 });
 
 });

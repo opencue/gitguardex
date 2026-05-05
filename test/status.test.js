@@ -110,6 +110,24 @@ test('status suppresses the full help tree by default and emits a Next hint', ()
 });
 
 
+test('compact status prints only the first global-service detection error line', () => {
+  const repoDir = initRepo();
+  const fakeNpm = createFakeNpmScript(`
+echo "first npm failure line" >&2
+echo "second npm failure line" >&2
+exit 1
+`);
+
+  const result = runNodeWithEnv(['status', '--target', repoDir], repoDir, {
+    GUARDEX_NPM_BIN: fakeNpm,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Could not detect global services: first npm failure line/);
+  assert.doesNotMatch(result.stdout, /second npm failure line/);
+});
+
+
 test('--verbose forces the expanded services list even when every service is active', () => {
   const repoDir = initRepo();
 
@@ -523,6 +541,32 @@ exit 1
 });
 
 
+test('compact status summarizes inactive optional companions without dependency detail', () => {
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-status-target-'));
+  const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
+  const fakeNpm = createFakeNpmScript(`
+if [[ "$1" == "list" ]]; then
+  cat <<'JSON'
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@imdeadpool/colony-cli":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+JSON
+  exit 0
+fi
+echo "unexpected npm args: $*" >&2
+exit 1
+`);
+
+  const result = runNodeWithEnv(['status', '--target', targetDir], targetDir, {
+    GUARDEX_NPM_BIN: fakeNpm,
+    GUARDEX_HOME_DIR: fakeHome,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Optional companion tools inactive: 1 \(run 'gx setup'\)/);
+  assert.doesNotMatch(result.stdout, /oh-my-claudecode: inactive/);
+  assert.doesNotMatch(result.stdout, /Yeachan-Heo\/oh-my-claudecode/);
+});
+
+
 test('status detects local cavekit and caveman companion installs', () => {
   const repoDir = initRepo();
   const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
@@ -562,21 +606,18 @@ test('status reports gh dependency as inactive when gh is unavailable', () => {
   assert.equal(ghService.status, 'inactive');
 });
 
-test('status reports rtk and fff-mcp dependencies as inactive when unavailable', () => {
+test('status reports rtk dependency as inactive when unavailable', () => {
   const repoDir = initRepo();
   const result = runNodeWithEnv(['status', '--target', repoDir, '--json'], repoDir, {
     GUARDEX_RTK_BIN: 'rtk-command-not-found-for-test',
-    GUARDEX_FFF_MCP_BIN: 'fff-mcp-command-not-found-for-test',
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const payload = JSON.parse(result.stdout);
   const rtkService = payload.services.find((service) => service.name === 'rtk');
-  const fffService = payload.services.find((service) => service.name === 'fff-mcp');
   assert.ok(rtkService, 'rtk service should be included in status payload');
-  assert.ok(fffService, 'fff-mcp service should be included in status payload');
   assert.equal(rtkService.status, 'inactive');
-  assert.equal(fffService.status, 'inactive');
+  assert.equal(payload.services.some((service) => service.name === 'fff-mcp'), false);
 });
 
 

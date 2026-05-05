@@ -2086,7 +2086,10 @@ function status(rawArgs) {
 
   console.log(`[${TOOL_NAME}] CLI: ${payload.cli.runtime}`);
   if (!toolchain.ok) {
-    console.log(`[${TOOL_NAME}] ⚠️ Could not detect global services: ${toolchain.error}`);
+    const detectionError = compact
+      ? String(toolchain.error || '').split(/\r?\n/).find(Boolean) || 'unknown error'
+      : toolchain.error;
+    console.log(`[${TOOL_NAME}] ⚠️ Could not detect global services: ${detectionError}`);
   }
 
   if (compact) {
@@ -2107,19 +2110,25 @@ function status(rawArgs) {
     .filter((service) => service.status !== 'active')
     .map((service) => service.displayName || service.name);
   if (inactiveOptionalCompanions.length > 0) {
-    console.log(
-      `[${TOOL_NAME}] Optional companion tools inactive: ${inactiveOptionalCompanions.join(', ')}`,
-    );
-    for (const warning of toolchainModule.describeMissingGlobalDependencyWarnings(
-      npmServices
-        .filter((service) => service.status === 'inactive')
-        .map((service) => service.packageName),
-    )) {
-      console.log(`[${TOOL_NAME}] ${warning}`);
+    if (compact) {
+      console.log(
+        `[${TOOL_NAME}] Optional companion tools inactive: ${inactiveOptionalCompanions.length} (run '${SHORT_TOOL_NAME} setup')`,
+      );
+    } else {
+      console.log(
+        `[${TOOL_NAME}] Optional companion tools inactive: ${inactiveOptionalCompanions.join(', ')}`,
+      );
+      for (const warning of toolchainModule.describeMissingGlobalDependencyWarnings(
+        npmServices
+          .filter((service) => service.status === 'inactive')
+          .map((service) => service.packageName),
+      )) {
+        console.log(`[${TOOL_NAME}] ${warning}`);
+      }
+      console.log(
+        `[${TOOL_NAME}] Run '${SHORT_TOOL_NAME} setup' to install missing companions with an explicit Y/N prompt.`,
+      );
     }
-    console.log(
-      `[${TOOL_NAME}] Run '${SHORT_TOOL_NAME} setup' to install missing companions with an explicit Y/N prompt.`,
-    );
   }
   const missingSystemTools = requiredSystemTools.filter((tool) => tool.status !== 'active');
   if (missingSystemTools.length > 0) {
@@ -2127,9 +2136,11 @@ function status(rawArgs) {
       .map((tool) => tool.displayName || tool.name)
       .join(', ');
     console.log(`[${TOOL_NAME}] ⚠️ Missing required system tool(s): ${tools}`);
-    for (const tool of missingSystemTools) {
-      const reasonText = tool.reason ? ` (${tool.reason})` : '';
-      console.log(`  - install ${tool.name}: ${tool.installHint}${reasonText}`);
+    if (!compact) {
+      for (const tool of missingSystemTools) {
+        const reasonText = tool.reason ? ` (${tool.reason})` : '';
+        console.log(`  - install ${tool.name}: ${tool.installHint}${reasonText}`);
+      }
     }
   }
 
