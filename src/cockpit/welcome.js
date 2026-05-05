@@ -9,13 +9,14 @@ const MIN_WIDTH = 48;
 const MAX_WIDTH = 88;
 
 const DEFAULT_AGENTS = ['codex', 'claude', 'opencode', 'cursor', 'gemini'];
-const GUARD_MOTIF = [
-  '      __',
-  '     / _)',
-  ' .-^^^-/',
-  '/  gx  \\',
-  '|_|--|_|',
+const GITGUARDEX_BRAND = [
+  '  ____  _   _   _   ___   ___   _____  __',
+  ' / ___|| | | | / \\ |  _ \\ |  _ \\ | ____|\\ \\/ /',
+  '| |  _ | | | |/ _ \\| |_) || | | ||  _|   \\  /',
+  '| |_| || |_| / ___ \\  _ < | |_| || |___  /  \\',
+  ' \\____| \\___/_/   \\_\\_| \\_\\____/ |_____|/_/\\_\\',
 ];
+const GITGUARDEX_STRAPLINE = 'guarded multi-agent cockpit';
 
 function stringValue(value, fallback = '') {
   if (typeof value === 'string') {
@@ -222,9 +223,13 @@ function renderWelcomePage(state = {}, settings = {}) {
     emptyLine(width),
   ];
 
-  GUARD_MOTIF.forEach((motifLine) => {
-    lines.push(themedBoxedLine(motifLine, width, 'accent', theme));
+  GITGUARDEX_BRAND.forEach((brandLine) => {
+    lines.push(themedBoxedLine(brandLine, width, 'accent', theme));
   });
+  lines.push(
+    emptyLine(width),
+    themedBoxedLine(GITGUARDEX_STRAPLINE, width, 'heading', theme),
+  );
 
   lines.push(
     emptyLine(width),
@@ -247,6 +252,8 @@ function renderWelcomePage(state = {}, settings = {}) {
     themedBoxedLine('Next actions', width, 'heading', theme),
     themedBoxedLine('  n new agent  - start a guarded agent lane', width, 'secondary', theme),
     themedBoxedLine('  t terminal   - open a repo terminal', width, 'secondary', theme),
+    themedBoxedLine('  l logs       - tail apps/logs/*.log and lane events', width, 'secondary', theme),
+    themedBoxedLine('  p projects   - switch repo (no lane selected)', width, 'secondary', theme),
     themedBoxedLine('  s settings   - tune cockpit defaults', width, 'secondary', theme),
     colorize(divider(width), 'border', theme),
   );

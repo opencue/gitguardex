@@ -28,10 +28,13 @@ test('renderWelcomePage snapshots the empty cockpit welcome strings', () => {
   assert.match(output, /Agents:\s+codex, claude/);
   assert.match(output, /n new agent/);
   assert.match(output, /t terminal/);
+  assert.match(output, /l logs/);
+  assert.match(output, /p projects/);
   assert.match(output, /s settings/);
   assert.match(output, /\? shortcuts/);
   assert.match(output, /q quit/);
   assert.match(output, /Next actions/);
+  assert.match(output, /guarded multi-agent cockpit/);
   assert.equal(output.endsWith('\n'), true);
 });
 
@@ -54,8 +57,8 @@ test('renderWelcomePage stays width bounded and plain terminal safe', () => {
     assert.equal(line.length <= width, true, `line exceeded ${width}: ${line}`);
   }
 
-  assert.match(output, /\/ _\)/);
-  assert.match(output, /\/  gx  \\/);
+  assert.match(output, /guarded multi-agent cockpit/);
+  assert.match(output, /\\____\|/);
   assert.match(output, /Locks:\s+5/);
   assert.match(output, /Agents:\s+codex, gemini/);
   assert.doesNotMatch(output, /[\u0080-\uffff]/);
