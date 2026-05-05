@@ -139,6 +139,88 @@ test('openKittyCockpit without bootstrap leaves args untouched', () => {
   }
 });
 
+test('auto-host bootstraps when stdout is a TTY and KITTY_LISTEN_ON is unset', () => {
+  const result = cockpit.openCockpit(['--target', '/repo/gitguardex'], {
+    resolveRepoRoot: (target) => target,
+    toolName: 'gx',
+    stdout: { isTTY: true, write() {} },
+    env: {},
+    dryRun: true,
+    readState: () => fakeState([fakeSession('alpha')]),
+    readSettings: () => ({}),
+    terminalBackends: { kitty: fakeBackendStub({ socket: '/tmp/auto-host.sock' }) },
+  });
+
+  assert.equal(result.backend, 'kitty');
+  assert.ok(result.plan.host, 'plan.host should be populated');
+  assert.equal(result.plan.host.socket, '/tmp/auto-host.sock');
+  for (const cmd of result.plan.commands) {
+    assert.equal(cmd.args[1], '--to=/tmp/auto-host.sock');
+  }
+});
+
+test('auto-host stays off when stdout is not a TTY', () => {
+  const result = cockpit.openCockpit(['--target', '/repo/gitguardex'], {
+    resolveRepoRoot: (target) => target,
+    toolName: 'gx',
+    stdout: { isTTY: false, write() {} },
+    env: {},
+    dryRun: true,
+    readState: () => fakeState([fakeSession('alpha')]),
+    readSettings: () => ({}),
+    terminalBackends: { kitty: fakeBackendStub() },
+  });
+
+  assert.equal(result.backend, 'kitty');
+  assert.equal(result.plan.host || null, null);
+});
+
+test('auto-host stays off when KITTY_LISTEN_ON is set', () => {
+  const result = cockpit.openCockpit(['--target', '/repo/gitguardex'], {
+    resolveRepoRoot: (target) => target,
+    toolName: 'gx',
+    stdout: { isTTY: true, write() {} },
+    env: { KITTY_LISTEN_ON: 'unix:/tmp/parent.sock' },
+    dryRun: true,
+    readState: () => fakeState([fakeSession('alpha')]),
+    readSettings: () => ({}),
+    terminalBackends: { kitty: fakeBackendStub() },
+  });
+
+  assert.equal(result.backend, 'kitty');
+  assert.equal(result.plan.host || null, null);
+});
+
+test('--no-host overrides the auto-host default', () => {
+  const result = cockpit.openCockpit(['--no-host', '--target', '/repo/gitguardex'], {
+    resolveRepoRoot: (target) => target,
+    toolName: 'gx',
+    stdout: { isTTY: true, write() {} },
+    env: {},
+    dryRun: true,
+    readState: () => fakeState([fakeSession('alpha')]),
+    readSettings: () => ({}),
+    terminalBackends: { kitty: fakeBackendStub() },
+  });
+
+  assert.equal(result.plan.host || null, null);
+});
+
+test('GUARDEX_AUTO_HOST=0 disables the auto-host default', () => {
+  const result = cockpit.openCockpit(['--target', '/repo/gitguardex'], {
+    resolveRepoRoot: (target) => target,
+    toolName: 'gx',
+    stdout: { isTTY: true, write() {} },
+    env: { GUARDEX_AUTO_HOST: '0' },
+    dryRun: true,
+    readState: () => fakeState([fakeSession('alpha')]),
+    readSettings: () => ({}),
+    terminalBackends: { kitty: fakeBackendStub() },
+  });
+
+  assert.equal(result.plan.host || null, null);
+});
+
 test('parseCockpitArgs accepts --host and --socket', () => {
   const opts1 = cockpit.parseCockpitArgs(['--host']);
   assert.equal(opts1.host, true);

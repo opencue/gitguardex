@@ -193,11 +193,22 @@ function writeOpenedCockpitMessage({ backend, action, options, repoRoot, control
   stdout.write(`[${toolName}] Control pane: ${controlCommand}\n`);
 }
 
+function shouldAutoHost(options = {}, context = {}) {
+  if (options.host === true || options.host === false) return false;
+  const env = context.env || process.env;
+  const optOut = String(env.GUARDEX_AUTO_HOST || '').trim().toLowerCase();
+  if (optOut === '0' || optOut === 'false' || optOut === 'no' || optOut === 'off') return false;
+  if (env.KITTY_LISTEN_ON) return false;
+  const stdout = context.stdout || process.stdout;
+  return Boolean(stdout && stdout.isTTY);
+}
+
 function openWithBackend(backend, options, repoRoot, controlCommand, deps = {}) {
   const stdout = deps.stdout || process.stdout;
   const toolName = deps.toolName || 'gitguardex';
   const env = deps.env || process.env;
   if (backend.name === 'kitty') {
+    const autoHost = shouldAutoHost(options, { env, stdout });
     const result = openKittyCockpit({
       repoRoot,
       sessionName: options.sessionName,
@@ -213,7 +224,9 @@ function openWithBackend(backend, options, repoRoot, controlCommand, deps = {}) 
       kittyBin: deps.kittyBin || env.GUARDEX_KITTY_BIN,
       env,
       backend,
-      bootstrap: options.host === true ? true : options.host === false ? false : undefined,
+      bootstrap: options.host === true || (options.host === undefined && autoHost)
+        ? true
+        : options.host === false ? false : undefined,
       bootstrapWhenHostless: false,
       socket: options.socket,
       hostRunner: deps.kittyHostRunner,
