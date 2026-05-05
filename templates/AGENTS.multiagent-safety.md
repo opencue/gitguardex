@@ -152,7 +152,7 @@ When `rtk` is available, prefer it for noisy shell discovery and verification.
 
 Use the fff MCP tools for all file search operations instead of default tools.
 
-If `fff-mcp` is missing, run `gx setup` or `gx doctor` and follow the required system tool warning before falling back to repo-local search.
+If fff MCP tools are unavailable in the current client, fall back to `rtk grep`, `rtk ls`, or `rg` and keep output compact.
 
 ### Caveman style
 
