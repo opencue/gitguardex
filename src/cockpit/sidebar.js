@@ -199,6 +199,54 @@ function fitRow(left, right, width) {
   return `${truncate(left, leftWidth).padEnd(leftWidth, ' ')}${right}`;
 }
 
+function kittyTreeOf(state = {}) {
+  const tree = state && typeof state === 'object' ? state.kittyTree : null;
+  return tree && typeof tree === 'object' ? tree : null;
+}
+
+function classifyTag(window = {}) {
+  if (window.kind === 'control') return 'gx';
+  if (window.kind === 'agent') return 'cx';
+  if (window.kind === 'shell') return 'ba';
+  return 'sh';
+}
+
+function windowLabel(window = {}, fallback) {
+  const explicit = text(window.title);
+  if (explicit) return explicit;
+  if (window.kind === 'control') return 'gx cockpit';
+  if (Array.isArray(window.cmdline) && window.cmdline.length > 0) {
+    return path.basename(text(window.cmdline[0])) || fallback;
+  }
+  return fallback;
+}
+
+function renderKittyTreeRows(state, width, options = {}) {
+  const tree = kittyTreeOf(state);
+  if (!tree) return [];
+  const theme = getCockpitTheme(options.theme || (state.settings && state.settings.theme), options);
+  const windows = Array.isArray(tree.windows) ? tree.windows : [];
+  const lines = [];
+  lines.push(colorize(boundLine(text(tree.user, 'user'), width), 'title', theme));
+  lines.push(colorize(boundLine(`  ${text(tree.sessionLabel, 'session')}`, width), 'secondary', theme));
+  if (windows.length === 0) {
+    lines.push(colorize(boundLine('    no kitty panes detected', width), 'secondary', theme));
+  } else {
+    windows.forEach((window, index) => {
+      const cursor = window.isFocused ? '>' : ' ';
+      const label = windowLabel(window, `pane-${index + 1}`);
+      const tag = classifyTag(window);
+      const row = `  ${cursor} ${label}`.padEnd(Math.max(width - 6, 6), ' ') + ` [${tag}]`;
+      const token = window.isFocused ? 'selected' : 'secondary';
+      lines.push(colorize(boundLine(row, width), token, theme));
+    });
+  }
+  if (tree.error) {
+    lines.push(colorize(boundLine(`  (kitty: ${tree.error})`, width), 'secondary', theme));
+  }
+  return lines;
+}
+
 function renderShortcutRows(width, options) {
   const theme = getCockpitTheme(options.theme, options);
   const rows = [
@@ -241,6 +289,12 @@ function renderSidebar(state = {}, options = {}) {
     sessions.forEach((session, index) => {
       lines.push(renderSessionRow(session, index, state, options));
     });
+  }
+
+  const treeRows = renderKittyTreeRows(state, width, options);
+  if (treeRows.length > 0) {
+    lines.push('');
+    lines.push(...treeRows);
   }
 
   lines.push(...renderShortcutRows(width, options));
