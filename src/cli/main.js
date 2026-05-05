@@ -890,6 +890,13 @@ function legacyDefaultStatusEnabled() {
   return envFlagIsTruthy(process.env.GUARDEX_LEGACY_STATUS);
 }
 
+function defaultCockpitDisabled() {
+  const raw = process.env.GUARDEX_DEFAULT_COCKPIT;
+  if (raw == null) return false;
+  const normalized = String(raw).trim().toLowerCase();
+  return ['0', 'false', 'no', 'off'].includes(normalized);
+}
+
 function parseAutoApproval(name) {
   const raw = process.env[name];
   if (raw == null) return null;
@@ -3776,7 +3783,7 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {
-    if (isInteractiveTerminal() && !legacyDefaultStatusEnabled()) {
+    if (isInteractiveTerminal() && !legacyDefaultStatusEnabled() && !defaultCockpitDisabled()) {
       cockpitModule.openDefaultCockpit({
         resolveRepoRoot,
         toolName: TOOL_NAME,

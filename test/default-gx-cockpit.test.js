@@ -172,3 +172,72 @@ test('gx status still prints status output', () => {
   assert.match(result.stdout, /\[gitguardex\] CLI:/);
   assert.match(result.stdout, /\[gitguardex\] Repo safety service:/);
 });
+
+test('GUARDEX_DEFAULT_COCKPIT=0 keeps plain gx on status output', async () => {
+  const repoDir = initRepo();
+  const originalOpenDefaultCockpit = cockpit.openDefaultCockpit;
+  cockpit.openDefaultCockpit = () => {
+    throw new Error('interactive cockpit should not open when GUARDEX_DEFAULT_COCKPIT=0');
+  };
+
+  let output = '';
+  try {
+    output = await withCliContext({
+      args: [],
+      cwd: repoDir,
+      stdinTTY: true,
+      stdoutTTY: true,
+      env: {
+        ...STATUS_ENV,
+        GUARDEX_LEGACY_STATUS: undefined,
+        GUARDEX_DEFAULT_COCKPIT: '0',
+      },
+    }, async () => captureStdout(async () => {
+      await cliMain.main();
+      assert.equal(process.exitCode, 0);
+    }));
+  } finally {
+    cockpit.openDefaultCockpit = originalOpenDefaultCockpit;
+  }
+
+  assert.match(output, /\[gitguardex\] CLI:/);
+  assert.match(output, /\[gitguardex\] Repo safety service:/);
+});
+
+test('defaultCockpitBackends in auto mode skips kitty when remote control is unavailable and auto-host is forbidden', () => {
+  const kittyBackend = {
+    name: 'kitty',
+    isAvailable: () => false,
+  };
+  const tmuxBackend = {
+    name: 'tmux',
+    isAvailable: () => true,
+  };
+
+  const candidates = cockpit.defaultCockpitBackends(
+    'auto',
+    { kittyBackend, tmuxBackend },
+    { autoHostPermitted: false },
+  );
+
+  assert.deepEqual(candidates.map((b) => b.name), ['tmux']);
+});
+
+test('defaultCockpitBackends in auto mode keeps kitty when auto-host is permitted so the bootstrap path can run', () => {
+  const kittyBackend = {
+    name: 'kitty',
+    isAvailable: () => false,
+  };
+  const tmuxBackend = {
+    name: 'tmux',
+    isAvailable: () => true,
+  };
+
+  const candidates = cockpit.defaultCockpitBackends(
+    'auto',
+    { kittyBackend, tmuxBackend },
+    { autoHostPermitted: true },
+  );
+
+  assert.deepEqual(candidates.map((b) => b.name), ['kitty', 'tmux']);
+});

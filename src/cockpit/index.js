@@ -261,21 +261,25 @@ function backendAvailable(backend) {
   }
 }
 
-function defaultCockpitBackends(preferredBackend, terminalBackendOptions = {}) {
+function defaultCockpitBackends(preferredBackend, terminalBackendOptions = {}, options = {}) {
   const preferred = normalizeBackendName(preferredBackend || DEFAULT_INTERACTIVE_BACKEND, DEFAULT_INTERACTIVE_BACKEND);
   const seen = new Set();
   const candidates = [];
-  const add = (name, options = {}) => {
+  const add = (name, addOptions = {}) => {
     if (seen.has(name)) return;
     const backend = selectTerminalBackend(name, terminalBackendOptions);
     if (!backend) return;
-    if (options.onlyIfAvailable && !backendAvailable(backend)) return;
+    if (addOptions.onlyIfAvailable && !backendAvailable(backend)) return;
     seen.add(name);
     candidates.push(backend);
   };
 
   if (preferred === 'auto') {
-    add('kitty', { onlyIfAvailable: true });
+    if (options.autoHostPermitted) {
+      add('kitty');
+    } else {
+      add('kitty', { onlyIfAvailable: true });
+    }
     add('tmux');
     return candidates;
   }
@@ -314,6 +318,7 @@ function openDefaultCockpit(deps = {}) {
   }
 
   const target = deps.target || process.cwd();
+  const stdout = deps.stdout || process.stdout;
   const options = {
     sessionName: DEFAULT_SESSION_NAME,
     backend: env.GUARDEX_COCKPIT_BACKEND || DEFAULT_INTERACTIVE_BACKEND,
@@ -324,8 +329,9 @@ function openDefaultCockpit(deps = {}) {
   const controlCommand = cockpitControlCommand(repoRoot);
   const terminalBackendOptions = terminalBackendOptionsFromDeps(deps);
   const failures = [];
+  const autoHostPermitted = shouldAutoHost({}, { env, stdout });
 
-  for (const backend of defaultCockpitBackends(options.backend, terminalBackendOptions)) {
+  for (const backend of defaultCockpitBackends(options.backend, terminalBackendOptions, { autoHostPermitted })) {
     try {
       return openWithBackend(backend, options, repoRoot, controlCommand, deps);
     } catch (error) {
