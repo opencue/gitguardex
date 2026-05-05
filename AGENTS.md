@@ -373,6 +373,7 @@ GUARDEX_ON=1
 - Work from an `agent/*` branch and worktree, never directly on the protected base branch.
 - Claim files before edits.
 - Use Colony for coordination before falling back to OMX state/notepad.
+- Prefer fff MCP tools for file search whenever available; do not route file search through RTK when fff can answer it.
 - Use OpenSpec for durable behavior contracts and change-driven work.
 - Keep outputs compact: less word, same proof.
 - Commit, push, and open/update a PR for completed work unless the user explicitly says to keep it local.
@@ -479,6 +480,12 @@ Default: less word, same proof.
 - Keep execution log separate from reasoning context: full commands/stdout belong in logs, while prompt context keeps only the latest 1-2 checkpoints plus the newest tool-result summary.
 - Treat local edit/commit, remote publish/PR, CI diagnosis, and cleanup as bounded phases.
 - Do not spend fresh narration or approval turns on obvious safe follow-ons inside an already authorized phase unless the risk changes.
+
+### FFF file search
+
+Use the fff MCP tools for all file search operations instead of default tools, including RTK shell wrappers.
+
+If fff MCP tools are unavailable in the current client, fall back to `rtk grep`, `rtk find`, `rtk ls`, or `rg` and keep output compact.
 
 ### Caveman style
 

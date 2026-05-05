@@ -27,7 +27,7 @@ GUARDEX_ON=1
 - Work from an `agent/*` branch and worktree, never directly on the protected base branch.
 - Claim files before edits.
 - Use Colony for coordination before falling back to OMX state/notepad.
-- Use the fff MCP tools for all file search operations instead of default tools.
+- Prefer fff MCP tools for file search whenever available; do not route file search through RTK when fff can answer it.
 - Use OpenSpec for durable behavior contracts and change-driven work.
 - Keep outputs compact: less word, same proof.
 - Commit, push, and open/update a PR for completed work unless the user explicitly says to keep it local.
@@ -137,7 +137,7 @@ Default: less word, same proof.
 
 ### RTK command compression
 
-When `rtk` is available, prefer it for noisy shell discovery and verification.
+When `rtk` is available, prefer it for noisy shell discovery and verification. For file search, fff MCP takes precedence whenever available.
 
 - Files: `rtk ls .`, `rtk read <file>`, `rtk read <file> -l aggressive`, `rtk smart <file>`, `rtk find "<glob>" .`, `rtk grep "<pattern>" .`, `rtk diff <a> <b>`.
 - Git and GitHub: `rtk git status`, `rtk git diff`, `rtk git log -n 10`, `rtk gh pr list`, `rtk gh pr view <id>`.
@@ -150,9 +150,9 @@ When `rtk` is available, prefer it for noisy shell discovery and verification.
 
 ### FFF file search
 
-Use the fff MCP tools for all file search operations instead of default tools.
+Use the fff MCP tools for all file search operations instead of default tools, including RTK shell wrappers.
 
-If fff MCP tools are unavailable in the current client, fall back to `rtk grep`, `rtk ls`, or `rg` and keep output compact.
+If fff MCP tools are unavailable in the current client, fall back to `rtk grep`, `rtk find`, `rtk ls`, or `rg` and keep output compact.
 
 ### Caveman style
 
