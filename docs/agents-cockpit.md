@@ -82,6 +82,25 @@ inside Kitty" mode.
 set). It does not require `allow_remote_control` to be enabled in
 `kitty.conf`, because the spawned host is configured inline via `-o`.
 
+### Auto-host default
+
+When you run `gx cockpit` from an interactive terminal that is **not**
+already a Kitty session (e.g. from gnome-terminal, alacritty, or any
+shell where `KITTY_LISTEN_ON` is unset) and the kitty backend is
+selected, `gx cockpit` auto-bootstraps a Kitty host as if you had
+passed `--host`.
+
+Auto-host is disabled when any of the following hold:
+- The cockpit is invoked with `--no-host`.
+- `KITTY_LISTEN_ON` is already exported (you are inside a Kitty
+  session — remote control is reachable through the parent socket).
+- `stdout` is not a TTY (CI, piped output, scripted tests).
+- `GUARDEX_AUTO_HOST=0` (or `false`/`no`/`off`) is exported.
+
+This makes the dmux-style "type one command, get a guarded multi-agent
+window" UX work out of the box while keeping the legacy "I am already
+inside Kitty with RC enabled" path untouched.
+
 ## Start agent lanes
 
 Start Codex:
