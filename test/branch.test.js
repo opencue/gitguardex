@@ -439,6 +439,13 @@ test('agent-branch-start honors T1 notes-only OpenSpec scaffolding', () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /\[agent-branch-start\] OpenSpec tier: T1/);
   assert.match(result.stdout, /\[agent-branch-start\] OpenSpec plan: skipped by tier T1/);
+  assert.match(result.stdout, /\[agent-branch-start\] Ready:/);
+  assert.match(result.stdout, /  branch:   agent\/codex\/simple-tighten-copy-/);
+  assert.match(result.stdout, /  next:\n    cd "/);
+  assert.match(
+    result.stdout,
+    /gx branch finish --branch "agent\/codex\/simple-tighten-copy-[^"]+" --base dev --via-pr --wait-for-merge --cleanup/,
+  );
 
   const createdWorktree = extractCreatedWorktree(result.stdout);
   const changeSlug = extractOpenSpecChangeSlug(result.stdout);

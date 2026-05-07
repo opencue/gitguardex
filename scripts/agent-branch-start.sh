@@ -389,11 +389,27 @@ print_reused_agent_worktree() {
   echo "[agent-branch-start] OpenSpec tier: ${OPENSPEC_TIER}"
   echo "[agent-branch-start] OpenSpec change: existing worktree"
   echo "[agent-branch-start] OpenSpec plan: existing worktree"
-  echo "[agent-branch-start] Next steps:"
-  echo "  cd \"${worktree_path}\""
-  echo "  gx locks claim --branch \"${branch_name}\" <file...>"
-  echo "  # continue work in this existing sandbox"
-  echo "  gx branch finish --branch \"${branch_name}\" --via-pr --wait-for-merge"
+  print_agent_next_steps "$branch_name" "$worktree_path" "continue work in this existing sandbox" "$BASE_BRANCH"
+}
+
+print_agent_next_steps() {
+  local branch_name="$1"
+  local worktree_path="$2"
+  local work_step="$3"
+  local base_branch="${4:-main}"
+
+  if [[ -z "$base_branch" ]]; then
+    base_branch="main"
+  fi
+
+  echo "[agent-branch-start] Ready:"
+  echo "  branch:   ${branch_name}"
+  echo "  worktree: ${worktree_path}"
+  echo "  next:"
+  echo "    cd \"${worktree_path}\""
+  echo "    gx locks claim --branch \"${branch_name}\" <file...>"
+  echo "    # ${work_step}"
+  echo "    gx branch finish --branch \"${branch_name}\" --base ${base_branch} --via-pr --wait-for-merge --cleanup"
 }
 
 has_local_changes() {
@@ -842,8 +858,4 @@ if [[ "$OPENSPEC_SKIP_PLAN" -eq 1 ]]; then
 else
   echo "[agent-branch-start] OpenSpec plan: openspec/plan/${openspec_plan_slug}"
 fi
-echo "[agent-branch-start] Next steps:"
-echo "  cd \"${worktree_path}\""
-echo "  gx locks claim --branch \"${branch_name}\" <file...>"
-echo "  # implement + commit"
-echo "  gx branch finish --branch \"${branch_name}\" --base ${BASE_BRANCH} --via-pr --wait-for-merge"
+print_agent_next_steps "$branch_name" "$worktree_path" "implement + commit" "$BASE_BRANCH"

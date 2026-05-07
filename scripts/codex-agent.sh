@@ -735,9 +735,14 @@ print_takeover_prompt() {
 
   finish_cmd="gx branch finish --branch \"${branch}\" --base ${base_branch} --via-pr --wait-for-merge --cleanup"
 
-  echo "[codex-agent] Takeover sandbox: ${wt}"
-  echo "[codex-agent] Takeover routing: $(describe_task_routing) (${TASK_ROUTING_REASON})"
-  echo "[codex-agent] Takeover prompt: Continue \`${change_slug}\` on branch \`${branch}\`. Work inside \`${wt}\`, review \`${change_artifact}\`, continue from the current state instead of creating a new sandbox, and when the work is done run \`${finish_cmd}\`."
+  echo "[codex-agent] Resume this sandbox:"
+  echo "  change:   ${change_slug}"
+  echo "  branch:   ${branch}"
+  echo "  worktree: ${wt}"
+  echo "  spec:     ${change_artifact}"
+  echo "  routing:  $(describe_task_routing) (${TASK_ROUTING_REASON})"
+  echo "  rule:     continue current state; do not create a new sandbox"
+  echo "  finish:   ${finish_cmd}"
 }
 
 sync_worktree_with_base() {
@@ -1161,7 +1166,11 @@ else
       echo "[codex-agent] Branch kept intentionally. Cleanup on demand: gx cleanup --branch \"${worktree_branch}\""
     else
       print_takeover_prompt "$worktree_path" "$worktree_branch"
-      echo "[codex-agent] If finished, merge with: gx branch finish --branch \"${worktree_branch}\" --base dev --via-pr --wait-for-merge"
+      finish_base_branch="$(resolve_worktree_base_branch "$worktree_path")"
+      if [[ -z "$finish_base_branch" ]]; then
+        finish_base_branch="dev"
+      fi
+      echo "[codex-agent] If finished, merge with: gx branch finish --branch \"${worktree_branch}\" --base ${finish_base_branch} --via-pr --wait-for-merge --cleanup"
       echo "[codex-agent] Cleanup on demand: gx cleanup --branch \"${worktree_branch}\""
     fi
   fi

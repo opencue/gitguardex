@@ -580,12 +580,14 @@ test('codex-agent prints a takeover prompt when the sandbox is kept after an inc
   const launchedBranch = extractCreatedBranch(launch.stdout);
   const changeSlug = launchedBranch.replace(/\//g, '-');
   assert.match(combinedOutput, /\[codex-agent\] Sandbox worktree kept:/);
-  assert.match(combinedOutput, new RegExp(`\\[codex-agent\\] Takeover sandbox: ${escapeRegexLiteral(fs.readFileSync(cwdMarker, 'utf8').trim())}`));
+  assert.match(combinedOutput, /\[codex-agent\] Resume this sandbox:/);
+  assert.match(combinedOutput, new RegExp(`  worktree: ${escapeRegexLiteral(fs.readFileSync(cwdMarker, 'utf8').trim())}`));
   assert.match(
     combinedOutput,
-    new RegExp(`\\[codex-agent\\] Takeover prompt: Continue \`${escapeRegexLiteral(changeSlug)}\` on branch \`${escapeRegexLiteral(launchedBranch)}\``),
+    new RegExp(`  change:   ${escapeRegexLiteral(changeSlug)}`),
   );
-  assert.match(combinedOutput, /continue from the current state instead of creating a new sandbox/);
+  assert.match(combinedOutput, new RegExp(`  branch:   ${escapeRegexLiteral(launchedBranch)}`));
+  assert.match(combinedOutput, /rule:     continue current state; do not create a new sandbox/);
   assert.match(
     combinedOutput,
     new RegExp(`openspec/changes/${escapeRegexLiteral(changeSlug)}/tasks\\.md`),
