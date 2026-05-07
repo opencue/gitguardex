@@ -84,6 +84,7 @@ if [[ ! -f "$PLAN_DIR/README.md" ]]; then
     echo
     echo "Each role folder contains OpenSpec-style artifacts:"
     echo "- \`.openspec.yaml\`"
+    echo "- \`prompt.md\` (copy/paste role prompt)"
     echo "- \`proposal.md\`"
     echo "- \`tasks.md\` (Spec / Tests / Implementation / Checkpoints checklists)"
     echo "- \`specs/<role>/spec.md\`"
@@ -108,6 +109,7 @@ Drive this plan from draft to execution-ready status with strict checkpoint disc
 - \`openspec/plan/${PLAN_SLUG}/checkpoints.md\`
 - \`openspec/plan/${PLAN_SLUG}/open-questions.md\`
 - \`openspec/plan/${PLAN_SLUG}/planner/plan.md\`
+- role \`prompt.md\` files for copy/paste helper startup
 - role \`tasks.md\` files for planner/architect/critic/executor/writer/verifier
 
 ## Coordinator responsibilities
@@ -282,6 +284,7 @@ Role workspace for \`${role}\`.
 
 Default artifacts:
 - \`.openspec.yaml\`
+- \`prompt.md\`
 - \`proposal.md\`
 - \`tasks.md\`
 - \`specs/<role>/spec.md\`
@@ -302,10 +305,50 @@ plan: ${PLAN_SLUG}
 role: ${role}
 status: draft
 artifacts:
+  prompt: prompt.md
   proposal: proposal.md
   tasks: tasks.md
   spec: specs/${ROLE_SPEC_SLUG}/spec.md
 ROLEYAMLEOF
+  fi
+
+  if [[ ! -f "$ROLE_DIR/prompt.md" ]]; then
+    cat > "$ROLE_DIR/prompt.md" <<ROLEPROMPTEOF
+# ${role} Prompt
+
+You are the \`${role}\` role for OpenSpec plan \`${PLAN_SLUG}\`.
+
+## Objective
+
+Complete only this role's assigned checklist and leave compact evidence for the coordinator.
+
+## Source of truth
+
+- \`openspec/plan/${PLAN_SLUG}/summary.md\`
+- \`openspec/plan/${PLAN_SLUG}/checkpoints.md\`
+- \`openspec/plan/${PLAN_SLUG}/open-questions.md\`
+- \`openspec/plan/${PLAN_SLUG}/${role}/tasks.md\`
+- \`openspec/plan/${PLAN_SLUG}/${role}/proposal.md\`
+
+## Before edits
+
+1. Confirm branch/worktree with \`git status --short --branch\`.
+2. Claim every touched file before editing:
+   - Prefer Colony \`task_claim_file\` when an active task exists.
+   - Otherwise run \`gx locks claim --branch <agent-branch> <file...>\`.
+3. Stay inside assigned files/modules; coordinate before touching shared paths.
+
+## Working rules
+
+- Update \`${role}/tasks.md\` as each item completes.
+- Record durable unresolved questions in \`open-questions.md\`.
+- Keep handoffs short: files changed, behavior touched, verification, risks.
+- Do not revert another agent's edits.
+
+## Cleanup
+
+Only the owner/finalizer lane runs \`gx branch finish --branch <agent-branch> --base dev --via-pr --wait-for-merge --cleanup\`. If blocked, append \`BLOCKED:\` with branch, task, blocker, next, evidence.
+ROLEPROMPTEOF
   fi
 
   if [[ ! -f "$ROLE_DIR/proposal.md" ]]; then

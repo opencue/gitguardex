@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "plan_slug": "agent-claude-submodule-aware-gx-2026-05-07-18-46",
+  "title": "Submodule-aware gx role plan",
+  "problem": "The existing OpenSpec plan workspace for submodule-aware gx has role tasks and prompt packets in-repo, but Colony had no published claimable plan, so helper agents could not claim planner, architect, executor, critic, writer, and verifier lanes from the coordination surface.",
+  "acceptance_criteria": [
+    "Colony exposes claimable role subtasks for the existing submodule-aware gx plan.",
+    "Each role subtask points to its plan prompt.md and tasks.md packet plus owned implementation files where applicable.",
+    "Downstream agents claim files before edits and record verification or blockers in the role task handoff fields."
+  ],
+  "roles": [
+    "planner",
+    "architect",
+    "critic",
+    "executor",
+    "writer",
+    "verifier"
+  ],
+  "tasks": [
+    {
+      "subtask_index": 0,
+      "title": "Planner: freeze submodule-aware gx plan",
+      "description": "Use planner/prompt.md and planner/tasks.md to finish spec/open-question planning for the existing submodule-aware gx plan. Keep durable questions in the plan workspace and hand off execution boundaries.",
+      "file_scope": [
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/planner/tasks.md",
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/planner/prompt.md"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "doc_work",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 1,
+      "title": "Architect: review lifecycle boundaries",
+      "description": "Use architect/prompt.md and architect/tasks.md to validate submodule lifecycle boundaries, manifests, token preflight, and failure modes before implementation.",
+      "file_scope": [
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/architect/tasks.md",
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/architect/prompt.md"
+      ],
+      "depends_on": [],
+      "spec_row_id": null,
+      "capability_hint": "infra_work",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 2,
+      "title": "Executor: implement submodule-aware gx",
+      "description": "Use executor/prompt.md and executor/tasks.md to add tests first, then implement submodule detection, lock tuple keying, start/finish wiring, and gx subcommands inside the approved scope.",
+      "file_scope": [
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/executor/tasks.md",
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/executor/prompt.md",
+        "scripts/agent-submodules.py",
+        "scripts/agent-branch-start.sh",
+        "scripts/agent-branch-finish.sh",
+        "scripts/agent-file-locks.py",
+        "scripts/codex-agent.sh",
+        "bin/gx",
+        "test/agent-submodules-detect.test.js",
+        "test/agent-submodules-locks.test.py",
+        "test/agent-submodules-finish.test.js",
+        "test/agent-submodules-preflight.test.js"
+      ],
+      "depends_on": [
+        0,
+        1
+      ],
+      "spec_row_id": null,
+      "capability_hint": "infra_work",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 3,
+      "title": "Quality review: stress-test executor diff",
+      "description": "Use critic/prompt.md and critic/tasks.md to review executor output for unclaimed edits, stranded submodule writes, atomic gitlink bump correctness, and missing negative scenarios.",
+      "file_scope": [
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/critic/tasks.md",
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/critic/prompt.md"
+      ],
+      "depends_on": [
+        2
+      ],
+      "spec_row_id": null,
+      "capability_hint": "infra_work",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 4,
+      "title": "Writer: sync operator docs/context",
+      "description": "Use writer/prompt.md and writer/tasks.md to update only approved user-facing workflow docs/context after implementation behavior is final.",
+      "file_scope": [
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/writer/tasks.md",
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/writer/prompt.md",
+        "AGENTS.md",
+        "README.md",
+        "openspec/specs/gitguardex-submodules/context.md"
+      ],
+      "depends_on": [
+        2,
+        3
+      ],
+      "spec_row_id": null,
+      "capability_hint": "doc_work",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    },
+    {
+      "subtask_index": 5,
+      "title": "Verifier: prove submodule-aware lifecycle",
+      "description": "Use verifier/prompt.md and verifier/tasks.md to run OpenSpec, focused node/python tests, and the approved walkthrough proof or record exact blockers.",
+      "file_scope": [
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/verifier/tasks.md",
+        "openspec/plan/agent-claude-submodule-aware-gx-2026-05-07-18-46/verifier/prompt.md"
+      ],
+      "depends_on": [
+        3,
+        4
+      ],
+      "spec_row_id": null,
+      "capability_hint": "test_work",
+      "status": "available",
+      "claimed_by_session_id": null,
+      "claimed_by_agent": null,
+      "completed_summary": null
+    }
+  ],
+  "published": {
+    "spec_task_id": 46,
+    "spec_change_path": "/home/deadpool/Documents/recodee/gitguardex/.omx/agent-worktrees/gitguardex__codex__codex-task-2026-05-07-22-43/openspec/changes/agent-claude-submodule-aware-gx-2026-05-07-18-46/CHANGE.md",
+    "auto_archive": false
+  },
+  "created_at": "2026-05-07T21:04:27.771Z",
+  "updated_at": "2026-05-07T21:04:27.771Z"
+}

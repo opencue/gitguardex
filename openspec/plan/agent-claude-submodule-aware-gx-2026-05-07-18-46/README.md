@@ -8,7 +8,7 @@ Use this command to update checkpoints:
 /opsx:checkpoint agent-claude-submodule-aware-gx-2026-05-07-18-46 <role> <checkpoint-id> <state> <note...>
 ```
 
-Roles (each has its own `tasks.md`):
+Roles (each has its own `tasks.md` and copyable `prompt.md`):
 
 - `planner/` — owns spec + open-questions
 - `architect/` — owns manifest schema + failure catalog

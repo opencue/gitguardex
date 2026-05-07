@@ -1069,6 +1069,7 @@ test('OpenSpec plan workspace scaffold creates expected role/task structure', ()
   for (const role of ['planner', 'architect', 'critic', 'executor', 'writer', 'verifier']) {
     assert.equal(fs.existsSync(path.join(planDir, role, 'README.md')), true, `${role}/README.md missing`);
     assert.equal(fs.existsSync(path.join(planDir, role, '.openspec.yaml')), true, `${role}/.openspec.yaml missing`);
+    assert.equal(fs.existsSync(path.join(planDir, role, 'prompt.md')), true, `${role}/prompt.md missing`);
     assert.equal(fs.existsSync(path.join(planDir, role, 'proposal.md')), true, `${role}/proposal.md missing`);
     assert.equal(fs.existsSync(path.join(planDir, role, 'tasks.md')), true, `${role}/tasks.md missing`);
     assert.equal(
@@ -1087,6 +1088,11 @@ test('OpenSpec plan workspace scaffold creates expected role/task structure', ()
   const coordinatorPrompt = fs.readFileSync(path.join(planDir, 'coordinator-prompt.md'), 'utf8');
   assert.match(coordinatorPrompt, /Drive this plan from draft to execution-ready status/);
   assert.match(coordinatorPrompt, /kickoff-prompts\.md/);
+
+  const executorPrompt = fs.readFileSync(path.join(planDir, 'executor', 'prompt.md'), 'utf8');
+  assert.match(executorPrompt, /You are the `executor` role for OpenSpec plan `plan-workspace-smoke`/);
+  assert.match(executorPrompt, /gx locks claim --branch <agent-branch> <file\.\.\.>/);
+  assert.match(executorPrompt, /gx branch finish --branch <agent-branch> --base dev --via-pr --wait-for-merge --cleanup/);
 
   const phasesContent = fs.readFileSync(path.join(planDir, 'phases.md'), 'utf8');
   assert.match(phasesContent, /\[PH01\]/);
