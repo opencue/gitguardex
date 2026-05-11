@@ -6,6 +6,7 @@ AGENT_NAME="${GUARDEX_AGENT_NAME:-agent}"
 BASE_BRANCH="${GUARDEX_BASE_BRANCH:-}"
 BASE_BRANCH_EXPLICIT=0
 CODEX_BIN="${GUARDEX_CODEX_BIN:-codex}"
+CODEX_APPROVAL_POLICY="${GUARDEX_CODEX_APPROVAL_POLICY-never}"
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
 AUTO_FINISH_RAW="${GUARDEX_CODEX_AUTO_FINISH:-true}"
@@ -65,6 +66,29 @@ normalize_tier() {
     '') printf '%s' "$fallback" ;;
     *) return 1 ;;
   esac
+}
+
+codex_args_include_approval_policy() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -a|--ask-for-approval|--approval-policy|--dangerously-bypass-approvals-and-sandbox)
+        return 0
+        ;;
+      --ask-for-approval=*|--approval-policy=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+build_codex_launch_args() {
+  CODEX_LAUNCH_ARGS=()
+  if [[ -n "$CODEX_APPROVAL_POLICY" ]] && ! codex_args_include_approval_policy "$@"; then
+    CODEX_LAUNCH_ARGS+=("-a" "$CODEX_APPROVAL_POLICY")
+  fi
+  CODEX_LAUNCH_ARGS+=("$@")
 }
 
 string_contains_any() {
@@ -1039,7 +1063,8 @@ run_finish_flow() {
     (
       cd "$wt"
       set +e
-      "$CODEX_BIN" "$review_prompt"
+      build_codex_launch_args "$review_prompt"
+      "$CODEX_BIN" "${CODEX_LAUNCH_ARGS[@]}"
       review_exit="$?"
       set -e
       if [[ "$review_exit" -ne 0 ]]; then
@@ -1097,10 +1122,11 @@ trap cleanup_active_session_state_on_exit EXIT INT TERM
 echo "[codex-agent] Launching ${CODEX_BIN} in sandbox: $worktree_path"
 cd "$worktree_path"
 set +e
+build_codex_launch_args "$@"
 GUARDEX_TASK_MODE="$TASK_MODE" \
 GUARDEX_OPENSPEC_TIER="$OPENSPEC_TIER" \
 GUARDEX_TASK_ROUTING_REASON="$TASK_ROUTING_REASON" \
-  "$CODEX_BIN" "$@"
+  "$CODEX_BIN" "${CODEX_LAUNCH_ARGS[@]}"
 codex_exit="$?"
 set -e
 

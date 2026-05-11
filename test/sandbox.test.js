@@ -106,6 +106,7 @@ test('codex-agent launches codex inside a fresh sandbox worktree and keeps branc
   );
 
   const launchedArgs = fs.readFileSync(argsMarker, 'utf8').trim();
+  assert.match(launchedArgs, /-a never/);
   assert.match(launchedArgs, /--model gpt-5\.4-mini/);
 
   assert.equal(fs.existsSync(launchedCwd), true, 'clean codex-agent sandbox should stay available by default');
@@ -397,7 +398,7 @@ test('codex-agent supports --codex-bin override before positional arguments', ()
   const cwdMarker = path.join(repoDir, '.codex-agent-cwd-override');
   const argsMarker = path.join(repoDir, '.codex-agent-args-override');
   const launch = runCodexAgent(
-    ['--codex-bin', fakeCodexPath, 'launch-task', 'planner', 'dev', '--model', 'gpt-5.4-mini'],
+    ['--codex-bin', fakeCodexPath, 'launch-task', 'planner', 'dev', '-a', 'on-request', '--model', 'gpt-5.4-mini'],
     repoDir,
     {
       GUARDEX_TEST_CODEX_CWD: cwdMarker,
@@ -414,6 +415,8 @@ test('codex-agent supports --codex-bin override before positional arguments', ()
     new RegExp(`${escapeRegexLiteral(repoDir)}/\\.omx/agent-worktrees/${escapeRegexLiteral(path.basename(repoDir))}__planner__`),
   );
   const launchedArgs = fs.readFileSync(argsMarker, 'utf8').trim();
+  assert.match(launchedArgs, /-a on-request/);
+  assert.doesNotMatch(launchedArgs, /-a never/);
   assert.match(launchedArgs, /--model gpt-5\.4-mini/);
   assert.equal(fs.existsSync(launchedCwd), true, 'override invocation should keep sandbox unless cleanup is requested');
 });
