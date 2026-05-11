@@ -1126,13 +1126,34 @@ run_pr_flow() {
   fi
   pr_body="Automated by gx branch finish (PR flow)."
 
-  "$GH_BIN" pr create \
+  pr_create_output=""
+  if pr_create_output="$("$GH_BIN" pr create \
     --base "$BASE_BRANCH" \
     --head "$SOURCE_BRANCH" \
     --title "$pr_title" \
-    --body "$pr_body" >/dev/null 2>&1 || true
+    --body "$pr_body" 2>&1)"; then
+    :
+  else
+    # Idempotent: a PR already opened for this head is fine — fall through
+    # to `gh pr view` so we still capture the URL. Anything else is a real
+    # failure and the user needs to see it.
+    if ! grep -qiE 'already exists|a pull request for branch' <<<"$pr_create_output"; then
+      echo "[agent-branch-finish] gh pr create failed:" >&2
+      echo "${pr_create_output}" >&2
+    fi
+  fi
 
   pr_url="$("$GH_BIN" pr view "$SOURCE_BRANCH" --json url --jq '.url' 2>/dev/null || true)"
+
+  if [[ -z "$pr_url" ]]; then
+    echo "[agent-branch-finish] No PR found for '${SOURCE_BRANCH}' after gh pr create; cannot proceed with PR merge." >&2
+    if [[ -n "$pr_create_output" ]]; then
+      echo "[agent-branch-finish] Last gh pr create output:" >&2
+      echo "${pr_create_output}" >&2
+    fi
+    return 1
+  fi
+  echo "[agent-branch-finish] PR URL: ${pr_url}" >&2
 
   merge_output=""
   if merge_output="$("$GH_BIN" pr merge "$SOURCE_BRANCH" --squash --delete-branch 2>&1)"; then

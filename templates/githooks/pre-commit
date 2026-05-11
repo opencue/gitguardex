@@ -207,11 +207,32 @@ fi
 
 if [[ "$branch" == agent/* ]]; then
   if [[ "${GUARDEX_AUTOCLAIM_STAGED_LOCKS:-1}" == "1" ]]; then
+    # Auto-claim non-deletion staged paths. Deletions need an explicit
+    # `--allow-delete` flag below so `locks validate --staged` doesn't
+    # reject the commit on the same trip the user staged the delete.
     while IFS= read -r staged_file; do
       [[ -z "$staged_file" ]] && continue
       [[ "$staged_file" == ".omx/state/agent-file-locks.json" ]] && continue
       run_guardex_cli locks claim --branch "$branch" "$staged_file" >/dev/null 2>&1 || true
-    done < <(git diff --cached --name-only --diff-filter=ACMRDTUXB)
+    done < <(git diff --cached --name-only --diff-filter=ACMRTUXB)
+
+    # Auto-approve deletions for the same branch (gated separately so
+    # operators can disable this single behavior without disabling the
+    # broader auto-claim). Defaults to enabled — matches the auto-claim
+    # default and removes the "first commit fails, then `gx locks
+    # allow-delete`, then commit again" loop.
+    if [[ "${GUARDEX_AUTOCLAIM_STAGED_DELETES:-1}" == "1" ]]; then
+      _staged_deletes=()
+      while IFS= read -r staged_delete; do
+        [[ -z "$staged_delete" ]] && continue
+        [[ "$staged_delete" == ".omx/state/agent-file-locks.json" ]] && continue
+        _staged_deletes+=("$staged_delete")
+      done < <(git diff --cached --name-only --diff-filter=D)
+      if (( ${#_staged_deletes[@]} > 0 )); then
+        run_guardex_cli locks claim --branch "$branch" --allow-delete \
+          "${_staged_deletes[@]}" >/dev/null 2>&1 || true
+      fi
+    fi
   fi
 
   if ! run_guardex_cli locks validate --branch "$branch" --staged; then
