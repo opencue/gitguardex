@@ -1523,14 +1523,6 @@ function shellQuote(value) {
   return `'${normalized.replace(/'/g, "'\"'\"'")}'`;
 }
 
-function readPackageJson(repoRoot) {
-  const packageJsonPath = path.join(repoRoot, 'package.json');
-  try {
-    return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  } catch (_error) {
-    return null;
-  }
-}
 
 function hasGitMarker(dirPath) {
   return fs.existsSync(path.join(dirPath, '.git'));
@@ -1608,20 +1600,56 @@ function repoPickLabel(repoRoot) {
   return parent ? `${parent}/${base}` : base;
 }
 
+function readGitOutput(repoRoot, args) {
+  try {
+    return cp.execFileSync('git', ['-C', repoRoot, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function repoGitSummary(repoRoot) {
+  const branch = readGitOutput(repoRoot, ['branch', '--show-current']) || 'unknown';
+  const status = readGitOutput(repoRoot, ['status', '--porcelain']);
+  return {
+    branch,
+    dirty: status === null ? 'unknown' : status.length > 0 ? 'dirty' : 'clean',
+  };
+}
+
+function repoPickDescription(repoRoot) {
+  const summary = repoGitSummary(repoRoot);
+  return `${summary.branch} · ${summary.dirty}`;
+}
+
+function findRepoRootForPath(repoRoots, candidatePath) {
+  const normalizedCandidatePath = normalizeAbsolutePath(candidatePath);
+  if (!normalizedCandidatePath) {
+    return null;
+  }
+
+  return repoRoots
+    .filter((repoRoot) => isPathWithin(repoRoot, normalizedCandidatePath))
+    .sort((left, right) => right.length - left.length)[0] || null;
+}
+
+function activeScmRootPath() {
+  const sourceControl = vscode.scm?.activeSourceControl;
+  return sourceControl?.rootUri?.fsPath || sourceControl?.rootUri?.path || '';
+}
+
+function preferredRepoRoot(repoRoots) {
+  return findRepoRootForPath(repoRoots, activeScmRootPath())
+    || findRepoRootForPath(repoRoots, vscode.window.activeTextEditor?.document?.uri?.fsPath);
+}
+
 function resolveStartAgentCommand(repoRoot, details) {
   const taskArg = shellQuote(details.taskName);
   const agentArg = shellQuote(details.agentName);
-  const localCodexAgentPath = path.join(repoRoot, 'scripts', 'codex-agent.sh');
-  if (fs.existsSync(localCodexAgentPath)) {
-    return `bash ./scripts/codex-agent.sh ${taskArg} ${agentArg}`;
-  }
-
-  const agentCodexScript = readPackageJson(repoRoot)?.scripts?.['agent:codex'];
-  if (typeof agentCodexScript === 'string' && agentCodexScript.trim().length > 0) {
-    return `npm run agent:codex -- ${taskArg} ${agentArg}`;
-  }
-
-  return `gx branch start ${taskArg} ${agentArg}`;
+  return `gx agents start ${taskArg} --agent ${agentArg} --target ${shellQuote(repoRoot)}`;
 }
 
 function sessionTaskLabel(session) {
@@ -2908,9 +2936,15 @@ async function pickRepoRoot() {
     return repoRoots[0];
   }
 
+  const selectedRepoRoot = preferredRepoRoot(repoRoots);
+  if (selectedRepoRoot) {
+    return selectedRepoRoot;
+  }
+
   const picks = repoRoots.map((repoRoot) => ({
     label: repoPickLabel(repoRoot),
-    description: repoRoot,
+    description: repoPickDescription(repoRoot),
+    detail: repoRoot,
     repoRoot,
   }));
   const selection = await vscode.window.showQuickPick?.(picks, {
