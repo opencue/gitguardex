@@ -16,6 +16,9 @@ WAIT_FOR_MERGE_RAW="${GUARDEX_FINISH_WAIT_FOR_MERGE:-true}"
 WAIT_TIMEOUT_SECONDS_RAW="${GUARDEX_FINISH_WAIT_TIMEOUT_SECONDS:-1800}"
 WAIT_POLL_SECONDS_RAW="${GUARDEX_FINISH_WAIT_POLL_SECONDS:-10}"
 PARENT_GITLINK_AUTO_COMMIT_RAW="${GUARDEX_FINISH_PARENT_GITLINK_AUTO_COMMIT:-true}"
+AUTO_RESOLVE_MODE_RAW="${GUARDEX_FINISH_AUTO_RESOLVE:-none}"
+AUTO_RESOLVE_SAFE_GLOBS_DEFAULT='.omc/**:.omx/state/**:.dev-ports.json:apps/logs/**:.agents/settings.local.json:.codex/state/**:.claude/state/**'
+AUTO_RESOLVE_SAFE_GLOBS_RAW="${GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS-$AUTO_RESOLVE_SAFE_GLOBS_DEFAULT}"
 
 run_guardex_cli() {
   if [[ -n "$CLI_ENTRY" ]]; then
@@ -139,9 +142,26 @@ while [[ $# -gt 0 ]]; do
       MERGE_MODE="direct"
       shift
       ;;
+    --auto-resolve)
+      if [[ "${2:-}" =~ ^(none|safe|full)$ ]]; then
+        AUTO_RESOLVE_MODE_RAW="$2"
+        shift 2
+      else
+        AUTO_RESOLVE_MODE_RAW="safe"
+        shift
+      fi
+      ;;
+    --auto-resolve=*)
+      AUTO_RESOLVE_MODE_RAW="${1#--auto-resolve=}"
+      shift
+      ;;
+    --no-auto-resolve)
+      AUTO_RESOLVE_MODE_RAW="none"
+      shift
+      ;;
     *)
       echo "[agent-branch-finish] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--branch <branch>] [--no-push] [--cleanup|--no-cleanup] [--wait-for-merge|--no-wait-for-merge] [--wait-timeout-seconds <n>] [--wait-poll-seconds <n>] [--parent-gitlink-commit|--no-parent-gitlink-commit] [--keep-remote-branch|--delete-remote-branch] [--mode auto|direct|pr|--via-pr|--direct-only]" >&2
+      echo "Usage: $0 [--base <branch>] [--branch <branch>] [--no-push] [--cleanup|--no-cleanup] [--wait-for-merge|--no-wait-for-merge] [--wait-timeout-seconds <n>] [--wait-poll-seconds <n>] [--parent-gitlink-commit|--no-parent-gitlink-commit] [--keep-remote-branch|--delete-remote-branch] [--mode auto|direct|pr|--via-pr|--direct-only] [--auto-resolve[=none|safe|full]|--no-auto-resolve]" >&2
       exit 1
       ;;
   esac
@@ -158,6 +178,150 @@ case "$MERGE_MODE" in
     exit 1
     ;;
 esac
+
+AUTO_RESOLVE_MODE="$(printf '%s' "$AUTO_RESOLVE_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
+case "$AUTO_RESOLVE_MODE" in
+  none|safe|full) ;;
+  *)
+    echo "[agent-branch-finish] Invalid --auto-resolve value: ${AUTO_RESOLVE_MODE_RAW} (expected none|safe|full)" >&2
+    exit 1
+    ;;
+esac
+
+path_matches_auto_resolve_safe_glob() {
+  local path="$1"
+  if [[ -z "${AUTO_RESOLVE_SAFE_GLOBS_RAW:-}" ]]; then
+    return 1
+  fi
+  local -a globs=()
+  IFS=':' read -ra globs <<< "$AUTO_RESOLVE_SAFE_GLOBS_RAW"
+  local pattern rewritten
+  for pattern in "${globs[@]}"; do
+    [[ -z "$pattern" ]] && continue
+    rewritten="${pattern%/**}"
+    if [[ "$rewritten" != "$pattern" ]]; then
+      if [[ "$path" == "$rewritten"/* ]]; then
+        return 0
+      fi
+    else
+      # shellcheck disable=SC2053
+      if [[ "$path" == $pattern ]]; then
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+# Resolve a conflicting submodule pointer if and only if one side is a strict
+# ancestor of the other (fast-forward direction). Writes the resolved SHA via
+# git update-index and prints the chosen SHA on stdout. Returns 0 on success,
+# 1 on uninitialized/divergent/unreachable cases.
+try_resolve_submodule_pointer_conflict() {
+  local repo_root_arg="$1"
+  local source_worktree_arg="$2"
+  local conflict_path="$3"
+
+  # Confirm registered submodule path.
+  if [[ ! -f "$repo_root_arg/.gitmodules" ]]; then
+    return 1
+  fi
+  if ! git -C "$repo_root_arg" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null \
+       | awk '{print $2}' | grep -Fxq -- "$conflict_path"; then
+    return 1
+  fi
+
+  # Read the three stages from the index.
+  local stage_out
+  stage_out="$(git -C "$source_worktree_arg" ls-files -u -- "$conflict_path" 2>/dev/null || true)"
+  if [[ -z "$stage_out" ]]; then
+    return 1
+  fi
+
+  local base_sha="" ours_sha="" theirs_sha=""
+  local mode_field stage_sha stage_num path_field
+  while IFS=$'\t' read -r meta path_field; do
+    [[ -z "$meta" || -z "$path_field" ]] && continue
+    # meta format: "<mode> <sha> <stage>"
+    read -r mode_field stage_sha stage_num <<< "$meta"
+    [[ "$mode_field" != "160000" ]] && return 1
+    case "$stage_num" in
+      1) base_sha="$stage_sha" ;;
+      2) ours_sha="$stage_sha" ;;
+      3) theirs_sha="$stage_sha" ;;
+    esac
+  done <<< "$stage_out"
+
+  if [[ -z "$ours_sha" || -z "$theirs_sha" ]]; then
+    return 1
+  fi
+
+  # Pick a working clone for the submodule. Three sources, in order:
+  #   1) checked-out submodule worktree (cheap, no network)
+  #   2) cached internal clone at .git/modules/<name>
+  #   3) temp bare clone from the submodule URL (last resort; needs network)
+  local sub_query_dir=""
+  local sub_dir="$source_worktree_arg/$conflict_path"
+  if [[ -d "$sub_dir" ]] && git -C "$sub_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    sub_query_dir="$sub_dir"
+  else
+    local repo_git_dir
+    repo_git_dir="$(git -C "$source_worktree_arg" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$repo_git_dir" && -d "$repo_git_dir/modules/$conflict_path" ]]; then
+      sub_query_dir="$repo_git_dir/modules/$conflict_path"
+    fi
+  fi
+
+  local temp_sub_clone=""
+  cleanup_temp_sub_clone() {
+    [[ -n "$temp_sub_clone" && -d "$temp_sub_clone" ]] && rm -rf "$temp_sub_clone"
+  }
+  trap cleanup_temp_sub_clone RETURN
+
+  if [[ -z "$sub_query_dir" ]]; then
+    local sub_url
+    sub_url="$(git -C "$repo_root_arg" config -f .gitmodules --get "submodule.${conflict_path}.url" 2>/dev/null || true)"
+    if [[ -z "$sub_url" ]]; then
+      return 1
+    fi
+    temp_sub_clone="$(mktemp -d -t gx-submod-resolve-XXXXXX 2>/dev/null || true)"
+    if [[ -z "$temp_sub_clone" || ! -d "$temp_sub_clone" ]]; then
+      return 1
+    fi
+    if ! git clone --quiet --bare "$sub_url" "$temp_sub_clone" >/dev/null 2>&1; then
+      return 1
+    fi
+    sub_query_dir="$temp_sub_clone"
+  fi
+
+  if ! git -C "$sub_query_dir" cat-file -e "${ours_sha}^{commit}" 2>/dev/null \
+     || ! git -C "$sub_query_dir" cat-file -e "${theirs_sha}^{commit}" 2>/dev/null; then
+    git -C "$sub_query_dir" fetch --quiet --all 2>/dev/null || true
+  fi
+  if ! git -C "$sub_query_dir" cat-file -e "${ours_sha}^{commit}" 2>/dev/null \
+     || ! git -C "$sub_query_dir" cat-file -e "${theirs_sha}^{commit}" 2>/dev/null; then
+    return 1
+  fi
+
+  local chosen_sha=""
+  if [[ "$ours_sha" == "$theirs_sha" ]]; then
+    chosen_sha="$ours_sha"
+  elif git -C "$sub_query_dir" merge-base --is-ancestor "$ours_sha" "$theirs_sha" 2>/dev/null; then
+    chosen_sha="$theirs_sha"
+  elif git -C "$sub_query_dir" merge-base --is-ancestor "$theirs_sha" "$ours_sha" 2>/dev/null; then
+    chosen_sha="$ours_sha"
+  else
+    # Divergent histories; refuse.
+    return 1
+  fi
+
+  if ! git -C "$source_worktree_arg" update-index --cacheinfo "160000,${chosen_sha},${conflict_path}" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  printf '%s' "$chosen_sha"
+  return 0
+}
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "[agent-branch-finish] Not inside a git repository." >&2
@@ -485,20 +649,97 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRA
 
   if ! git -C "$source_worktree" merge --no-commit --no-ff "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
     conflict_files="$(git -C "$source_worktree" diff --name-only --diff-filter=U || true)"
-    git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
 
-    echo "[agent-branch-finish] Preflight conflict detected between '${SOURCE_BRANCH}' and latest origin/${BASE_BRANCH}." >&2
-    if [[ -n "$conflict_files" ]]; then
-      echo "[agent-branch-finish] Conflicting files:" >&2
-      while IFS= read -r file; do
-        [[ -n "$file" ]] && echo "  - ${file}" >&2
+    if [[ "$AUTO_RESOLVE_MODE" != "none" && -n "$conflict_files" ]]; then
+      auto_resolve_unresolved=""
+      auto_resolve_resolved_state=""
+      auto_resolve_resolved_submodules=""
+      while IFS= read -r conflict_path; do
+        [[ -z "$conflict_path" ]] && continue
+        if path_matches_auto_resolve_safe_glob "$conflict_path"; then
+          if git -C "$source_worktree" checkout --theirs -- "$conflict_path" >/dev/null 2>&1 \
+            && git -C "$source_worktree" add -- "$conflict_path" >/dev/null 2>&1; then
+            auto_resolve_resolved_state+="${conflict_path}"$'\n'
+            continue
+          fi
+        fi
+        if [[ "$AUTO_RESOLVE_MODE" == "full" ]]; then
+          if chosen_sha="$(try_resolve_submodule_pointer_conflict "$repo_root" "$source_worktree" "$conflict_path")"; then
+            auto_resolve_resolved_submodules+="${conflict_path}@${chosen_sha}"$'\n'
+            continue
+          fi
+        fi
+        auto_resolve_unresolved+="${conflict_path}"$'\n'
       done <<< "$conflict_files"
-    fi
-    echo "[agent-branch-finish] Rebase/merge '${BASE_BRANCH}' into '${SOURCE_BRANCH}' and resolve conflicts before finishing." >&2
-    exit 1
-  fi
 
-  git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
+      if [[ -n "$auto_resolve_unresolved" ]]; then
+        git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
+        echo "[agent-branch-finish] --auto-resolve=${AUTO_RESOLVE_MODE}: some conflicts are outside the safe allowlist (or submodule histories diverge); aborting." >&2
+        echo "[agent-branch-finish] Unresolved conflicts:" >&2
+        while IFS= read -r unresolved_path; do
+          [[ -n "$unresolved_path" ]] && echo "  - ${unresolved_path}" >&2
+        done <<< "$auto_resolve_unresolved"
+        echo "[agent-branch-finish] State-file allowlist (GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS): ${AUTO_RESOLVE_SAFE_GLOBS_RAW}" >&2
+        if [[ "$AUTO_RESOLVE_MODE" != "full" ]]; then
+          echo "[agent-branch-finish] Submodule pointer auto-resolve requires --auto-resolve=full; not enabled for this run." >&2
+        fi
+        exit 1
+      fi
+
+      # Claim resolved paths so the pre-commit lock guard accepts the merge.
+      auto_resolve_claim_paths=()
+      while IFS= read -r resolved_path; do
+        [[ -n "$resolved_path" ]] && auto_resolve_claim_paths+=("$resolved_path")
+      done <<< "$auto_resolve_resolved_state"
+      while IFS= read -r resolved_entry; do
+        [[ -z "$resolved_entry" ]] && continue
+        auto_resolve_claim_paths+=("${resolved_entry%@*}")
+      done <<< "$auto_resolve_resolved_submodules"
+      if [[ "${#auto_resolve_claim_paths[@]}" -gt 0 ]]; then
+        run_guardex_cli locks claim --branch "$SOURCE_BRANCH" "${auto_resolve_claim_paths[@]}" >/dev/null 2>&1 || true
+      fi
+
+      auto_resolve_commit_msg="Merge origin/${BASE_BRANCH} into ${SOURCE_BRANCH} (gx --auto-resolve=${AUTO_RESOLVE_MODE}; state files -> base, submodule pointers fast-forwarded)"
+      if ! git -C "$source_worktree" commit -m "$auto_resolve_commit_msg" >/dev/null 2>&1; then
+        git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
+        echo "[agent-branch-finish] --auto-resolve=${AUTO_RESOLVE_MODE}: failed to commit resolved merge (pre-commit hook may have rejected it; verify file locks)." >&2
+        exit 1
+      fi
+
+      state_count=0
+      submod_count=0
+      [[ -n "$auto_resolve_resolved_state" ]] && state_count="$(printf '%s' "$auto_resolve_resolved_state" | grep -c '^[^[:space:]]')"
+      [[ -n "$auto_resolve_resolved_submodules" ]] && submod_count="$(printf '%s' "$auto_resolve_resolved_submodules" | grep -c '^[^[:space:]]')"
+      echo "[agent-branch-finish] --auto-resolve=${AUTO_RESOLVE_MODE}: resolved ${state_count} state-file conflict(s), ${submod_count} submodule pointer conflict(s)." >&2
+      if [[ -n "$auto_resolve_resolved_state" ]]; then
+        echo "[agent-branch-finish] State files (resolved to base):" >&2
+        while IFS= read -r resolved_path; do
+          [[ -n "$resolved_path" ]] && echo "  - ${resolved_path}" >&2
+        done <<< "$auto_resolve_resolved_state"
+      fi
+      if [[ -n "$auto_resolve_resolved_submodules" ]]; then
+        echo "[agent-branch-finish] Submodule pointers (fast-forwarded):" >&2
+        while IFS= read -r resolved_entry; do
+          [[ -n "$resolved_entry" ]] && echo "  - ${resolved_entry%@*} -> ${resolved_entry##*@}" >&2
+        done <<< "$auto_resolve_resolved_submodules"
+      fi
+    else
+      git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
+
+      echo "[agent-branch-finish] Preflight conflict detected between '${SOURCE_BRANCH}' and latest origin/${BASE_BRANCH}." >&2
+      if [[ -n "$conflict_files" ]]; then
+        echo "[agent-branch-finish] Conflicting files:" >&2
+        while IFS= read -r file; do
+          [[ -n "$file" ]] && echo "  - ${file}" >&2
+        done <<< "$conflict_files"
+      fi
+      echo "[agent-branch-finish] Rebase/merge '${BASE_BRANCH}' into '${SOURCE_BRANCH}' and resolve conflicts before finishing." >&2
+      echo "[agent-branch-finish] Or rerun with --auto-resolve=safe (state files) or --auto-resolve=full (state files + fast-forward-able submodule pointers)." >&2
+      exit 1
+    fi
+  else
+    git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
+  fi
 fi
 
 should_create_integration_helper=1

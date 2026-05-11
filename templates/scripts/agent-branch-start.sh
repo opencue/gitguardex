@@ -16,6 +16,9 @@ OPENSPEC_CAPABILITY_SLUG_OVERRIDE="${GUARDEX_OPENSPEC_CAPABILITY_SLUG:-}"
 OPENSPEC_MASTERPLAN_LABEL_RAW="${GUARDEX_OPENSPEC_MASTERPLAN_LABEL-masterplan}"
 OPENSPEC_TIER_RAW="${GUARDEX_OPENSPEC_TIER:-T3}"
 REUSE_EXISTING_RAW="${GUARDEX_BRANCH_START_REUSE_EXISTING:-true}"
+AUTO_TRANSFER_ENABLED_RAW="${GUARDEX_AUTO_TRANSFER:-true}"
+AUTO_TRANSFER_EXCLUDE_DEFAULT='.omc/**:.omx/state/**:.dev-ports.json:apps/logs/**:.agents/settings.local.json:.codex/state/**:.claude/state/**'
+AUTO_TRANSFER_EXCLUDE_RAW="${GUARDEX_AUTO_TRANSFER_EXCLUDE-$AUTO_TRANSFER_EXCLUDE_DEFAULT}"
 PRINT_NAME_ONLY=0
 POSITIONAL_ARGS=()
 
@@ -66,6 +69,18 @@ while [[ $# -gt 0 ]]; do
     --new|--no-reuse|--no-reuse-existing)
       REUSE_EXISTING_RAW="false"
       shift
+      ;;
+    --no-transfer)
+      AUTO_TRANSFER_ENABLED_RAW="false"
+      shift
+      ;;
+    --transfer)
+      AUTO_TRANSFER_ENABLED_RAW="true"
+      shift
+      ;;
+    --transfer-exclude)
+      AUTO_TRANSFER_EXCLUDE_RAW="${2:-}"
+      shift 2
       ;;
     --in-place|--allow-in-place)
       echo "[agent-branch-start] In-place branch mode is disabled." >&2
@@ -790,18 +805,54 @@ restore_auto_transfer_stash_on_failure() {
 
 trap 'restore_auto_transfer_stash_on_failure "$?"' EXIT
 
+auto_transfer_enabled_lc="$(printf '%s' "$AUTO_TRANSFER_ENABLED_RAW" | tr '[:upper:]' '[:lower:]')"
+case "$auto_transfer_enabled_lc" in
+  0|false|no|off) AUTO_TRANSFER_ENABLED=0 ;;
+  *) AUTO_TRANSFER_ENABLED=1 ;;
+esac
+
+build_auto_transfer_stash_argv() {
+  # Emit NUL-separated argv: --include-untracked --message <msg> [-- :/ :(exclude,glob)PAT ...]
+  local msg="$1"
+  printf '%s\0' --include-untracked --message "$msg"
+  if [[ -z "${AUTO_TRANSFER_EXCLUDE_RAW:-}" ]]; then
+    return 0
+  fi
+  printf '%s\0' '--' ':/'
+  local -a patterns=()
+  IFS=':' read -ra patterns <<< "$AUTO_TRANSFER_EXCLUDE_RAW"
+  local pattern
+  for pattern in "${patterns[@]}"; do
+    [[ -z "$pattern" ]] && continue
+    printf '%s\0' ":(exclude,glob)${pattern}"
+  done
+}
+
 current_branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 protected_branches_raw="$(resolve_protected_branches "$repo_root")"
 if [[ -n "$current_branch" && "$current_branch" != "HEAD" ]] && is_protected_branch_name "$current_branch" "$protected_branches_raw"; then
   if has_local_changes "$repo_root"; then
-    auto_transfer_message="guardex-auto-transfer-${timestamp}-${agent_slug}-${task_slug}"
-    if git -C "$repo_root" stash push --include-untracked --message "$auto_transfer_message" >/dev/null 2>&1; then
-      auto_transfer_stash_ref="$(resolve_stash_ref_by_message "$repo_root" "$auto_transfer_message")"
-      if [[ -n "$auto_transfer_stash_ref" ]]; then
-        auto_transfer_source_branch="$current_branch"
-        echo "[agent-branch-start] Detected local changes on protected branch '${current_branch}'. Moving them to '${branch_name}'..."
-        if ! maybe_fail_after_auto_transfer_stash; then
-          exit 1
+    if [[ "$AUTO_TRANSFER_ENABLED" -eq 0 ]]; then
+      echo "[agent-branch-start] Detected local changes on protected branch '${current_branch}'; --no-transfer set, leaving them in place." >&2
+      echo "[agent-branch-start] If you intended those changes for '${branch_name}', stash them manually and apply inside the worktree." >&2
+    else
+      auto_transfer_message="guardex-auto-transfer-${timestamp}-${agent_slug}-${task_slug}"
+      stash_argv=()
+      while IFS= read -r -d '' arg; do
+        stash_argv+=("$arg")
+      done < <(build_auto_transfer_stash_argv "$auto_transfer_message")
+      if git -C "$repo_root" stash push "${stash_argv[@]}" >/dev/null 2>&1; then
+        auto_transfer_stash_ref="$(resolve_stash_ref_by_message "$repo_root" "$auto_transfer_message")"
+        if [[ -n "$auto_transfer_stash_ref" ]]; then
+          auto_transfer_source_branch="$current_branch"
+          echo "[agent-branch-start] Detected local changes on protected branch '${current_branch}'. Moving them to '${branch_name}' (state-file globs excluded)..."
+          if ! maybe_fail_after_auto_transfer_stash; then
+            exit 1
+          fi
+        else
+          if has_local_changes "$repo_root"; then
+            echo "[agent-branch-start] Local changes on '${current_branch}' all match the auto-transfer exclude list; leaving them in place on '${current_branch}'." >&2
+          fi
         fi
       fi
     fi
