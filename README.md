@@ -9,7 +9,6 @@
   and human teammates working the same codebase at the same time.
 </p>
 
-Package summary ([about_description.txt](./about_description.txt)): Guardian T-Rex for your multi-agent repo. Isolated worktrees, file locks, and PR-only merges stop parallel Codex & Claude agents from overwriting each other's work. Auto-wires Oh My Codex, Oh My Claude, OpenSpec, and Caveman.
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@imdeadpool/guardex"><img alt="npm version" src="https://img.shields.io/npm/v/%40imdeadpool%2Fguardex?label=npm&style=flat-square&color=cb3837&logo=npm&logoColor=white"></a>
