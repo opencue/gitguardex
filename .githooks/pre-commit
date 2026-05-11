@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# When run inside the gitguardex repo itself, also enforce the
+# scripts/ <-> templates/scripts/ symlink parity invariant locally.
+# CI (.github/workflows/ci.yml) runs the same check; this gives
+# instant local feedback on broken symlinks instead of waiting for
+# the PR check to fail minutes later. Consumer repos don't have
+# scripts/check-script-symlinks.sh (it's not in the scaffold list),
+# so the test below silently noops there.
+hook_repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$hook_repo_root" && -x "${hook_repo_root}/scripts/check-script-symlinks.sh" ]]; then
+  if ! "${hook_repo_root}/scripts/check-script-symlinks.sh"; then
+    echo "[gitguardex-shim] scripts/<->templates/scripts/ symlink parity check failed; aborting commit." >&2
+    exit 1
+  fi
+fi
+
 if [[ -n "${GUARDEX_CLI_ENTRY:-}" ]]; then
   node_bin="${GUARDEX_NODE_BIN:-node}"
   exec "$node_bin" "$GUARDEX_CLI_ENTRY" 'hook' 'run' 'pre-commit' "$@"

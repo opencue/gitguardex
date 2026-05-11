@@ -137,6 +137,26 @@ function toDestinationPath(relativeTemplatePath) {
   throw new Error(`Unsupported template path: ${relativeTemplatePath}`);
 }
 
+// scripts/ ↔ templates/scripts/ layout convention (single source of truth):
+//
+// 1. PAIRED files (10): tracked on both sides; scripts/<file> is a symlink
+//    to ../templates/scripts/<file> per PR #548. See
+//    scripts/check-script-symlinks.sh for the exact list. CI + the
+//    .githooks/pre-commit shim both enforce that no symlink is ever
+//    replaced with a regular file. Edit only the templates/scripts/ copy;
+//    the symlink propagates.
+//
+// 2. SCAFFOLD-ONLY files (the 4 below + workflows + vscode extension):
+//    tracked only under templates/; scaffolded into gitignored
+//    scripts/<file> (or .githooks/<file>, etc.) by `gx setup`. Consumer
+//    repos receive a regular file copy at the destination; gitguardex
+//    itself receives the same copy and ignores it via the
+//    multiagent-safety .gitignore block. Edit only the templates/ copy.
+//
+// If a file you're about to add fits pattern (1), also add it to
+// scripts/check-script-symlinks.sh's required_symlinks list. If it fits
+// pattern (2), append the destination path to .gitignore's multiagent-
+// safety block (auto-managed by syncManagedGitignoreLines below).
 const TEMPLATE_FILES = [
   'scripts/agent-session-state.js',
   'scripts/guardex-docker-loader.sh',
