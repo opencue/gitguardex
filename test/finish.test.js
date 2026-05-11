@@ -93,7 +93,7 @@ test('agent-branch-finish handles Claude-root worktrees when inferring base from
   result = runCmd('git', ['worktree', 'add', auxWorktree, 'main'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
-  const finish = runBranchFinish(['--branch', agentBranch], repoDir);
+  const finish = runBranchFinish(['--branch', agentBranch, '--no-cleanup'], repoDir);
   assert.equal(finish.status, 0, finish.stderr || finish.stdout);
   assert.match(finish.stdout, new RegExp(`Merged '${escapeRegexLiteral(agentBranch)}' into 'main'`));
 
@@ -325,7 +325,7 @@ test('agent-branch-finish auto-syncs source branch when behind origin/dev', () =
   result = runCmd('git', ['checkout', 'agent/test-finish-sync-guard'], repoDir);
   assert.equal(result.status, 0, result.stderr);
 
-  const finish = runBranchFinish(['--branch', 'agent/test-finish-sync-guard'], repoDir);
+  const finish = runBranchFinish(['--branch', 'agent/test-finish-sync-guard', '--no-cleanup'], repoDir);
   assert.equal(finish.status, 0, finish.stderr || finish.stdout);
   assert.match(finish.stderr, /agent-sync-guard/);
   assert.match(finish.stderr, /Auto-syncing 'agent\/test-finish-sync-guard' onto origin\/dev before finish/);
@@ -373,7 +373,7 @@ test('agent-branch-finish removes stale source-probe worktrees before creating a
   assert.equal(result.status, 0, result.stderr || result.stdout);
   fs.writeFileSync(path.join(sourceProbePath, 'agent-stale-source-probe.txt'), 'stale probe dirty change\n', 'utf8');
 
-  const finish = runBranchFinish(['--branch', 'agent/test-stale-source-probe'], repoDir);
+  const finish = runBranchFinish(['--branch', 'agent/test-stale-source-probe', '--no-cleanup'], repoDir);
   assert.equal(finish.status, 0, finish.stderr || finish.stdout);
   assert.match(finish.stderr, /Removing stale source-probe worktree for 'agent\/test-stale-source-probe'/);
   assert.equal(fs.existsSync(sourceProbePath), false, 'stale source-probe worktree should be removed before finish continues');
@@ -1075,6 +1075,150 @@ exit 1
   assert.notEqual(result.status, 0, 'agent branch should be deleted locally after wait+merge cleanup');
   result = runCmd('git', ['ls-remote', '--heads', 'origin', 'agent/test-pr-wait-merge'], repoDir);
   assert.equal(result.stdout.trim(), '', 'agent branch should be deleted on origin after wait+merge cleanup');
+});
+
+
+test('agent-branch-finish defaults bare PR finish to wait, cleanup, and base refresh', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  attachOriginRemote(repoDir);
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['add', '.'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['commit', '-m', 'apply gx setup'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['push', 'origin', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+
+  result = runCmd('git', ['checkout', '-b', 'agent/test-pr-default-wait-cleanup'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  commitFile(repoDir, 'agent-pr-default.txt', 'agent default wait cleanup\n', 'agent default wait cleanup change');
+
+  const auxWorktree = path.join(path.dirname(repoDir), 'aux-default-pr-dev');
+  result = runCmd('git', ['worktree', 'add', auxWorktree, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const ghMergeState = path.join(repoDir, '.finish-gh-default-merge-attempts');
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "create" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json url "* ]]; then
+    echo "https://example.test/pr/default"
+    exit 0
+  fi
+  if [[ " $* " == *" --json state,mergedAt,url "* ]]; then
+    attempts=0
+    if [[ -f "${'${GUARDEX_TEST_GH_MERGE_STATE}'}" ]]; then
+      attempts="$(cat "${'${GUARDEX_TEST_GH_MERGE_STATE}'}")"
+    fi
+    if [[ "$attempts" -ge 2 ]]; then
+      echo -e "MERGED\\x1f2026-05-11T00:00:00Z\\x1fhttps://example.test/pr/default"
+    else
+      echo -e "OPEN\\x1f\\x1fhttps://example.test/pr/default"
+    fi
+    exit 0
+  fi
+  echo "unexpected gh pr view args: $*" >&2
+  exit 1
+fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then
+  attempts=0
+  if [[ -f "${'${GUARDEX_TEST_GH_MERGE_STATE}'}" ]]; then
+    attempts="$(cat "${'${GUARDEX_TEST_GH_MERGE_STATE}'}")"
+  fi
+  attempts=$((attempts + 1))
+  echo "$attempts" > "${'${GUARDEX_TEST_GH_MERGE_STATE}'}"
+  if [[ "$attempts" -lt 2 ]]; then
+    echo "Required status check \\"test (node 22)\\" is expected." >&2
+    exit 1
+  fi
+  git push origin "$3:dev" >/dev/null 2>&1
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+
+  const finish = runBranchFinish(
+    [
+      '--branch',
+      'agent/test-pr-default-wait-cleanup',
+      '--mode',
+      'pr',
+      '--wait-timeout-seconds',
+      '60',
+      '--wait-poll-seconds',
+      '0',
+    ],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      GUARDEX_TEST_GH_MERGE_STATE: ghMergeState,
+    },
+  );
+  assert.equal(finish.status, 0, finish.stderr || finish.stdout);
+  assert.equal(fs.readFileSync(ghMergeState, 'utf8').trim(), '2', 'bare PR finish should wait and retry merge by default');
+  assert.match(finish.stdout, /Merged 'agent\/test-pr-default-wait-cleanup' into 'dev' via pr flow and cleaned source branch\/worktree\./);
+  assert.match(finish.stdout, /Refreshed local dev worktree with 'git pull --ff-only origin dev': /);
+  assert.equal(fs.existsSync(auxWorktree), true, 'default cleanup should keep the checked-out dev worktree');
+  assert.equal(
+    fs.existsSync(path.join(repoDir, 'agent-pr-default.txt')),
+    true,
+    'clean local dev checkout should be refreshed after PR merge',
+  );
+
+  result = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-pr-default-wait-cleanup'], repoDir);
+  assert.notEqual(result.status, 0, 'default cleanup should delete the local agent branch');
+  result = runCmd('git', ['ls-remote', '--heads', 'origin', 'agent/test-pr-default-wait-cleanup'], repoDir);
+  assert.equal(result.stdout.trim(), '', 'default cleanup should delete the remote agent branch');
+});
+
+
+test('agent-branch-finish warns instead of pulling dirty local base worktree', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  attachOriginRemote(repoDir);
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['add', '.'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['commit', '-m', 'apply gx setup'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['push', 'origin', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+
+  result = runCmd('git', ['checkout', '-b', 'agent/test-dirty-base-refresh-warning'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  commitFile(repoDir, 'agent-dirty-base-refresh.txt', 'agent dirty base refresh\n', 'agent dirty base refresh change');
+
+  const auxWorktree = path.join(path.dirname(repoDir), 'aux-dirty-dev');
+  result = runCmd('git', ['worktree', 'add', auxWorktree, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(auxWorktree, 'package.json'), '{"dirty":true}\n', 'utf8');
+
+  const finish = runBranchFinish(
+    ['--branch', 'agent/test-dirty-base-refresh-warning', '--base', 'dev', '--direct-only', '--no-cleanup'],
+    repoDir,
+  );
+  assert.equal(finish.status, 0, finish.stderr || finish.stdout);
+  assert.match(
+    finish.stderr,
+    /Warning: local dev worktree is dirty; skipping 'git pull --ff-only origin dev' for /,
+  );
+  assert.equal(
+    fs.existsSync(path.join(auxWorktree, 'agent-dirty-base-refresh.txt')),
+    false,
+    'dirty local dev worktree should not be pulled implicitly',
+  );
 });
 
 

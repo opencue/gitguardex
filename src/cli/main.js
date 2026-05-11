@@ -3606,7 +3606,7 @@ function worktree(rawArgs) {
     const { target, passthrough } = extractTargetedArgs(rest);
     invokePackageAsset('worktreePrune', passthrough, {
       cwd: resolveRepoRoot(target),
-      env: { GUARDEX_PRUNE_ACTIVE_CWD: activeCwd },
+      env: { GUARDEX_PRUNE_ACTIVE_CWD: process.env.GUARDEX_PRUNE_ACTIVE_CWD || activeCwd },
     });
     return;
   }

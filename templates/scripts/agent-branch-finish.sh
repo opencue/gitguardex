@@ -11,8 +11,8 @@ MERGE_MODE="auto"
 GH_BIN="${GUARDEX_GH_BIN:-gh}"
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
-CLEANUP_AFTER_MERGE_RAW="${GUARDEX_FINISH_CLEANUP:-false}"
-WAIT_FOR_MERGE_RAW="${GUARDEX_FINISH_WAIT_FOR_MERGE:-false}"
+CLEANUP_AFTER_MERGE_RAW="${GUARDEX_FINISH_CLEANUP:-true}"
+WAIT_FOR_MERGE_RAW="${GUARDEX_FINISH_WAIT_FOR_MERGE:-true}"
 WAIT_TIMEOUT_SECONDS_RAW="${GUARDEX_FINISH_WAIT_TIMEOUT_SECONDS:-1800}"
 WAIT_POLL_SECONDS_RAW="${GUARDEX_FINISH_WAIT_POLL_SECONDS:-10}"
 PARENT_GITLINK_AUTO_COMMIT_RAW="${GUARDEX_FINISH_PARENT_GITLINK_AUTO_COMMIT:-true}"
@@ -64,8 +64,8 @@ normalize_int() {
   printf '%s' "$value"
 }
 
-CLEANUP_AFTER_MERGE="$(normalize_bool "$CLEANUP_AFTER_MERGE_RAW" "0")"
-WAIT_FOR_MERGE="$(normalize_bool "$WAIT_FOR_MERGE_RAW" "0")"
+CLEANUP_AFTER_MERGE="$(normalize_bool "$CLEANUP_AFTER_MERGE_RAW" "1")"
+WAIT_FOR_MERGE="$(normalize_bool "$WAIT_FOR_MERGE_RAW" "1")"
 WAIT_TIMEOUT_SECONDS="$(normalize_int "$WAIT_TIMEOUT_SECONDS_RAW" "1800" "30")"
 WAIT_POLL_SECONDS="$(normalize_int "$WAIT_POLL_SECONDS_RAW" "10" "0")"
 PARENT_GITLINK_AUTO_COMMIT="$(normalize_bool "$PARENT_GITLINK_AUTO_COMMIT_RAW" "1")"
@@ -370,6 +370,22 @@ is_clean_worktree() {
   local wt="$1"
   git -C "$wt" diff --quiet -- . ":(exclude).omx/state/agent-file-locks.json" \
     && git -C "$wt" diff --cached --quiet -- . ":(exclude).omx/state/agent-file-locks.json"
+}
+
+refresh_clean_base_worktree() {
+  local wt="$1"
+  [[ -z "$wt" || "$PUSH_ENABLED" -ne 1 ]] && return 0
+
+  if ! is_clean_worktree "$wt"; then
+    echo "[agent-branch-finish] Warning: local ${BASE_BRANCH} worktree is dirty; skipping 'git pull --ff-only origin ${BASE_BRANCH}' for ${wt}." >&2
+    return 0
+  fi
+
+  if GUARDEX_DISABLE_POST_MERGE_CLEANUP=1 GUARDEX_PRUNE_ACTIVE_CWD="$finish_active_cwd" git -C "$wt" pull --ff-only origin "$BASE_BRANCH" >/dev/null; then
+    echo "[agent-branch-finish] Refreshed local ${BASE_BRANCH} worktree with 'git pull --ff-only origin ${BASE_BRANCH}': ${wt}"
+  else
+    echo "[agent-branch-finish] Warning: failed to refresh local ${BASE_BRANCH} worktree with 'git pull --ff-only origin ${BASE_BRANCH}': ${wt}" >&2
+  fi
 }
 
 remove_stale_source_probe_worktrees "$SOURCE_BRANCH"
@@ -957,9 +973,7 @@ fi
 run_guardex_cli locks release --branch "$SOURCE_BRANCH" >/dev/null 2>&1 || true
 
 base_worktree="$(get_worktree_for_branch "$BASE_BRANCH")"
-if [[ -n "$base_worktree" ]] && is_clean_worktree "$base_worktree" && [[ "$PUSH_ENABLED" -eq 1 ]]; then
-  git -C "$base_worktree" pull --ff-only origin "$BASE_BRANCH" >/dev/null 2>&1 || true
-fi
+refresh_clean_base_worktree "$base_worktree"
 maybe_auto_commit_parent_gitlink "$base_worktree"
 
 # Pivot out of the agent worktree before prune calls that may remove it.
@@ -985,7 +999,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
         git -C "$source_worktree" checkout --detach >/dev/null 2>&1 || true
       fi
       if [[ "$switched_to_base" -eq 1 && "$PUSH_ENABLED" -eq 1 ]] && git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
-        git -C "$source_worktree" pull --ff-only origin "$BASE_BRANCH" >/dev/null 2>&1 || true
+        refresh_clean_base_worktree "$source_worktree"
       fi
     fi
   elif [[ "$source_worktree" == "$current_worktree" && "$source_worktree" == "${agent_worktree_root}"/* ]]; then
