@@ -5,6 +5,7 @@ const sandboxModule = require('../sandbox');
 const toolchainModule = require('../toolchain');
 const finishCommands = require('../finish');
 const doctorModule = require('../doctor');
+const submoduleModule = require('../submodule');
 const agentInspect = require('../agents/inspect');
 const agentStatus = require('../agents/status');
 const agentCleanupSessions = require('../agents/cleanup-sessions');
@@ -3723,6 +3724,73 @@ function sync(rawArgs) {
   return finishCommands.sync(rawArgs);
 }
 
+function submodule(rawArgs) {
+  const parsed = parseTargetFlag(rawArgs || [], process.cwd());
+  const [subcommand, ...rest] = parsed.args;
+
+  if (!subcommand || subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
+    console.log(
+      `${TOOL_NAME} submodule commands:\n` +
+      `  ${TOOL_NAME} submodule advance [<path>] [--push] [--dry-run] [--branch <ref>] [--no-commit] [--target <path>]\n\n` +
+      `  advance — for each submodule listed in .gitmodules, fetch the tracked branch's\n` +
+      `            remote tip, advance the parent pointer, and (when on a non-protected\n` +
+      `            branch) commit the bump. Use --push to publish in one step.`,
+    );
+    return;
+  }
+
+  if (subcommand !== 'advance') {
+    throw new Error(`Unknown submodule subcommand: ${subcommand}. Try '${SHORT_TOOL_NAME} submodule help'.`);
+  }
+
+  let push = false;
+  let dryRun = false;
+  let commit = true;
+  let branchOverride = '';
+  let pathArg = '';
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (arg === '--push') {
+      push = true;
+      continue;
+    }
+    if (arg === '--dry-run' || arg === '-n') {
+      dryRun = true;
+      continue;
+    }
+    if (arg === '--no-commit') {
+      commit = false;
+      continue;
+    }
+    if (arg === '--branch' || arg === '-b') {
+      branchOverride = rest[i + 1] || '';
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--branch=')) {
+      branchOverride = arg.slice('--branch='.length);
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      throw new Error(`Unknown option for '${SHORT_TOOL_NAME} submodule advance': ${arg}`);
+    }
+    if (pathArg) {
+      throw new Error(`'${SHORT_TOOL_NAME} submodule advance' accepts at most one submodule path (got '${pathArg}' and '${arg}')`);
+    }
+    pathArg = arg;
+  }
+
+  const result = submoduleModule.advance({
+    target: parsed.target,
+    path: pathArg,
+    push,
+    dryRun,
+    commit,
+    branch: branchOverride,
+  });
+  submoduleModule.printAdvanceResult(result);
+}
+
 function cockpit(rawArgs) {
   cockpitModule.openCockpit(rawArgs, {
     resolveRepoRoot,
@@ -3887,6 +3955,7 @@ async function main() {
   if (command === 'report') return report(rest);
   if (command === 'protect') return protect(rest);
   if (command === 'sync') return sync(rest);
+  if (command === 'submodule') return submodule(rest);
   if (command === 'cleanup') return cleanup(rest);
   if (command === 'release') return release(rest);
 
