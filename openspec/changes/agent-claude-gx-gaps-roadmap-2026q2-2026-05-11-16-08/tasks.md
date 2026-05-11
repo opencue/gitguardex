@@ -30,9 +30,9 @@ This change is complete only when **all** of the following are true:
 
 ## 3. Verification
 
-- [ ] 3.1 Run targeted project verification: `openspec validate agent-claude-gx-gaps-roadmap-2026q2-2026-05-11-16-08 --type change --strict`.
-- [ ] 3.2 Run `openspec validate --specs`.
-- [ ] 3.3 Confirm `git status` inside the worktree only shows files under `openspec/changes/agent-claude-gx-gaps-roadmap-2026q2-2026-05-11-16-08/` (no stray src/script edits).
+- [x] 3.1 Run targeted project verification: `openspec validate agent-claude-gx-gaps-roadmap-2026q2-2026-05-11-16-08 --type change --strict` — passed ("Change ... is valid").
+- [x] 3.2 Run `openspec validate --specs` — passed ("No items found to validate" since no main-spec deltas).
+- [x] 3.3 Confirm `git status` inside the worktree only shows files under `openspec/changes/agent-claude-gx-gaps-roadmap-2026q2-2026-05-11-16-08/` — confirmed, 12 files all rooted there.
 
 ## 4. Cleanup (mandatory; run before claiming completion)
 
