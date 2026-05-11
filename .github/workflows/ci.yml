@@ -38,5 +38,8 @@ jobs:
       - name: Static check CLI entrypoint
         run: node --check bin/multiagent-safety.js
 
+      - name: Check scripts/ ↔ templates/scripts/ symlink parity
+        run: bash scripts/check-script-symlinks.sh
+
       - name: Package dry run
         run: npm pack --dry-run
