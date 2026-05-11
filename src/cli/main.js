@@ -13,6 +13,7 @@ const { finishAgentSession } = require('../agents/finish');
 const sessionSeverityReport = require('../report/session-severity');
 const cockpitModule = require('../cockpit');
 const agentsStart = require('../agents/start');
+const prReviewModule = require('../pr-review');
 const {
   fs,
   path,
@@ -135,6 +136,7 @@ const {
   parseDoctorArgs,
   parseTargetFlag,
   parseReviewArgs,
+  parsePrReviewArgs,
   parseAgentsArgs,
   parseReportArgs,
   parseSyncArgs,
@@ -2541,6 +2543,13 @@ function review(rawArgs) {
   process.exitCode = typeof result.status === 'number' ? result.status : 1;
 }
 
+function prReview(rawArgs) {
+  const options = parsePrReviewArgs(rawArgs);
+  const result = prReviewModule.runPrReview(options);
+  prReviewModule.printPrReviewResult(result);
+  process.exitCode = 0;
+}
+
 function agentsStatePathForRepo(repoRoot) {
   return path.join(repoRoot, AGENTS_BOTS_STATE_RELATIVE);
 }
@@ -3938,6 +3947,7 @@ async function main() {
   }
 
   if (command === 'prompt') return prompt(rest);
+  if (command === 'pr-review') return prReview(rest);
   if (command === 'doctor') return doctor(rest);
   if (command === 'branch') return branch(rest);
   if (command === 'pivot') return pivot(rest);

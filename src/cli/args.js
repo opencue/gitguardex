@@ -261,6 +261,69 @@ function parseReviewArgs(rawArgs) {
   };
 }
 
+function parsePrReviewArgs(rawArgs) {
+  const parsed = parseTargetFlag(rawArgs, process.cwd());
+  const options = {
+    target: parsed.target,
+    provider: 'codex',
+    pr: '',
+    post: false,
+    artifact: '',
+    timeoutMs: 10 * 60 * 1000,
+  };
+
+  for (let index = 0; index < parsed.args.length; index += 1) {
+    const arg = parsed.args[index];
+    if (arg === '--provider') {
+      const next = requireValue(parsed.args, index, '--provider');
+      if (!['codex', 'claude'].includes(next)) {
+        throw new Error(`Invalid --provider value: ${next} (expected codex|claude)`);
+      }
+      options.provider = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--pr') {
+      options.pr = requireValue(parsed.args, index, '--pr');
+      index += 1;
+      continue;
+    }
+    if (arg === '--post') {
+      options.post = true;
+      continue;
+    }
+    if (arg === '--no-post') {
+      options.post = false;
+      continue;
+    }
+    if (arg === '--artifact' || arg === '--output') {
+      options.artifact = requireValue(parsed.args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === '--timeout-ms') {
+      const raw = requireValue(parsed.args, index, '--timeout-ms');
+      const parsedTimeout = Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0) {
+        throw new Error('--timeout-ms requires a positive integer');
+      }
+      options.timeoutMs = parsedTimeout;
+      index += 1;
+      continue;
+    }
+    throw new Error(`Unknown option: ${arg}`);
+  }
+
+  if (!options.pr) {
+    throw new Error('--pr requires a pull request number');
+  }
+  if (!/^\d+$/.test(String(options.pr))) {
+    throw new Error(`--pr must be a pull request number (received: ${options.pr})`);
+  }
+
+  return options;
+}
+
 function parseAgentsArgs(rawArgs) {
   const parsed = parseTargetFlag(rawArgs, process.cwd());
   const [subcommandRaw = '', ...rest] = parsed.args;
@@ -1138,6 +1201,7 @@ module.exports = {
   parseDoctorArgs,
   parseTargetFlag,
   parseReviewArgs,
+  parsePrReviewArgs,
   parseAgentsArgs,
   parseReportArgs,
   parseSyncArgs,
