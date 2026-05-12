@@ -8,7 +8,7 @@ Records modified code files in dirty-{session_id}.json.
 
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -80,7 +80,7 @@ def main() -> None:
         files.append(file_path)
     state["files"] = files
     state["modified"] = True
-    state["last_modified"] = datetime.now(UTC).isoformat()
+    state["last_modified"] = datetime.now(timezone.utc).isoformat()
 
     with open(state_path, "w") as f:
         json.dump(state, f, indent=2)
