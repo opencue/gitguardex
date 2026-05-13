@@ -414,6 +414,7 @@ const SUGGESTIBLE_COMMANDS = [
   'copy-commands',
   'print-agents-snippet',
   'release',
+  'budget',
 ];
 // CLI_COMMAND_GROUPS is the grouped source of truth the `gx --help` /
 // `gx` no-args renderer uses. Each group is ordered roughly by how often a
