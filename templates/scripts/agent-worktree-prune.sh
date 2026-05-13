@@ -382,6 +382,26 @@ read_branch_activity_epoch() {
 
 skipped_recent=0
 
+has_live_process_in_worktree() {
+  local wt="$1"
+  local proc_cwd=""
+
+  [[ -d /proc ]] || return 1
+
+  for proc_cwd in /proc/[0-9]*/cwd; do
+    [[ -e "$proc_cwd" ]] || continue
+    local live_cwd=""
+    live_cwd="$(readlink "$proc_cwd" 2>/dev/null || true)"
+    [[ -n "$live_cwd" ]] || continue
+    live_cwd="${live_cwd% (deleted)}"
+    if [[ "$live_cwd" == "$wt" || "$live_cwd" == "${wt}"/* ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 branch_idle_gate() {
   local branch="$1"
   local wt="$2"
@@ -499,6 +519,11 @@ process_entry() {
   if [[ -n "$current_pwd" && ( "$wt" == "$current_pwd" || "$current_pwd" == "${wt}"/* ) ]]; then
     skipped_active=$((skipped_active + 1))
     echo "[agent-worktree-prune] Skipping active cwd worktree: ${wt}"
+    return
+  fi
+  if has_live_process_in_worktree "$wt"; then
+    skipped_active=$((skipped_active + 1))
+    echo "[agent-worktree-prune] Skipping live process worktree: ${wt}"
     return
   fi
 

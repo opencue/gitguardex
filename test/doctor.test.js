@@ -1141,6 +1141,45 @@ test('gx doctor auto-prunes detached-HEAD agent worktrees under .omc/agent-workt
   );
 });
 
+
+test('gx doctor preserves detached agent worktrees with live processes', async () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  const liveWorktree = path.join(worktreeRoot, 'live-agent-worktree');
+
+  let result = runHumanCmd('git', ['branch', 'agent/claude/live-demo'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['worktree', 'add', liveWorktree, 'agent/claude/live-demo'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['-C', liveWorktree, 'checkout', '--detach', 'HEAD'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['branch', '-D', 'agent/claude/live-demo'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const child = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], {
+    cwd: liveWorktree,
+    stdio: 'ignore',
+  });
+  const exitPromise = new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+
+  try {
+    assert.equal(isPidAlive(child.pid), true, 'live worktree process should be running');
+    result = runNode(['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'], repoDir);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const combined = `${result.stdout}\n${result.stderr}`;
+    assert.match(combined, /Skipping live process worktree/);
+    assert.equal(fs.existsSync(liveWorktree), true, 'live process worktree should be preserved');
+  } finally {
+    child.kill('SIGTERM');
+    await exitPromise;
+  }
+});
+
 test('gx doctor preserves stranded worktrees when GUARDEX_SKIP_AUTO_WORKTREE_PRUNE=1', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
