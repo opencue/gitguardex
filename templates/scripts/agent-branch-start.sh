@@ -417,6 +417,20 @@ print_agent_next_steps() {
     base_branch="main"
   fi
 
+  # Pre-`Ready:` post-condition check. `git worktree add` has been observed
+  # to return 0 with the worktree dir still missing on disk (race condition
+  # during the OpenSpec / dependency-symlink phase between `worktree add`
+  # and now). If we print `Ready:` in that state, callers cd into a
+  # vanished directory and lose subsequent edits silently. Surface it as
+  # an exit-1 error instead — operator can retry + `git worktree prune`.
+  if [[ ! -d "$worktree_path" || ! -e "$worktree_path/.git" ]]; then
+    printf '[agent-branch-start] ERROR: worktree did not materialize on disk before Ready:\n' >&2
+    printf '[agent-branch-start]   branch:   %s\n' "$branch_name" >&2
+    printf '[agent-branch-start]   expected: %s\n' "$worktree_path" >&2
+    printf '[agent-branch-start] Run `git worktree prune` to clear ghost entries, then retry.\n' >&2
+    exit 1
+  fi
+
   echo "[agent-branch-start] Ready:"
   echo "  branch:   ${branch_name}"
   echo "  worktree: ${worktree_path}"
@@ -861,6 +875,13 @@ fi
 
 worktree_add_output=""
 if ! worktree_add_output="$(git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$start_ref" 2>&1)"; then
+  printf '%s\n' "$worktree_add_output" >&2
+  exit 1
+fi
+# git worktree add has been observed to exit 0 while the target dir is
+# missing — verify before downstream init runs against a phantom path.
+if [[ ! -d "$worktree_path" || ! -e "$worktree_path/.git" ]]; then
+  printf '[agent-branch-start] ERROR: git worktree add reported success but %s is not a valid worktree.\n' "$worktree_path" >&2
   printf '%s\n' "$worktree_add_output" >&2
   exit 1
 fi
