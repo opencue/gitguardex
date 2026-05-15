@@ -1,21 +1,45 @@
 #!/usr/bin/env node
 
-const hooksModule = require('../hooks');
-const sandboxModule = require('../sandbox');
-const toolchainModule = require('../toolchain');
-const finishCommands = require('../finish');
-const doctorModule = require('../doctor');
-const submoduleModule = require('../submodule');
-const agentInspect = require('../agents/inspect');
-const agentStatus = require('../agents/status');
-const agentCleanupSessions = require('../agents/cleanup-sessions');
-const { finishAgentSession } = require('../agents/finish');
-const sessionSeverityReport = require('../report/session-severity');
-const budgetModule = require('../budget');
-const ciInitModule = require('../ci-init');
-const cockpitModule = require('../cockpit');
-const agentsStart = require('../agents/start');
-const prReviewModule = require('../pr-review');
+// Lazy-load heavy subcommand modules so `gx --help`, `gx help`, and dispatch
+// to unrelated verbs do not pay the cost of loading every subcommand graph.
+// Each handler only touches its own module(s); accesses are always property
+// reads (`x.foo(...)`), so a memoizing Proxy that defers the `require()`
+// is a safe drop-in.
+function lazyProxy(loader) {
+  let cached = null;
+  return new Proxy(Object.create(null), {
+    get(_target, prop) {
+      if (cached === null) {
+        cached = loader();
+      }
+      return cached[prop];
+    },
+    has(_target, prop) {
+      if (cached === null) {
+        cached = loader();
+      }
+      return prop in cached;
+    },
+  });
+}
+
+const hooksModule = lazyProxy(() => require('../hooks'));
+const sandboxModule = lazyProxy(() => require('../sandbox'));
+const toolchainModule = lazyProxy(() => require('../toolchain'));
+const finishCommands = lazyProxy(() => require('../finish'));
+const doctorModule = lazyProxy(() => require('../doctor'));
+const submoduleModule = lazyProxy(() => require('../submodule'));
+const agentInspect = lazyProxy(() => require('../agents/inspect'));
+const agentStatus = lazyProxy(() => require('../agents/status'));
+const agentCleanupSessions = lazyProxy(() => require('../agents/cleanup-sessions'));
+const agentsFinishModule = lazyProxy(() => require('../agents/finish'));
+const finishAgentSession = (...callArgs) => agentsFinishModule.finishAgentSession(...callArgs);
+const sessionSeverityReport = lazyProxy(() => require('../report/session-severity'));
+const budgetModule = lazyProxy(() => require('../budget'));
+const ciInitModule = lazyProxy(() => require('../ci-init'));
+const cockpitModule = lazyProxy(() => require('../cockpit'));
+const agentsStart = lazyProxy(() => require('../agents/start'));
+const prReviewModule = lazyProxy(() => require('../pr-review'));
 const {
   fs,
   path,
