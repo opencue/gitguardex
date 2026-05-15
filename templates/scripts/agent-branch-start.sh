@@ -508,6 +508,26 @@ managed_worktree_roots() {
   done
 }
 
+branch_tip_is_merged_into_protected_base() {
+  local repo="$1"
+  local entry_worktree="$2"
+  local protected_raw="$3"
+  local head_sha base ref
+  head_sha="$(git -C "$entry_worktree" rev-parse --verify HEAD 2>/dev/null || true)"
+  if [[ -z "$head_sha" ]]; then
+    return 1
+  fi
+  for base in $protected_raw; do
+    for ref in "refs/heads/${base}" "refs/remotes/origin/${base}"; do
+      git -C "$repo" show-ref --verify --quiet "$ref" || continue
+      if git -C "$repo" merge-base --is-ancestor "$head_sha" "$ref" >/dev/null 2>&1; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 find_matching_dirty_agent_worktree() {
   local repo="$1"
   local worktree_root_rel="$2"
@@ -517,7 +537,8 @@ find_matching_dirty_agent_worktree() {
   local best_branch=""
   local best_worktree=""
   local best_count=0
-  local root entry branch descriptor score
+  local root entry branch descriptor score protected_raw
+  protected_raw="$(resolve_protected_branches "$repo")"
 
   while IFS= read -r root; do
     [[ -d "$root" ]] || continue
@@ -528,6 +549,15 @@ find_matching_dirty_agent_worktree() {
       fi
       [[ "$branch" == "agent/${agent_slug}/"* ]] || continue
       has_local_changes "$entry" || continue
+      # Skip worktrees whose branch tip is already reachable from a
+      # protected base. After `gx branch finish --via-pr --cleanup` the
+      # worktree directory can linger on disk (e.g. the operator's shell
+      # is still cwd'd inside it). Reusing such a worktree for a new
+      # task would silently hand the next agent a stale, merged HEAD.
+      if branch_tip_is_merged_into_protected_base "$repo" "$entry" "$protected_raw"; then
+        echo "[agent-branch-start] Skipping merged-and-cleaned worktree: ${entry} (branch ${branch} already in base)" >&2
+        continue
+      fi
 
       descriptor="${branch#agent/${agent_slug}/}"
       score="$(token_match_score "$task_slug" "$descriptor")"
