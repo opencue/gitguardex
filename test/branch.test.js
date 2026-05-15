@@ -176,6 +176,38 @@ test('agent-branch-start reuses a single dirty matching managed worktree from th
   );
 });
 
+test('agent-branch-start skips a merged-and-cleaned worktree instead of reusing it for a new task', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+
+  let result = runBranchStart(['--tier', 'T1', 'tui plan watcher validator', 'bot'], repoDir, {
+    GUARDEX_OPENSPEC_AUTO_INIT: 'true',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const firstBranch = extractCreatedBranch(result.stdout);
+  const firstWorktree = extractCreatedWorktree(result.stdout);
+
+  // Simulate post-`gx branch finish --via-pr --cleanup` state on the
+  // primary checkout: the branch had been published (upstream config set)
+  // and the remote-tracking ref was then deleted by `push --delete`.
+  let cmd = runCmd('git', ['config', `branch.${firstBranch}.remote`, 'origin'], repoDir);
+  assert.equal(cmd.status, 0, cmd.stderr || cmd.stdout);
+  cmd = runCmd('git', ['config', `branch.${firstBranch}.merge`, `refs/heads/${firstBranch}`], repoDir);
+  assert.equal(cmd.status, 0, cmd.stderr || cmd.stdout);
+  // Leave the worktree dirty so it would otherwise match the reuse heuristic.
+  fs.writeFileSync(path.join(firstWorktree, 'leftover.txt'), 'merged-but-not-yet-pruned\n', 'utf8');
+
+  // A new task whose slug tokens overlap with the merged-and-cleaned branch.
+  result = runBranchStart(['--tier', 'T1', 'tui plan validator', 'bot'], repoDir, {
+    GUARDEX_OPENSPEC_AUTO_INIT: 'true',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(result.stdout, /Matched dirty managed worktree for requested task/);
+  assert.match(result.stderr, /Skipping merged-and-cleaned worktree/);
+  assert.match(result.stdout, /Created branch: agent\/(codex|claude)\/tui-plan-validator-/);
+  assert.notEqual(extractCreatedBranch(result.stdout), firstBranch);
+  assert.notEqual(extractCreatedWorktree(result.stdout), firstWorktree);
+});
+
 test('agent-branch-start creates a fresh branch when dirty matching worktrees are ambiguous', () => {
   const { repoDir } = createBootstrappedRepo({ committed: true });
 

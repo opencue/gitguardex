@@ -508,6 +508,25 @@ managed_worktree_roots() {
   done
 }
 
+branch_published_then_remote_pruned() {
+  # Detect the post-`gx branch finish --via-pr --cleanup` state: the agent
+  # branch was published (so upstream config is set), but the remote-tracking
+  # ref no longer exists (because `push origin --delete` ran during cleanup).
+  # That combination only arises after a finish that successfully merged the
+  # PR and pruned the remote branch — a freshly-created agent branch never
+  # has an upstream until publish, so this never false-positives on the
+  # "started, dirty, no commits yet" case that we want to keep reusable.
+  local repo="$1"
+  local branch="$2"
+  local upstream
+  upstream="$(git -C "$repo" config --get "branch.${branch}.remote" 2>/dev/null || true)"
+  [[ -n "$upstream" ]] || return 1
+  if git -C "$repo" show-ref --verify --quiet "refs/remotes/${upstream}/${branch}"; then
+    return 1
+  fi
+  return 0
+}
+
 find_matching_dirty_agent_worktree() {
   local repo="$1"
   local worktree_root_rel="$2"
@@ -528,6 +547,13 @@ find_matching_dirty_agent_worktree() {
       fi
       [[ "$branch" == "agent/${agent_slug}/"* ]] || continue
       has_local_changes "$entry" || continue
+      # Skip merged-and-cleaned worktrees that happen to still be on disk
+      # (e.g. operator's shell is cwd'd inside; cleanup deferred). Reusing
+      # such a worktree would silently hand the next agent a stale HEAD.
+      if branch_published_then_remote_pruned "$repo" "$branch"; then
+        echo "[agent-branch-start] Skipping merged-and-cleaned worktree: ${entry} (branch ${branch} has no remote tracking ref)" >&2
+        continue
+      fi
 
       descriptor="${branch#agent/${agent_slug}/}"
       score="$(token_match_score "$task_slug" "$descriptor")"
