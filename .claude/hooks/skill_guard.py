@@ -26,6 +26,11 @@ DEFAULT_MAIN_RS_INTEGRATOR_AGENT = os.environ.get("MAIN_RS_INTEGRATOR_AGENT", "i
 PROTECTED_BRANCH_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH"
 SHELL_GUARD_OVERRIDE_ENV = "ALLOW_BASH_ON_NON_AGENT_BRANCH"
 PRIMARY_WORKTREE_AGENT_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE"
+# Extra agent-branch prefixes (comma- or space-separated). The hardcoded
+# "agent/" prefix is always recognized; this env var adds session-managed
+# prefixes like "claude/" without forcing repos to fork the hook.
+AGENT_BRANCH_PREFIXES_ENV = "GUARDEX_AGENT_BRANCH_PREFIXES"
+DEFAULT_AGENT_BRANCH_PREFIXES = ("agent/",)
 PATCH_FILE_HEADER_RE = re.compile(
     r"^\*\*\* (?:Update|Add|Delete) File:\s+(.+?)\s*$",
     re.MULTILINE,
@@ -38,6 +43,9 @@ SHELL_OUTPUT_REDIRECT_FALLBACK_RE = re.compile(
 )
 SHELL_ALLOWED_SEGMENTS = (
     re.compile(r"^(?:cd|pwd|true|false|echo|printf|export|unset|set(?:\s+-[A-Za-z-]+)?)\b"),
+    # Read-only version probes: harmless, frequent on session start.
+    re.compile(r"^(?:node|npm|pnpm|yarn|python|python3|ruby|go|java|cargo|rustc|deno|bun)\s+--version\b"),
+    re.compile(r"^(?:node|npm|pnpm|yarn|python|python3|ruby|go|java|cargo|rustc|deno|bun)\s+-v\b"),
     re.compile(r"^git\s+(?:status|rev-parse|symbolic-ref|branch|log|show|diff|fetch|remote|config\s+--get|worktree\s+list|ls-files|submodule\s+status|stash\s+(?:list|show))\b"),
     # Safe sync: fast-forward / rebase pulls cannot move primary onto a divergent state.
     re.compile(r"^git\s+pull(?:\s+--ff-only|\s+--rebase|\s+origin\s+\S+)?\s*$"),
@@ -273,6 +281,40 @@ def branch_agent_name(branch: str) -> str:
     return ""
 
 
+def _parse_branch_prefixes(raw: str) -> tuple[str, ...]:
+    """Split GUARDEX_AGENT_BRANCH_PREFIXES into normalized prefixes."""
+    if not raw:
+        return ()
+    tokens = [token.strip() for token in re.split(r"[\s,]+", raw) if token.strip()]
+    normalized: list[str] = []
+    for token in tokens:
+        # Ensure trailing slash so "claude" matches "claude/foo" but not
+        # an unrelated branch named "claudette/foo".
+        if not token.endswith("/"):
+            token = token + "/"
+        normalized.append(token)
+    return tuple(normalized)
+
+
+def agent_branch_prefixes() -> tuple[str, ...]:
+    """Active agent-branch prefixes: defaults plus GUARDEX_AGENT_BRANCH_PREFIXES."""
+    extras = _parse_branch_prefixes(os.environ.get(AGENT_BRANCH_PREFIXES_ENV, ""))
+    seen: set[str] = set()
+    out: list[str] = []
+    for prefix in (*DEFAULT_AGENT_BRANCH_PREFIXES, *extras):
+        if prefix not in seen:
+            seen.add(prefix)
+            out.append(prefix)
+    return tuple(out)
+
+
+def is_agent_branch(branch: str) -> bool:
+    """Treat branch as agent-managed if it matches any active prefix."""
+    if not branch:
+        return False
+    return any(branch.startswith(prefix) for prefix in agent_branch_prefixes())
+
+
 def is_codex_session() -> bool:
     """Best-effort detection for Codex/OMX automated sessions."""
     return bool(
@@ -288,7 +330,7 @@ def ensure_protected_branch_edit_allowed(file_path: str) -> str | None:
         return None
     repo_root = find_repo_root(file_path)
     branch = current_branch(repo_root)
-    if branch.startswith("agent/"):
+    if is_agent_branch(branch):
         return None
 
     if branch in PROTECTED_BRANCHES:
@@ -423,7 +465,7 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
         return None
 
     branch = current_branch(repo_root)
-    if branch.startswith("agent/"):
+    if is_agent_branch(branch):
         return None
     if is_allowed_non_agent_shell_command(command):
         return None
