@@ -1,3 +1,4 @@
+// @ts-check
 const { TOOL_NAME, LOCK_FILE_RELATIVE, path, fs } = require('../context');
 const { isTerseMode } = require('../output');
 const { run, runPackageAsset } = require('../core/runtime');
@@ -29,6 +30,48 @@ const {
 } = require('../cli/args');
 const submoduleModule = require('../submodule');
 
+/**
+ * Options recognized by {@link autoCommitWorktreeForFinish} and the public
+ * {@link finish} entry. Mirrors the relevant subset of `parseFinishArgs`'s
+ * output.
+ *
+ * @typedef {Object} FinishOptions
+ * @property {boolean} [noAutoCommit] When true, refuse to auto-commit dirty worktrees.
+ * @property {boolean} [dryRun] When true, surface intended actions without performing them.
+ * @property {string} [commitMessage] Override for the auto-commit message.
+ * @property {boolean} [advanceSubmodules] Run `submoduleModule.advance` against the worktree before finish.
+ * @property {boolean} [waitForMerge] Forward `--wait-for-merge` to `agent-branch-finish`.
+ * @property {boolean} [cleanup] Forward `--cleanup` (vs `--no-cleanup`) to `agent-branch-finish`.
+ * @property {'pr'|'direct'|'auto'} [mergeMode] Merge selection forwarded to `agent-branch-finish`.
+ * @property {boolean} [keepRemote] Forward `--keep-remote-branch` to `agent-branch-finish`.
+ * @property {boolean} [parentGitlinkCommit] Toggle for `--parent-gitlink-commit`.
+ * @property {boolean} [failFast] Stop the loop after the first failing branch.
+ * @property {boolean} [all] Include already-merged branches in the candidate list.
+ * @property {string} [branch] Single branch to finish (skips discovery).
+ * @property {string} [base] Explicit base branch override.
+ * @property {string} [target] Path inside the target repo (defaults to cwd).
+ */
+
+/**
+ * Outcome of an auto-commit attempt for a single branch.
+ *
+ * @typedef {Object} AutoCommitResult
+ * @property {boolean} changed True when the worktree had local changes.
+ * @property {boolean} committed True only when a commit was created.
+ * @property {boolean} [dryRun] True when `--dry-run` short-circuited the commit.
+ * @property {string} [message] Commit message used (when `committed` is true).
+ */
+
+/**
+ * Claim agent file locks for every file the worktree is about to commit,
+ * including pending deletions. No-op when there is nothing to claim.
+ *
+ * @param {string} repoRoot Repo root for the lock tool to operate on.
+ * @param {string} worktreePath Worktree whose changes are being committed.
+ * @param {string} branch Agent branch that should own the new claims.
+ * @returns {void}
+ * @throws {Error} When the lock-claim or allow-delete subprocess exits non-zero.
+ */
 function claimLocksForAutoCommit(repoRoot, worktreePath, branch) {
   const changedFiles = uniquePreserveOrder([
     ...gitOutputLines(worktreePath, ['diff', '--name-only', '--', '.', ':(exclude).omx/state/agent-file-locks.json']),
@@ -85,6 +128,17 @@ function claimLocksForAutoCommit(repoRoot, worktreePath, branch) {
   }
 }
 
+/**
+ * Stage and commit pending work in `worktreePath` (if any) before the
+ * finish flow takes over. Honors `--no-auto-commit` and `--dry-run`.
+ *
+ * @param {string} repoRoot Repo root for lock-tool dispatch.
+ * @param {string} worktreePath Worktree to commit in.
+ * @param {string} branch Agent branch the worktree is checked out on.
+ * @param {FinishOptions} options Finish options (only auto-commit fields are read).
+ * @returns {AutoCommitResult} What happened (or would happen, in dry-run).
+ * @throws {Error} When `--no-auto-commit` is set with dirty state, or when git add/commit fails.
+ */
 function autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options) {
   const hasChanges = worktreeHasLocalChanges(worktreePath);
   if (!hasChanges) {
@@ -135,6 +189,15 @@ function autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options) {
   return { changed: true, committed: true, message: commitMessage };
 }
 
+/**
+ * Run the worktree-prune sweep with options parsed from `rawArgs`. In watch
+ * mode loops forever (or until `--once`), printing the cycle header and
+ * delegating each cycle to the `worktreePrune` package asset.
+ *
+ * @param {ReadonlyArray<string>} rawArgs CLI argv slice for the cleanup command.
+ * @returns {void}
+ * @throws {Error} When the underlying prune subprocess exits non-zero or the watch sleep fails.
+ */
 function cleanup(rawArgs) {
   const activeCwd = process.cwd();
   const options = parseCleanupArgs(rawArgs);
@@ -205,6 +268,14 @@ function cleanup(rawArgs) {
   process.exitCode = 0;
 }
 
+/**
+ * Dispatch to the `branchMerge` package asset with options parsed from
+ * `rawArgs`. Pipes stdout/stderr through to the parent process.
+ *
+ * @param {ReadonlyArray<string>} rawArgs CLI argv slice for the merge command.
+ * @returns {void}
+ * @throws {Error} When the merge subprocess exits non-zero.
+ */
 function merge(rawArgs) {
   const options = parseMergeArgs(rawArgs);
   const repoRoot = resolveRepoRoot(options.target);
@@ -240,6 +311,17 @@ function merge(rawArgs) {
   process.exitCode = 0;
 }
 
+/**
+ * Drive the finish flow across one or many agent branches: discover
+ * candidates, auto-commit dirty worktrees, optionally advance submodules,
+ * and invoke `agent-branch-finish` for each branch. Aggregates per-branch
+ * outcomes and prints a single summary line at the end.
+ *
+ * @param {ReadonlyArray<string>} rawArgs CLI argv slice for the finish command.
+ * @param {Partial<FinishOptions>} [defaults] Defaults merged before CLI overrides.
+ * @returns {void}
+ * @throws {Error} When `--branch` references an unknown ref, or when any branch fails to finish (after the loop completes).
+ */
 function finish(rawArgs, defaults = {}) {
   const activeCwd = process.cwd();
   const options = parseFinishArgs(rawArgs, defaults);
@@ -412,6 +494,17 @@ function finish(rawArgs, defaults = {}) {
   process.exitCode = 0;
 }
 
+/**
+ * Sync the current (or all) agent branches against the configured base
+ * branch using either rebase or merge. Supports `--check`, `--dry-run`,
+ * `--json`, and `--all-agent-branches` modes. Temporarily resets the lock
+ * registry around the sync operation when it is dirty so it does not block
+ * the rebase/merge, then restores the saved contents.
+ *
+ * @param {ReadonlyArray<string>} rawArgs CLI argv slice for the sync command.
+ * @returns {void}
+ * @throws {Error} When the working tree is dirty (without `--allow-dirty`), the lock reset fails, or the underlying rebase/merge fails.
+ */
 function sync(rawArgs) {
   const options = parseSyncArgs(rawArgs);
   const repoRoot = resolveRepoRoot(options.target);

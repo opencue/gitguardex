@@ -1,3 +1,4 @@
+// @ts-check
 const fs = require('node:fs');
 const {
   path,
@@ -14,12 +15,89 @@ const {
 } = require('../context');
 const { run: rawRun } = require('../core/runtime');
 
-// Route every spawn from this module through the process-scoped probe cache
-// in context.js. cachedSpawn falls through to cp.spawnSync for any command
-// not on its read-only allowlist (writes like `git commit`, `git push`,
-// `git checkout`, `git worktree add/remove`, etc.), so this substitution is
-// a strict perf optimization and changes no observable behavior. Preserves
-// rawRun's signature: (cmd, args, opts) -> spawnSync result.
+/**
+ * Result of a synchronous child-process spawn.
+ *
+ * Mirrors the relevant subset of Node's `child_process.SpawnSyncReturns`
+ * without pulling in `@types/node`, so this typedef stays usable under
+ * `@ts-check` even when type definitions are not installed.
+ *
+ * @typedef {Object} SpawnResult
+ * @property {number|null} status Exit code, or `null` if the process was killed by a signal.
+ * @property {string} [stdout] Captured stdout (utf-8).
+ * @property {string} [stderr] Captured stderr (utf-8).
+ * @property {Error} [error] Spawn-level error (e.g., ENOENT, timeout).
+ */
+
+/**
+ * Options accepted by {@link run}.
+ *
+ * @typedef {Object} RunOptions
+ * @property {string} [stdio] Stdio mode passed to spawnSync ('pipe' by default).
+ * @property {string} [cwd] Working directory for the child process.
+ * @property {Record<string, string|undefined>} [env] Extra env vars merged on top of `process.env`.
+ * @property {number} [timeout] Kill the child after this many milliseconds.
+ */
+
+/**
+ * Outcome of an additive setup operation reported by setup-style helpers.
+ *
+ * @typedef {Object} SetupOperation
+ * @property {string} status Operation outcome (e.g., 'unchanged', 'updated', 'set', 'would-set', 'synced', 'failed').
+ * @property {string} file Human-readable identifier for the touched resource (often `git config <key>`).
+ * @property {string} [note] Optional explanation surfaced in setup output.
+ */
+
+/**
+ * Porcelain status of the agent file-lock registry inside the working tree.
+ *
+ * @typedef {Object} LockRegistryStatus
+ * @property {boolean} dirty Lock file has uncommitted or untracked changes.
+ * @property {boolean} untracked Lock file is present but not tracked by git.
+ */
+
+/**
+ * Ahead/behind counts between a branch and a base ref.
+ *
+ * @typedef {Object} AheadBehindCounts
+ * @property {number} ahead Commits on `branchRef` not on `baseRef`.
+ * @property {number} behind Commits on `baseRef` not on `branchRef`.
+ */
+
+/**
+ * Outcome of attempting to switch the primary checkout onto a branch.
+ *
+ * @typedef {Object} EnsureRepoBranchResult
+ * @property {boolean} ok True when the working tree is on (or moved to) the requested branch.
+ * @property {boolean} changed True only when this call performed a checkout.
+ * @property {string} [stdout] Checkout stdout when the operation failed.
+ * @property {string} [stderr] Checkout stderr when the operation failed.
+ */
+
+/**
+ * Worktree entry describing an `agent/*` branch checked out on disk.
+ *
+ * @typedef {Object} AgentWorktreeEntry
+ * @property {string} worktreePath Absolute filesystem path of the worktree.
+ * @property {string} branch Branch name (without the `refs/heads/` prefix).
+ */
+
+/**
+ * Spawn `cmd` synchronously and capture its output as utf-8 text.
+ *
+ * Routes every call through the process-scoped probe cache in `context.js`
+ * so repeated read-only probes (e.g., `git rev-parse`, `git config --get`)
+ * answer from cache. `cachedSpawn` falls through to `cp.spawnSync` for any
+ * command not on its read-only allowlist (writes like `git commit`,
+ * `git push`, `git checkout`, `git worktree add/remove`), so this is a
+ * strict perf optimization that preserves `rawRun`'s signature
+ * `(cmd, args, opts) -> spawnSync result`.
+ *
+ * @param {string} cmd Executable to invoke.
+ * @param {ReadonlyArray<string>} args Argument vector.
+ * @param {RunOptions} [options] Spawn options (see {@link RunOptions}).
+ * @returns {SpawnResult} Result of the spawn.
+ */
 function run(cmd, args, options = {}) {
   return cachedSpawn(cmd, args, {
     encoding: 'utf8',
@@ -33,6 +111,15 @@ function run(cmd, args, options = {}) {
 // cache stays trivial. (Currently nothing in this module needs to bypass.)
 void rawRun;
 
+/**
+ * Run `git -C <repoRoot> <args>` and throw unless `allowFailure` is set.
+ *
+ * @param {string} repoRoot Repository root the command should target.
+ * @param {ReadonlyArray<string>} args Argument vector passed after `-C <repoRoot>`.
+ * @param {{ allowFailure?: boolean }} [opts] When `allowFailure` is true, non-zero exits are returned to the caller instead of throwing.
+ * @returns {SpawnResult} The spawn result (always returned; only thrown on failure when `allowFailure` is false).
+ * @throws {Error} When git exits non-zero and `allowFailure` is not set.
+ */
 function gitRun(repoRoot, args, { allowFailure = false } = {}) {
   const result = run('git', ['-C', repoRoot, ...args]);
   if (!allowFailure && result.status !== 0) {
@@ -41,6 +128,13 @@ function gitRun(repoRoot, args, { allowFailure = false } = {}) {
   return result;
 }
 
+/**
+ * Resolve the absolute git toplevel for `targetPath` (or `process.cwd()`).
+ *
+ * @param {string} [targetPath] Filesystem path inside a git repo. Defaults to the current working directory.
+ * @returns {string} Absolute path to the git toplevel.
+ * @throws {Error} When `targetPath` is not inside a git repository.
+ */
 function resolveRepoRoot(targetPath) {
   const resolvedTarget = path.resolve(targetPath || process.cwd());
   const result = run('git', ['-C', resolvedTarget, 'rev-parse', '--show-toplevel']);
@@ -53,6 +147,12 @@ function resolveRepoRoot(targetPath) {
   return result.stdout.trim();
 }
 
+/**
+ * Test whether `targetPath` (or cwd) resolves inside a git repository.
+ *
+ * @param {string} [targetPath] Filesystem path to probe. Defaults to the current working directory.
+ * @returns {boolean} True if the path is inside a git repo.
+ */
 function isGitRepo(targetPath) {
   const resolvedTarget = path.resolve(targetPath || process.cwd());
   const result = run('git', ['-C', resolvedTarget, 'rev-parse', '--show-toplevel']);
@@ -81,6 +181,21 @@ function resolveGitCommonDir(repoPath) {
   return path.resolve(repoPath, raw);
 }
 
+/**
+ * Walk `rootPath` and return every distinct git working tree found within it.
+ *
+ * Skips common heavy/disposable directories (`node_modules`, `dist`, etc.),
+ * excludes the root's own `.git`, and by default treats submodules
+ * (where `.git` is a file, not a directory) as part of the root unless
+ * `includeSubmodules` is set. Filters out worktree children that share the
+ * root's `git-common-dir` so additional worktrees of the same repo do not
+ * show up as nested repos.
+ *
+ * @param {string} rootPath Path to search.
+ * @param {{ maxDepth?: number, extraSkip?: ReadonlyArray<string>, includeSubmodules?: boolean, skipRelativeDirs?: ReadonlyArray<string> }} [opts] Walk tuning knobs.
+ * @returns {string[]} Sorted list of repo paths, with `rootPath` first.
+ * @throws {Error} When `rootPath` is not itself a git repository.
+ */
 function discoverNestedGitRepos(rootPath, opts = {}) {
   const maxDepth = Number.isFinite(opts.maxDepth)
     ? Math.max(1, opts.maxDepth)
@@ -144,6 +259,12 @@ function discoverNestedGitRepos(rootPath, opts = {}) {
   return root ? [root, ...rest] : [];
 }
 
+/**
+ * Split a whitespace/comma-delimited branch list into a deduped array.
+ *
+ * @param {unknown} rawValue Raw config value (string-coerced; non-strings yield `[]`).
+ * @returns {string[]} Branch names with empty entries removed.
+ */
 function parseBranchList(rawValue) {
   return String(rawValue || '')
     .split(/[\s,]+/)
@@ -151,8 +272,17 @@ function parseBranchList(rawValue) {
     .filter(Boolean);
 }
 
+/**
+ * Return `items` with duplicates removed, preserving first-seen order.
+ *
+ * @template T
+ * @param {ReadonlyArray<T>} items Input list.
+ * @returns {T[]} Deduped list.
+ */
 function uniquePreserveOrder(items) {
+  /** @type {Set<T>} */
   const seen = new Set();
+  /** @type {T[]} */
   const result = [];
   for (const item of items) {
     if (seen.has(item)) continue;
@@ -162,6 +292,12 @@ function uniquePreserveOrder(items) {
   return result;
 }
 
+/**
+ * Read the `GIT_PROTECTED_BRANCHES_KEY` config value as a deduped list.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string[]|null} Parsed branches, or `null` when the key is unset / empty.
+ */
 function readConfiguredProtectedBranches(repoRoot) {
   const result = gitRun(repoRoot, ['config', '--get', GIT_PROTECTED_BRANCHES_KEY], { allowFailure: true });
   if (result.status !== 0) {
@@ -174,6 +310,14 @@ function readConfiguredProtectedBranches(repoRoot) {
   return parsed;
 }
 
+/**
+ * Enumerate local branches that look like user branches (not `agent/*`, not
+ * in `DEFAULT_PROTECTED_BRANCHES`). Falls back to the currently checked-out
+ * branch when no other user branches exist.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string[]} User branch names.
+ */
 function listLocalUserBranches(repoRoot) {
   const result = gitRun(repoRoot, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], { allowFailure: true });
   const branchNames = result.status === 0
@@ -211,6 +355,12 @@ function listLocalUserBranches(repoRoot) {
   return [branchName];
 }
 
+/**
+ * Enumerate local branches under `refs/heads/agent/`.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string[]} Agent branch names (deduped, in for-each-ref order).
+ */
 function listLocalAgentBranches(repoRoot) {
   const result = gitRun(
     repoRoot,
@@ -228,6 +378,12 @@ function listLocalAgentBranches(repoRoot) {
   );
 }
 
+/**
+ * Build a `branch -> worktreePath` map from `git worktree list --porcelain`.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {Map<string, string>} Branch -> absolute worktree path; empty on failure.
+ */
 function mapWorktreePathsByBranch(repoRoot) {
   const result = gitRun(repoRoot, ['worktree', 'list', '--porcelain'], { allowFailure: true });
   const map = new Map();
@@ -252,10 +408,24 @@ function mapWorktreePathsByBranch(repoRoot) {
   return map;
 }
 
+/**
+ * Test whether `ref` resolves via `git show-ref --verify`.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} ref Fully-qualified ref (e.g., `refs/heads/main`).
+ * @returns {boolean} True when the ref exists.
+ */
 function gitRefExists(repoRoot, ref) {
   return run('git', ['-C', repoRoot, 'show-ref', '--verify', '--quiet', ref]).status === 0;
 }
 
+/**
+ * Report whether `worktreePath` has working-tree changes the finish flow
+ * would consider significant, ignoring noise from the lock-registry file.
+ *
+ * @param {string} worktreePath Worktree to inspect.
+ * @returns {boolean} True when meaningful changes are present.
+ */
 function hasSignificantWorkingTreeChanges(worktreePath) {
   const result = run('git', [
     '-C',
@@ -285,6 +455,12 @@ function hasSignificantWorkingTreeChanges(worktreePath) {
   return false;
 }
 
+/**
+ * Resolve the effective protected-branches list (config override or default).
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string[]} Protected branch names.
+ */
 function readProtectedBranches(repoRoot) {
   const result = gitRun(repoRoot, ['config', '--get', GIT_PROTECTED_BRANCHES_KEY], { allowFailure: true });
   if (result.status !== 0) {
@@ -298,6 +474,14 @@ function readProtectedBranches(repoRoot) {
   return parsed;
 }
 
+/**
+ * Add any local user branches that are missing from the protected-branches
+ * config. In dry-run mode the config is left untouched.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {boolean} dryRun When true, report intended changes without writing.
+ * @returns {SetupOperation} Operation outcome (`unchanged`, `would-update`, or `updated`).
+ */
 function ensureSetupProtectedBranches(repoRoot, dryRun) {
   const localUserBranches = listLocalUserBranches(repoRoot);
   if (localUserBranches.length === 0) {
@@ -331,6 +515,14 @@ function ensureSetupProtectedBranches(repoRoot, dryRun) {
   };
 }
 
+/**
+ * Persist the protected-branches list into git config, replacing the prior
+ * value. An empty array unsets the key entirely.
+ *
+ * @param {string} repoRoot Repo to update.
+ * @param {ReadonlyArray<string>} branches Branch names to record.
+ * @returns {void}
+ */
 function writeProtectedBranches(repoRoot, branches) {
   if (branches.length === 0) {
     gitRun(repoRoot, ['config', '--unset-all', GIT_PROTECTED_BRANCHES_KEY], { allowFailure: true });
@@ -352,6 +544,15 @@ const SUBMODULE_AUTO_SYNC_CONFIGS = [
   },
 ];
 
+/**
+ * Wire git config so submodules auto-update on pull/fetch and snap working
+ * dirs to the parent index. No-op (returns `[]`) when the repo has no
+ * `.gitmodules` file. Existing config values are respected, not overwritten.
+ *
+ * @param {string} repoRoot Repo to configure.
+ * @param {boolean} dryRun When true, report intended changes without writing.
+ * @returns {SetupOperation[]} One operation per config key plus the recursive submodule sync result.
+ */
 function ensureSubmoduleAutoSync(repoRoot, dryRun) {
   const gitmodulesPath = path.join(repoRoot, '.gitmodules');
   if (!fs.existsSync(gitmodulesPath)) {
@@ -403,6 +604,13 @@ function ensureSubmoduleAutoSync(repoRoot, dryRun) {
   return operations;
 }
 
+/**
+ * Read a single git config value as a trimmed string.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} key Config key to read.
+ * @returns {string} Trimmed value, or '' when the key is unset.
+ */
 function readGitConfig(repoRoot, key) {
   const result = gitRun(repoRoot, ['config', '--get', key], { allowFailure: true });
   if (result.status !== 0) {
@@ -411,6 +619,14 @@ function readGitConfig(repoRoot, key) {
   return (result.stdout || '').trim();
 }
 
+/**
+ * Resolve the base branch to use (explicit CLI value wins; otherwise config
+ * key `GIT_BASE_BRANCH_KEY`; otherwise `DEFAULT_BASE_BRANCH`).
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} [explicitBase] Value passed on the CLI, if any.
+ * @returns {string} Resolved base branch name.
+ */
 function resolveBaseBranch(repoRoot, explicitBase) {
   if (explicitBase) {
     return explicitBase;
@@ -419,6 +635,14 @@ function resolveBaseBranch(repoRoot, explicitBase) {
   return configured || DEFAULT_BASE_BRANCH;
 }
 
+/**
+ * Resolve the sync strategy to use, validated against the allowed set.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} [explicitStrategy] Value passed on the CLI, if any.
+ * @returns {'rebase'|'merge'} Resolved strategy (lower-cased).
+ * @throws {Error} When the resolved value is not `rebase` or `merge`.
+ */
 function resolveSyncStrategy(repoRoot, explicitStrategy) {
   const strategy = (explicitStrategy || readGitConfig(repoRoot, GIT_SYNC_STRATEGY_KEY) || DEFAULT_SYNC_STRATEGY)
     .trim()
@@ -429,6 +653,13 @@ function resolveSyncStrategy(repoRoot, explicitStrategy) {
   return strategy;
 }
 
+/**
+ * Return the currently checked-out branch name.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string} Current branch name.
+ * @throws {Error} When `git branch --show-current` fails or HEAD is detached.
+ */
 function currentBranchName(repoRoot) {
   const result = gitRun(repoRoot, ['branch', '--show-current'], { allowFailure: true });
   if (result.status !== 0) {
@@ -441,10 +672,23 @@ function currentBranchName(repoRoot) {
   return branch;
 }
 
+/**
+ * Test whether `HEAD` resolves to a commit (i.e., repo is not unborn).
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {boolean} True when HEAD has a commit.
+ */
 function repoHasHeadCommit(repoRoot) {
   return gitRun(repoRoot, ['rev-parse', '--verify', 'HEAD'], { allowFailure: true }).status === 0;
 }
 
+/**
+ * Produce a human-readable description of HEAD: branch name, branch name
+ * annotated as unborn, a detached short SHA, or `(unknown)`.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string} Display label for the current HEAD.
+ */
 function readBranchDisplayName(repoRoot) {
   const symbolic = gitRun(repoRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD'], { allowFailure: true });
   if (symbolic.status === 0) {
@@ -462,14 +706,35 @@ function readBranchDisplayName(repoRoot) {
   return '(unknown)';
 }
 
+/**
+ * Test whether the repo has an `origin` remote configured.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {boolean} True when `git remote get-url origin` succeeds.
+ */
 function hasOriginRemote(repoRoot) {
   return gitRun(repoRoot, ['remote', 'get-url', 'origin'], { allowFailure: true }).status === 0;
 }
 
+/**
+ * Return the subset of `COMPOSE_HINT_FILES` that exist under `repoRoot`.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string[]} Relative paths of compose-hint files present on disk.
+ */
 function detectComposeHintFiles(repoRoot) {
   return COMPOSE_HINT_FILES.filter((relativePath) => fs.existsSync(path.join(repoRoot, relativePath)));
 }
 
+/**
+ * Print onboarding hints for fresh repos (no HEAD commit, no origin, or
+ * docker-compose detected). Silent when none of those conditions apply.
+ *
+ * @param {string} repoRoot Repo to describe.
+ * @param {string} baseBranch Base branch to reference in suggested commands.
+ * @param {string} [repoLabel] Optional label injected into log lines (useful when iterating multiple repos).
+ * @returns {void}
+ */
 function printSetupRepoHints(repoRoot, baseBranch, repoLabel = '') {
   const branchDisplay = readBranchDisplayName(repoRoot);
   const hasHeadCommit = repoHasHeadCommit(repoRoot);
@@ -501,6 +766,14 @@ function printSetupRepoHints(repoRoot, baseBranch, repoLabel = '') {
   }
 }
 
+/**
+ * Test whether the working tree at `repoRoot` has changes outside the
+ * lock-registry file.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {boolean} True when meaningful changes are present.
+ * @throws {Error} When `git status --porcelain` fails.
+ */
 function workingTreeIsDirty(repoRoot) {
   const result = gitRun(repoRoot, ['status', '--porcelain'], { allowFailure: true });
   if (result.status !== 0) {
@@ -518,6 +791,15 @@ function workingTreeIsDirty(repoRoot) {
   return significant.length > 0;
 }
 
+/**
+ * Ensure `repoRoot` is checked out on `branch`, performing a checkout if
+ * needed. Failures are reported via the returned object rather than thrown
+ * so callers can decide how to surface them.
+ *
+ * @param {string} repoRoot Repo to operate on.
+ * @param {string} branch Branch to check out.
+ * @returns {EnsureRepoBranchResult} Outcome of the operation.
+ */
 function ensureRepoBranch(repoRoot, branch) {
   const current = currentBranchName(repoRoot);
   if (current === branch) {
@@ -545,6 +827,14 @@ function ensureRepoBranch(repoRoot, branch) {
   return { ok: true, changed: true };
 }
 
+/**
+ * Fetch `origin/<baseBranch>` and verify the remote ref now exists.
+ *
+ * @param {string} repoRoot Repo to operate on.
+ * @param {string} baseBranch Base branch name (without `origin/` prefix).
+ * @returns {void}
+ * @throws {Error} When the fetch fails or the remote base ref is missing.
+ */
 function ensureOriginBaseRef(repoRoot, baseBranch) {
   const fetch = gitRun(repoRoot, ['fetch', 'origin', baseBranch, '--quiet'], { allowFailure: true });
   if (fetch.status !== 0) {
@@ -560,6 +850,15 @@ function ensureOriginBaseRef(repoRoot, baseBranch) {
   }
 }
 
+/**
+ * Compute the ahead/behind commit counts between two refs.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} branchRef Branch ref (left side of `...`).
+ * @param {string} baseRef Base ref (right side of `...`).
+ * @returns {AheadBehindCounts} Commits ahead of and behind the base.
+ * @throws {Error} When `git rev-list` cannot compute the comparison.
+ */
 function aheadBehind(repoRoot, branchRef, baseRef) {
   const result = gitRun(repoRoot, ['rev-list', '--left-right', '--count', `${branchRef}...${baseRef}`], {
     allowFailure: true,
@@ -573,6 +872,12 @@ function aheadBehind(repoRoot, branchRef, baseRef) {
   return { ahead: Number.isFinite(ahead) ? ahead : 0, behind: Number.isFinite(behind) ? behind : 0 };
 }
 
+/**
+ * Inspect `git status --porcelain` for just the lock-registry file.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {LockRegistryStatus} Whether the lock file is dirty and/or untracked.
+ */
 function lockRegistryStatus(repoRoot) {
   const result = gitRun(repoRoot, ['status', '--porcelain', '--', LOCK_FILE_RELATIVE], { allowFailure: true });
   if (result.status !== 0) {
@@ -586,6 +891,13 @@ function lockRegistryStatus(repoRoot) {
   return { dirty: true, untracked };
 }
 
+/**
+ * Enumerate worktrees whose branch lives under `refs/heads/agent/`.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {AgentWorktreeEntry[]} One entry per agent worktree.
+ * @throws {Error} When `git worktree list` cannot run.
+ */
 function listAgentWorktrees(repoRoot) {
   const result = gitRun(repoRoot, ['worktree', 'list', '--porcelain'], { allowFailure: true });
   if (result.status !== 0) {
@@ -627,12 +939,28 @@ function listAgentWorktrees(repoRoot) {
   return entries;
 }
 
+/**
+ * Like {@link listLocalAgentBranches} but restricted to entries starting
+ * with `agent/`. Used as the candidate list for batch-finish flows.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string[]} Agent branch names.
+ */
 function listLocalAgentBranchesForFinish(repoRoot) {
   return uniquePreserveOrder(
     listLocalAgentBranches(repoRoot).filter((line) => line.startsWith('agent/')),
   );
 }
 
+/**
+ * Interpret a `git diff --quiet`-style command: 0 = no changes, 1 = changes,
+ * anything else is a real error.
+ *
+ * @param {string} worktreePath Worktree to invoke git in.
+ * @param {ReadonlyArray<string>} args Arguments after `-C <worktreePath>`.
+ * @returns {boolean} True when the diff reports changes.
+ * @throws {Error} When git exits with a status other than 0 or 1.
+ */
 function gitQuietChangeResult(worktreePath, args) {
   const result = run('git', ['-C', worktreePath, ...args], { stdio: 'pipe' });
   if (result.status === 0) {
@@ -648,6 +976,14 @@ function gitQuietChangeResult(worktreePath, args) {
   );
 }
 
+/**
+ * Detect any pending local work in `worktreePath` (unstaged, staged, or
+ * untracked), ignoring noise from the agent file-locks state file.
+ *
+ * @param {string} worktreePath Worktree to inspect.
+ * @returns {boolean} True when local changes are present.
+ * @throws {Error} When git commands invoked during the probe fail.
+ */
 function worktreeHasLocalChanges(worktreePath) {
   const hasUnstaged = gitQuietChangeResult(worktreePath, [
     'diff',
@@ -681,6 +1017,15 @@ function worktreeHasLocalChanges(worktreePath) {
   return String(untracked.stdout || '').trim().length > 0;
 }
 
+/**
+ * Run `git -C <worktreePath> <args>` and return stdout split into trimmed
+ * non-empty lines.
+ *
+ * @param {string} worktreePath Worktree to invoke git in.
+ * @param {ReadonlyArray<string>} args Arguments after `-C <worktreePath>`.
+ * @returns {string[]} Trimmed stdout lines (empties removed).
+ * @throws {Error} When git exits non-zero.
+ */
 function gitOutputLines(worktreePath, args) {
   const result = run('git', ['-C', worktreePath, ...args], { stdio: 'pipe' });
   if (result.status !== 0) {
@@ -696,6 +1041,13 @@ function gitOutputLines(worktreePath, args) {
     .filter(Boolean);
 }
 
+/**
+ * Test whether `refs/heads/<branch>` exists locally.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} branch Branch name (without `refs/heads/` prefix).
+ * @returns {boolean} True when the local branch exists.
+ */
 function branchExists(repoRoot, branch) {
   const result = gitRun(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
     allowFailure: true,
@@ -703,6 +1055,16 @@ function branchExists(repoRoot, branch) {
   return result.status === 0;
 }
 
+/**
+ * Resolve the base branch for the finish flow: CLI override wins; otherwise
+ * the configured base; otherwise `DEFAULT_BASE_BRANCH`. The `_sourceBranch`
+ * parameter is currently unused but reserved for future per-branch policy.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} _sourceBranch Source agent branch (unused; reserved).
+ * @param {string} [explicitBase] CLI override, if any.
+ * @returns {string} Resolved base branch name.
+ */
 function resolveFinishBaseBranch(repoRoot, _sourceBranch, explicitBase) {
   if (explicitBase) {
     return explicitBase;
@@ -716,6 +1078,15 @@ function resolveFinishBaseBranch(repoRoot, _sourceBranch, explicitBase) {
   return DEFAULT_BASE_BRANCH;
 }
 
+/**
+ * Test whether `branch` is an ancestor of `baseBranch` (i.e., already merged).
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} branch Branch to check.
+ * @param {string} baseBranch Base branch to compare against.
+ * @returns {boolean} True when `branch` is an ancestor of `baseBranch`.
+ * @throws {Error} When git returns an unexpected status (anything other than 0 or 1).
+ */
 function branchMergedIntoBase(repoRoot, branch, baseBranch) {
   if (!branchExists(repoRoot, baseBranch)) {
     return false;
@@ -732,6 +1103,17 @@ function branchMergedIntoBase(repoRoot, branch, baseBranch) {
   throw new Error(`Unable to determine merge status for ${branch} -> ${baseBranch}`);
 }
 
+/**
+ * Run a sync against `baseRef` using the requested strategy. On failure,
+ * surface git output plus a hint for resolving an in-progress rebase/merge.
+ *
+ * @param {string} repoRoot Repo to operate on.
+ * @param {'rebase'|'merge'} strategy Sync strategy.
+ * @param {string} baseRef Ref to rebase onto / merge from.
+ * @param {boolean} ffOnly Pass `--ff-only` to merge; rejected for rebase.
+ * @returns {void}
+ * @throws {Error} When the rebase/merge fails or when `ffOnly` is combined with `rebase`.
+ */
 function syncOperation(repoRoot, strategy, baseRef, ffOnly) {
   if (strategy === 'rebase') {
     if (ffOnly) {
