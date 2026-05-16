@@ -333,14 +333,40 @@ test('cli main no longer keeps local copies of extracted shared helpers or dead 
   const source = fs.readFileSync(path.join(repoRoot, 'src', 'cli', 'main.js'), 'utf8');
   const doctorSource = fs.readFileSync(path.join(repoRoot, 'src', 'doctor', 'index.js'), 'utf8');
   const gitSource = fs.readFileSync(path.join(repoRoot, 'src', 'git', 'index.js'), 'utf8');
+  const doctorCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'doctor.js'),
+    'utf8',
+  );
+  const bootstrapCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'bootstrap.js'),
+    'utf8',
+  );
+  const finishCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'finish.js'),
+    'utf8',
+  );
+  const miscCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'misc.js'),
+    'utf8',
+  );
 
+  // main.js is now the thin dispatcher; the heavy modules it pulls in have
+  // moved to src/cli/commands/* and src/cli/shared/*, so assert against the
+  // dispatcher's new shape and the new homes for the extracted handlers.
   assert.match(source, /require\('\.\.\/context'\)/);
-  assert.match(source, /require\('\.\.\/doctor'\)/);
   assert.match(source, /require\('\.\.\/output'\)/);
-  assert.match(source, /require\('\.\.\/scaffold'\)/);
-  assert.match(source, /require\('\.\/args'\)/);
   assert.match(source, /require\('\.\/dispatch'\)/);
   assert.match(source, /require\('\.\.\/git'\)/);
+  assert.match(source, /require\('\.\/commands\/doctor'\)/);
+  assert.match(source, /require\('\.\/commands\/bootstrap'\)/);
+  assert.match(source, /require\('\.\/commands\/finish'\)/);
+  assert.match(source, /require\('\.\/commands\/misc'\)/);
+  // The extracted handlers keep importing the canonical scaffold/args modules.
+  assert.match(doctorCmdSource, /require\('\.\.\/\.\.\/doctor'\)/);
+  assert.match(doctorCmdSource, /require\('\.\.\/\.\.\/scaffold'\)/);
+  assert.match(bootstrapCmdSource, /require\('\.\.\/args'\)/);
+  assert.match(finishCmdSource, /require\('\.\.\/\.\.\/finish'\)/);
+  assert.match(miscCmdSource, /require\('\.\.\/\.\.\/scaffold'\)/);
   assert.doesNotMatch(source, /const TOOL_NAME = 'gitguardex';/);
   assert.doesNotMatch(source, /const MAINTAINER_RELEASE_REPO = path\.resolve\(/);
   assert.doesNotMatch(source, /function envFlagIsTruthy\(raw\)/);
