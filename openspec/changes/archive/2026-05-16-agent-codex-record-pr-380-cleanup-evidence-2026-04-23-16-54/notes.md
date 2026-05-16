@@ -15,6 +15,6 @@ Verification:
 
 ## Cleanup
 
-- [ ] Run: `gx branch finish --branch agent/codex/record-pr-380-cleanup-evidence-2026-04-23-16-54 --base main --via-pr --wait-for-merge --cleanup`
-- [ ] Record PR URL + `MERGED` state in the completion handoff.
-- [ ] Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).
+- [x] Run: `gx branch finish --branch agent/codex/record-pr-380-cleanup-evidence-2026-04-23-16-54 --base main --via-pr --wait-for-merge --cleanup`
+- [x] Record PR URL + `MERGED` state in the completion handoff.
+- [x] Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).

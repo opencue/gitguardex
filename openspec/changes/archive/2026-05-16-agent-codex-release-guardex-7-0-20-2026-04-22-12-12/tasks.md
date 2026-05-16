@@ -16,7 +16,7 @@
 
 ## 4. Completion
 
-- [ ] 4.1 Finish the agent branch via PR merge + cleanup (`gx branch finish --branch "agent/codex/release-guardex-7-0-20-2026-04-22-12-12" --base main --via-pr --wait-for-merge --cleanup`).
-- [ ] 4.2 Run `gx release` from the maintainer repo after merge and record the GitHub release URL plus npm workflow result.
-- [ ] 4.3 Record PR URL + final `MERGED` state in the completion handoff.
-- [ ] 4.4 Confirm sandbox cleanup (`git worktree list`, `git branch -a`) or capture a `BLOCKED:` handoff if merge, release, or cleanup is still pending.
+- [x] 4.1 Finish the agent branch via PR merge + cleanup (`gx branch finish --branch "agent/codex/release-guardex-7-0-20-2026-04-22-12-12" --base main --via-pr --wait-for-merge --cleanup`).
+- [x] 4.2 Run `gx release` from the maintainer repo after merge and record the GitHub release URL plus npm workflow result.
+- [x] 4.3 Record PR URL + final `MERGED` state in the completion handoff.
+- [x] 4.4 Confirm sandbox cleanup (`git worktree list`, `git branch -a`) or capture a `BLOCKED:` handoff if merge, release, or cleanup is still pending.

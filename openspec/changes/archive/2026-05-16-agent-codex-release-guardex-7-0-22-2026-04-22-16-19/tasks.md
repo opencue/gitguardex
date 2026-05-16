@@ -16,6 +16,6 @@
 
 ## 4. Cleanup
 
-- [ ] 4.1 Run: `gx branch finish --branch agent/codex/release-guardex-7-0-22-2026-04-22-16-19 --base main --via-pr --wait-for-merge --cleanup`
-- [ ] 4.2 Record PR URL + `MERGED` state in the completion handoff.
-- [ ] 4.3 Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).
+- [x] 4.1 Run: `gx branch finish --branch agent/codex/release-guardex-7-0-22-2026-04-22-16-19 --base main --via-pr --wait-for-merge --cleanup`
+- [x] 4.2 Record PR URL + `MERGED` state in the completion handoff.
+- [x] 4.3 Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).

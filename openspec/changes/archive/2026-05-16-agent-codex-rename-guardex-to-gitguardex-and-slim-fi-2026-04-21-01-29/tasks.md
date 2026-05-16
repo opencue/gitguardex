@@ -19,4 +19,4 @@
 
 ## 5. Cleanup
 
-- [ ] 5.1 Finish branch via PR merge + cleanup and record final `MERGED` evidence.
+- [x] 5.1 Finish branch via PR merge + cleanup and record final `MERGED` evidence.

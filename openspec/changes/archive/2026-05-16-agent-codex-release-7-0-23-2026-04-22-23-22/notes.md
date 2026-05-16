@@ -23,7 +23,7 @@ Verification:
 
 ## Cleanup
 
-- [ ] Run: `gx branch finish --branch agent/codex/release-7-0-23-2026-04-22-23-22 --base main --via-pr --wait-for-merge --cleanup`
-- [ ] Run: `gx release`
-- [ ] Record PR URL + `MERGED` state and release URL in the completion handoff.
-- [ ] Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).
+- [x] Run: `gx branch finish --branch agent/codex/release-7-0-23-2026-04-22-23-22 --base main --via-pr --wait-for-merge --cleanup`
+- [x] Run: `gx release`
+- [x] Record PR URL + `MERGED` state and release URL in the completion handoff.
+- [x] Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).

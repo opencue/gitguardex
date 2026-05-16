@@ -11,6 +11,6 @@ Release-only lane: bump `@imdeadpool/guardex` to `7.0.26`, add the matching `REA
 
 ## Cleanup
 
-- [ ] Run: `gx branch finish --branch agent/codex/release-7-0-26-2026-04-23-16-21 --base main --via-pr --wait-for-merge --cleanup`
-- [ ] Record PR URL + `MERGED` state in the completion handoff.
-- [ ] Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).
+- [x] Run: `gx branch finish --branch agent/codex/release-7-0-26-2026-04-23-16-21 --base main --via-pr --wait-for-merge --cleanup`
+- [x] Record PR URL + `MERGED` state in the completion handoff.
+- [x] Confirm sandbox worktree is gone (`git worktree list`, `git branch -a`).

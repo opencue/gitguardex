@@ -17,4 +17,4 @@
 ## 4. Cleanup
 
 - [x] 4.1 Confirm branch is ready for finish.
-- [ ] 4.2 After successful merge, run `bash scripts/agent-worktree-prune.sh --base <base> --delete-branches --delete-remote-branches` so merged agent branch/worktree sandboxes are removed from local and `origin`.
+- [x] 4.2 After successful merge, run `bash scripts/agent-worktree-prune.sh --base <base> --delete-branches --delete-remote-branches` so merged agent branch/worktree sandboxes are removed from local and `origin`.
