@@ -28,23 +28,28 @@ if [[ ! -f "${CLI_ENTRY}" ]]; then
   exit 1
 fi
 
-NODE_BIN="${NODE_BIN:-node}"
-if ! command -v "${NODE_BIN}" >/dev/null 2>&1; then
-  echo "FAIL: node not found in PATH" >&2
+NODE_BIN_NAME="${NODE_BIN:-node}"
+if ! NODE_BIN_RESOLVED="$(command -v "${NODE_BIN_NAME}" 2>/dev/null)"; then
+  echo "FAIL: node not found in PATH (looked for '${NODE_BIN_NAME}')" >&2
   exit 1
 fi
+NODE_BIN="${NODE_BIN_RESOLVED}"
+
+# `gx setup` and the per-repo `.githooks/pre-commit` (plus the shell-shim
+# scripts the scaffold writes into `bin/` and `scripts/`) all dispatch to
+# the CLI via `GUARDEX_CLI_ENTRY` / `GUARDEX_NODE_BIN` when set, and fall
+# back to `gx` on `PATH` otherwise. Clean CI runners have no `gx` on PATH,
+# so we EXPORT both vars at the script level. Every subprocess -- including
+# `git commit`'s hook fork, the scaffolded shim scripts inside the fixture,
+# and our own `run_gx` invocations -- inherits the same entry point.
+export GUARDEX_CLI_ENTRY="${CLI_ENTRY}"
+export GUARDEX_NODE_BIN="${NODE_BIN}"
 
 # Helper: run `gx ...` with a sanitized env. This script is intended to run
 # both from GitHub-hosted runners (clean env) AND locally from inside a
 # Guardex agent worktree. In the latter case the inherited shell carries
 # `CLAUDECODE`, `CODEX_THREAD_ID`, `GUARDEX_AGENT_*`, etc., which would make
 # the CLI think we are reusing the parent worktree's session. Strip those.
-#
-# We also export `GUARDEX_CLI_ENTRY` + `GUARDEX_NODE_BIN` so the `gx` shim
-# scripts that `gx setup` writes into the fixture (`bin/...`, `scripts/...`)
-# can dispatch back to *this* CLI instead of an absent global `gx` PATH
-# entry. Tests in `test/finish.test.js` rely on the same env via
-# `runCmd()`/`runNode()` helpers.
 run_gx() {
   env \
     -u CODEX_THREAD_ID \
@@ -72,7 +77,7 @@ trap cleanup EXIT
 FIXTURE_REPO="${SCRATCH}/fixture"
 ORIGIN_DIR="${SCRATCH}/origin.git"
 MOCK_BIN_DIR="${SCRATCH}/mock-bin"
-GUARDEX_HOME_DIR="${SCRATCH}/guardex-home"
+export GUARDEX_HOME_DIR="${SCRATCH}/guardex-home"
 mkdir -p "${MOCK_BIN_DIR}" "${GUARDEX_HOME_DIR}"
 
 # ---- gh mock: drives the local bare origin to perform the merge ----------
