@@ -285,8 +285,15 @@ test('package manifest ships repo skills for npx skills installer', () => {
 test('doctor CLI parser stays in src/cli args while the main doctor command stays routable and dead legacy audit stubs stay removed', () => {
   const argsSource = fs.readFileSync(path.join(repoRoot, 'src', 'cli', 'args.js'), 'utf8');
   const cliSource = fs.readFileSync(path.join(repoRoot, 'src', 'cli', 'main.js'), 'utf8');
+  const doctorCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'doctor.js'),
+    'utf8',
+  );
   assert.match(argsSource, /function parseDoctorArgs\(rawArgs(?:, options = \{\})?\)/);
-  assert.match(cliSource, /function doctor\(rawArgs\)/);
+  // Doctor handler moved to src/cli/commands/doctor.js after the dispatcher
+  // split; main.js now just imports and routes to it.
+  assert.match(doctorCmdSource, /function doctor\(rawArgs\)/);
+  assert.match(cliSource, /\{ doctor \} = require\('\.\/commands\/doctor'\)/);
   assert.doesNotMatch(cliSource, /function doctorAudit\(rawArgs\)/);
   assert.doesNotMatch(cliSource, /function installMany\(rawArgs\)/);
   assert.doesNotMatch(cliSource, /function initWorkspace\(rawArgs\)/);
@@ -294,17 +301,37 @@ test('doctor CLI parser stays in src/cli args while the main doctor command stay
 
 test('cli main delegates extracted seams and keeps doctor single-source', () => {
   const cliSource = fs.readFileSync(path.join(repoRoot, 'src', 'cli', 'main.js'), 'utf8');
-  const doctorDefs = cliSource.match(/function doctor\(rawArgs\)/g) || [];
-  assert.equal(doctorDefs.length, 1, 'doctor() must not be duplicated');
+  const doctorCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'doctor.js'),
+    'utf8',
+  );
+  const finishCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'finish.js'),
+    'utf8',
+  );
+  const sandboxSharedSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'shared', 'sandbox.js'),
+    'utf8',
+  );
+  const miscCmdSource = fs.readFileSync(
+    path.join(repoRoot, 'src', 'cli', 'commands', 'misc.js'),
+    'utf8',
+  );
+  // main.js must not redefine the dispatch entrypoints — they live in the
+  // extracted modules and are imported here.
+  assert.doesNotMatch(cliSource, /function doctor\(rawArgs\)/);
   assert.doesNotMatch(cliSource, /function parseSetupArgs\(/);
   assert.doesNotMatch(cliSource, /function parseDoctorArgs\(/);
   assert.doesNotMatch(cliSource, /getSandboxApi|getToolchainApi|getFinishApi/);
-  assert.match(cliSource, /function assertProtectedMainWriteAllowed\(options, commandName\)\s*{\s*return sandboxModule\.assertProtectedMainWriteAllowed\(options, commandName\);\s*}/s);
-  assert.match(cliSource, /function maybeSelfUpdateBeforeStatus\(\)\s*{\s*return toolchainModule\.maybeSelfUpdateBeforeStatus\(\);\s*}/s);
-  assert.match(cliSource, /function hook\(rawArgs\)\s*{\s*return hooksModule\.hook\(rawArgs, \{/s);
-  assert.match(cliSource, /function internal\(rawArgs\)\s*{\s*return hooksModule\.internal\(rawArgs, \{/s);
-  assert.match(cliSource, /function finish\(rawArgs, defaults = \{\}\)\s*{\s*return finishCommands\.finish\(rawArgs, defaults\);\s*}/s);
-  assert.match(cliSource, /printOperations\('Doctor\/fix', fixPayload, (?:singleRepoOptions|options)\.dryRun\);/);
+  // Doctor is single-sourced in commands/doctor.js.
+  const doctorDefs = doctorCmdSource.match(/function doctor\(rawArgs\)/g) || [];
+  assert.equal(doctorDefs.length, 1, 'doctor() must not be duplicated');
+  // The extracted seams keep their thin wrappers around the underlying modules.
+  assert.match(sandboxSharedSource, /function assertProtectedMainWriteAllowed\(options, commandName\)\s*{\s*return sandboxModule\.assertProtectedMainWriteAllowed\(options, commandName\);\s*}/s);
+  assert.match(miscCmdSource, /function hook\(rawArgs\)\s*{\s*return hooksModule\.hook\(rawArgs, \{/s);
+  assert.match(miscCmdSource, /function internal\(rawArgs\)\s*{\s*return hooksModule\.internal\(rawArgs, \{/s);
+  assert.match(finishCmdSource, /function finish\(rawArgs, defaults = \{\}\)\s*{\s*return finishCommands\.finish\(rawArgs, defaults\);\s*}/s);
+  assert.match(doctorCmdSource, /printOperations\('Doctor\/fix', fixPayload, (?:singleRepoOptions|options)\.dryRun\);/);
 });
 
 test('cli main module loads after extracted arg and dispatch seams move out', () => {
