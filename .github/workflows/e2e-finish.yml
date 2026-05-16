@@ -1,0 +1,64 @@
+name: e2e (finish flow)
+
+# End-to-end smoke test for the `gx branch finish --via-pr --wait-for-merge
+# --cleanup` loop. Runs `test/e2e/finish-via-pr.sh`, which spins up a local
+# bare-repo origin and a mock `gh` to exercise the real finish pipeline
+# (push -> PR create -> PR merge -> remote/local cleanup) without touching
+# any external remote.
+#
+# Scoped to PRs that touch the finish CLI surface so most PRs don't pay for
+# this extra job. Always available via workflow_dispatch for ad-hoc runs.
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - 'bin/**'
+      - 'src/finish/**'
+      - 'src/cli/**'
+      - 'src/git/**'
+      - 'scripts/openspec/**'
+      - 'templates/scripts/agent-branch-finish.sh'
+      - 'templates/scripts/agent-branch-start.sh'
+      - 'test/e2e/**'
+      - '.github/workflows/e2e-finish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-finish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  finish-via-pr:
+    name: gx branch finish --via-pr (local-only)
+    # Draft PRs skip CI to save minutes during in-flight agent work;
+    # auto-fires on `ready_for_review`. Matches `ci.yml`.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+
+      - name: Install
+        run: npm install --ignore-scripts
+
+      - name: Configure git identity (needed by gx setup hooks)
+        run: |
+          git config --global user.email "guardex-e2e@example.invalid"
+          git config --global user.name  "guardex-e2e"
+          git config --global init.defaultBranch main
+
+      - name: Run e2e finish-via-pr smoke test
+        run: bash test/e2e/finish-via-pr.sh
