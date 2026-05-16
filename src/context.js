@@ -380,6 +380,7 @@ const SUGGESTIBLE_COMMANDS = [
   'release',
   'budget',
   'ci-init',
+  'speckit',
 ];
 // CLI_COMMAND_GROUPS is the grouped source of truth the `gx --help` /
 // `gx` no-args renderer uses. Each group is ordered roughly by how often a
@@ -428,6 +429,7 @@ const CLI_COMMAND_GROUPS = [
       ['pr-review', 'Run local Codex/Claude PR review and post inline GitHub comments or write an artifact'],
       ['cockpit', 'Create or attach to a repo tmux cockpit session'],
       ['install-agent-skills', 'Install Guardex Codex/Claude skills into the user home'],
+      ['speckit', 'Install Spec Kit (specify-cli) SDD slash skills (/speckit-specify, /speckit-plan, ...) into the current repo'],
       ['prompt', 'Print AI setup checklist or named slices (--exec, --part, --list-parts, --snippet)'],
       ['report', 'Security/safety reports (e.g. OpenSSF scorecard, session severity)'],
       ['release', 'Create or update the current GitHub release with README-generated notes'],

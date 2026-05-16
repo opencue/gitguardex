@@ -37,6 +37,7 @@ const finishAgentSession = (...callArgs) => agentsFinishModule.finishAgentSessio
 const sessionSeverityReport = lazyProxy(() => require('../report/session-severity'));
 const budgetModule = lazyProxy(() => require('../budget'));
 const ciInitModule = lazyProxy(() => require('../ci-init'));
+const speckitModule = lazyProxy(() => require('../speckit'));
 const cockpitModule = lazyProxy(() => require('../cockpit'));
 const agentsStart = lazyProxy(() => require('../agents/start'));
 const prReviewModule = lazyProxy(() => require('../pr-review'));
@@ -3919,6 +3920,7 @@ async function main() {
   if (command === 'release') return release(rest);
   if (command === 'budget') return budgetModule.runBudgetCommand(rest);
   if (command === 'ci-init') return ciInitModule.runCiInitCommand(rest);
+  if (command === 'speckit') return speckitModule.runSpeckitCommand(rest);
 
   const suggestion = maybeSuggestCommand(command);
   if (suggestion) {
