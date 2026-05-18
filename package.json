@@ -18,6 +18,7 @@
     "agent:branch:merge": "bash ./scripts/agent-branch-merge.sh",
     "agent:cleanup": "gx cleanup",
     "agent:hooks:install": "bash ./scripts/install-agent-git-hooks.sh",
+    "guardex:install-global": "bash ./scripts/install-global-hooks.sh",
     "agent:locks:claim": "python3 ./scripts/agent-file-locks.py claim",
     "agent:locks:allow-delete": "python3 ./scripts/agent-file-locks.py allow-delete",
     "agent:locks:release": "python3 ./scripts/agent-file-locks.py release",
