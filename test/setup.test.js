@@ -137,14 +137,12 @@ test('setup provisions workflow files and repo config', () => {
   assert.match(agentsContent, /GUARDEX_ON=0/);
   assert.match(
     agentsContent,
-    /For every new task, including follow-up work in the same chat\/session, if an assigned agent sub-branch\/worktree is already open, continue in that sub-branch/,
+    /If a worktree is already open for this chat\/session, \*\*continue in it\*\*/,
   );
-  assert.match(agentsContent, /### Colony coordination loop/);
-  assert.match(agentsContent, /Use Colony as the primary coordination surface\./);
   assert.match(agentsContent, /### Token \/ context budget/);
   assert.match(agentsContent, /Default: less word, same proof\./);
   assert.match(agentsContent, /### Caveman style/);
-  assert.match(agentsContent, /Answer order stays fixed: answer first, cause next, fix or next step last\./);
+  assert.match(agentsContent, /answer first, cause next, fix or next step last\./);
 
   const claudeStats = fs.lstatSync(path.join(repoDir, 'CLAUDE.md'));
   assert.equal(claudeStats.isSymbolicLink(), true, 'CLAUDE.md should link to AGENTS.md');
@@ -627,14 +625,14 @@ Trailing project notes after managed block.
   assert.match(nextAgents, /Trailing project notes after managed block\./);
   assert.match(
     nextAgents,
-    /For every new task, including follow-up work in the same chat\/session, if an assigned agent sub-branch\/worktree is already open, continue in that sub-branch/,
+    /If a worktree is already open for this chat\/session, \*\*continue in it\*\*/,
   );
   assert.match(
     nextAgents,
-    /Never implement directly on the local\/base branch checkout\. Keep it unchanged and perform all edits in the agent sub-branch\/worktree\./,
+    /Work from an `agent\/\*` branch \+ worktree\. \*\*Never\*\* edit the protected base directly\./,
   );
   assert.match(nextAgents, /Small tasks stay direct and caveman-only\./);
-  assert.match(nextAgents, /Promote to full Guardex \/ OMX orchestration only when scope grows into:/);
+  assert.match(nextAgents, /Promote to full Guardex \/ OMX orchestration only when scope grows into/);
   assert.match(nextAgents, /final completion\/cleanup section/);
   assert.match(nextAgents, /PR URL \+ final `MERGED` evidence/);
   assert.doesNotMatch(nextAgents, /legacy managed clause/);
@@ -850,16 +848,15 @@ test('install configures AGENTS managed policy block with GX contract wording', 
 
   const agentsContent = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
   assert.match(agentsContent, /<!-- multiagent-safety:START -->/);
-  assert.match(agentsContent, /## Multi-Agent Execution Contract: Guardex \+ Colony/);
+  assert.match(agentsContent, /## Multi-Agent Execution Contract/);
   assert.match(
     agentsContent,
-    /OMX completion policy: when a task is done, the agent must run `gx branch finish --branch "<agent-branch>" --via-pr --wait-for-merge --cleanup`/,
+    /gx branch finish --branch "<agent-branch>" --via-pr --wait-for-merge --cleanup/,
   );
-  assert.match(agentsContent, /instead of standalone `git push` \/ `gh pr` commands/);
-  assert.match(agentsContent, /External approval boundary:/);
+  assert.match(agentsContent, /instead of standalone `git push` \/ `gh pr`/);
+  assert.match(agentsContent, /### External approval boundary/);
   assert.match(agentsContent, /Guardex cannot bypass Codex host approval prompts/);
   assert.match(agentsContent, /request approval for the narrow `gx branch finish \.\.\.` command/);
-  assert.match(agentsContent, /### Colony coordination loop/);
   assert.match(agentsContent, /### Token \/ context budget/);
   assert.match(agentsContent, /### Caveman style/);
 });
