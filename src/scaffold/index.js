@@ -14,6 +14,8 @@ const {
   USER_LEVEL_SKILL_ASSETS,
   AGENTS_MARKER_START,
   AGENTS_MARKER_END,
+  MONOREPO_MARKER_START,
+  MONOREPO_MARKER_END,
   GITIGNORE_MARKER_START,
   GITIGNORE_MARKER_END,
   SHARED_VSCODE_SETTINGS_RELATIVE,
@@ -557,6 +559,77 @@ function ensureClaudeAgentsLink(repoRoot, dryRun) {
   return { status: dryRun ? 'would-create' : 'created', file: 'CLAUDE.md', note: 'symlink to AGENTS.md' };
 }
 
+function detectMonorepoApps(repoRoot) {
+  const appsDir = path.join(repoRoot, 'apps');
+  let stat;
+  try {
+    stat = fs.statSync(appsDir);
+  } catch {
+    return false;
+  }
+  if (!stat.isDirectory()) return false;
+  let entries;
+  try {
+    entries = fs.readdirSync(appsDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return entries.some(
+    (entry) =>
+      entry.isDirectory() &&
+      fs.existsSync(path.join(appsDir, entry.name, 'package.json')),
+  );
+}
+
+function ensureMonorepoAppsSnippet(repoRoot, dryRun) {
+  const agentsPath = path.join(repoRoot, 'AGENTS.md');
+  if (!detectMonorepoApps(repoRoot)) {
+    return {
+      status: 'skipped',
+      file: 'AGENTS.md',
+      note: 'no apps/<pkg>/package.json detected — monorepo block not needed',
+    };
+  }
+  const snippet = fs
+    .readFileSync(path.join(TEMPLATE_ROOT, 'AGENTS.monorepo-apps.md'), 'utf8')
+    .trimEnd();
+  const managedRegex = new RegExp(
+    `${MONOREPO_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MONOREPO_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+    'm',
+  );
+
+  // Ensure AGENTS.md exists first (created by ensureAgentsSnippet upstream).
+  if (!fs.existsSync(agentsPath)) {
+    if (!dryRun) {
+      fs.writeFileSync(agentsPath, `# AGENTS\n\n${snippet}\n`, 'utf8');
+    }
+    return { status: 'created', file: 'AGENTS.md', note: 'monorepo-apps block' };
+  }
+
+  const existing = fs.readFileSync(agentsPath, 'utf8');
+  if (managedRegex.test(existing)) {
+    const next = existing.replace(managedRegex, snippet);
+    if (next === existing) {
+      return { status: 'unchanged', file: 'AGENTS.md', note: 'monorepo-apps block' };
+    }
+    if (!dryRun) {
+      fs.writeFileSync(agentsPath, next, 'utf8');
+    }
+    return {
+      status: 'updated',
+      file: 'AGENTS.md',
+      note: 'refreshed monorepo-apps block',
+    };
+  }
+
+  const separator = existing.endsWith('\n') ? '\n' : '\n\n';
+  if (!dryRun) {
+    fs.writeFileSync(agentsPath, `${existing}${separator}${snippet}\n`, 'utf8');
+  }
+
+  return { status: 'updated', file: 'AGENTS.md', note: 'appended monorepo-apps block' };
+}
+
 function ensureManagedGitignore(repoRoot, dryRun) {
   const gitignorePath = path.join(repoRoot, '.gitignore');
   const managedBlock = [
@@ -782,6 +855,8 @@ module.exports = {
   removeLegacyManagedRepoFile,
   ensureAgentsSnippet,
   ensureClaudeAgentsLink,
+  ensureMonorepoAppsSnippet,
+  detectMonorepoApps,
   ensureManagedGitignore,
   parseJsonObjectLikeFile,
   buildRepoVscodeSettings,

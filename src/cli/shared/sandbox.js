@@ -21,6 +21,14 @@ const {
 } = require('../../git');
 const sandboxModule = require('../../sandbox');
 const doctorModule = require('../../doctor');
+const { prepareAgentWorktree } = require('../../scaffold/agent-worktree-prep');
+
+function formatWorktreePrepOps(operations) {
+  if (!operations || operations.length === 0) return '';
+  return operations
+    .map((op) => `[agent-branch-start] worktree-prep ${op.status} ${op.file}${op.note ? ' — ' + op.note : ''}`)
+    .join('\n') + '\n';
+}
 const {
   run,
   runPackageAsset,
@@ -284,6 +292,7 @@ function startProtectedBaseSandboxFallback(blocked, sandboxSuffix) {
     }
   }
 
+  const prepOps = prepareAgentWorktree(blocked.repoRoot, selectedWorktreePath);
   return {
     metadata: {
       branch: selectedBranch,
@@ -291,7 +300,8 @@ function startProtectedBaseSandboxFallback(blocked, sandboxSuffix) {
     },
     stdout:
       `[agent-branch-start] Created branch: ${selectedBranch}\n` +
-      `[agent-branch-start] Worktree: ${selectedWorktreePath}\n`,
+      `[agent-branch-start] Worktree: ${selectedWorktreePath}\n` +
+      formatWorktreePrepOps(prepOps),
     stderr: addResult.stderr || '',
   };
 }
@@ -335,9 +345,13 @@ function startProtectedBaseSandbox(blocked, { taskName, sandboxSuffix }) {
     return startProtectedBaseSandboxFallback(blocked, sandboxSuffix);
   }
 
+  const worktreePathResolved = metadata.worktreePath
+    ? path.resolve(metadata.worktreePath)
+    : '';
+  const prepOps = prepareAgentWorktree(blocked.repoRoot, worktreePathResolved);
   return {
     metadata,
-    stdout: startResult.stdout || '',
+    stdout: (startResult.stdout || '') + formatWorktreePrepOps(prepOps),
     stderr: startResult.stderr || '',
   };
 }

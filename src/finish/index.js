@@ -29,6 +29,7 @@ const {
   parseSyncArgs,
 } = require('../cli/args');
 const submoduleModule = require('../submodule');
+const { runPreflight, summarizePreflight } = require('./preflight');
 
 /**
  * Options recognized by {@link autoCommitWorktreeForFinish} and the public
@@ -456,6 +457,28 @@ function finish(rawArgs, defaults = {}) {
         console.log(`[${TOOL_NAME}] [dry-run] Would run: gx branch finish ${finishArgs.join(' ')}`);
         succeeded += 1;
         continue;
+      }
+
+      // Preflight: typecheck + lint touched workspace packages before opening
+      // a PR. Only enforced for PR-mode finishes; bypass with --skip-preflight.
+      if (options.mergeMode === 'pr' && !options.skipPreflight) {
+        const preflight = runPreflight(repoRoot, worktreePath, branch, baseBranch, {
+          verbose: !terse,
+        });
+        console.log(`[${TOOL_NAME}] ${summarizePreflight(preflight)}`);
+        if (preflight.status === 'failed') {
+          for (const f of preflight.failures) {
+            console.error(`[${TOOL_NAME}] preflight failure: ${f.label} (exit ${f.status})`);
+            if (f.stderr && f.stderr.trim()) {
+              console.error(f.stderr.trim());
+            } else if (f.stdout && f.stdout.trim()) {
+              console.error(f.stdout.trim());
+            }
+          }
+          throw new Error(
+            `preflight failed for ${preflight.failures.length} script(s). Fix the failures or rerun with --skip-preflight to bypass.`,
+          );
+        }
       }
 
       const finishResult = runPackageAsset('branchFinish', finishArgs, {

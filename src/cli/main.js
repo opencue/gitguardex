@@ -41,6 +41,7 @@ const { claude: claudeCommand } = require('./commands/claude');
 const { agents } = require('./commands/agents');
 const { report } = require('./commands/report');
 const { release } = require('./commands/release');
+const { watch } = require('./commands/watch');
 const {
   prompt,
   printAgentsSnippet,
@@ -229,6 +230,7 @@ async function main() {
   if (command === 'submodule') return submodule(rest);
   if (command === 'cleanup') return cleanup(rest);
   if (command === 'release') return release(rest);
+  if (command === 'watch') return watch(rest);
   if (command === 'budget') return budgetModule.runBudgetCommand(rest);
   if (command === 'ci-init') return ciInitModule.runCiInitCommand(rest);
   if (command === 'speckit') return speckitModule.runSpeckitCommand(rest);

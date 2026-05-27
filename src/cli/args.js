@@ -1084,6 +1084,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     failFast: false,
     commitMessage: '',
     mergeMode: defaults.mergeMode || 'pr',
+    skipPreflight: false,
   };
 
   for (let index = 0; index < rawArgs.length; index += 1) {
@@ -1194,6 +1195,10 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     }
     if (arg === '--no-advance-submodules') {
       options.advanceSubmodules = false;
+      continue;
+    }
+    if (arg === '--skip-preflight') {
+      options.skipPreflight = true;
       continue;
     }
     throw new Error(`Unknown option: ${arg}`);

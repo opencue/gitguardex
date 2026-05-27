@@ -36,6 +36,7 @@ const {
   writeLockState,
   ensureAgentsSnippet,
   ensureClaudeAgentsLink,
+  ensureMonorepoAppsSnippet,
   ensureManagedGitignore,
   ensureRepoVscodeSettings,
   configureHooks,
@@ -162,6 +163,7 @@ function runInstallInternal(options) {
 
   if (!options.skipAgents) {
     operations.push(ensureAgentsSnippet(repoRoot, Boolean(options.dryRun), { force: Boolean(options.force) }));
+    operations.push(ensureMonorepoAppsSnippet(repoRoot, Boolean(options.dryRun)));
     operations.push(ensureClaudeAgentsLink(repoRoot, Boolean(options.dryRun)));
   }
 
@@ -246,6 +248,7 @@ function runFixInternal(options) {
 
   if (!options.skipAgents) {
     operations.push(ensureAgentsSnippet(repoRoot, Boolean(options.dryRun), { force: Boolean(options.force) }));
+    operations.push(ensureMonorepoAppsSnippet(repoRoot, Boolean(options.dryRun)));
     operations.push(ensureClaudeAgentsLink(repoRoot, Boolean(options.dryRun)));
   }
 
