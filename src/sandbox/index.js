@@ -13,6 +13,14 @@ const {
   gitRefExists,
   ensureRepoBranch,
 } = require('../git');
+const { prepareAgentWorktree } = require('../scaffold/agent-worktree-prep');
+
+function formatWorktreePrepOps(operations) {
+  if (!operations || operations.length === 0) return '';
+  return operations
+    .map((op) => `[agent-branch-start] worktree-prep ${op.status} ${op.file}${op.note ? ' — ' + op.note : ''}`)
+    .join('\n') + '\n';
+}
 
 function hasGuardexBootstrapFiles(repoRoot) {
   const required = [
@@ -195,6 +203,7 @@ function startProtectedBaseSandboxFallback(blocked, sandboxSuffix) {
     }
   }
 
+  const prepOps = prepareAgentWorktree(blocked.repoRoot, selectedWorktreePath);
   return {
     metadata: {
       branch: selectedBranch,
@@ -202,7 +211,8 @@ function startProtectedBaseSandboxFallback(blocked, sandboxSuffix) {
     },
     stdout:
       `[agent-branch-start] Created branch: ${selectedBranch}\n` +
-      `[agent-branch-start] Worktree: ${selectedWorktreePath}\n`,
+      `[agent-branch-start] Worktree: ${selectedWorktreePath}\n` +
+      formatWorktreePrepOps(prepOps),
     stderr: addResult.stderr || '',
   };
 }
@@ -246,9 +256,10 @@ function startProtectedBaseSandbox(blocked, { taskName, sandboxSuffix }) {
     return startProtectedBaseSandboxFallback(blocked, sandboxSuffix);
   }
 
+  const prepOps = prepareAgentWorktree(blocked.repoRoot, worktreePath);
   return {
     metadata,
-    stdout: startResult.stdout || '',
+    stdout: (startResult.stdout || '') + formatWorktreePrepOps(prepOps),
     stderr: startResult.stderr || '',
   };
 }

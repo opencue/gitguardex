@@ -280,6 +280,8 @@ const LOCK_FILE_RELATIVE = '.omx/state/agent-file-locks.json';
 const AGENTS_BOTS_STATE_RELATIVE = '.omx/state/agents-bots.json';
 const AGENTS_MARKER_START = '<!-- multiagent-safety:START -->';
 const AGENTS_MARKER_END = '<!-- multiagent-safety:END -->';
+const MONOREPO_MARKER_START = '<!-- monorepo-apps:START -->';
+const MONOREPO_MARKER_END = '<!-- monorepo-apps:END -->';
 const GITIGNORE_MARKER_START = '# multiagent-safety:START';
 const GITIGNORE_MARKER_END = '# multiagent-safety:END';
 const CODEX_WORKTREE_RELATIVE_DIR = path.join('.omx', 'agent-worktrees');
@@ -977,6 +979,8 @@ module.exports = {
   AGENTS_BOTS_STATE_RELATIVE,
   AGENTS_MARKER_START,
   AGENTS_MARKER_END,
+  MONOREPO_MARKER_START,
+  MONOREPO_MARKER_END,
   GITIGNORE_MARKER_START,
   GITIGNORE_MARKER_END,
   CODEX_WORKTREE_RELATIVE_DIR,
