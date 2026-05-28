@@ -15,8 +15,34 @@ OPENSPEC_MASTERPLAN_LABEL_RAW="${GUARDEX_OPENSPEC_MASTERPLAN_LABEL-masterplan}"
 PRINT_NAME_ONLY=0
 POSITIONAL_ARGS=()
 
+print_usage() {
+  cat <<'USAGE'
+Usage: agent-branch-start [task] [agent] [base] [options]
+
+Start an isolated agent/* branch + worktree for a task.
+
+Positional:
+  task                 Task name/slug (default: "task")
+  agent                Agent name (default: "agent")
+  base                 Base branch to fork from (default: repo default)
+
+Options:
+  --task <name>        Task name/slug
+  --agent <name>       Agent name
+  --base <branch>      Base branch to fork from
+  --worktree-root <p>  Worktree root dir (default: .omx/agent-worktrees)
+  --tier <T1|T2|T3>    OpenSpec tier (accepted for compatibility)
+  --print-name-only    Print the computed branch name and exit
+  -h, --help           Show this help and exit
+USAGE
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
     --task)
       TASK_NAME="${2:-task}"
       shift 2
