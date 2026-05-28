@@ -150,6 +150,10 @@ AUTO_PROMOTE_DRAFT="$(normalize_bool "$AUTO_PROMOTE_DRAFT_RAW" "1")"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)
+      echo "Usage: $0 [--base <branch>] [--branch <branch>] [--no-push] [--cleanup|--no-cleanup] [--wait-for-merge|--no-wait-for-merge] [--wait-timeout-seconds <n>] [--wait-poll-seconds <n>] [--parent-gitlink-commit|--no-parent-gitlink-commit] [--keep-remote-branch|--delete-remote-branch] [--mode auto|direct|pr|--via-pr|--direct-only] [--auto-resolve[=none|safe|full]|--no-auto-resolve] [--no-preflight|--preflight] [--preflight-script <path>] [--no-auto-promote|--auto-promote]"
+      exit 0
+      ;;
     --base)
       BASE_BRANCH="${2:-}"
       BASE_BRANCH_EXPLICIT=1
