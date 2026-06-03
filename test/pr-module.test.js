@@ -32,16 +32,6 @@ function makeRepo() {
   return dir;
 }
 
-test('detectBaseBranch falls back to main when no origin is configured', () => {
-  const repoRoot = makeRepo();
-  try {
-    const base = prModule.detectBaseBranch(repoRoot);
-    assert.equal(base, 'main');
-  } finally {
-    fs.rmSync(repoRoot, { recursive: true, force: true });
-  }
-});
-
 test('defaultPrTitleFromCommit returns latest commit subject', () => {
   const repoRoot = makeRepo();
   try {

@@ -13,6 +13,7 @@ const {
   resolveRepoRoot,
   currentBranchName,
   hasOriginRemote,
+  detectDefaultBaseBranch,
 } = require('./git');
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -105,26 +106,6 @@ function pushBranch(repoRoot, branch, { setUpstream = true } = {}) {
   };
 }
 
-function detectBaseBranch(repoRoot, fallback = 'main') {
-  // Prefer remote HEAD; fall back to common base names; finally `fallback`.
-  const remoteHead = run('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], {
-    cwd: repoRoot, allowFailure: true,
-  });
-  if (remoteHead.status === 0) {
-    const value = (remoteHead.stdout || '').trim();
-    if (value.startsWith('origin/')) {
-      return value.slice('origin/'.length);
-    }
-  }
-  for (const candidate of ['main', 'dev', 'develop', 'master']) {
-    const exists = run('git', ['rev-parse', '--verify', `refs/remotes/origin/${candidate}`], {
-      cwd: repoRoot, allowFailure: true,
-    });
-    if (exists.status === 0) return candidate;
-  }
-  return fallback;
-}
-
 function defaultPrTitleFromCommit(repoRoot, branch) {
   const result = run('git', ['log', '-1', '--pretty=%s', branch], {
     cwd: repoRoot, allowFailure: true,
@@ -201,7 +182,7 @@ function openPullRequest(options) {
     }
   }
 
-  const base = options.base || detectBaseBranch(repoRoot);
+  const base = options.base || detectDefaultBaseBranch(repoRoot);
   const title = options.title || defaultPrTitleFromCommit(repoRoot, branch);
   const body = options.body || defaultPrBodyFromCommits(repoRoot, branch, base);
 
@@ -367,7 +348,6 @@ module.exports = {
   findOpenPrForBranch,
   findLatestPrForBranch,
   pushBranch,
-  detectBaseBranch,
   openPullRequest,
   getPullRequestStatus,
   enableAutoMerge,

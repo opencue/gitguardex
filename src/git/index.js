@@ -13,7 +13,6 @@ const {
   COMPOSE_HINT_FILES,
   LOCK_FILE_RELATIVE,
 } = require('../context');
-const { run: rawRun } = require('../core/runtime');
 
 /**
  * Result of a synchronous child-process spawn.
@@ -90,8 +89,8 @@ const { run: rawRun } = require('../core/runtime');
  * answer from cache. `cachedSpawn` falls through to `cp.spawnSync` for any
  * command not on its read-only allowlist (writes like `git commit`,
  * `git push`, `git checkout`, `git worktree add/remove`), so this is a
- * strict perf optimization that preserves `rawRun`'s signature
- * `(cmd, args, opts) -> spawnSync result`.
+ * strict perf optimization preserving the `(cmd, args, opts) -> spawnSync
+ * result` signature.
  *
  * @param {string} cmd Executable to invoke.
  * @param {ReadonlyArray<string>} args Argument vector.
@@ -107,9 +106,6 @@ function run(cmd, args, options = {}) {
     timeout: options.timeout,
   });
 }
-// Keep rawRun referenced so a future write that intentionally bypasses the
-// cache stays trivial. (Currently nothing in this module needs to bypass.)
-void rawRun;
 
 /**
  * Run `git -C <repoRoot> <args>` and throw unless `allowFailure` is set.
