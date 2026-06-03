@@ -1,5 +1,5 @@
 const { fs, path, LOCK_FILE_RELATIVE, TOOL_NAME } = require('../context');
-const { changedFiles } = require('./inspect');
+const { changedFiles, listWorktrees } = require('./inspect');
 const { listAgentSessions } = require('./sessions');
 
 function uniqueSorted(values) {
@@ -35,10 +35,10 @@ function readLockDetails(repoRoot) {
   return { counts, files };
 }
 
-function readChangedFiles(repoRoot, branch) {
+function readChangedFiles(repoRoot, branch, worktrees) {
   if (!branch) return [];
   try {
-    return changedFiles({ target: repoRoot, branch }).files || [];
+    return changedFiles({ target: repoRoot, branch, worktrees }).files || [];
   } catch (_error) {
     return [];
   }
@@ -53,7 +53,7 @@ function normalizePr(session) {
   };
 }
 
-function normalizeSessionForStatus(session, lockDetails, repoRoot) {
+function normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees) {
   const branch = session.branch || '';
   const worktreePath = session.worktreePath || '';
   const claimedFiles = uniqueSorted([
@@ -73,7 +73,7 @@ function normalizeSessionForStatus(session, lockDetails, repoRoot) {
     worktreeExists: worktreePath ? fs.existsSync(worktreePath) : false,
     lockCount: lockDetails.counts.get(branch) || 0,
     claimedFiles,
-    changedFiles: readChangedFiles(repoRoot, branch),
+    changedFiles: readChangedFiles(repoRoot, branch, worktrees),
     metadata: session.metadata && typeof session.metadata === 'object' ? session.metadata : {},
     launchCommand: session.launchCommand || '',
     tmux: session.tmux && typeof session.tmux === 'object' ? session.tmux : null,
@@ -85,10 +85,13 @@ function normalizeSessionForStatus(session, lockDetails, repoRoot) {
 
 function buildAgentsStatusPayload(repoRoot) {
   const lockDetails = readLockDetails(repoRoot);
+  // Hoist the invariant `git worktree list` out of the per-session loop: fetch it
+  // once here instead of once inside every session's changedFiles() (~6N -> ~6+N).
+  const worktrees = listWorktrees(repoRoot);
   return {
     schemaVersion: 1,
     repoRoot,
-    sessions: listAgentSessions(repoRoot).map((session) => normalizeSessionForStatus(session, lockDetails, repoRoot)),
+    sessions: listAgentSessions(repoRoot).map((session) => normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees)),
   };
 }
 

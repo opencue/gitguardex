@@ -28,7 +28,6 @@ const {
 } = require('../../core/runtime');
 const hooksModule = require('../../hooks');
 const submoduleModule = require('../../submodule');
-const cockpitModule = require('../../cockpit');
 const {
   removeLegacyPackageScripts,
   installUserLevelAsset,
@@ -200,6 +199,8 @@ function submodule(rawArgs) {
 }
 
 function cockpit(rawArgs) {
+  // Lazy-require: cockpit pulls ~32 modules; load only for `gx cockpit`.
+  const cockpitModule = require('../../cockpit');
   cockpitModule.openCockpit(rawArgs, {
     resolveRepoRoot,
     toolName: TOOL_NAME,
