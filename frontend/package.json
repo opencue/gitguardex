@@ -13,7 +13,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "express": "4.22.1",
+    "express": "4.22.2",
     "next": "15.5.18",
     "react": "19.0.3",
     "react-dom": "19.0.3"
