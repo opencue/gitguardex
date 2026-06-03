@@ -83,6 +83,52 @@ test('skill_guard ALLOWS writing a file OUTSIDE the repo on a protected branch (
   }
 });
 
+test('skill_guard ALLOWS writing into a DIFFERENT repo (also on main) than the cwd repo', () => {
+  // The guard protects the repo you are working IN (cwd), not whichever repo the
+  // target file happens to live in. A version-controlled ~/.claude memory dir is
+  // its own git repo on its own `main` branch; editing it from the gitguardex
+  // repo must not trip gitguardex's branch protection.
+  const cwdRepo = makeRepoOn('main');       // the repo the session works in
+  const otherRepo = makeRepoOn('main');     // a separate repo (e.g. the memory dir)
+  try {
+    const target = path.join(otherRepo, 'memory.md');
+    const result = invokeHook(cwdRepo, writePayload(target, cwdRepo));
+    assert.equal(result.status, 0, `cross-repo write must be allowed: ${result.stderr || result.stdout}`);
+  } finally {
+    fs.rmSync(cwdRepo, { recursive: true, force: true });
+    fs.rmSync(otherRepo, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard BLOCKS a mixed patch (in-repo + out-of-repo targets) on main due to the in-repo edit', () => {
+  // A cross-repo target in the same payload must not "launder" an in-repo edit:
+  // containment filtering keeps the in-repo target, so the guard still fires.
+  const dir = makeRepoOn('main');
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-guard-mix-'));
+  try {
+    const patch = [
+      '*** Begin Patch',
+      `*** Update File: ${path.join(dir, 'src', 'foo.js')}`,
+      '@@',
+      '+x',
+      `*** Add File: ${path.join(outside, 'memory.md')}`,
+      '+y',
+      '*** End Patch',
+    ].join('\n');
+    const result = invokeHook(dir, {
+      session_id: 'skill-guard-test',
+      cwd: dir,
+      tool_name: 'ApplyPatch',
+      tool_input: { content: patch },
+    });
+    assert.equal(result.status, 2, `in-repo edit in a mixed patch must still block: ${result.stderr}`);
+    assert.match(result.stderr, /BLOCKED/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard still BLOCKS writing a file INSIDE the repo on a protected branch', () => {
   const dir = makeRepoOn('main');
   try {
