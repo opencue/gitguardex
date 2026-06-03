@@ -30,6 +30,7 @@ const {
 } = require('../cli/args');
 const submoduleModule = require('../submodule');
 const { runPreflight, summarizePreflight } = require('./preflight');
+const { runReviewGate } = require('./review-gate');
 
 /**
  * Options recognized by {@link autoCommitWorktreeForFinish} and the public
@@ -479,6 +480,13 @@ function finish(rawArgs, defaults = {}) {
             `preflight failed for ${preflight.failures.length} script(s). Fix the failures or rerun with --skip-preflight to bypass.`,
           );
         }
+      }
+
+      // Opt-in merge gate (--gate-review / gx ship): enforce a clean AI review +
+      // green CI + GitHub-mergeable verdict BEFORE the shell merge runs. Throws on
+      // failure, which the catch below turns into a finish failure (no merge).
+      if (options.mergeMode === 'pr' && options.gateReview) {
+        runReviewGate({ repoRoot, branch, baseBranch, options });
       }
 
       const finishResult = runPackageAsset('branchFinish', finishArgs, {

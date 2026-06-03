@@ -63,7 +63,7 @@ function findOpenPrForBranch(repoRoot, branch) {
     'pr', 'list',
     '--head', branch,
     '--state', 'open',
-    '--json', 'number,url,state,isDraft,mergeable,headRefName,baseRefName,title,statusCheckRollup',
+    '--json', 'number,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,title,statusCheckRollup',
     '--limit', '5',
   ]);
   if (!result.ok) {
@@ -259,6 +259,8 @@ function getPullRequestStatus(repoRoot, branch) {
     state: pr.state,
     isDraft: pr.isDraft,
     mergeable: pr.mergeable,
+    mergeStateStatus: pr.mergeStateStatus,
+    reviewDecision: pr.reviewDecision,
     title: pr.title,
     head: pr.headRefName,
     base: pr.baseRefName,

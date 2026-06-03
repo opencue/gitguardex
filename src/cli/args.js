@@ -1093,6 +1093,9 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     commitMessage: '',
     mergeMode: defaults.mergeMode || 'pr',
     skipPreflight: false,
+    gateReview: defaults.gateReview ?? false,
+    reviewProvider: defaults.reviewProvider || 'codex',
+    allowNoChecks: false,
   };
 
   for (let index = 0; index < rawArgs.length; index += 1) {
@@ -1207,6 +1210,27 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     }
     if (arg === '--skip-preflight') {
       options.skipPreflight = true;
+      continue;
+    }
+    if (arg === '--gate-review') {
+      options.gateReview = true;
+      continue;
+    }
+    if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
+      options.gateReview = false;
+      continue;
+    }
+    if (arg === '--allow-no-checks') {
+      options.allowNoChecks = true;
+      continue;
+    }
+    if (arg === '--review-provider') {
+      const next = rawArgs[index + 1];
+      if (!next || !['codex', 'claude'].includes(next)) {
+        throw new Error('--review-provider requires a value of codex|claude');
+      }
+      options.reviewProvider = next;
+      index += 1;
       continue;
     }
     throw new Error(`Unknown option: ${arg}`);
