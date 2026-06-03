@@ -848,7 +848,6 @@ test('install configures AGENTS managed policy block with GX contract wording', 
   assert.match(agentsContent, /Guardex cannot bypass Codex host approval prompts/);
   assert.match(agentsContent, /request approval for the narrow `gx branch finish \.\.\.` command/);
   assert.match(agentsContent, /### Token \/ context budget/);
-  assert.match(agentsContent, /### Caveman style/);
 });
 
 

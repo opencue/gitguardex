@@ -140,16 +140,6 @@ Persist unresolved questions or blockers into `openspec/plan/<plan-slug>/open-qu
 - **rtk** (shell compression): wrap noisy discovery (`rtk ls`/`grep`/`find`/`read`), git/gh (`rtk git status`/`gh pr list`), and verification (`rtk tsc`/`lint`/`test`). Do **not** wrap machine-readable commands (`--porcelain`, `--json`, exact stdout contracts).
 - **OpenSpec**: keep `openspec/changes/<slug>/tasks.md` current during work, not batched. Validate with `openspec validate --specs` before archive.
 
-### Caveman style
-
-Default to `ultra` for commentary and progress updates: answer first, cause next, fix or next step last. Drop filler. Use fragments when clear.
-
-Keep exact literals (code, commands, file paths, flags, env vars, URLs, numbers, timestamps, error text) unchanged.
-
-Switch back to `lite` or normal wording for security warnings, irreversible actions, privacy/compliance notes, ordered instructions where fragments may confuse, confused users, commits, PR text, specs, logs, and blocker evidence.
-
-Never caveman-compress commands, file paths, specs, logs, or blocker evidence.
-
 ### Token / context budget
 
 Default: less word, same proof.
