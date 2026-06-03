@@ -14,7 +14,6 @@ const toolchainModule = require('../toolchain');
 const budgetModule = require('../budget');
 const ciInitModule = require('../ci-init');
 const speckitModule = require('../speckit');
-const cockpitModule = require('../cockpit');
 const { usage, startTransientSpinner } = require('../output');
 const {
   maybeSuggestCommand,
@@ -151,6 +150,8 @@ async function main() {
 
   if (args.length === 0) {
     if (isInteractiveTerminal() && !legacyDefaultStatusEnabled() && !defaultCockpitDisabled()) {
+      // Lazy-require: cockpit pulls ~32 modules; load only when actually rendering it.
+      const cockpitModule = require('../cockpit');
       cockpitModule.openDefaultCockpit({
         resolveRepoRoot,
         toolName: TOOL_NAME,

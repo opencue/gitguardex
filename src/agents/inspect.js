@@ -45,10 +45,22 @@ function parseWorktreeList(outputText) {
   return worktrees;
 }
 
-function worktreePathForBranch(repoRoot, branch) {
+function listWorktrees(repoRoot) {
   const result = git(repoRoot, ['worktree', 'list', '--porcelain'], { allowFailure: true });
-  if (result.status !== 0) return { worktreePath: repoRoot, worktreeFound: false };
-  const match = parseWorktreeList(result.stdout).find((entry) => entry.branch === branch);
+  return result.status === 0 ? parseWorktreeList(result.stdout) : null;
+}
+
+// `worktrees` (pre-parsed via listWorktrees) lets callers iterating many branches
+// in one pass hoist the invariant `git worktree list` out of their loop. When
+// omitted, the list is fetched on demand — unchanged behavior.
+function worktreePathForBranch(repoRoot, branch, worktrees = null) {
+  let entries = worktrees;
+  if (entries == null) {
+    const result = git(repoRoot, ['worktree', 'list', '--porcelain'], { allowFailure: true });
+    if (result.status !== 0) return { worktreePath: repoRoot, worktreeFound: false };
+    entries = parseWorktreeList(result.stdout);
+  }
+  const match = entries.find((entry) => entry.branch === branch);
   return {
     worktreePath: match?.path || repoRoot,
     worktreeFound: Boolean(match?.path),
@@ -119,7 +131,7 @@ function inspectAgentBranch(options) {
 
   const baseBranch = resolveBaseBranch(repoRoot, branch);
   const compareRef = compareRefForBase(repoRoot, baseBranch);
-  const { worktreePath, worktreeFound } = worktreePathForBranch(repoRoot, branch);
+  const { worktreePath, worktreeFound } = worktreePathForBranch(repoRoot, branch, options.worktrees);
   return { repoRoot, branch, baseBranch, compareRef, worktreePath, worktreeFound };
 }
 
@@ -179,6 +191,7 @@ module.exports = {
   branchLocks,
   changedFiles,
   inspectAgentBranch,
+  listWorktrees,
   parseWorktreeList,
   readLockRegistry,
   renderDiff,
