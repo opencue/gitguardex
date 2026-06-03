@@ -20,6 +20,14 @@ const {
   ensureRepoBranch,
 } = require('../../git');
 const sandboxModule = require('../../sandbox');
+// These helpers are identical to sandbox/index.js; delegate to keep one source.
+const {
+  protectedBaseWriteBlock,
+  extractAgentBranchStartMetadata,
+  resolveSandboxTarget,
+  isSpawnFailure,
+  cleanupProtectedBaseSandbox,
+} = sandboxModule;
 const doctorModule = require('../../doctor');
 const { prepareAgentWorktree } = require('../../scaffold/agent-worktree-prep');
 
@@ -103,32 +111,6 @@ function hasGuardexBootstrapFiles(repoRoot) {
   return required.every((relativePath) => fs.existsSync(path.join(repoRoot, relativePath)));
 }
 
-function protectedBaseWriteBlock(options, { requireBootstrap = true } = {}) {
-  if (options.dryRun || options.allowProtectedBaseWrite) {
-    return null;
-  }
-
-  const repoRoot = resolveRepoRoot(options.target);
-  if (requireBootstrap && !hasGuardexBootstrapFiles(repoRoot)) {
-    return null;
-  }
-
-  const branch = currentBranchName(repoRoot);
-  if (branch !== 'main') {
-    return null;
-  }
-
-  const protectedBranches = readProtectedBranches(repoRoot);
-  if (!protectedBranches.includes(branch)) {
-    return null;
-  }
-
-  return {
-    repoRoot,
-    branch,
-  };
-}
-
 function assertProtectedMainWriteAllowed(options, commandName) {
   return sandboxModule.assertProtectedMainWriteAllowed(options, commandName);
 }
@@ -172,28 +154,6 @@ function runSetupBootstrapInternal(options) {
   };
 }
 
-function extractAgentBranchStartMetadata(output) {
-  const outputText = String(output || '');
-  const branchMatch = outputText.match(/^\[agent-branch-start\] (?:Created branch|Reusing existing branch): (.+)$/m);
-  const worktreeMatch = outputText.match(/^\[agent-branch-start\] Worktree: (.+)$/m);
-  return {
-    branch: branchMatch ? branchMatch[1].trim() : '',
-    worktreePath: worktreeMatch ? worktreeMatch[1].trim() : '',
-  };
-}
-
-function resolveSandboxTarget(repoRoot, worktreePath, targetPath) {
-  const resolvedTarget = path.resolve(targetPath);
-  const relativeTarget = path.relative(repoRoot, resolvedTarget);
-  if (relativeTarget.startsWith('..') || path.isAbsolute(relativeTarget)) {
-    throw new Error(`sandbox target must stay inside repo root: ${resolvedTarget}`);
-  }
-  if (!relativeTarget || relativeTarget === '.') {
-    return worktreePath;
-  }
-  return path.join(worktreePath, relativeTarget);
-}
-
 function buildSandboxSetupArgs(options, sandboxTarget) {
   const args = ['setup', '--target', sandboxTarget, '--no-global-install', '--no-recursive'];
   appendForceArgs(args, options);
@@ -203,10 +163,6 @@ function buildSandboxSetupArgs(options, sandboxTarget) {
   if (options.dryRun) args.push('--dry-run');
   if (options.contract) args.push('--contract');
   return args;
-}
-
-function isSpawnFailure(result) {
-  return Boolean(result?.error) && typeof result?.status !== 'number';
 }
 
 function protectedBaseSandboxBranchPrefix() {
@@ -356,59 +312,6 @@ function startProtectedBaseSandbox(blocked, { taskName, sandboxSuffix }) {
     stdout: (startResult.stdout || '') + formatWorktreePrepOps(prepOps),
     stderr: startResult.stderr || '',
   };
-}
-
-function cleanupProtectedBaseSandbox(repoRoot, metadata) {
-  const result = {
-    worktree: 'skipped',
-    branch: 'skipped',
-    note: 'missing sandbox metadata',
-  };
-
-  if (!metadata?.worktreePath || !metadata?.branch) {
-    return result;
-  }
-
-  if (fs.existsSync(metadata.worktreePath)) {
-    const removeResult = run(
-      'git',
-      ['-C', repoRoot, 'worktree', 'remove', '--force', metadata.worktreePath],
-      { timeout: 30_000 },
-    );
-    if (isSpawnFailure(removeResult)) {
-      throw removeResult.error;
-    }
-    if (removeResult.status !== 0) {
-      throw new Error(
-        (removeResult.stderr || removeResult.stdout || 'failed to remove sandbox worktree').trim(),
-      );
-    }
-    result.worktree = 'removed';
-  } else {
-    result.worktree = 'missing';
-  }
-
-  if (gitRefExists(repoRoot, `refs/heads/${metadata.branch}`)) {
-    const branchDeleteResult = run(
-      'git',
-      ['-C', repoRoot, 'branch', '-D', metadata.branch],
-      { timeout: 20_000 },
-    );
-    if (isSpawnFailure(branchDeleteResult)) {
-      throw branchDeleteResult.error;
-    }
-    if (branchDeleteResult.status !== 0) {
-      throw new Error(
-        (branchDeleteResult.stderr || branchDeleteResult.stdout || 'failed to delete sandbox branch').trim(),
-      );
-    }
-    result.branch = 'deleted';
-  } else {
-    result.branch = 'missing';
-  }
-
-  result.note = 'sandbox worktree pruned';
-  return result;
 }
 
 function runSetupInSandbox(options, blocked, repoLabel = '') {
