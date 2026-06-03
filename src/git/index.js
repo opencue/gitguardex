@@ -620,8 +620,43 @@ function readGitConfig(repoRoot, key) {
 }
 
 /**
+ * Detect the repository's real default branch when nothing is configured.
+ *
+ * Prefers the symbolic `origin/HEAD` (what the remote calls its default),
+ * then the first existing branch among `main`, `master`, `dev` (local or
+ * on origin), and only then falls back to the hardcoded `DEFAULT_BASE_BRANCH`.
+ * This stops the finish/PR flow from targeting a non-existent `dev` on repos
+ * whose base is actually `main`.
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @returns {string} Detected default base branch name.
+ */
+function detectDefaultBaseBranch(repoRoot) {
+  const symbolic = gitRun(repoRoot, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], {
+    allowFailure: true,
+  });
+  if (symbolic.status === 0) {
+    const ref = String(symbolic.stdout || '').trim().replace(/^origin\//, '');
+    if (ref) {
+      return ref;
+    }
+  }
+
+  for (const candidate of ['main', 'master', 'dev']) {
+    if (
+      gitRefExists(repoRoot, `refs/heads/${candidate}`) ||
+      gitRefExists(repoRoot, `refs/remotes/origin/${candidate}`)
+    ) {
+      return candidate;
+    }
+  }
+
+  return DEFAULT_BASE_BRANCH;
+}
+
+/**
  * Resolve the base branch to use (explicit CLI value wins; otherwise config
- * key `GIT_BASE_BRANCH_KEY`; otherwise `DEFAULT_BASE_BRANCH`).
+ * key `GIT_BASE_BRANCH_KEY`; otherwise the repo's detected default branch).
  *
  * @param {string} repoRoot Repo to inspect.
  * @param {string} [explicitBase] Value passed on the CLI, if any.
@@ -632,7 +667,7 @@ function resolveBaseBranch(repoRoot, explicitBase) {
     return explicitBase;
   }
   const configured = readGitConfig(repoRoot, GIT_BASE_BRANCH_KEY);
-  return configured || DEFAULT_BASE_BRANCH;
+  return configured || detectDefaultBaseBranch(repoRoot);
 }
 
 /**
@@ -1057,17 +1092,25 @@ function branchExists(repoRoot, branch) {
 
 /**
  * Resolve the base branch for the finish flow: CLI override wins; otherwise
- * the configured base; otherwise `DEFAULT_BASE_BRANCH`. The `_sourceBranch`
- * parameter is currently unused but reserved for future per-branch policy.
+ * the per-branch `branch.<source>.guardexBase` recorded at branch-start;
+ * otherwise the repo-wide configured base; otherwise the repo's detected
+ * default branch.
  *
  * @param {string} repoRoot Repo to inspect.
- * @param {string} _sourceBranch Source agent branch (unused; reserved).
+ * @param {string} sourceBranch Source agent branch (used for per-branch base).
  * @param {string} [explicitBase] CLI override, if any.
  * @returns {string} Resolved base branch name.
  */
-function resolveFinishBaseBranch(repoRoot, _sourceBranch, explicitBase) {
+function resolveFinishBaseBranch(repoRoot, sourceBranch, explicitBase) {
   if (explicitBase) {
     return explicitBase;
+  }
+
+  if (sourceBranch) {
+    const perBranch = readGitConfig(repoRoot, `branch.${sourceBranch}.guardexBase`);
+    if (perBranch) {
+      return perBranch;
+    }
   }
 
   const configured = readGitConfig(repoRoot, GIT_BASE_BRANCH_KEY);
@@ -1075,7 +1118,7 @@ function resolveFinishBaseBranch(repoRoot, _sourceBranch, explicitBase) {
     return configured;
   }
 
-  return DEFAULT_BASE_BRANCH;
+  return detectDefaultBaseBranch(repoRoot);
 }
 
 /**
@@ -1166,6 +1209,7 @@ module.exports = {
   ensureSubmoduleAutoSync,
   writeProtectedBranches,
   readGitConfig,
+  detectDefaultBaseBranch,
   resolveBaseBranch,
   resolveSyncStrategy,
   currentBranchName,
