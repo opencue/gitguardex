@@ -150,26 +150,20 @@ test('prompt --exec rejects prompt-only parts', () => {
   assert.match(result.stderr, /Exec-capable parts:/);
 });
 
-test('prompt --snippet prints the managed AGENTS template with token budget and caveman rules', () => {
+test('prompt --snippet prints the managed AGENTS template with token budget rules', () => {
   const repoDir = initRepo();
   const result = runNode(['prompt', '--snippet'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /<!-- multiagent-safety:START -->/);
-  assert.match(result.stdout, /### Colony coordination loop/);
-  assert.match(result.stdout, /Use Colony as the primary coordination surface\./);
+  assert.match(result.stdout, /### Core rules/);
+  assert.match(result.stdout, /### Isolation \(the load-bearing rule\)/);
   assert.match(result.stdout, /### Token \/ context budget/);
   assert.match(result.stdout, /Default: less word, same proof\./);
   assert.match(result.stdout, /Keep raw terminal interaction out of long-lived context/);
-  assert.match(result.stdout, /Keep execution log separate from reasoning context/);
-  assert.match(result.stdout, /### RTK command compression/);
+  assert.match(result.stdout, /### Optional companion tooling/);
   assert.match(result.stdout, /rtk git status/);
-  assert.match(result.stdout, /Do not wrap machine-readable commands with RTK/);
-  assert.match(result.stdout, /### FFF file search/);
-  assert.match(result.stdout, /For file search, fff MCP takes precedence whenever available\./);
-  assert.match(result.stdout, /Use the fff MCP tools for all file search operations instead of default tools, including RTK shell wrappers\./);
-  assert.match(result.stdout, /If fff MCP tools are unavailable in the current client/);
-  assert.match(result.stdout, /### Caveman style/);
-  assert.match(result.stdout, /Answer order stays fixed: answer first, cause next, fix or next step last\./);
+  assert.match(result.stdout, /### Verification gates/);
+  assert.match(result.stdout, /<!-- multiagent-safety:END -->/);
 });
 
 
