@@ -178,3 +178,26 @@ test('mergeSettings --force ignores existing settings', () => {
   const mergedNonForce = claudeModule.mergeSettings(existing, claudeModule.TEMPLATE_DEFAULT_SETTINGS);
   assert.ok(mergedNonForce.hooks.PreToolUse.some((g) => g.matcher === 'Other'));
 });
+
+test('agent_branch_advisor.py is a managed (distributed) hook file', () => {
+  assert.ok(
+    claudeModule.MANAGED_HOOK_FILES.includes('agent_branch_advisor.py'),
+    'advisor must be in MANAGED_HOOK_FILES so gx claude install copies it to target repos',
+  );
+});
+
+test('branch advisor is wired into SessionStart and UserPromptSubmit', () => {
+  const merged = claudeModule.mergeSettings(null, claudeModule.TEMPLATE_DEFAULT_SETTINGS);
+  for (const event of ['SessionStart', 'UserPromptSubmit']) {
+    const groups = merged.hooks[event] || [];
+    const commands = groups.flatMap((g) => (g.hooks || []).map((h) => h.command || ''));
+    assert.ok(
+      commands.some((cmd) => cmd.includes('.claude/hooks/agent_branch_advisor.py')),
+      `${event} should invoke agent_branch_advisor.py`,
+    );
+  }
+  // Pre-existing advisory hooks must survive alongside the new one.
+  const sessionCmds = (merged.hooks.SessionStart || []).flatMap((g) =>
+    (g.hooks || []).map((h) => h.command || ''));
+  assert.ok(sessionCmds.some((cmd) => cmd.includes('agent-stalled-report.sh')), 'stalled report preserved');
+});
