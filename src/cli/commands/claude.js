@@ -24,6 +24,7 @@ const SKILLS_REL = '.claude/skills';
 const MANAGED_HOOK_FILES = [
   'skill_guard.py',
   'skill_activation.py',
+  'agent_branch_advisor.py',
   'post_edit_tracker.py',
   'skill_tracker.py',
 ];
@@ -39,8 +40,8 @@ const MANAGED_SLASH_COMMANDS = [
 ];
 
 const EXPECTED_HOOK_MATCHERS = {
-  SessionStart: ['agent-stalled-report.sh'],
-  UserPromptSubmit: ['skill_activation.py'],
+  SessionStart: ['agent-stalled-report.sh', 'agent_branch_advisor.py'],
+  UserPromptSubmit: ['skill_activation.py', 'agent_branch_advisor.py'],
   PreToolUse: ['skill_guard.py'],
   PostToolUse: ['post_edit_tracker.py', 'skill_tracker.py'],
 };
@@ -54,6 +55,10 @@ const TEMPLATE_DEFAULT_SETTINGS = {
             type: 'command',
             command: 'bash "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/scripts/agent-stalled-report.sh"',
           },
+          {
+            type: 'command',
+            command: 'python3 "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/hooks/agent_branch_advisor.py"',
+          },
         ],
       },
     ],
@@ -63,6 +68,10 @@ const TEMPLATE_DEFAULT_SETTINGS = {
           {
             type: 'command',
             command: 'python3 "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/hooks/skill_activation.py"',
+          },
+          {
+            type: 'command',
+            command: 'python3 "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/hooks/agent_branch_advisor.py"',
           },
         ],
       },
