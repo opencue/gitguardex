@@ -153,6 +153,12 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run) {
   if (result.status !== 0) {
     throw new Error(`${provider} review failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`);
   }
+  // A compliant provider always emits the findings JSON object (empty array when
+  // nothing is wrong). Empty stdout means the review did NOT run — fail closed so
+  // a silent no-op is never mistaken for "clean" by the merge gate.
+  if (!(result.stdout || '').trim()) {
+    throw new Error(`${provider} review returned no output (review did not run)`);
+  }
   return normalizeFindings(result.stdout || '');
 }
 
@@ -218,6 +224,22 @@ function runPrReview(options, deps = {}) {
   return { posted: true, artifactPath: '', findings };
 }
 
+/**
+ * Decide whether a set of review findings clears the merge gate. Blocks on any
+ * finding whose severity is in `blockSeverities` (high + critical by default;
+ * low/medium are advisory). Pure + synchronous so it is trivially testable.
+ *
+ * Fail-closed semantics live in the CALLER: an absent/empty `findings` here is
+ * treated as clean, so the caller must independently treat a review that did
+ * NOT run (provider threw / timed out) as a block, never as clean.
+ */
+function evaluateReviewGate(findings, { blockSeverities = ['high', 'critical'] } = {}) {
+  const block = new Set(blockSeverities.map((s) => String(s).toLowerCase()));
+  const list = Array.isArray(findings) ? findings : [];
+  const blocking = list.filter((f) => f && block.has(String(f.severity).toLowerCase()));
+  return { clean: blocking.length === 0, blocking };
+}
+
 function printPrReviewResult(result) {
   if (result.posted) {
     console.log(`${TOOL_PREFIX} Posted PR review with ${result.findings.length} finding(s).`);
@@ -237,5 +259,6 @@ module.exports = {
   normalizeFindings,
   renderMarkdownReview,
   runPrReview,
+  evaluateReviewGate,
   printPrReviewResult,
 };

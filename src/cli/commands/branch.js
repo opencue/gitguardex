@@ -88,6 +88,11 @@ function ship(rawArgs) {
   ensureFlag('--via-pr');
   ensureFlag('--wait-for-merge');
   ensureFlag('--cleanup');
+  // `gx ship` enforces the merge gate (clean review + green CI) by default;
+  // an explicit --no-gate-review / --skip-review-gate opts back out.
+  if (!args.includes('--no-gate-review') && !args.includes('--skip-review-gate')) {
+    ensureFlag('--gate-review');
+  }
   return finish(args);
 }
 
