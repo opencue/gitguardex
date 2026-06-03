@@ -135,14 +135,11 @@ test('setup provisions workflow files and repo config', () => {
   const agentsContent = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
   assert.equal(agentsContent.includes('<!-- multiagent-safety:START -->'), true);
   assert.match(agentsContent, /GUARDEX_ON=0/);
-  assert.match(
-    agentsContent,
-    /If a worktree is already open for this chat\/session, \*\*continue in it\*\*/,
-  );
-  assert.match(agentsContent, /### Token \/ context budget/);
-  assert.match(agentsContent, /Default: less word, same proof\./);
-  assert.match(agentsContent, /### Caveman style/);
-  assert.match(agentsContent, /answer first, cause next, fix or next step last\./);
+  // Default install ships the minimal block; the full 171-line contract is opt-in via --contract.
+  assert.match(agentsContent, /## Multi-Agent Safety \(minimal\)/);
+  assert.match(agentsContent, /gx branch start "<task>" "<agent-name>"/);
+  assert.match(agentsContent, /Run `gx setup --contract`/);
+  assert.doesNotMatch(agentsContent, /## Multi-Agent Execution Contract/);
 
   const claudeStats = fs.lstatSync(path.join(repoDir, 'CLAUDE.md'));
   assert.equal(claudeStats.isSymbolicLink(), true, 'CLAUDE.md should link to AGENTS.md');
@@ -376,11 +373,10 @@ test('setup refreshes existing managed AGENTS block by default', () => {
   assert.match(currentAgents, /## Repo-specific notes/);
   assert.match(currentAgents, /Guardex is enabled by default/);
   assert.match(currentAgents, /GUARDEX_ON=0/);
-  assert.match(currentAgents, /GUARDEX_ON=1/);
-  assert.match(currentAgents, /Small tasks stay direct and caveman-only\./);
-  assert.match(currentAgents, /Promote to full Guardex \/ OMX orchestration only when scope grows into/);
-  assert.match(currentAgents, /final completion\/cleanup section/);
-  assert.match(currentAgents, /PR URL \+ final `MERGED` evidence/);
+  // Default refresh installs the minimal block; full contract is opt-in via --contract.
+  assert.match(currentAgents, /## Multi-Agent Safety \(minimal\)/);
+  assert.match(currentAgents, /Run `gx setup --contract`/);
+  assert.doesNotMatch(currentAgents, /## Multi-Agent Execution Contract/);
   assert.doesNotMatch(currentAgents, /legacy managed clause/);
   assert.match(result.stdout, /refreshed gitguardex-managed block/);
 });
@@ -623,18 +619,11 @@ Trailing project notes after managed block.
   const nextAgents = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
   assert.match(nextAgents, /Project-specific guidance before managed block\./);
   assert.match(nextAgents, /Trailing project notes after managed block\./);
-  assert.match(
-    nextAgents,
-    /If a worktree is already open for this chat\/session, \*\*continue in it\*\*/,
-  );
-  assert.match(
-    nextAgents,
-    /Work from an `agent\/\*` branch \+ worktree\. \*\*Never\*\* edit the protected base directly\./,
-  );
-  assert.match(nextAgents, /Small tasks stay direct and caveman-only\./);
-  assert.match(nextAgents, /Promote to full Guardex \/ OMX orchestration only when scope grows into/);
-  assert.match(nextAgents, /final completion\/cleanup section/);
-  assert.match(nextAgents, /PR URL \+ final `MERGED` evidence/);
+  // Default refresh installs the minimal block; full contract is opt-in via --contract.
+  assert.match(nextAgents, /## Multi-Agent Safety \(minimal\)/);
+  assert.match(nextAgents, /Work from an `agent\/\*` branch \+ worktree/);
+  assert.match(nextAgents, /Run `gx setup --contract`/);
+  assert.doesNotMatch(nextAgents, /## Multi-Agent Execution Contract/);
   assert.doesNotMatch(nextAgents, /legacy managed clause/);
 });
 
@@ -842,7 +831,8 @@ test('install blocks in-place maintenance writes on protected main unless overri
 test('install configures AGENTS managed policy block with GX contract wording', () => {
   const repoDir = initRepo();
 
-  const result = runNode(['install', '--target', repoDir], repoDir);
+  // --contract opts into the full multi-agent contract wording.
+  const result = runNode(['install', '--target', repoDir, '--contract'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /AGENTS\.md managed policy block is configured by install\./);
 

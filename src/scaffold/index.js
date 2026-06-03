@@ -502,31 +502,54 @@ function removeLegacyManagedRepoFile(repoRoot, relativePath, options = {}) {
   return { status: dryRun ? 'would-remove' : 'removed', file: relativePath };
 }
 
-function ensureAgentsSnippet(repoRoot, dryRun) {
+// A managed block longer than this many non-blank lines is treated as the full
+// contract. The minimal block is ~8 lines and the full contract is ~171, so any
+// threshold between the two is safe; 40 leaves a wide margin on both sides.
+const FULL_BLOCK_LINE_THRESHOLD = 40;
+
+function countNonBlankLines(text) {
+  return text.split('\n').filter((line) => line.trim().length > 0).length;
+}
+
+// Default install ships the minimal block; the full 171-line contract is opt-in
+// via `options.contract` (--contract / --full). Once a repo has the full block,
+// it is never silently downgraded: an existing managed block over the line
+// threshold keeps refreshing from the full template even without the flag.
+function ensureAgentsSnippet(repoRoot, dryRun, options = {}) {
   const agentsPath = path.join(repoRoot, 'AGENTS.md');
-  const snippet = fs.readFileSync(path.join(TEMPLATE_ROOT, 'AGENTS.multiagent-safety.md'), 'utf8').trimEnd();
   const managedRegex = new RegExp(
     `${AGENTS_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AGENTS_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
     'm',
   );
 
-  if (!fs.existsSync(agentsPath)) {
+  const existing = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, 'utf8') : null;
+  const existingBlock = existing ? existing.match(managedRegex) : null;
+  const existingIsFull = Boolean(existingBlock)
+    && countNonBlankLines(existingBlock[0]) > FULL_BLOCK_LINE_THRESHOLD;
+  const wantFull = Boolean(options.contract) || existingIsFull;
+
+  const templateFile = wantFull
+    ? 'AGENTS.multiagent-safety.md'
+    : 'AGENTS.multiagent-safety.min.md';
+  const snippet = fs.readFileSync(path.join(TEMPLATE_ROOT, templateFile), 'utf8').trimEnd();
+  const variant = wantFull ? 'full contract block' : 'minimal block';
+
+  if (existing == null) {
     if (!dryRun) {
       fs.writeFileSync(agentsPath, `# AGENTS\n\n${snippet}\n`, 'utf8');
     }
-    return { status: 'created', file: 'AGENTS.md' };
+    return { status: 'created', file: 'AGENTS.md', note: variant };
   }
 
-  const existing = fs.readFileSync(agentsPath, 'utf8');
-  if (managedRegex.test(existing)) {
-    const next = existing.replace(managedRegex, snippet);
+  if (existingBlock) {
+    const next = existing.replace(managedRegex, () => snippet);
     if (next === existing) {
-      return { status: 'unchanged', file: 'AGENTS.md' };
+      return { status: 'unchanged', file: 'AGENTS.md', note: variant };
     }
     if (!dryRun) {
       fs.writeFileSync(agentsPath, next, 'utf8');
     }
-    return { status: 'updated', file: 'AGENTS.md', note: 'refreshed gitguardex-managed block' };
+    return { status: 'updated', file: 'AGENTS.md', note: `refreshed gitguardex-managed block (${variant})` };
   }
 
   if (existing.includes(AGENTS_MARKER_START)) {
@@ -538,7 +561,7 @@ function ensureAgentsSnippet(repoRoot, dryRun) {
     fs.writeFileSync(agentsPath, `${existing}${separator}${snippet}\n`, 'utf8');
   }
 
-  return { status: 'updated', file: 'AGENTS.md' };
+  return { status: 'updated', file: 'AGENTS.md', note: variant };
 }
 
 function ensureClaudeAgentsLink(repoRoot, dryRun) {

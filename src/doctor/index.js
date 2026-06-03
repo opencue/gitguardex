@@ -119,6 +119,7 @@ function buildSandboxDoctorArgs(options, sandboxTarget) {
   if (options.skipAgents) args.push('--skip-agents');
   if (options.skipPackageJson) args.push('--skip-package-json');
   if (options.skipGitignore) args.push('--no-gitignore');
+  if (options.contract) args.push('--contract');
   if (!options.dropStaleLocks) args.push('--keep-stale-locks');
   args.push(options.waitForMerge ? '--wait-for-merge' : '--no-wait-for-merge');
   if (options.verboseAutoFinish) args.push('--verbose-auto-finish');

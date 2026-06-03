@@ -108,6 +108,14 @@ function parseCommonArgs(rawArgs, defaults) {
       options.allowProtectedBaseWrite = true;
       continue;
     }
+    if (arg === '--contract' || arg === '--full') {
+      options.contract = true;
+      continue;
+    }
+    if (arg === '--minimal' || arg === '--no-contract') {
+      options.contract = false;
+      continue;
+    }
     if (Object.prototype.hasOwnProperty.call(options, 'waitForMerge') && arg === '--wait-for-merge') {
       options.waitForMerge = true;
       continue;
