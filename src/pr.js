@@ -7,12 +7,7 @@
 // these helpers expose the same primitives to the JS CLI so `gx pr ...` can be
 // driven without invoking the shell flow.
 
-const {
-  fs,
-  path,
-  GH_BIN,
-  TOOL_NAME,
-} = require('./context');
+const { GH_BIN } = require('./context');
 const { run } = require('./core/runtime');
 const {
   resolveRepoRoot,
@@ -379,8 +374,4 @@ module.exports = {
   resolveRepoAndBranch,
   defaultPrTitleFromCommit,
   defaultPrBodyFromCommits,
-  // re-exports used in tests:
-  TOOL_NAME,
-  // path is reused indirectly; not exported.
-  _internal: { fs, path },
 };

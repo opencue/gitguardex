@@ -915,17 +915,12 @@ function cachedSpawn(cmd, args, options) {
   return result;
 }
 
-function clearProbeCache() {
-  PROBE_CACHE.clear();
-}
-
 module.exports = {
   fs,
   os,
   path,
   cp,
   cachedSpawn,
-  clearProbeCache,
   PACKAGE_ROOT,
   CLI_ENTRY_PATH,
   packageJsonPath,
