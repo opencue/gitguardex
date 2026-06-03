@@ -160,6 +160,33 @@ def resolve_repo_root(file_path: str, cwd: str) -> Path:
     return Path.cwd()
 
 
+def path_within_repo(target: str, repo_root: Path, cwd: str) -> bool:
+    """True when `target` resolves to a path inside the guarded repo working tree.
+
+    The edit guard exists to protect the repo's checkout. A write to a file that
+    is NOT inside the repo (e.g. `~/.claude/.../memory/*.md`, `/tmp` scratch)
+    cannot touch the protected branch, so it must never be blocked — even when
+    the current cwd's repo happens to be on a protected branch. Relative targets
+    resolve against the session cwd (which is inside the repo); absolute targets
+    outside the repo return False. Both sides are `.resolve()`d, so `..` and
+    symlinks are canonicalized before the containment check — a symlink inside
+    the repo that points OUT (e.g. `<repo>/link -> /etc`) is intentionally
+    treated as out-of-repo, since the write lands outside the protected tree.
+    """
+    if not target:
+        return False
+    try:
+        candidate = Path(target).expanduser()
+        if not candidate.is_absolute():
+            base = Path(cwd) if cwd else repo_root
+            candidate = base / candidate
+        candidate = candidate.resolve()
+        candidate.relative_to(Path(repo_root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def normalize_guardex_toggle(raw: str | None) -> bool | None:
     if raw is None:
         return None
@@ -645,6 +672,14 @@ def main() -> None:
     if not target_paths:
         sys.exit(0)
 
+    # Only files inside the guarded repo's working tree are subject to the edit
+    # guard. Writes to paths outside the repo (memory files under ~/.claude,
+    # /tmp scratch, etc.) never touch the protected checkout, so allow them
+    # regardless of the current repo's branch.
+    in_repo_targets = [p for p in target_paths if path_within_repo(p, repo_root, cwd)]
+    if not in_repo_targets:
+        sys.exit(0)
+
     protected_branch_error = ensure_protected_branch_edit_allowed(repo_root)
     if protected_branch_error:
         emit_event(
@@ -661,7 +696,7 @@ def main() -> None:
         print(protected_branch_error, file=sys.stderr)
         sys.exit(2)
 
-    for target_path in target_paths:
+    for target_path in in_repo_targets:
         lock_error = ensure_main_rs_lock(target_path, session_id)
         if lock_error:
             emit_event(
@@ -701,7 +736,7 @@ def main() -> None:
 
         path_patterns = file_triggers.get("pathPatterns", [])
         matched_target = ""
-        for target_path in target_paths:
+        for target_path in in_repo_targets:
             if not match_path_patterns(target_path, path_patterns):
                 continue
             path_exclusions = file_triggers.get("pathExclusions", [])
@@ -763,7 +798,7 @@ def main() -> None:
 
         path_patterns = file_triggers.get("pathPatterns", [])
         matched_target = ""
-        for target_path in target_paths:
+        for target_path in in_repo_targets:
             if not match_path_patterns(target_path, path_patterns):
                 continue
             path_exclusions = file_triggers.get("pathExclusions", [])
