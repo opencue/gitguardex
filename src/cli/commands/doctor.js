@@ -81,6 +81,7 @@ function doctor(rawArgs) {
         ...(options.skipAgents ? ['--skip-agents'] : []),
         ...(options.skipPackageJson ? ['--skip-package-json'] : []),
         ...(options.skipGitignore ? ['--no-gitignore'] : []),
+        ...(options.contract ? ['--contract'] : []),
         ...(options.dryRun ? ['--dry-run'] : []),
         // Recursive child doctor runs should report pending PR state immediately instead of blocking the parent loop.
         '--no-wait-for-merge',

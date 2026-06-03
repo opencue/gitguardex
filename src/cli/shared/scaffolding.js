@@ -162,7 +162,7 @@ function runInstallInternal(options) {
   operations.push(ensureLockRegistry(repoRoot, Boolean(options.dryRun)));
 
   if (!options.skipAgents) {
-    operations.push(ensureAgentsSnippet(repoRoot, Boolean(options.dryRun), { force: Boolean(options.force) }));
+    operations.push(ensureAgentsSnippet(repoRoot, Boolean(options.dryRun), { force: Boolean(options.force), contract: Boolean(options.contract) }));
     operations.push(ensureMonorepoAppsSnippet(repoRoot, Boolean(options.dryRun)));
     operations.push(ensureClaudeAgentsLink(repoRoot, Boolean(options.dryRun)));
   }
@@ -247,7 +247,7 @@ function runFixInternal(options) {
   }
 
   if (!options.skipAgents) {
-    operations.push(ensureAgentsSnippet(repoRoot, Boolean(options.dryRun), { force: Boolean(options.force) }));
+    operations.push(ensureAgentsSnippet(repoRoot, Boolean(options.dryRun), { force: Boolean(options.force), contract: Boolean(options.contract) }));
     operations.push(ensureMonorepoAppsSnippet(repoRoot, Boolean(options.dryRun)));
     operations.push(ensureClaudeAgentsLink(repoRoot, Boolean(options.dryRun)));
   }

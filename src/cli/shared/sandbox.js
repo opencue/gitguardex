@@ -162,6 +162,7 @@ function runSetupBootstrapInternal(options) {
     skipPackageJson: options.skipPackageJson,
     skipGitignore: options.skipGitignore,
     allowProtectedBaseWrite: options.allowProtectedBaseWrite,
+    contract: options.contract,
   });
 
   return {
@@ -200,6 +201,7 @@ function buildSandboxSetupArgs(options, sandboxTarget) {
   if (options.skipPackageJson) args.push('--skip-package-json');
   if (options.skipGitignore) args.push('--no-gitignore');
   if (options.dryRun) args.push('--dry-run');
+  if (options.contract) args.push('--contract');
   return args;
 }
 

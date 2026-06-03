@@ -128,13 +128,39 @@ Trailing project notes after managed block.
   assert.match(currentAgents, /Trailing project notes after managed block\./);
   assert.match(currentAgents, /Guardex is enabled by default/);
   assert.match(currentAgents, /GUARDEX_ON=0/);
-  assert.match(currentAgents, /GUARDEX_ON=1/);
-  assert.match(currentAgents, /Small tasks stay direct and caveman-only\./);
-  assert.match(currentAgents, /Promote to full Guardex \/ OMX orchestration only when scope grows into:/);
-  assert.match(currentAgents, /final completion\/cleanup section/);
-  assert.match(currentAgents, /PR URL \+ final `MERGED` evidence/);
+  // Default refresh installs the minimal block (full contract is opt-in via --contract).
+  assert.match(currentAgents, /## Multi-Agent Safety \(minimal\)/);
+  assert.match(currentAgents, /gx branch finish .*--via-pr --wait-for-merge --cleanup/);
+  assert.match(currentAgents, /Run `gx setup --contract`/);
+  assert.doesNotMatch(currentAgents, /## Multi-Agent Execution Contract/);
   assert.doesNotMatch(currentAgents, /legacy managed clause/);
   assert.match(result.stdout, /refreshed gitguardex-managed block/);
+});
+
+
+test('setup --contract opts into the full contract; default stays minimal and is never downgraded', () => {
+  const repoDir = initRepo();
+
+  // Default install ships the minimal block, not the 171-line contract.
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  let agents = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /## Multi-Agent Safety \(minimal\)/);
+  assert.doesNotMatch(agents, /## Multi-Agent Execution Contract/);
+
+  // Opt in: --contract upgrades the managed block to the full contract.
+  result = runNode(['setup', '--target', repoDir, '--no-global-install', '--contract'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  agents = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /## Multi-Agent Execution Contract/);
+  assert.doesNotMatch(agents, /## Multi-Agent Safety \(minimal\)/);
+
+  // No downgrade: a later default run keeps the full contract in place.
+  result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  agents = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /## Multi-Agent Execution Contract/);
+  assert.doesNotMatch(agents, /## Multi-Agent Safety \(minimal\)/);
 });
 
 
