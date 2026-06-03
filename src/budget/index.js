@@ -1,6 +1,7 @@
 'use strict';
 
 const cp = require('node:child_process');
+const { GH_BIN } = require('../context');
 
 const TOOL_NAME = 'gx';
 
@@ -8,7 +9,7 @@ const DEFAULT_WARN_NET_USD = 1; // any paid spend at all
 const DEFAULT_CRITICAL_NET_USD = 10; // paid spend that has caused merge blocks before
 
 function runGh(args) {
-  const result = cp.spawnSync('gh', args, { encoding: 'utf8' });
+  const result = cp.spawnSync(GH_BIN, args, { encoding: 'utf8' });
   if (result.error) {
     const err = new Error(`gh binary not found: ${result.error.message}`);
     err.code = 'GH_BIN_MISSING';

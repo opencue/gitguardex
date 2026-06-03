@@ -293,7 +293,24 @@ function buildMissingCompanionInstallPrompt(missingPackages, missingLocalTools) 
   return `${dependencyPrefix}Install missing companion tools now? (${installCommands.join(' && ')})`;
 }
 
+// Process-scoped memo for the slow `npm list -g` probe (~1.6-2.4s). Detection is
+// invariant within one gx invocation, but the bare-`gx`/`gx status` path queries
+// it twice (self-update check + status snapshot). Busted after a global install.
+let globalToolchainDetectionCache = null;
+
+function resetGlobalToolchainDetectionCache() {
+  globalToolchainDetectionCache = null;
+}
+
 function detectGlobalToolchainPackages() {
+  if (globalToolchainDetectionCache) {
+    return globalToolchainDetectionCache;
+  }
+  globalToolchainDetectionCache = computeGlobalToolchainPackages();
+  return globalToolchainDetectionCache;
+}
+
+function computeGlobalToolchainPackages() {
   const result = run(NPM_BIN, ['list', '-g', '--depth=0', '--json']);
   if (result.status !== 0) {
     const stderr = (result.stderr || '').trim();
@@ -563,6 +580,8 @@ function performCompanionInstall(missingPackages, missingLocalTools) {
       };
     }
     installed.push(...missingPackages);
+    // Global package set changed; drop the memo so any later detection re-probes.
+    resetGlobalToolchainDetectionCache();
   }
 
   for (const tool of missingLocalTools) {
@@ -599,6 +618,7 @@ module.exports = {
   describeCompanionInstallCommands,
   buildMissingCompanionInstallPrompt,
   detectGlobalToolchainPackages,
+  resetGlobalToolchainDetectionCache,
   detectRequiredSystemTools,
   detectOptionalLocalCompanionTools,
   askGlobalInstallForMissing,

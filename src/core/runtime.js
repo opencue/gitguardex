@@ -1,6 +1,7 @@
 const {
   fs,
   path,
+  cachedSpawn,
   CLI_ENTRY_PATH,
   PACKAGE_SCRIPT_ASSETS,
 } = require('../context');
@@ -13,8 +14,12 @@ function requireValue(rawArgs, index, flagName) {
   return value;
 }
 
+// Route reads through the process-scoped probe cache. cachedSpawn caches ONLY a
+// strict allowlist (git geometry probes, git/gh `--version`, `which`) and falls
+// through to a real spawn for everything else — writes, ref resolution, npm,
+// gh auth/pr — so observable behavior is unchanged, only redundant probes drop.
 function run(cmd, args, options = {}) {
-  return require('node:child_process').spawnSync(cmd, args, {
+  return cachedSpawn(cmd, args, {
     encoding: 'utf8',
     stdio: options.stdio || 'pipe',
     cwd: options.cwd,
