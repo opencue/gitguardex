@@ -153,10 +153,16 @@ def normalize_path(value: str) -> str:
 
 
 def resolve_repo_root(file_path: str, cwd: str) -> Path:
-    if file_path:
-        return find_repo_root(file_path)
+    # The GUARDED repo is the one the session is working in (cwd), not whatever
+    # repo the target file happens to live in. Resolve from cwd first so a hook
+    # installed in repo A never applies A's branch protection to a file inside an
+    # unrelated repo B — e.g. a version-controlled `~/.claude/.../memory` dir that
+    # is its own git repo on its own `main` branch. `path_within_repo` then keeps
+    # cross-repo / out-of-repo targets out of scope.
     if cwd:
         return find_repo_root(cwd)
+    if file_path:
+        return find_repo_root(file_path)
     return Path.cwd()
 
 
