@@ -295,9 +295,6 @@ async function cmdWatch(opts) {
 
 function cmdList(opts) {
   const repoRoot = prModule.resolveRepoAndBranch(opts.target).repoRoot;
-  const result = prModule._internal && prModule._internal.fs
-    ? null // not needed
-    : null;
   // Use gh directly for the list since prModule keeps single-branch focus.
   const { GH_BIN } = require('../../context');
   const { run } = require('../../core/runtime');

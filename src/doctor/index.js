@@ -12,7 +12,7 @@ const {
   AGENT_WORKTREE_RELATIVE_DIRS,
   defaultAgentWorktreeRelativeDir,
 } = require('../context');
-const { run: rawRun, runPackageAsset } = require('../core/runtime');
+const { runPackageAsset } = require('../core/runtime');
 
 // Route doctor probe-running calls through the process-scoped probe cache.
 // cachedSpawn falls through to cp.spawnSync for any non-allowlisted call
@@ -29,7 +29,6 @@ function run(cmd, args, options = {}) {
     timeout: options.timeout,
   });
 }
-void rawRun;
 const {
   currentBranchName,
   gitRefExists,

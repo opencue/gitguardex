@@ -1222,9 +1222,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
 module.exports = {
   requireValue,
   normalizeManagedForcePath,
-  collectForceManagedPaths,
   parseCommonArgs,
-  parseRepoTraversalArgs,
   parseSetupArgs,
   parseDoctorArgs,
   parseTargetFlag,

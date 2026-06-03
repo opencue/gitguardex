@@ -122,5 +122,4 @@ function createBackend(options = {}) {
 
 module.exports = {
   createBackend,
-  targetId,
 };
