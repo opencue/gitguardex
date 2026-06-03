@@ -60,6 +60,50 @@ function bashPayload(cmd, cwd) {
   };
 }
 
+function writePayload(filePath, cwd) {
+  return {
+    session_id: 'skill-guard-test',
+    cwd,
+    tool_name: 'Write',
+    tool_input: { file_path: filePath, content: 'x\n' },
+  };
+}
+
+test('skill_guard ALLOWS writing a file OUTSIDE the repo on a protected branch (memory writes)', () => {
+  const dir = makeRepoOn('main');
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-guard-outside-'));
+  try {
+    // cwd is the repo (on main), but the target lives outside the repo working
+    // tree — it can never touch the protected checkout, so it must be allowed.
+    const result = invokeHook(dir, writePayload(path.join(outside, 'memory.md'), dir));
+    assert.equal(result.status, 0, `out-of-repo write must be allowed: ${result.stderr || result.stdout}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard still BLOCKS writing a file INSIDE the repo on a protected branch', () => {
+  const dir = makeRepoOn('main');
+  try {
+    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 2, `in-repo write on main must still be blocked: ${result.stderr}`);
+    assert.match(result.stderr, /BLOCKED/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard allows writing a file INSIDE the repo on an agent/* branch', () => {
+  const dir = makeRepoOn('agent/test/lane');
+  try {
+    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard exit code is 0 (allow) for read-only command on protected branch', () => {
   const dir = makeRepoOn('main');
   try {
