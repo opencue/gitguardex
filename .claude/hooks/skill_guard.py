@@ -26,18 +26,21 @@ DEFAULT_MAIN_RS_INTEGRATOR_AGENT = os.environ.get("MAIN_RS_INTEGRATOR_AGENT", "i
 PROTECTED_BRANCH_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH"
 SHELL_GUARD_OVERRIDE_ENV = "ALLOW_BASH_ON_NON_AGENT_BRANCH"
 PRIMARY_WORKTREE_AGENT_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE"
-# Extra agent-branch prefixes (comma- or space-separated). The hardcoded
-# defaults below are always recognized; this env var adds session-managed
-# prefixes without forcing repos to fork the hook.
+# Branch namespace policy.
 #
-# Defaults cover the common agentic-CLI branch namespaces:
+# By default ANY branch that is not a protected base (main/dev/master, plus any
+# repo-configured protected branch) counts as agent-managed and is safe to edit
+# or commit on. The load-bearing rule is only that you are OFF the protected
+# base, so `vendor/x`, `feat/y`, or any ad-hoc name works without ceremony.
+#
+# Lockdown mode: set GUARDEX_AGENT_BRANCH_PREFIXES_ONLY=1 to restrict
+# agent-managed branches to an explicit GUARDEX_AGENT_BRANCH_PREFIXES allowlist
+# (comma- or space-separated). The defaults below cover the common agentic-CLI
+# namespaces and seed that allowlist in lockdown mode:
 #   - "agent/"   — Guardex / Codex / generic agent branches
 #   - "claude/"  — Claude Code session branches (e.g. claude/improve-X-Segmk)
 #   - "codex/"   — Codex Cloud session branches
 #   - "cursor/"  — Cursor background-agent branches
-#
-# Repos that want to restrict to a single prefix should set
-# GUARDEX_AGENT_BRANCH_PREFIXES_ONLY=1 along with an explicit list.
 AGENT_BRANCH_PREFIXES_ENV = "GUARDEX_AGENT_BRANCH_PREFIXES"
 AGENT_BRANCH_PREFIXES_EXCLUSIVE_ENV = "GUARDEX_AGENT_BRANCH_PREFIXES_ONLY"
 DEFAULT_AGENT_BRANCH_PREFIXES = ("agent/", "claude/", "codex/", "cursor/")
@@ -342,18 +345,23 @@ def _parse_branch_prefixes(raw: str) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-def agent_branch_prefixes() -> tuple[str, ...]:
-    """Active agent-branch prefixes: defaults plus GUARDEX_AGENT_BRANCH_PREFIXES.
-
-    If GUARDEX_AGENT_BRANCH_PREFIXES_ONLY=1, only the explicit env list is used
-    (defaults are dropped). This is for repos that want to lock down which
-    namespaces count as agent-managed.
-    """
-    extras = _parse_branch_prefixes(os.environ.get(AGENT_BRANCH_PREFIXES_ENV, ""))
-    exclusive = os.environ.get(AGENT_BRANCH_PREFIXES_EXCLUSIVE_ENV, "").strip().lower() in {
+def _exclusive_prefix_mode() -> bool:
+    """True when GUARDEX_AGENT_BRANCH_PREFIXES_ONLY restricts to an allowlist."""
+    return os.environ.get(AGENT_BRANCH_PREFIXES_EXCLUSIVE_ENV, "").strip().lower() in {
         "1", "true", "yes", "on",
     }
-    base = () if exclusive else DEFAULT_AGENT_BRANCH_PREFIXES
+
+
+def agent_branch_prefixes() -> tuple[str, ...]:
+    """Agent-branch prefix allowlist used in lockdown mode.
+
+    Returns defaults plus GUARDEX_AGENT_BRANCH_PREFIXES. When
+    GUARDEX_AGENT_BRANCH_PREFIXES_ONLY=1 the defaults are dropped so only the
+    explicit env list is used. Only consulted when _exclusive_prefix_mode() is
+    on; the default policy (any non-protected branch) ignores prefixes.
+    """
+    extras = _parse_branch_prefixes(os.environ.get(AGENT_BRANCH_PREFIXES_ENV, ""))
+    base = () if _exclusive_prefix_mode() else DEFAULT_AGENT_BRANCH_PREFIXES
     seen: set[str] = set()
     out: list[str] = []
     for prefix in (*base, *extras):
@@ -363,11 +371,23 @@ def agent_branch_prefixes() -> tuple[str, ...]:
     return tuple(out)
 
 
-def is_agent_branch(branch: str) -> bool:
-    """Treat branch as agent-managed if it matches any active prefix."""
+def is_agent_branch(branch: str, protected: "set[str] | None" = None) -> bool:
+    """Treat a branch as agent-managed (safe to edit/commit on).
+
+    Default policy: any non-empty branch that is NOT a protected base counts as
+    agent-managed, so `vendor/x`, `feat/y`, or any ad-hoc name works. Callers
+    pass the repo-resolved protected set so git-config / env-configured bases are
+    honored; when omitted, the static PROTECTED_BRANCHES (main/dev/master) apply.
+
+    Lockdown policy (GUARDEX_AGENT_BRANCH_PREFIXES_ONLY=1): restrict to the
+    agent_branch_prefixes() allowlist instead.
+    """
     if not branch:
         return False
-    return any(branch.startswith(prefix) for prefix in agent_branch_prefixes())
+    if _exclusive_prefix_mode():
+        return any(branch.startswith(prefix) for prefix in agent_branch_prefixes())
+    bases = PROTECTED_BRANCHES if protected is None else protected
+    return branch not in bases
 
 
 def is_codex_session() -> bool:
@@ -385,7 +405,7 @@ def ensure_protected_branch_edit_allowed(file_path: str) -> str | None:
         return None
     repo_root = find_repo_root(file_path)
     branch = current_branch(repo_root)
-    if is_agent_branch(branch):
+    if is_agent_branch(branch, resolve_protected_branches(repo_root)):
         return None
 
     if branch in PROTECTED_BRANCHES:
@@ -520,7 +540,7 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
         return None
 
     branch = current_branch(repo_root)
-    if is_agent_branch(branch):
+    if is_agent_branch(branch, resolve_protected_branches(repo_root)):
         return None
     if is_allowed_non_agent_shell_command(command):
         return None

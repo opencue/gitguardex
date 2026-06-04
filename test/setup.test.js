@@ -851,7 +851,27 @@ test('install configures AGENTS managed policy block with GX contract wording', 
 });
 
 
-test('setup pre-commit blocks codex session commits on non-agent branches by default', () => {
+test('setup pre-commit allows agent commits on any non-protected branch by default', () => {
+  const repoDir = initRepo();
+
+  let result = runNode(['setup', '--target', repoDir], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd('git', ['checkout', '-b', 'feature/codex-test'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  // Default policy: being OFF a protected base is the only load-bearing rule,
+  // so a codex session commits freely on a non-agent, non-protected branch.
+  fs.writeFileSync(path.join(repoDir, 'notes.txt'), 'hello\n', 'utf8');
+  result = runCmd('git', ['add', 'notes.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd('git', ['commit', '-m', 'codex non-agent commit'], repoDir, { CODEX_THREAD_ID: 'test-thread' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+
+test('setup pre-commit re-blocks non-agent branches under GUARDEX_REQUIRE_AGENT_BRANCH lockdown', () => {
   const repoDir = initRepo();
 
   let result = runNode(['setup', '--target', repoDir], repoDir);
@@ -864,9 +884,12 @@ test('setup pre-commit blocks codex session commits on non-agent branches by def
   result = runCmd('git', ['add', 'notes.txt'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
-  result = runCmd('git', ['commit', '-m', 'codex non-agent commit'], repoDir, { CODEX_THREAD_ID: 'test-thread' });
+  result = runCmd('git', ['commit', '-m', 'codex non-agent commit'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+    GUARDEX_REQUIRE_AGENT_BRANCH: '1',
+  });
   assert.notEqual(result.status, 0, result.stdout);
-  assert.match(result.stderr, /\[codex-branch-guard\] Codex agent commit blocked on non-agent branch\./);
+  assert.match(result.stderr, /\[agent-branch-guard\] Lockdown mode: agent commits must run on dedicated agent\/\* branches\./);
 });
 
 
