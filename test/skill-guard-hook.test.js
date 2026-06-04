@@ -254,15 +254,16 @@ test('skill_guard recognizes claude/* when GUARDEX_AGENT_BRANCH_PREFIXES is set'
   }
 });
 
-test('skill_guard recognizes multiple prefixes (comma-separated, missing slash)', () => {
+test('lockdown mode honors prefix boundary (comma-separated, missing slash)', () => {
+  // In lockdown mode prefixes gate: the env parser appends "/", so a bare
+  // branch lacking that boundary does not match and stays blocked.
   const dir = makeRepoOn('codex-rebuild-pipeline');
   try {
-    // No-slash token should still match prefix-style because the env parser
-    // appends "/"; bare token should not match a branch lacking that boundary.
     const blocked = invokeHook(dir, bashPayload('rm seed.txt', dir), {
+      GUARDEX_AGENT_BRANCH_PREFIXES_ONLY: '1',
       GUARDEX_AGENT_BRANCH_PREFIXES: 'codex/,claude/',
     });
-    assert.equal(blocked.status, 2, 'bare branch should still be blocked');
+    assert.equal(blocked.status, 2, 'bare branch should be blocked in lockdown mode');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -270,11 +271,57 @@ test('skill_guard recognizes multiple prefixes (comma-separated, missing slash)'
   const dir2 = makeRepoOn('codex/lane-a');
   try {
     const allowed = invokeHook(dir2, bashPayload('rm seed.txt', dir2), {
+      GUARDEX_AGENT_BRANCH_PREFIXES_ONLY: '1',
       GUARDEX_AGENT_BRANCH_PREFIXES: 'codex,claude',
     });
     assert.equal(allowed.status, 0, allowed.stderr || allowed.stdout);
   } finally {
     fs.rmSync(dir2, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard allows any non-protected branch name by default (vendor/, feat/, bare)', () => {
+  for (const branch of ['vendor/acme-sdk', 'feat/new-thing', 'random-experiment']) {
+    const dir = makeRepoOn(branch);
+    try {
+      // Editing a file and running an otherwise-blocked shell command both pass:
+      // the only load-bearing rule is being OFF a protected base.
+      const wrote = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+      assert.equal(wrote.status, 0, `expected write allow on ${branch}: ${wrote.stderr || wrote.stdout}`);
+      const ran = invokeHook(dir, bashPayload('rm seed.txt', dir));
+      assert.equal(ran.status, 0, `expected shell allow on ${branch}: ${ran.stderr || ran.stdout}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('lockdown mode blocks an ad-hoc branch name that the default policy allows', () => {
+  // vendor/* is allowed by default but not in the lockdown allowlist.
+  const dir = makeRepoOn('vendor/acme-sdk');
+  try {
+    const result = invokeHook(dir, bashPayload('rm seed.txt', dir), {
+      GUARDEX_AGENT_BRANCH_PREFIXES_ONLY: '1',
+      GUARDEX_AGENT_BRANCH_PREFIXES: 'agent/',
+    });
+    assert.equal(result.status, 2, 'lockdown mode should block vendor/* when not listed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard still blocks a repo-configured protected branch (default policy)', () => {
+  // The default "any non-protected branch" policy must honor repo-configured
+  // protected bases, not just the static main/dev/master.
+  const dir = makeRepoOn('release');
+  try {
+    const result = invokeHook(dir, bashPayload('rm seed.txt', dir), {
+      GUARDEX_PROTECTED_BRANCHES: 'release',
+    });
+    assert.equal(result.status, 2, 'configured protected branch must stay blocked');
+    assert.match(result.stderr, /BLOCKED/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

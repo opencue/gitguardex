@@ -11,12 +11,16 @@ This document is the agent contract for this repo. It applies identically to Cod
 
 If you are a Claude Code session arriving in this repo for the first time:
 
-1. **Branch awareness** — `skill_guard.py` accepts `agent/*`, `claude/*`,
-   `codex/*`, and `cursor/*` as agent-managed branch namespaces by default.
-   Your harness-assigned `claude/<...>` branch is recognized; you don't need
-   to set `GUARDEX_AGENT_BRANCH_PREFIXES`. If you ever do need to lock down
-   namespaces, set `GUARDEX_AGENT_BRANCH_PREFIXES_ONLY=1` plus an explicit
-   list.
+1. **Branch awareness** — by default ANY branch that is not a protected base
+   (`main`/`dev`/`master`, plus any repo-configured protected branch) counts as
+   an agent-managed branch you may edit and commit on. `agent/*`, `claude/*`,
+   `vendor/*`, `feat/*`, or any ad-hoc name all work — being OFF a protected
+   base is the only load-bearing rule, so you don't need to set
+   `GUARDEX_AGENT_BRANCH_PREFIXES`. Lockdown is opt-in: set
+   `GUARDEX_AGENT_BRANCH_PREFIXES_ONLY=1` (+ an explicit prefix list) to gate
+   the Claude Code edit/Bash guard, and/or `GUARDEX_REQUIRE_AGENT_BRANCH=1`
+   (or `git config multiagent.requireAgentBranch true`) to force git commits
+   back onto the `agent/*` namespace.
 2. **Slash commands** — `/gx-status`, `/gx-doctor`, `/gx-pivot`,
    `/gx-pr`, `/gx-finish`, `/gx-setup`, `/gx-act` are available out of the
    box. See `.claude/commands/`. `/gx-act` wraps

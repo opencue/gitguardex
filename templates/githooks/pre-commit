@@ -108,6 +108,18 @@ case "$codex_require_agent_branch" in
   *) should_require_codex_agent_branch=1 ;;
 esac
 
+# General lockdown knob (applies to ALL agent sessions, not just Codex).
+# Default OFF: any branch that is not a protected base is an acceptable agent
+# branch, so `vendor/x`, `feat/y`, or any ad-hoc name commits without ceremony.
+# Set GUARDEX_REQUIRE_AGENT_BRANCH=1 (or `git config multiagent.requireAgentBranch
+# true`) to force agent commits back onto the agent/* namespace.
+require_agent_branch_raw="${GUARDEX_REQUIRE_AGENT_BRANCH:-$(git config --get multiagent.requireAgentBranch || true)}"
+require_agent_branch="$(printf '%s' "$require_agent_branch_raw" | tr '[:upper:]' '[:lower:]')"
+should_require_agent_branch=0
+case "$require_agent_branch" in
+  1|true|yes|on) should_require_agent_branch=1 ;;
+esac
+
 is_codex_managed_only_commit_on_protected=0
 if [[ "$is_codex_session" == "1" && "$is_protected_branch" == "1" ]]; then
   deleted_paths="$(git diff --cached --name-only --diff-filter=D)"
@@ -147,19 +159,10 @@ Temporary bypass (not recommended):
 MSG
       exit 1
     fi
-
-    cat >&2 <<'MSG'
-[codex-branch-guard] Codex agent commit blocked on non-agent branch.
-Use isolated branch/worktree first:
-  gx branch start "<task-or-plan>" "<agent-name>"
-Then commit from the created agent/* branch.
-
-Temporary bypass (not recommended):
-  GUARDEX_ALLOW_CODEX_ON_NON_AGENT=1 git commit ...
-Disable this rule for a repo (not recommended):
-  git config multiagent.codexRequireAgentBranch false
-MSG
-    exit 1
+    # Non-protected branches (vendor/, feat/, any ad-hoc name) are fine for
+    # Codex too — being OFF a protected base is the only load-bearing rule.
+    # Re-impose the agent/* requirement with GUARDEX_REQUIRE_AGENT_BRANCH=1
+    # (handled by the general lockdown gate below).
   fi
 fi
 
@@ -192,15 +195,17 @@ MSG
   exit 1
 fi
 
-if [[ "$is_agent_session" == "1" && "$branch" != agent/* ]]; then
+if [[ "$is_agent_session" == "1" && "$branch" != agent/* && "$should_require_agent_branch" == "1" ]]; then
   cat >&2 <<'MSG'
-[agent-branch-guard] Agent commits must run on dedicated agent/* branches.
+[agent-branch-guard] Lockdown mode: agent commits must run on dedicated agent/* branches.
+GUARDEX_REQUIRE_AGENT_BRANCH (or multiagent.requireAgentBranch) is enabled.
 Start an agent branch first:
   gx branch start "<task-or-plan>" "<agent-name>"
 Then commit on that branch.
 
-Temporary bypass (not recommended):
-  ALLOW_COMMIT_ON_PROTECTED_BRANCH=1 git commit ...
+Relax (any non-protected branch is normally fine):
+  unset GUARDEX_REQUIRE_AGENT_BRANCH
+  # or: git config multiagent.requireAgentBranch false
 MSG
   exit 1
 fi
