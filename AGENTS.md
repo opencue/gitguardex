@@ -32,7 +32,9 @@ If you are a Claude Code session arriving in this repo for the first time:
    commit + push + PR + merge + cleanup, still use the non-negotiable
    `gx branch finish --via-pr --wait-for-merge --cleanup`.
 4. **Repo wiring** — `gx claude install` writes `.claude/settings.json`,
-   hooks, slash commands, and the gitguardex skill into a target repo.
+   hooks, slash commands, the gitguardex skill, and a `.mcp.json` that registers
+   the read-only `gx` MCP server (the cross-repo agent radar: `list_agents`,
+   `who_owns`, `my_context`) into a target repo. Opt out with `--no-mcp`.
    `gx claude check` diagnoses drift without writing; `gx claude doctor`
    diagnoses and repairs.
 

@@ -20,6 +20,10 @@ const SETTINGS_REL = '.claude/settings.json';
 const HOOKS_REL = '.claude/hooks';
 const COMMANDS_REL = '.claude/commands';
 const SKILLS_REL = '.claude/skills';
+// Repo-scoped MCP registration so any agent in the target repo can see the
+// cross-repo agent radar (`gx mcp`). Read-only server; opt out with --no-mcp.
+const MCP_REL = '.mcp.json';
+const MCP_SERVER_KEY = SHORT_TOOL_NAME;
 
 const MANAGED_HOOK_FILES = [
   'skill_guard.py',
@@ -326,6 +330,47 @@ function describeStatus(s) {
   return '?';
 }
 
+function mcpServerSpec() {
+  return { command: SHORT_TOOL_NAME, args: ['mcp', 'serve'] };
+}
+
+// Register the read-only `gx mcp` server in the target repo's .mcp.json so any
+// agent there can call list_agents / who_owns / my_context. Merges into an
+// existing .mcp.json without disturbing other servers; idempotent.
+function installMcpServer(repoRoot, { dryRun }) {
+  const filePath = path.join(repoRoot, MCP_REL);
+  const fileExisted = fs.existsSync(filePath);
+  const config = readJsonIfExists(filePath) || {};
+  config.mcpServers = config.mcpServers || {};
+  const desired = mcpServerSpec();
+  const current = config.mcpServers[MCP_SERVER_KEY];
+  if (current && JSON.stringify(current) === JSON.stringify(desired)) {
+    return { status: 'unchanged', dest: filePath };
+  }
+  const status = current ? 'updated' : fileExisted ? 'merged' : 'created';
+  config.mcpServers[MCP_SERVER_KEY] = desired;
+  writeJson(filePath, config, { dryRun });
+  return { status, dest: filePath };
+}
+
+// Inverse of installMcpServer: drop the gx server. Removes the whole .mcp.json
+// only when it held nothing but our server (no other servers AND no other
+// top-level keys); otherwise prunes just the gx entry and preserves the rest.
+function uninstallMcpServer(repoRoot, { dryRun }) {
+  const filePath = path.join(repoRoot, MCP_REL);
+  const config = readJsonIfExists(filePath);
+  if (!config || !config.mcpServers || !config.mcpServers[MCP_SERVER_KEY]) {
+    return { status: 'absent', dest: filePath };
+  }
+  delete config.mcpServers[MCP_SERVER_KEY];
+  const onlyOurs = Object.keys(config.mcpServers).length === 0 && Object.keys(config).length === 1;
+  if (!dryRun) {
+    if (onlyOurs) fs.unlinkSync(filePath);
+    else writeJson(filePath, config, { dryRun: false });
+  }
+  return { status: onlyOurs ? 'removed' : 'pruned', dest: filePath };
+}
+
 function runInstall(rawArgs) {
   const opts = parseInstallArgs(rawArgs);
   const repoRoot = resolveRepoRoot(opts.target);
@@ -335,6 +380,9 @@ function runInstall(rawArgs) {
   const hookResults = installHooks(repoRoot, opts);
   const slashResults = installSlashCommands(repoRoot, opts);
   const skillResult = installAgentSkill(repoRoot, opts);
+  const mcpResult = opts.noMcp
+    ? { status: 'skipped', dest: path.join(repoRoot, MCP_REL) }
+    : installMcpServer(repoRoot, opts);
   const symlinkResult = ensureSpeckitMarkers(repoRoot, opts);
 
   // Summary
@@ -354,6 +402,7 @@ function runInstall(rawArgs) {
   } else if (skillResult.status === 'source-missing') {
     logWarn('gitguardex skill source missing in package; skipped.');
   }
+  logInfo(`mcp server (${MCP_REL}): ${mcpResult.status}`);
   logInfo(`CLAUDE.md symlink: ${symlinkResult.status}${symlinkResult.note ? ` (${symlinkResult.note})` : ''}`);
 
   if (opts.json) {
@@ -363,6 +412,7 @@ function runInstall(rawArgs) {
       hooks: hookResults,
       slashCommands: slashResults,
       skill: skillResult,
+      mcp: mcpResult,
       symlink: symlinkResult,
       dryRun: opts.dryRun,
     }, null, 2) + '\n');
@@ -433,6 +483,17 @@ function runCheck(rawArgs) {
         // ignore
       }
     }
+  }
+
+  // MCP registration check
+  const mcpConfig = readJsonIfExists(path.join(repoRoot, MCP_REL));
+  const hasGxMcp = Boolean(mcpConfig && mcpConfig.mcpServers && mcpConfig.mcpServers[MCP_SERVER_KEY]);
+  if (!hasGxMcp) {
+    issues.push({
+      severity: 'warning',
+      kind: 'mcp-missing',
+      message: `${MCP_REL} does not register the '${MCP_SERVER_KEY}' MCP server (run '${SHORT_TOOL_NAME} claude install', or install --no-mcp to skip).`,
+    });
   }
 
   // Symlink check
@@ -518,6 +579,11 @@ function runUninstall(rawArgs) {
     if (!opts.dryRun) writeJson(settingsPath, settings, { dryRun: false });
     removed.push(`${SETTINGS_REL} (managed entries pruned)`);
   }
+  // Remove the gx MCP server from .mcp.json (drop the file if it only held ours)
+  const mcpRemoval = uninstallMcpServer(repoRoot, opts);
+  if (mcpRemoval.status !== 'absent') {
+    removed.push(`${MCP_REL} (${mcpRemoval.status === 'removed' ? 'removed' : `'${MCP_SERVER_KEY}' server pruned`})`);
+  }
 
   logOk(`Removed ${removed.length} item(s)${opts.dryRun ? ' (dry-run)' : ''}.`);
   for (const r of removed) console.log(`  - ${r}`);
@@ -531,6 +597,7 @@ function parseInstallArgs(rawArgs) {
     json: false,
     yes: false,
     fix: false,
+    noMcp: false,
   };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
@@ -540,6 +607,7 @@ function parseInstallArgs(rawArgs) {
     if (arg === '--json') { opts.json = true; continue; }
     if (arg === '--yes' || arg === '-y') { opts.yes = true; continue; }
     if (arg === '--fix') { opts.fix = true; continue; }
+    if (arg === '--no-mcp') { opts.noMcp = true; continue; }
   }
   return opts;
 }
@@ -548,7 +616,7 @@ function printUsage() {
   console.log(`Usage: ${SHORT_TOOL_NAME} claude <subcommand> [flags]
 
 Subcommands:
-  install     install/update .claude/settings.json + hooks + slash commands.
+  install     install/update .claude/settings.json + hooks + slash commands + .mcp.json.
   check       diagnose Claude Code wiring (read-only by default).
   doctor      alias: 'check --fix'.
   uninstall   remove gitguardex-managed Claude Code wiring (--yes required).
@@ -556,6 +624,7 @@ Subcommands:
 Flags:
   --target <path>   Operate in a different repo directory.
   --force           Overwrite existing managed entries instead of merging.
+  --no-mcp          Skip registering the gx MCP server in .mcp.json.
   --dry-run         Report what would change without writing.
   --json            Emit JSON output.
   --yes / -y        Required for uninstall.
@@ -593,8 +662,13 @@ module.exports = {
   ensureSpeckitMarkers,
   installHooks,
   installSlashCommands,
+  installMcpServer,
+  uninstallMcpServer,
+  mcpServerSpec,
   MANAGED_HOOK_FILES,
   MANAGED_SLASH_COMMANDS,
+  MCP_REL,
+  MCP_SERVER_KEY,
   TEMPLATE_DEFAULT_SETTINGS,
   EXPECTED_HOOK_MATCHERS,
 };
