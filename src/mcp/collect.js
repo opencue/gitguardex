@@ -19,6 +19,9 @@ const { findOpenPrForBranch, listOpenPrsForRepo } = require('../pr');
 
 const PROTECTED_BRANCHES = new Set(['main', 'master', 'dev']);
 const LOCK_FILE_RELATIVE = path.join('.omx', 'state', 'agent-file-locks.json');
+// A lane older than this (days since last commit), with no open PR and no
+// uncommitted work, is flagged `stale: true` — a candidate for cleanup.
+const STALE_DAYS = Number(process.env.GUARDEX_MCP_STALE_DAYS) || 14;
 
 function git(repoRoot, args) {
   // Bounded: a hung git call must not stall the whole MCP request past the
@@ -189,16 +192,27 @@ function indexPrsByBranch(prs) {
   return map;
 }
 
-// One gh call per repo -> a branch->PR map. Best-effort (never throws).
+// One gh call per repo -> { map: branch->PR, error }. Best-effort (never throws).
+// `error` is set when the lookup itself failed (gh missing/unauthed/offline),
+// distinct from a successful lookup that found no open PRs.
 function prMapForRepo(mainRoot) {
   try {
-    return indexPrsByBranch(listOpenPrsForRepo(mainRoot));
-  } catch {
-    return {};
+    const { prs, error } = listOpenPrsForRepo(mainRoot);
+    return { map: indexPrsByBranch(prs), error: error || null };
+  } catch (err) {
+    return { map: {}, error: String((err && err.message) || err) };
   }
 }
 
-function buildAgentRecord(mainRoot, wt, locks, prMap) {
+// Whole days since an ISO timestamp, or null. Pure (now injected) for testing.
+function daysSince(iso, nowMs) {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.floor((nowMs - t) / 86400000);
+}
+
+function buildAgentRecord(mainRoot, wt, locks, prInfo, nowMs) {
   const branch = wt.branch;
   const record = {
     repo: repoName(mainRoot),
@@ -212,8 +226,15 @@ function buildAgentRecord(mainRoot, wt, locks, prMap) {
     dirty: dirtyFiles(wt.path),
     locks,
     lastCommit: lastCommit(mainRoot, branch),
-    pr: prMap ? prMap[branch] || null : null,
+    pr: prInfo ? prInfo.map[branch] || null : null,
+    prLookupError: prInfo ? prInfo.error : null,
   };
+  // Stale = old, no open PR, no uncommitted work — a safe prune candidate.
+  record.ageDays = record.lastCommit ? daysSince(record.lastCommit.date, nowMs) : null;
+  record.stale = record.ageDays != null
+    && record.ageDays > STALE_DAYS
+    && !record.pr
+    && record.dirty.length === 0;
   if (wt.isPrimary) {
     record.warning =
       'on the PRIMARY checkout, not an isolated worktree — edits here risk auto-stash/revert when another lane switches branches. Use `gx branch start`.';
@@ -235,12 +256,13 @@ function collectRepoAgents(repoPath, { includePrs = true } = {}) {
   const lanes = listWorktrees(mainRoot).filter(isAgentLane);
   if (lanes.length === 0) return []; // no lanes -> no gh call for this repo
   // ONE gh call for the whole repo, only when there is at least one lane.
-  const prMap = includePrs ? prMapForRepo(mainRoot) : null;
+  const prInfo = includePrs ? prMapForRepo(mainRoot) : null;
+  const nowMs = Date.now();
   return lanes.map((wt) => {
     // Each worktree owns its OWN lock file; a lane's locks are the entries in
     // its own worktree keyed to its branch.
     const locks = locksByBranch(wt.path)[wt.branch] || [];
-    return buildAgentRecord(mainRoot, wt, locks, prMap);
+    return buildAgentRecord(mainRoot, wt, locks, prInfo, nowMs);
   });
 }
 
@@ -313,6 +335,7 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
   const mainRoot = mainRepoRoot(cwd) || here;
   const branch = git(here, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const self = listWorktrees(mainRoot).find((w) => path.resolve(w.path) === path.resolve(here));
+  const lc = branch ? lastCommit(mainRoot, branch) : null;
   return {
     repo: repoName(mainRoot),
     repoPath: mainRoot,
@@ -324,7 +347,8 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
     dirty: dirtyFiles(here),
     locks: branch ? locksByBranch(here)[branch] || [] : [], // this lane's own claims
     pr: includePr && branch ? safePr(mainRoot, branch) : null,
-    lastCommit: branch ? lastCommit(mainRoot, branch) : null,
+    lastCommit: lc,
+    ageDays: lc ? daysSince(lc.date, Date.now()) : null,
   };
 }
 
@@ -335,6 +359,8 @@ module.exports = {
   whoOwns,
   myContext,
   indexPrsByBranch,
+  daysSince,
+  STALE_DAYS,
   listWorktrees,
   locksByBranch,
   parseAgentName,

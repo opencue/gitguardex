@@ -98,8 +98,9 @@ function findLatestPrForBranch(repoRoot, branch) {
 /**
  * List ALL open PRs for the repo on origin in a single gh call, so callers can
  * correlate many branches to their PRs without one gh round-trip per branch.
- * Best-effort: returns [] when gh is missing / unauthenticated / offline
- * (never throws), so a cross-repo scan degrades gracefully.
+ * Best-effort: never throws. Returns `{ prs, error }` so callers can tell a
+ * genuine "no open PRs" (`error: null`) from a failed lookup (gh missing /
+ * unauthenticated / offline → `error` set, `prs: []`).
  * NB: `limit` (default 100) bounds correlation COVERAGE, not just payload size —
  * a repo with more than `limit` open PRs may leave some lanes showing pr:null.
  */
@@ -110,8 +111,9 @@ function listOpenPrsForRepo(repoRoot, { limit = 100 } = {}) {
     '--json', 'number,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,title',
     '--limit', String(limit),
   ]);
-  if (!result.ok || !Array.isArray(result.data)) return [];
-  return result.data;
+  if (!result.ok) return { prs: [], error: result.error || 'gh pr list failed' };
+  if (!Array.isArray(result.data)) return { prs: [], error: null };
+  return { prs: result.data, error: null };
 }
 
 function pushBranch(repoRoot, branch, { setUpstream = true } = {}) {
