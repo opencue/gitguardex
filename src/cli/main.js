@@ -38,6 +38,7 @@ const { review, prReview } = require('./commands/review');
 const { pr: prCommand } = require('./commands/pr');
 const { claude: claudeCommand } = require('./commands/claude');
 const { agents } = require('./commands/agents');
+const { mcp } = require('./commands/mcp');
 const { report } = require('./commands/report');
 const { release } = require('./commands/release');
 const { watch } = require('./commands/watch');
@@ -222,6 +223,7 @@ async function main() {
   if (command === 'install-agent-skills') return installAgentSkills(rest);
   if (command === 'internal') return internal(rest);
   if (command === 'agents') return agents(rest);
+  if (command === 'mcp') return mcp(rest);
   if (command === 'cockpit') return cockpit(rest);
   if (command === 'merge') return merge(rest);
   if (command === 'finish') return finish(rest);
