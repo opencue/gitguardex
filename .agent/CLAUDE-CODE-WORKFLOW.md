@@ -22,7 +22,7 @@ gx branch start --tier T0 "fix-typo-in-readme" "claude-name"
 # T1 (small fix): notes-only scaffold, commit message is the spec of record
 gx branch start --tier T1 "tighten-retry-backoff" "claude-name"
 
-# T2 (default for real behavior changes): full change spec, no plan workspace
+# T2 (explicit; real behavior changes): full change spec, no plan workspace
 gx branch start --tier T2 "add-oauth-endpoint" "claude-name"
 
 # T3 (explicit; plan-driven): plan workspace + full OpenSpec
