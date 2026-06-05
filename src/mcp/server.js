@@ -19,13 +19,13 @@ const TOOLS = [
   {
     name: 'list_agents',
     description:
-      'List every active agent lane across all discovered repos: repo, branch, worktree, task, the PR it is shipping, held file locks, last commit, and warnings (e.g. an agent editing on the primary checkout). Use this to see who is working on what before you start. Read-only.',
+      'List every active agent lane across all discovered repos: repo, branch, worktree, task, dirty (files changed RIGHT NOW), held file locks, last commit, the PR it is shipping (opt-in), and warnings — e.g. a lane editing the primary checkout (the harness should act on that warning by moving to `gx branch start`). Use this to see who is working on what before you start. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
         include_prs: {
           type: 'boolean',
-          description: 'Fetch PR state per pushed branch via gh (slower, network). Default true.',
+          description: 'Fetch PR state per pushed branch via gh (slower, network fan-out). Default FALSE here — pass true when you need PRs, or use repo_state for one repo.',
         },
         roots: {
           type: 'array',
@@ -72,9 +72,11 @@ const TOOLS = [
 function callTool(name, args = {}) {
   switch (name) {
     case 'list_agents':
+      // PRs are opt-in here: a cross-repo gh fan-out can exceed the client
+      // timeout. repo_state/my_context (narrow scope) keep PRs on by default.
       return collect.collectAllAgents({
         roots: args.roots,
-        includePrs: args.include_prs !== false,
+        includePrs: args.include_prs === true,
         limit: args.limit,
       });
     case 'repo_state':
@@ -103,8 +105,10 @@ function dispatch(msg) {
   const isNotification = id === undefined || id === null;
   try {
     if (method === 'initialize') {
+      // Pin the version WE support, regardless of what the client requested —
+      // echoing an unknown/future version back defeats MCP version negotiation.
       return ok(id, {
-        protocolVersion: (params && params.protocolVersion) || PROTOCOL_VERSION,
+        protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: { name: 'gx', version: (packageJson && packageJson.version) || '0.0.0' },
       });
@@ -140,7 +144,9 @@ function serve({ input = process.stdin, output = process.stdout } = {}) {
     try {
       msg = JSON.parse(trimmed);
     } catch {
-      return; // ignore malformed line
+      // JSON-RPC 2.0: a parse error is reported with a null id.
+      output.write(`${JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } })}\n`);
+      return;
     }
     const res = dispatch(msg);
     if (res) output.write(`${JSON.stringify(res)}\n`);

@@ -12,6 +12,11 @@ test('initialize returns serverInfo and echoes the protocol version', () => {
   assert.ok(r.result.capabilities.tools, 'declares tools capability');
 });
 
+test('initialize pins the server protocol version even when the client requests another', () => {
+  const r = server.dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2099-01-01' } });
+  assert.equal(r.result.protocolVersion, server.PROTOCOL_VERSION, 'server pins its own supported version');
+});
+
 test('tools/list returns the four read-only tools, each with a schema', () => {
   const r = server.dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
   const names = r.result.tools.map((t) => t.name).sort();
@@ -64,4 +69,19 @@ test('serve() reads newline-delimited JSON from stdin and writes responses to st
   const msg = JSON.parse(first);
   assert.equal(msg.id, 1);
   assert.equal(msg.result.tools.length, 4);
+});
+
+test('serve() reports a malformed line as a JSON-RPC parse error (-32700, id null)', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let out = '';
+  output.on('data', (c) => { out += c; });
+  const rl = server.serve({ input, output });
+  input.write('this is not json\n');
+  input.end();
+  await new Promise((resolve) => { rl.on('close', resolve); setTimeout(resolve, 100); });
+  rl.close();
+  const msg = JSON.parse(out.trim().split('\n')[0]);
+  assert.equal(msg.id, null);
+  assert.equal(msg.error.code, -32700);
 });

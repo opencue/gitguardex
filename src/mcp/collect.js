@@ -21,9 +21,42 @@ const PROTECTED_BRANCHES = new Set(['main', 'master', 'dev']);
 const LOCK_FILE_RELATIVE = path.join('.omx', 'state', 'agent-file-locks.json');
 
 function git(repoRoot, args) {
-  const res = cp.spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
+  // Bounded: a hung git call must not stall the whole MCP request past the
+  // client timeout. On timeout spawnSync sets status=null -> we return null.
+  const res = cp.spawnSync('git', args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 7000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
   if (!res || res.status !== 0) return null;
   return (res.stdout || '').trim();
+}
+
+// Files an agent is changing RIGHT NOW in a worktree (uncommitted). Unlike
+// locks (written at commit time), this reflects in-progress edits — the most
+// direct "who is working on what" signal.
+function dirtyFiles(worktreePath, cap = 25) {
+  // NB: parse RAW stdout (not the trimmed git() helper) — porcelain is
+  // column-sensitive ("XY PATH"); trimming eats the first line's leading
+  // status space and shifts the path by one.
+  const res = cp.spawnSync('git', ['status', '--porcelain'], {
+    cwd: worktreePath,
+    encoding: 'utf8',
+    timeout: 7000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (!res || res.status !== 0 || !res.stdout) return [];
+  const files = res.stdout
+    .split('\n')
+    .filter((line) => line.length > 3)
+    .map((line) => line.slice(3))
+    .filter(Boolean)
+    // Exclude gitguardex runtime state — it's bookkeeping churn, not the
+    // agent's work (and is gitignored in real repos anyway).
+    .filter((f) => !f.startsWith('.omx/') && !f.startsWith('.omc/'));
+  if (files.length <= cap) return files;
+  return files.slice(0, cap).concat([`…(+${files.length - cap} more)`]);
 }
 
 function isProtectedBranch(branch) {
@@ -79,6 +112,9 @@ function readLockMap(repoRoot) {
     const data = JSON.parse(raw);
     return (data && data.locks) || {};
   } catch {
+    // stdout is reserved for JSON-RPC; surface the problem on stderr so a
+    // poisoned lock file doesn't silently hide claims.
+    process.stderr.write(`[gx mcp] warning: ignoring corrupt lock file ${lockPath}\n`);
     return {};
   }
 }
@@ -152,6 +188,7 @@ function buildAgentRecord(mainRoot, wt, locks, includePrs) {
     worktree: wt.path,
     onPrimaryCheckout: Boolean(wt.isPrimary),
     pushed: branchHasUpstream(mainRoot, branch),
+    dirty: dirtyFiles(wt.path),
     locks,
     lastCommit: lastCommit(mainRoot, branch),
     pr: includePrs ? safePr(mainRoot, branch) : null,
@@ -261,6 +298,7 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
     agent: parseAgentName(branch),
     onPrimaryCheckout: self ? Boolean(self.isPrimary) : null,
     protected: isProtectedBranch(branch),
+    dirty: dirtyFiles(here),
     locks: branch ? locksByBranch(here)[branch] || [] : [], // this lane's own claims
     pr: includePr && branch ? safePr(mainRoot, branch) : null,
     lastCommit: branch ? lastCommit(mainRoot, branch) : null,

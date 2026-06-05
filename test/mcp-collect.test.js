@@ -105,6 +105,21 @@ test('collectAllAgents dedupes a repo + its worktrees into one main root', () =>
   }
 });
 
+test('a lane reports the files it is editing RIGHT NOW (uncommitted), independent of locks', () => {
+  const { root, main, wtA } = makeRepoWithLanes();
+  try {
+    // alice has no committed lock for README, but is editing it uncommitted.
+    fs.writeFileSync(path.join(wtA, 'README.md'), 'work in progress\n');
+    const agents = collect.collectRepoAgents(main, { includePrs: false });
+    const alice = agents.find((a) => a.agent === 'alice');
+    assert.ok(alice.dirty.includes('README.md'), 'in-progress edit shows up in dirty');
+    const bob = agents.find((a) => a.agent === 'bob');
+    assert.deepEqual(bob.dirty, [], 'a clean lane reports no dirty files');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('an agent editing on the PRIMARY checkout is surfaced with a warning', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-primary-'));
   try {

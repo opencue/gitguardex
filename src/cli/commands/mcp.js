@@ -29,12 +29,13 @@ function printUsage() {
 function fmtAgent(a) {
   const pr = a.pr ? `PR #${a.pr.number} (${a.pr.state}${a.pr.isDraft ? ', draft' : ''})` : a.pushed ? 'pushed, no open PR' : 'local only';
   const locks = a.locks && a.locks.length ? `${a.locks.length} lock(s)` : 'no locks';
+  const dirty = a.dirty && a.dirty.length ? `editing ${a.dirty.length} file(s)` : 'clean';
   const when = a.lastCommit && a.lastCommit.date ? a.lastCommit.date.replace('T', ' ').replace(/\..*$/, '') : '?';
   const warn = a.warning ? '  ⚠ ON PRIMARY CHECKOUT' : '';
   return [
     `• ${a.repo}  ${a.branch}${warn}`,
     `    agent=${a.agent || '?'}  task=${a.task}`,
-    `    ${pr}  ${locks}  last=${when}`,
+    `    ${dirty}  ${locks}  ${pr}  last=${when}`,
     `    worktree=${a.worktree}`,
   ].join('\n');
 }

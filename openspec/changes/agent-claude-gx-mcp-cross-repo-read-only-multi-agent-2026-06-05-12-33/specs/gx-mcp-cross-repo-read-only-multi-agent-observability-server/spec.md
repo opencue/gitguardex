@@ -13,8 +13,13 @@ server SHALL NOT mutate any repository.
 #### Scenario: List active agent lanes across repos
 - **WHEN** `list_agents` is called
 - **THEN** it returns one record per active agent lane (a worktree on a non-protected branch) across all discovered repos
-- **AND** each record carries repo, branch, worktree, task, held locks, last commit, and (best-effort) the open PR for the branch
-- **AND** a repo and its linked worktrees are counted as a single repo (deduped by main root).
+- **AND** each record carries repo, branch, worktree, task, the files it is editing right now (`dirty`), held locks, last commit, and the open PR for the branch
+- **AND** a repo and its linked worktrees are counted as a single repo (deduped by main root)
+- **AND** PR lookups are opt-in for `list_agents` (default off) to bound the cross-repo `gh` fan-out, while single-repo `repo_state`/`my_context` include PRs by default.
+
+#### Scenario: Live in-progress edits independent of locks
+- **WHEN** a lane has uncommitted changes that have not been lock-claimed (locks materialize at commit time)
+- **THEN** the lane's `dirty` field lists those changed files (excluding gitguardex runtime state under `.omx/`/`.omc/`), giving a live "currently editing" signal.
 
 #### Scenario: Cross-worktree lock ownership
 - **WHEN** `who_owns(file)` is called for a path locked by another agent in a different worktree
