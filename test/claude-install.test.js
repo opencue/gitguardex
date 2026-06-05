@@ -179,6 +179,40 @@ test('mergeSettings --force ignores existing settings', () => {
   assert.ok(mergedNonForce.hooks.PreToolUse.some((g) => g.matcher === 'Other'));
 });
 
+test('installMcpServer registers the gx server in a fresh .mcp.json', () => {
+  const repoRoot = makeRepo();
+  const result = claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'created');
+  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
+  assert.deepEqual(config.mcpServers[claudeModule.MCP_SERVER_KEY], { command: 'gx', args: ['mcp', 'serve'] });
+});
+
+test('installMcpServer merges into an existing .mcp.json without clobbering other servers', () => {
+  const repoRoot = makeRepo();
+  fs.writeFileSync(
+    path.join(repoRoot, claudeModule.MCP_REL),
+    JSON.stringify({ mcpServers: { other: { command: 'x' } } }, null, 2),
+  );
+  const result = claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'merged');
+  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
+  assert.deepEqual(Object.keys(config.mcpServers).sort(), ['gx', 'other']);
+  assert.deepEqual(config.mcpServers.other, { command: 'x' }, 'existing server preserved');
+});
+
+test('installMcpServer is idempotent on a second run', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const result = claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'unchanged');
+});
+
+test('installMcpServer dry-run does not write .mcp.json', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: true });
+  assert.equal(fs.existsSync(path.join(repoRoot, claudeModule.MCP_REL)), false);
+});
+
 test('agent_branch_advisor.py is a managed (distributed) hook file', () => {
   assert.ok(
     claudeModule.MANAGED_HOOK_FILES.includes('agent_branch_advisor.py'),
