@@ -417,8 +417,8 @@ def ensure_protected_branch_edit_allowed(file_path: str) -> str | None:
 
     return (
         f"BLOCKED: Agent edit attempted on {blocked_scope}.\n"
-        "Auto-pivot to an isolated agent worktree (single command, dirty tree migrates with you):\n"
-        '  gx pivot "<task>" "<agent-name>"\n'
+        "Open an isolated agent worktree (single command, dirty tree migrates with you):\n"
+        '  gx branch start "<task>" "<agent-name>"\n'
         "Then `cd` into the printed WORKTREE_PATH and retry the edit.\n"
         "Equivalent legacy form:\n"
         '  bash scripts/agent-branch-start.sh "<task>" "<agent-name>"\n'
@@ -553,8 +553,8 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
     preview = command.strip().splitlines()[0][:180]
     return (
         f"BLOCKED: Shell command may mutate files on {blocked_scope}.\n"
-        "Auto-pivot to an isolated agent worktree (single command, dirty tree migrates with you):\n"
-        '  gx pivot "<task>" "<agent-name>"\n'
+        "Open an isolated agent worktree (single command, dirty tree migrates with you):\n"
+        '  gx branch start "<task>" "<agent-name>"\n'
         "Then `cd` into the printed WORKTREE_PATH and retry from there.\n"
         "Equivalent legacy form:\n"
         '  bash scripts/agent-branch-start.sh "<task>" "<agent-name>"\n'

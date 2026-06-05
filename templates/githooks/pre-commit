@@ -150,8 +150,6 @@ if [[ "$should_require_codex_agent_branch" == "1" && "${GUARDEX_ALLOW_CODEX_ON_N
 GitGuardex requires Codex work to run from an isolated agent/* branch.
 Start the sub-branch/worktree with:
   gx branch start "<task-or-plan>" "<agent-name>"
-Or manually:
-  gx branch start "<task-or-plan>" "<agent-name>"
 Then commit from the created agent/* branch.
 
 Temporary bypass (not recommended):
