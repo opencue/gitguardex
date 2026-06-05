@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { findProjects } = require('../cockpit/projects-finder');
-const { findOpenPrForBranch } = require('../pr');
+const { findOpenPrForBranch, listOpenPrsForRepo } = require('../pr');
 
 const PROTECTED_BRANCHES = new Set(['main', 'master', 'dev']);
 const LOCK_FILE_RELATIVE = path.join('.omx', 'state', 'agent-file-locks.json');
@@ -177,7 +177,39 @@ function safePr(repoRoot, branch) {
   }
 }
 
-function buildAgentRecord(mainRoot, wt, locks, includePrs) {
+function slimPr(pr) {
+  return {
+    number: pr.number,
+    url: pr.url,
+    state: pr.state,
+    isDraft: pr.isDraft,
+    title: pr.title,
+    baseRefName: pr.baseRefName,
+    reviewDecision: pr.reviewDecision || null,
+    mergeable: pr.mergeable || null,
+    mergeStateStatus: pr.mergeStateStatus || null,
+  };
+}
+
+// Pure: index a `gh pr list` array by its branch (headRefName) for O(1) lookup.
+function indexPrsByBranch(prs) {
+  const map = {};
+  for (const pr of prs || []) {
+    if (pr && pr.headRefName) map[pr.headRefName] = slimPr(pr);
+  }
+  return map;
+}
+
+// One gh call per repo -> a branch->PR map. Best-effort (never throws).
+function prMapForRepo(mainRoot) {
+  try {
+    return indexPrsByBranch(listOpenPrsForRepo(mainRoot));
+  } catch {
+    return {};
+  }
+}
+
+function buildAgentRecord(mainRoot, wt, locks, prMap) {
   const branch = wt.branch;
   const record = {
     repo: repoName(mainRoot),
@@ -191,7 +223,7 @@ function buildAgentRecord(mainRoot, wt, locks, includePrs) {
     dirty: dirtyFiles(wt.path),
     locks,
     lastCommit: lastCommit(mainRoot, branch),
-    pr: includePrs ? safePr(mainRoot, branch) : null,
+    pr: prMap ? prMap[branch] || null : null,
   };
   if (wt.isPrimary) {
     record.warning =
@@ -200,25 +232,27 @@ function buildAgentRecord(mainRoot, wt, locks, includePrs) {
   return record;
 }
 
+function isAgentLane(wt) {
+  // An active agent lane = a worktree on a non-protected branch (or the primary
+  // checkout sitting on a working branch, surfaced later with a warning).
+  if (!wt.branch) return false;
+  if (isProtectedBranch(wt.branch) && !wt.isPrimary) return false;
+  if (wt.isPrimary && isProtectedBranch(wt.branch)) return false;
+  return true;
+}
+
 function collectRepoAgents(repoPath, { includePrs = true } = {}) {
   const mainRoot = mainRepoRoot(repoPath) || repoPath;
-  const worktrees = listWorktrees(mainRoot);
-  if (worktrees.length === 0) return [];
-  const agents = [];
-  for (const wt of worktrees) {
-    // Skip the safe/normal states: primary on a protected base, detached
-    // worktrees, and the rare protected-branch linked worktree. What remains
-    // is an active agent lane (or an agent editing on primary, surfaced with a
-    // warning).
-    if (!wt.branch) continue;
-    if (isProtectedBranch(wt.branch) && !wt.isPrimary) continue;
-    if (wt.isPrimary && isProtectedBranch(wt.branch)) continue;
+  const lanes = listWorktrees(mainRoot).filter(isAgentLane);
+  if (lanes.length === 0) return []; // no lanes -> no gh call for this repo
+  // ONE gh call for the whole repo, only when there is at least one lane.
+  const prMap = includePrs ? prMapForRepo(mainRoot) : null;
+  return lanes.map((wt) => {
     // Each worktree owns its OWN lock file; a lane's locks are the entries in
     // its own worktree keyed to its branch.
     const locks = locksByBranch(wt.path)[wt.branch] || [];
-    agents.push(buildAgentRecord(mainRoot, wt, locks, includePrs));
-  }
-  return agents;
+    return buildAgentRecord(mainRoot, wt, locks, prMap);
+  });
 }
 
 function collectAllAgents({ roots, includePrs = true, limit } = {}) {
@@ -311,6 +345,7 @@ module.exports = {
   repoState,
   whoOwns,
   myContext,
+  indexPrsByBranch,
   listWorktrees,
   locksByBranch,
   parseAgentName,
