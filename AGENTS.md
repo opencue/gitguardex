@@ -82,7 +82,8 @@ gh pr merge <PR-NUMBER> --repo <owner>/<repo> --auto --squash
 gx finish --all
 ```
 
-Tier guide (sized by blast radius; default is `T3` if `--tier` is omitted):
+Tier guide (sized by blast radius; **default is `T1`** when `--tier` is omitted —
+escalate with `--tier T2` for a behavior change or `--tier T3` for plan-driven work):
 
 | Tier | Use for | Scaffolding | Gates |
 |------|---------|-------------|-------|

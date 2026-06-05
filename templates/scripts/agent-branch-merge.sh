@@ -281,7 +281,10 @@ if [[ -z "$TARGET_BRANCH" ]]; then
   start_output=""
   if ! start_output="$(
     cd "$repo_root"
-    GUARDEX_OPENSPEC_AUTO_INIT=1 run_guardex_cli branch start "$TASK_NAME" "$AGENT_NAME" "$BASE_BRANCH" 2>&1
+    # An integration lane is inherently cross-cutting, so pin it to T3 (full
+    # change + plan workspace) regardless of the branch-start default (now T1).
+    GUARDEX_OPENSPEC_AUTO_INIT=1 GUARDEX_OPENSPEC_TIER="${GUARDEX_OPENSPEC_TIER:-T3}" \
+      run_guardex_cli branch start "$TASK_NAME" "$AGENT_NAME" "$BASE_BRANCH" 2>&1
   )"; then
     printf '%s\n' "$start_output" >&2
     exit 1
