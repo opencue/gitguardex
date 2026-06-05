@@ -14,7 +14,10 @@ OPENSPEC_PLAN_SLUG_OVERRIDE="${GUARDEX_OPENSPEC_PLAN_SLUG:-}"
 OPENSPEC_CHANGE_SLUG_OVERRIDE="${GUARDEX_OPENSPEC_CHANGE_SLUG:-}"
 OPENSPEC_CAPABILITY_SLUG_OVERRIDE="${GUARDEX_OPENSPEC_CAPABILITY_SLUG:-}"
 OPENSPEC_MASTERPLAN_LABEL_RAW="${GUARDEX_OPENSPEC_MASTERPLAN_LABEL-masterplan}"
-OPENSPEC_TIER_RAW="${GUARDEX_OPENSPEC_TIER:-T3}"
+# Default tier is T1 (notes.md only, minimal scaffold): most tasks are small,
+# and a full T3 plan workspace costs thousands of tokens an agent never reads.
+# Escalate explicitly with --tier T2 (behavior change) or T3 (plan-driven).
+OPENSPEC_TIER_RAW="${GUARDEX_OPENSPEC_TIER:-T1}"
 REUSE_EXISTING_RAW="${GUARDEX_BRANCH_START_REUSE_EXISTING:-true}"
 AUTO_TRANSFER_ENABLED_RAW="${GUARDEX_AUTO_TRANSFER:-true}"
 AUTO_TRANSFER_EXCLUDE_DEFAULT='.omc/**:.omx/state/**:.dev-ports.json:apps/logs/**:.codex/settings.local.json:.claude/settings.local.json:.codex/state/**:.claude/state/**'
@@ -57,7 +60,8 @@ Options:
   --worktree-root <p>  Worktree root dir (default: .omx/agent-worktrees)
   --reuse-existing     Reuse an existing matching worktree (default)
   --new                Force a fresh worktree instead of reusing
-  --tier <T1|T2|T3>    OpenSpec tier for scaffolding
+  --tier <T1|T2|T3>    OpenSpec tier for scaffolding (default T1; T2 for a
+                       behavior change, T3 for plan-driven work)
   --transfer           Auto-transfer uncommitted changes into the worktree (default)
   --no-transfer        Do not auto-transfer uncommitted changes
   --transfer-exclude <globs>  Colon-separated globs to exclude from transfer
@@ -323,7 +327,7 @@ normalize_tier() {
   esac
 }
 
-if ! OPENSPEC_TIER="$(normalize_tier "$OPENSPEC_TIER_RAW" "T3")"; then
+if ! OPENSPEC_TIER="$(normalize_tier "$OPENSPEC_TIER_RAW" "T1")"; then
   echo "[agent-branch-start] Unsupported OpenSpec tier: ${OPENSPEC_TIER_RAW}" >&2
   exit 1
 fi
@@ -977,6 +981,9 @@ fi
 echo "[agent-branch-start] Created branch: ${branch_name}"
 echo "[agent-branch-start] Worktree: ${worktree_path}"
 echo "[agent-branch-start] OpenSpec tier: ${OPENSPEC_TIER}"
+if [[ "$OPENSPEC_TIER" == "T1" ]]; then
+  echo "[agent-branch-start] T1 minimal scaffold (notes.md). Escalate: --tier T2 for a behavior change, T3 for plan-driven work."
+fi
 if [[ "$OPENSPEC_AUTO_INIT" -ne 1 ]]; then
   echo "[agent-branch-start] OpenSpec change: skipped (GUARDEX_OPENSPEC_AUTO_INIT disabled)"
 elif [[ "$OPENSPEC_SKIP_CHANGE" -eq 1 ]]; then

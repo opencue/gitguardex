@@ -4,7 +4,7 @@ When Guardex is enabled, Claude Code sessions use the same agent-worktree + Open
 
 ## Tiering (token-aware scaffolding)
 
-`gx branch start` and `gx branch finish` accept `--tier {T0|T1|T2|T3}` to size the OpenSpec scaffolding to the change's blast radius. Default is `T3` (full scaffolding; current behavior). The tier is recorded in the bootstrap manifest so `finish` picks it up automatically.
+`gx branch start` and `gx branch finish` accept `--tier {T0|T1|T2|T3}` to size the OpenSpec scaffolding to the change's blast radius. Default is `T1` (notes.md only — most tasks are small, and a full T3 plan workspace costs thousands of tokens an agent never reads). Escalate explicitly with `--tier T2` for a behavior change or `--tier T3` for plan-driven work. The tier is recorded in the bootstrap manifest so `finish` picks it up automatically.
 
 | Tier | Use for | Scaffolding on `start` | Gates on `finish` |
 |------|---------|------------------------|--------------------|
@@ -22,11 +22,11 @@ gx branch start --tier T0 "fix-typo-in-readme" "claude-name"
 # T1 (small fix): notes-only scaffold, commit message is the spec of record
 gx branch start --tier T1 "tighten-retry-backoff" "claude-name"
 
-# T2 (default for real behavior changes): full change spec, no plan workspace
+# T2 (explicit; real behavior changes): full change spec, no plan workspace
 gx branch start --tier T2 "add-oauth-endpoint" "claude-name"
 
-# T3 (current default if --tier is omitted): plan workspace + full OpenSpec
-gx branch start "refactor-payment-pipeline" "claude-name"
+# T3 (explicit; plan-driven): plan workspace + full OpenSpec
+gx branch start --tier T3 "refactor-payment-pipeline" "claude-name"
 ```
 
 `finish` reads the tier from the manifest automatically; passing `--tier` on finish is only needed to override (e.g., upgrading to a fuller gate).

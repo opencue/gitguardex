@@ -496,6 +496,41 @@ test('agent-branch-start honors T1 notes-only OpenSpec scaffolding', () => {
 });
 
 
+test('agent-branch-start DEFAULTS to T1 scaffolding when --tier is omitted', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd('git', ['add', '.'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'apply gx setup'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  // No --tier: must resolve to T1, not the old T3 default.
+  result = runBranchStart(['tighten copy', 'bot'], repoDir, {
+    GUARDEX_OPENSPEC_AUTO_INIT: 'true',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /\[agent-branch-start\] OpenSpec tier: T1/);
+  assert.match(result.stdout, /T1 minimal scaffold/, 'prints the escalation hint');
+
+  const createdWorktree = extractCreatedWorktree(result.stdout);
+  const changeSlug = extractOpenSpecChangeSlug(result.stdout);
+  const changeDir = path.join(createdWorktree, 'openspec', 'changes', changeSlug);
+  assert.equal(fs.existsSync(path.join(changeDir, 'notes.md')), true, 'notes.md present for default T1');
+  assert.equal(fs.existsSync(path.join(changeDir, 'proposal.md')), false, 'no proposal.md for default T1');
+  assert.equal(
+    fs.existsSync(path.join(createdWorktree, 'openspec', 'plan', changeSlug)),
+    false,
+    'default T1 must not create a plan workspace',
+  );
+});
+
+
 test('agent-branch-start honors T2 full change scaffolding without a plan workspace', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
