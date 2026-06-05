@@ -353,6 +353,24 @@ function installMcpServer(repoRoot, { dryRun }) {
   return { status, dest: filePath };
 }
 
+// Inverse of installMcpServer: drop the gx server. Removes the whole .mcp.json
+// only when it held nothing but our server (no other servers AND no other
+// top-level keys); otherwise prunes just the gx entry and preserves the rest.
+function uninstallMcpServer(repoRoot, { dryRun }) {
+  const filePath = path.join(repoRoot, MCP_REL);
+  const config = readJsonIfExists(filePath);
+  if (!config || !config.mcpServers || !config.mcpServers[MCP_SERVER_KEY]) {
+    return { status: 'absent', dest: filePath };
+  }
+  delete config.mcpServers[MCP_SERVER_KEY];
+  const onlyOurs = Object.keys(config.mcpServers).length === 0 && Object.keys(config).length === 1;
+  if (!dryRun) {
+    if (onlyOurs) fs.unlinkSync(filePath);
+    else writeJson(filePath, config, { dryRun: false });
+  }
+  return { status: onlyOurs ? 'removed' : 'pruned', dest: filePath };
+}
+
 function runInstall(rawArgs) {
   const opts = parseInstallArgs(rawArgs);
   const repoRoot = resolveRepoRoot(opts.target);
@@ -562,16 +580,9 @@ function runUninstall(rawArgs) {
     removed.push(`${SETTINGS_REL} (managed entries pruned)`);
   }
   // Remove the gx MCP server from .mcp.json (drop the file if it only held ours)
-  const mcpPath = path.join(repoRoot, MCP_REL);
-  const mcpConfig = readJsonIfExists(mcpPath);
-  if (mcpConfig && mcpConfig.mcpServers && mcpConfig.mcpServers[MCP_SERVER_KEY]) {
-    delete mcpConfig.mcpServers[MCP_SERVER_KEY];
-    const onlyOurs = Object.keys(mcpConfig.mcpServers).length === 0 && Object.keys(mcpConfig).length === 1;
-    if (!opts.dryRun) {
-      if (onlyOurs) fs.unlinkSync(mcpPath);
-      else writeJson(mcpPath, mcpConfig, { dryRun: false });
-    }
-    removed.push(`${MCP_REL} (${onlyOurs ? 'removed' : `'${MCP_SERVER_KEY}' server pruned`})`);
+  const mcpRemoval = uninstallMcpServer(repoRoot, opts);
+  if (mcpRemoval.status !== 'absent') {
+    removed.push(`${MCP_REL} (${mcpRemoval.status === 'removed' ? 'removed' : `'${MCP_SERVER_KEY}' server pruned`})`);
   }
 
   logOk(`Removed ${removed.length} item(s)${opts.dryRun ? ' (dry-run)' : ''}.`);
@@ -652,6 +663,7 @@ module.exports = {
   installHooks,
   installSlashCommands,
   installMcpServer,
+  uninstallMcpServer,
   mcpServerSpec,
   MANAGED_HOOK_FILES,
   MANAGED_SLASH_COMMANDS,

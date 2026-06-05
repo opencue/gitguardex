@@ -213,6 +213,47 @@ test('installMcpServer dry-run does not write .mcp.json', () => {
   assert.equal(fs.existsSync(path.join(repoRoot, claudeModule.MCP_REL)), false);
 });
 
+test('uninstallMcpServer deletes .mcp.json when it only held the gx server', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'removed');
+  assert.equal(fs.existsSync(path.join(repoRoot, claudeModule.MCP_REL)), false);
+});
+
+test('uninstallMcpServer keeps the file (prunes only gx) when other servers exist', () => {
+  const repoRoot = makeRepo();
+  fs.writeFileSync(
+    path.join(repoRoot, claudeModule.MCP_REL),
+    JSON.stringify({ mcpServers: { other: { command: 'x' } } }, null, 2),
+  );
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'pruned');
+  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
+  assert.deepEqual(Object.keys(config.mcpServers), ['other'], 'gx removed, other kept');
+});
+
+test('uninstallMcpServer preserves a file that has other top-level keys (no deletion)', () => {
+  const repoRoot = makeRepo();
+  fs.writeFileSync(
+    path.join(repoRoot, claudeModule.MCP_REL),
+    JSON.stringify({ $schema: 'https://example/schema.json', mcpServers: {} }, null, 2),
+  );
+  claudeModule.installMcpServer(repoRoot, { dryRun: false }); // adds gx
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'pruned', 'extra top-level key blocks file deletion');
+  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
+  assert.equal(config.$schema, 'https://example/schema.json', 'unrelated top-level key preserved');
+  assert.equal(config.mcpServers[claudeModule.MCP_SERVER_KEY], undefined, 'gx removed');
+});
+
+test('uninstallMcpServer is a no-op when no .mcp.json exists', () => {
+  const repoRoot = makeRepo();
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'absent');
+});
+
 test('agent_branch_advisor.py is a managed (distributed) hook file', () => {
   assert.ok(
     claudeModule.MANAGED_HOOK_FILES.includes('agent_branch_advisor.py'),
