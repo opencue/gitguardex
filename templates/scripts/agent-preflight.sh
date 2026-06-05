@@ -22,17 +22,43 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 
-ran=0
+ran=0        # steps that PASSED
+attempted=0  # steps that RAN (pass or fail) — drives stack detection
 fail=0
+# Quiet by default: a green `npm test` run can be hundreds of lines of TAP that
+# floods the agent's context on every `gx branch finish`. Capture each step's
+# output, print a one-line summary on success, and surface only the tail on
+# failure (where it is actually useful). Stream full output live with
+# GUARDEX_PREFLIGHT_VERBOSE=1.
+GUARDEX_PREFLIGHT_FAIL_TAIL="${GUARDEX_PREFLIGHT_FAIL_TAIL:-40}"
 run_step() {
   local label="$1"
   shift
   echo "[agent-preflight] -> $label"
-  if "$@"; then
-    ran=$((ran + 1))
-    echo "[agent-preflight]    ok"
+  attempted=$((attempted + 1))
+  if [[ "${GUARDEX_PREFLIGHT_VERBOSE:-0}" == "1" ]]; then
+    if "$@"; then
+      ran=$((ran + 1))
+      echo "[agent-preflight]    ok"
+    else
+      echo "[agent-preflight] FAIL: $label" >&2
+      fail=1
+    fi
+    return 0
+  fi
+  local out rc
+  # `if` keeps `set -e` from aborting on a failing step before we capture rc.
+  if out="$("$@" 2>&1)"; then
+    rc=0
   else
-    echo "[agent-preflight] FAIL: $label" >&2
+    rc=$?
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    ran=$((ran + 1))
+    echo "[agent-preflight]    ok ($(printf '%s\n' "$out" | wc -l | tr -d ' ') lines suppressed; GUARDEX_PREFLIGHT_VERBOSE=1 to show)"
+  else
+    echo "[agent-preflight] FAIL: $label (exit $rc) — last ${GUARDEX_PREFLIGHT_FAIL_TAIL} lines:" >&2
+    printf '%s\n' "$out" | tail -n "$GUARDEX_PREFLIGHT_FAIL_TAIL" >&2
     fail=1
   fi
 }
@@ -74,7 +100,7 @@ if [[ -f pyproject.toml ]] && command -v ruff >/dev/null 2>&1; then
   run_step "ruff check" ruff check .
 fi
 
-if [[ "$ran" -eq 0 ]]; then
+if [[ "$attempted" -eq 0 ]]; then
   echo "[agent-preflight] No recognized project stack detected; skipping checks." >&2
   exit 0
 fi
