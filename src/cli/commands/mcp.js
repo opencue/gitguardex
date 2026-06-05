@@ -27,13 +27,16 @@ function printUsage() {
 }
 
 function fmtAgent(a) {
-  const pr = a.pr ? `PR #${a.pr.number} (${a.pr.state}${a.pr.isDraft ? ', draft' : ''})` : a.pushed ? 'pushed, no open PR' : 'local only';
+  const pr = a.prLookupError
+    ? `PR? (lookup failed)`
+    : a.pr ? `PR #${a.pr.number} (${a.pr.state}${a.pr.isDraft ? ', draft' : ''})` : a.pushed ? 'pushed, no open PR' : 'local only';
   const locks = a.locks && a.locks.length ? `${a.locks.length} lock(s)` : 'no locks';
   const dirty = a.dirty && a.dirty.length ? `editing ${a.dirty.length} file(s)` : 'clean';
   const when = a.lastCommit && a.lastCommit.date ? a.lastCommit.date.replace('T', ' ').replace(/\..*$/, '') : '?';
   const warn = a.warning ? '  ⚠ ON PRIMARY CHECKOUT' : '';
+  const stale = a.stale ? `  ⚠ STALE ${a.ageDays}d` : '';
   return [
-    `• ${a.repo}  ${a.branch}${warn}`,
+    `• ${a.repo}  ${a.branch}${warn}${stale}`,
     `    agent=${a.agent || '?'}  task=${a.task}`,
     `    ${dirty}  ${locks}  ${pr}  last=${when}`,
     `    worktree=${a.worktree}`,

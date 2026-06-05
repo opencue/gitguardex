@@ -139,6 +139,76 @@ test('indexPrsByBranch keys a gh pr-list array by branch and slims the payload',
   assert.deepEqual(collect.indexPrsByBranch(null), {}, 'null input -> empty map');
 });
 
+test('daysSince computes whole-day age and tolerates bad input', () => {
+  const now = Date.parse('2026-06-15T00:00:00Z');
+  assert.equal(collect.daysSince('2026-06-01T00:00:00Z', now), 14);
+  assert.equal(collect.daysSince('2026-06-15T00:00:00Z', now), 0);
+  assert.equal(collect.daysSince(null, now), null);
+  assert.equal(collect.daysSince('not-a-date', now), null);
+});
+
+test('an old lane (no PR, clean) is flagged stale; a fresh lane is not', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-stale-'));
+  const main = path.join(root, 'mainrepo');
+  fs.mkdirSync(main);
+  const g = (args, env = {}) => {
+    const r = cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+      cwd: main, encoding: 'utf8', env: { ...process.env, ...env },
+    });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+    return r.stdout;
+  };
+  g(['init', '-q', '-b', 'main']);
+  g(['config', 'user.email', 't@e.com']);
+  g(['config', 'user.name', 'T']);
+  g(['config', 'commit.gpgsign', 'false']);
+  fs.writeFileSync(path.join(main, 'README.md'), 'hi\n');
+  g(['add', '.']);
+  const oldDate = '2026-01-01T00:00:00'; // ~5 months before "now" => well past STALE_DAYS
+  g(['commit', '-q', '-m', 'seed'], { GIT_AUTHOR_DATE: oldDate, GIT_COMMITTER_DATE: oldDate });
+  // old lane: points at the old seed commit
+  g(['worktree', 'add', '-q', '-b', 'agent/old/x', path.join(root, 'wt-old')]);
+  // fresh lane: a brand-new commit
+  g(['worktree', 'add', '-q', '-b', 'agent/new/y', path.join(root, 'wt-new')]);
+  cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '-q', '-m', 'fresh'], {
+    cwd: path.join(root, 'wt-new'), encoding: 'utf8',
+  });
+  try {
+    const agents = collect.collectRepoAgents(main, { includePrs: false });
+    const old = agents.find((a) => a.branch === 'agent/old/x');
+    const fresh = agents.find((a) => a.branch === 'agent/new/y');
+    assert.ok(old.ageDays > collect.STALE_DAYS, `old lane ageDays=${old.ageDays} should exceed ${collect.STALE_DAYS}`);
+    assert.equal(old.stale, true, 'old + no PR + clean => stale');
+    assert.equal(old.prLookupError, null, 'includePrs:false => no lookup error');
+    assert.equal(fresh.stale, false, 'fresh lane is not stale');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a failed PR lookup surfaces as prLookupError (distinct from "no open PR")', () => {
+  // A repo with no GitHub remote -> `gh pr list` cannot succeed -> error is set.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-prerr-'));
+  const g = (args) => cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: root, encoding: 'utf8' });
+  g(['init', '-q', '-b', 'main']);
+  g(['config', 'user.email', 't@e.com']);
+  g(['config', 'user.name', 'T']);
+  g(['config', 'commit.gpgsign', 'false']);
+  fs.writeFileSync(path.join(root, 'f'), 'x');
+  g(['add', '.']);
+  g(['commit', '-q', '-m', 's']);
+  g(['worktree', 'add', '-q', '-b', 'agent/p/q', path.join(root, 'wt')]);
+  try {
+    const agents = collect.collectRepoAgents(root, { includePrs: true });
+    assert.equal(agents.length, 1);
+    assert.equal(typeof agents[0].prLookupError, 'string', 'gh failure surfaces as a prLookupError string');
+    assert.ok(agents[0].prLookupError.length > 0);
+    assert.equal(agents[0].pr, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('an agent editing on the PRIMARY checkout is surfaced with a warning', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-primary-'));
   try {

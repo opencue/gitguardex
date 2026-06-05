@@ -19,7 +19,7 @@ const TOOLS = [
   {
     name: 'list_agents',
     description:
-      'List every active agent lane across all discovered repos: repo, branch, worktree, task, dirty (files changed RIGHT NOW), held file locks, last commit, the PR it is shipping, and warnings — e.g. a lane editing the primary checkout (the harness should act on that warning by moving to `gx branch start`). Use this to see who is working on what before you start. Read-only.',
+      'List every active agent lane across all discovered repos: repo, branch, worktree, task, dirty (files changed RIGHT NOW), held file locks, last commit, ageDays, the PR it is shipping (with prLookupError set when the gh lookup itself failed, vs no open PR), stale (old + no PR + clean = a prune candidate), and warnings — e.g. a lane editing the primary checkout (the harness should act on that warning by moving to `gx branch start`). Use this to see who is working on what before you start. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
