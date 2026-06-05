@@ -335,6 +335,7 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
   const mainRoot = mainRepoRoot(cwd) || here;
   const branch = git(here, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const self = listWorktrees(mainRoot).find((w) => path.resolve(w.path) === path.resolve(here));
+  const lc = branch ? lastCommit(mainRoot, branch) : null;
   return {
     repo: repoName(mainRoot),
     repoPath: mainRoot,
@@ -346,8 +347,8 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
     dirty: dirtyFiles(here),
     locks: branch ? locksByBranch(here)[branch] || [] : [], // this lane's own claims
     pr: includePr && branch ? safePr(mainRoot, branch) : null,
-    lastCommit: branch ? lastCommit(mainRoot, branch) : null,
-    ageDays: branch ? daysSince((lastCommit(mainRoot, branch) || {}).date, Date.now()) : null,
+    lastCommit: lc,
+    ageDays: lc ? daysSince(lc.date, Date.now()) : null,
   };
 }
 
