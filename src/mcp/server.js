@@ -19,13 +19,13 @@ const TOOLS = [
   {
     name: 'list_agents',
     description:
-      'List every active agent lane across all discovered repos: repo, branch, worktree, task, dirty (files changed RIGHT NOW), held file locks, last commit, the PR it is shipping (opt-in), and warnings — e.g. a lane editing the primary checkout (the harness should act on that warning by moving to `gx branch start`). Use this to see who is working on what before you start. Read-only.',
+      'List every active agent lane across all discovered repos: repo, branch, worktree, task, dirty (files changed RIGHT NOW), held file locks, last commit, the PR it is shipping, and warnings — e.g. a lane editing the primary checkout (the harness should act on that warning by moving to `gx branch start`). Use this to see who is working on what before you start. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
         include_prs: {
           type: 'boolean',
-          description: 'Fetch PR state per pushed branch via gh (slower, network fan-out). Default FALSE here — pass true when you need PRs, or use repo_state for one repo.',
+          description: 'Fetch PR state via gh (one call per repo that has lanes). Default true; pass false to skip gh entirely.',
         },
         roots: {
           type: 'array',
@@ -72,11 +72,11 @@ const TOOLS = [
 function callTool(name, args = {}) {
   switch (name) {
     case 'list_agents':
-      // PRs are opt-in here: a cross-repo gh fan-out can exceed the client
-      // timeout. repo_state/my_context (narrow scope) keep PRs on by default.
+      // PRs on by default: one gh call per repo that has active lanes (most
+      // repos have none, so they cost nothing). Pass include_prs:false to skip.
       return collect.collectAllAgents({
         roots: args.roots,
-        includePrs: args.include_prs === true,
+        includePrs: args.include_prs !== false,
         limit: args.limit,
       });
     case 'repo_state':

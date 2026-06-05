@@ -120,6 +120,25 @@ test('a lane reports the files it is editing RIGHT NOW (uncommitted), independen
   }
 });
 
+test('indexPrsByBranch keys a gh pr-list array by branch and slims the payload', () => {
+  const prs = [
+    {
+      number: 7, url: 'u7', state: 'OPEN', isDraft: false, title: 'A', baseRefName: 'main',
+      headRefName: 'agent/alice/x', reviewDecision: 'APPROVED', mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN', extra: 'dropped',
+    },
+    { number: 9, url: 'u9', state: 'OPEN', headRefName: 'agent/bob/y' },
+    { number: 0, headRefName: null }, // no branch -> skipped
+  ];
+  const map = collect.indexPrsByBranch(prs);
+  assert.deepEqual(Object.keys(map).sort(), ['agent/alice/x', 'agent/bob/y']);
+  assert.equal(map['agent/alice/x'].number, 7);
+  assert.equal(map['agent/alice/x'].reviewDecision, 'APPROVED');
+  assert.equal(map['agent/alice/x'].extra, undefined, 'unknown fields are slimmed out');
+  assert.equal(map['agent/bob/y'].reviewDecision, null, 'missing fields default to null');
+  assert.deepEqual(collect.indexPrsByBranch(null), {}, 'null input -> empty map');
+});
+
 test('an agent editing on the PRIMARY checkout is surfaced with a warning', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-primary-'));
   try {
