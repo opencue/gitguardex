@@ -100,6 +100,8 @@ function findLatestPrForBranch(repoRoot, branch) {
  * correlate many branches to their PRs without one gh round-trip per branch.
  * Best-effort: returns [] when gh is missing / unauthenticated / offline
  * (never throws), so a cross-repo scan degrades gracefully.
+ * NB: `limit` (default 100) bounds correlation COVERAGE, not just payload size —
+ * a repo with more than `limit` open PRs may leave some lanes showing pr:null.
  */
 function listOpenPrsForRepo(repoRoot, { limit = 100 } = {}) {
   const result = ghJson(repoRoot, [

@@ -160,18 +160,7 @@ function safePr(repoRoot, branch) {
   if (!branchHasUpstream(repoRoot, branch)) return null;
   try {
     const pr = findOpenPrForBranch(repoRoot, branch);
-    if (!pr) return null;
-    return {
-      number: pr.number,
-      url: pr.url,
-      state: pr.state,
-      isDraft: pr.isDraft,
-      title: pr.title,
-      baseRefName: pr.baseRefName,
-      reviewDecision: pr.reviewDecision || null,
-      mergeable: pr.mergeable || null,
-      mergeStateStatus: pr.mergeStateStatus || null,
-    };
+    return pr ? slimPr(pr) : null;
   } catch {
     return null;
   }
