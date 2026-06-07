@@ -215,6 +215,7 @@ def list_worktree_roots(repo_root: Path) -> list[Path]:
     try:
         out = run_git(['worktree', 'list', '--porcelain'], cwd=repo_root)
     except LockError:
+        print('[agent-file-locks] Warning: `git worktree list` failed; enforcing locks for THIS worktree only.', file=sys.stderr)
         return [repo_root]
     roots: list[Path] = []
     for line in out.splitlines():
@@ -233,6 +234,7 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
         try:
             state = load_state(root)
         except LockError:
+            print(f'[agent-file-locks] Warning: could not read the lock file in {root}; its claims are not enforced this run.', file=sys.stderr)
             continue
         for file_path, entry in state['locks'].items():
             merged.setdefault(file_path, []).append(entry)
@@ -266,12 +268,18 @@ def cross_worktree_lock(repo_root: Path):
     except (OSError, LockError):
         yield
         return
+    locked = False
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            locked = True
+        except OSError:
+            pass  # e.g. NFS / fd limits: run unserialized rather than crash the command
         yield
     finally:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if locked:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
 
@@ -321,6 +329,9 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
 
 
 def cmd_allow_delete(args: argparse.Namespace, repo_root: Path) -> int:
+    # Operates on THIS worktree's lock file only — run it from the worktree where
+    # the claim was made. (claim/validate union across worktrees; the write side
+    # stays local.)
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
     files = [normalize_repo_path(repo_root, p) for p in args.files]
@@ -355,6 +366,8 @@ def cmd_allow_delete(args: argparse.Namespace, repo_root: Path) -> int:
 
 
 def cmd_release(args: argparse.Namespace, repo_root: Path) -> int:
+    # Local-only, like allow-delete: releases claims recorded in THIS worktree's
+    # lock file. Run it from the worktree that made the claim.
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
     agent = resolve_agent(args)
@@ -375,31 +388,42 @@ def cmd_release(args: argparse.Namespace, repo_root: Path) -> int:
 
 
 def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
-    state = load_state(repo_root)
-    locks: dict[str, dict[str, Any]] = state['locks']
+    # Union across worktrees so status reflects what claim/validate now enforce —
+    # a sibling worktree's claims would otherwise be invisible here.
     agent_filter = resolve_agent(args)
+    roots = list_worktree_roots(repo_root)
 
-    rows: list[tuple[str, str, str, str, bool]] = []
-    for file_path, entry in sorted(locks.items()):
-        branch = str(entry.get('branch', ''))
-        if args.branch and branch != args.branch:
+    rows: list[tuple[str, str, str, str, bool, str]] = []
+    for root in roots:
+        try:
+            locks = load_state(root)['locks']
+        except LockError:
             continue
-        agent = str(entry.get('agent', ''))
-        if agent_filter and agent != agent_filter:
-            continue
-        claimed_at = str(entry.get('claimed_at', ''))
-        allow_delete = bool(entry.get('allow_delete', False))
-        rows.append((file_path, branch, agent, claimed_at, allow_delete))
+        for file_path, entry in locks.items():
+            branch = str(entry.get('branch', ''))
+            if args.branch and branch != args.branch:
+                continue
+            agent = str(entry.get('agent', ''))
+            if agent_filter and agent != agent_filter:
+                continue
+            claimed_at = str(entry.get('claimed_at', ''))
+            allow_delete = bool(entry.get('allow_delete', False))
+            rows.append((file_path, branch, agent, claimed_at, allow_delete, str(root)))
+    rows.sort()
 
     if not rows:
         print('[agent-file-locks] No active locks.')
         return 0
 
+    multi = len(roots) > 1
     print('[agent-file-locks] Active locks:')
-    for file_path, branch, agent, claimed_at, allow_delete in rows:
+    for file_path, branch, agent, claimed_at, allow_delete, worktree in rows:
         delete_flag = ' delete-ok' if allow_delete else ''
         agent_flag = f' [{agent}]' if agent else ''
-        print(f'  - {file_path} | {branch}{agent_flag} | {claimed_at}{delete_flag}')
+        # Annotate the worktree only when there is more than one, so a single-
+        # worktree repo's output is unchanged.
+        wt_flag = f' @ {worktree}' if multi else ''
+        print(f'  - {file_path} | {branch}{agent_flag} | {claimed_at}{delete_flag}{wt_flag}')
     return 0
 
 
