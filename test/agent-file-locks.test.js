@@ -184,3 +184,54 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.equal(v.status, 0, `committing one's own claim must pass: ${v.stderr}`);
   });
 });
+
+function claimAsync(cwd, branch, file, agent) {
+  const args = ['claim', '--branch', branch];
+  if (agent) args.push('--agent', agent);
+  args.push(file);
+  return new Promise((resolve) => {
+    const child = cp.spawn('python3', [LOCK_PY, ...args], { cwd });
+    let err = '';
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('close', (code) => resolve({ code, err }));
+  });
+}
+
+function readLocks(repoDir) {
+  const lockPath = path.join(repoDir, '.omx', 'state', 'agent-file-locks.json');
+  return JSON.parse(fs.readFileSync(lockPath, 'utf8')).locks || {};
+}
+
+defineSpawnSuite('agent-file-locks atomic claims (G3)', () => {
+  test('concurrent claims of DISTINCT files are all recorded (no lost updates)', async () => {
+    const repoDir = makeRepo();
+    const N = 12;
+    const files = Array.from({ length: N }, (_, i) => `f${i}.txt`);
+    files.forEach((f) => writeFile(repoDir, f));
+
+    const results = await Promise.all(files.map((f) => claimAsync(repoDir, 'agent/x/lane', f)));
+    for (const r of results) assert.equal(r.code, 0, r.err);
+
+    const locks = readLocks(repoDir);
+    assert.equal(
+      Object.keys(locks).length,
+      N,
+      `all ${N} concurrent claims must survive the shared lock, got ${Object.keys(locks).length}`,
+    );
+  });
+
+  test('concurrent claims of the SAME file by different agents: exactly one wins', async () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'contested.txt');
+    const agents = ['a', 'b', 'c', 'd', 'e'];
+
+    const results = await Promise.all(
+      agents.map((a) => claimAsync(repoDir, 'agent/x/lane', 'contested.txt', a)),
+    );
+    const winners = results.filter((r) => r.code === 0).length;
+    assert.equal(winners, 1, `exactly one claimant must win the contested file, got ${winners}`);
+
+    const entry = readLocks(repoDir)['contested.txt'];
+    assert.ok(entry && entry.agent, 'a single owner is recorded for the contested file');
+  });
+});

@@ -25,10 +25,16 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # non-POSIX (e.g. Windows): cross-worktree locking degrades to best-effort
+    fcntl = None
 
 
 LOCK_FILE_RELATIVE = Path('.omx/state/agent-file-locks.json')
@@ -231,6 +237,43 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
         for file_path, entry in state['locks'].items():
             merged.setdefault(file_path, []).append(entry)
     return merged
+
+
+def common_git_dir(repo_root: Path) -> Path:
+    """Absolute git common dir — shared by every worktree of the repo."""
+    common = run_git(['rev-parse', '--git-common-dir'], cwd=repo_root)
+    path = Path(common)
+    if not path.is_absolute():
+        path = repo_root / path
+    return path.resolve()
+
+
+@contextmanager
+def cross_worktree_lock(repo_root: Path):
+    """Exclusive OS lock shared by ALL worktrees of the repo (it lives in the
+    common git dir), so concurrent claim/release/validate runs — in the same or
+    different worktrees — are serialized. Without it, two claims race on the
+    read-modify-write of separate lock files and can both win the same path or
+    drop each other's writes. Best-effort: a no-op where fcntl is unavailable or
+    the lock file can't be created, so locking never hard-fails a command."""
+    if fcntl is None:
+        yield
+        return
+    try:
+        lock_path = common_git_dir(repo_root) / 'agent-file-locks.lock'
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, 'w')
+    except (OSError, LockError):
+        yield
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
@@ -490,25 +533,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def dispatch_command(args: argparse.Namespace, repo_root: Path) -> int:
+    if args.command == 'claim':
+        return cmd_claim(args, repo_root)
+    if args.command == 'allow-delete':
+        return cmd_allow_delete(args, repo_root)
+    if args.command == 'release':
+        return cmd_release(args, repo_root)
+    if args.command == 'status':
+        return cmd_status(args, repo_root)
+    if args.command == 'validate':
+        if not args.staged and not args.files:
+            raise LockError('validate requires --staged or one or more file paths')
+        return cmd_validate(args, repo_root)
+    raise LockError(f'Unknown command: {args.command}')
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
     try:
         repo_root = resolve_repo_root()
-        if args.command == 'claim':
-            return cmd_claim(args, repo_root)
-        if args.command == 'allow-delete':
-            return cmd_allow_delete(args, repo_root)
-        if args.command == 'release':
-            return cmd_release(args, repo_root)
-        if args.command == 'status':
-            return cmd_status(args, repo_root)
-        if args.command == 'validate':
-            if not args.staged and not args.files:
-                raise LockError('validate requires --staged or one or more file paths')
-            return cmd_validate(args, repo_root)
-        raise LockError(f'Unknown command: {args.command}')
+        # Serialize state-changing commands (and validate's snapshot read) across
+        # ALL worktrees with one shared lock, so concurrent runs can't clobber
+        # each other or both win the same file. status is a pure read -> unlocked.
+        if args.command in {'claim', 'allow-delete', 'release', 'validate'}:
+            with cross_worktree_lock(repo_root):
+                return dispatch_command(args, repo_root)
+        return dispatch_command(args, repo_root)
     except LockError as exc:
         print(f'[agent-file-locks] {exc}', file=sys.stderr)
         return 2
