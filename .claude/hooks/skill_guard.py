@@ -169,6 +169,21 @@ def resolve_repo_root(file_path: str, cwd: str) -> Path:
     return Path.cwd()
 
 
+def resolve_target_path(target: str, repo_root: Path, cwd: str) -> Path:
+    """Absolute, canonicalized path for a tool target.
+
+    Relative targets resolve against the session cwd (which is inside the repo),
+    absolute targets are taken as-is; both are `.resolve()`d so `..`/symlinks are
+    canonicalized. Shared by containment checks and per-target branch resolution
+    so they agree on exactly which file an edit lands on.
+    """
+    candidate = Path(target).expanduser()
+    if not candidate.is_absolute():
+        base = Path(cwd) if cwd else repo_root
+        candidate = base / candidate
+    return candidate.resolve()
+
+
 def path_within_repo(target: str, repo_root: Path, cwd: str) -> bool:
     """True when `target` resolves to a path inside the guarded repo working tree.
 
@@ -185,11 +200,7 @@ def path_within_repo(target: str, repo_root: Path, cwd: str) -> bool:
     if not target:
         return False
     try:
-        candidate = Path(target).expanduser()
-        if not candidate.is_absolute():
-            base = Path(cwd) if cwd else repo_root
-            candidate = base / candidate
-        candidate = candidate.resolve()
+        candidate = resolve_target_path(target, repo_root, cwd)
         candidate.relative_to(Path(repo_root).resolve())
         return True
     except (ValueError, OSError):
@@ -706,21 +717,29 @@ def main() -> None:
     if not in_repo_targets:
         sys.exit(0)
 
-    protected_branch_error = ensure_protected_branch_edit_allowed(repo_root)
-    if protected_branch_error:
-        emit_event(
-            session_id,
-            "hook.invoked",
-            {
-                "hook": "skill_guard",
-                "trigger": "PreToolUse",
-                "outcome": "protected_branch_blocked",
-                "matched_count": 1,
-                "exit_code": 2,
-            },
-        )
-        print(protected_branch_error, file=sys.stderr)
-        sys.exit(2)
+    # Judge each in-repo target by the branch of ITS OWN worktree, not the
+    # session cwd's. A file nested in a linked agent worktree (e.g. under
+    # .omc/agent-worktrees/) is physically inside the protected checkout but is
+    # checked out on an agent branch, so editing it can never touch the protected
+    # branch and must be allowed even while the session sits on a protected base.
+    # Block on the first target that actually resolves to a protected branch.
+    for target_path in in_repo_targets:
+        abs_target = resolve_target_path(target_path, repo_root, cwd)
+        protected_branch_error = ensure_protected_branch_edit_allowed(str(abs_target))
+        if protected_branch_error:
+            emit_event(
+                session_id,
+                "hook.invoked",
+                {
+                    "hook": "skill_guard",
+                    "trigger": "PreToolUse",
+                    "outcome": "protected_branch_blocked",
+                    "matched_count": 1,
+                    "exit_code": 2,
+                },
+            )
+            print(protected_branch_error, file=sys.stderr)
+            sys.exit(2)
 
     for target_path in in_repo_targets:
         lock_error = ensure_main_rs_lock(target_path, session_id)
