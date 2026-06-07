@@ -129,6 +129,7 @@ If a change publishes or bumps a package version, the same change must also upda
 | Subdoc | What's inside |
 |---|---|
 | [`.agent/TOKEN-DISCIPLINE.md`](.agent/TOKEN-DISCIPLINE.md) | Token-efficient execution: planning phases, token/command/git discipline, reporting format, verification, and multi-agent token budget supplement. |
+| [`.agent/MULTI-AGENT-EFFICIENCY.md`](.agent/MULTI-AGENT-EFFICIENCY.md) | Token-efficient multi-agent work: scout-then-implement, one-job-per-agent, parallel split-role review, model routing, and when not to fan out. |
 | [`.agent/GUARDEX-TOGGLE.md`](.agent/GUARDEX-TOGGLE.md) | `GUARDEX_ON` toggle semantics in repo-root `.env` (disable / re-enable Guardex workflow). |
 | [`.agent/CLAUDE-CODE-WORKFLOW.md`](.agent/CLAUDE-CODE-WORKFLOW.md) | Full Claude Code workflow: tiering table with examples, sandbox + lock + finish steps, default Claude finish (non-negotiable), `skill_guard` notes. |
 | [`.agent/OPENSPEC-WORKFLOW.md`](.agent/OPENSPEC-WORKFLOW.md) | OpenSpec-first workflow, philosophy, tooling-freshness commands, source-of-truth layout, documentation model (spec + context), and `/opsx:*` command list. |
@@ -288,6 +289,16 @@ Default: less word, same proof.
 - Startup/resume summaries stay tiny: `branch`, `task`, `blocker`, `next`, `evidence`.
 - Keep raw terminal interaction out of long-lived context: retain only process, action sent, current result, next action.
 - Full commands/stdout belong in logs; prompt context keeps only the latest 1–2 checkpoints plus the newest tool-result summary.
+
+### Multi-agent token efficiency
+
+Fan-out saves tokens only when each agent has a narrow job and returns a compact result. When reviewing or implementing here:
+
+- **Scout, then implement.** A cheap-model subagent locates the 3-5 files that matter and returns a summary; edit those inline. Don't read 20+ files in the main context to find the 4 that count.
+- **One agent, one job.** Each subagent gets a single objective and returns one output (analyze OR fix), not a muddle of both.
+- **Review by parallel role.** Run correctness / security / consistency reviewers in parallel and synthesize — cheaper and sharper than one reviewer holding the whole diff. The finish review-gate is the place for it.
+- **Route models to task weight.** scan/explore/draft → cheap (e.g. `haiku`); implement/debug → mid (`sonnet`); architecture/complex review → top (`opus`). `CLAUDE_CODE_SUBAGENT_MODEL` sets the subagent tier.
+- **Don't fan out trivial work.** One-file tweaks and bounded edits stay direct (see Task-size routing) — a subagent's setup cost only pays off on a wide read or review surface.
 
 ### Version bumps
 
