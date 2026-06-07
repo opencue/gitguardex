@@ -85,3 +85,65 @@ test('serve() reports a malformed line as a JSON-RPC parse error (-32700, id nul
   assert.equal(msg.id, null);
   assert.equal(msg.error.code, -32700);
 });
+
+test('list_agents is a compact radar by default and full records with detail:true', () => {
+  // Stub the collector with one synthetic lane so coverage does not depend on
+  // the environment having active agent worktrees (CI has none).
+  const collect = require('../src/mcp/collect');
+  const orig = collect.collectAllAgents;
+  collect.collectAllAgents = () => ({
+    agents: [
+      {
+        repo: 'r',
+        repoPath: '/abs/r',
+        branch: 'agent/x/y',
+        agent: 'x',
+        task: 'do a thing',
+        worktree: '/abs/r/.omc/agent-worktrees/r__x__y',
+        onPrimaryCheckout: false,
+        pushed: true,
+        dirty: ['a.js', 'b.js'],
+        locks: ['a.js'],
+        lastCommit: { date: '2026-06-07T10:00:00.000Z', subject: 'do a thing' },
+        pr: { number: 7, url: 'u', state: 'OPEN' },
+        prLookupError: null,
+        ageDays: 0,
+        stale: false,
+      },
+    ],
+    scannedRepos: 1,
+    roots: [],
+    errors: [],
+  });
+  const call = (args) =>
+    JSON.parse(
+      server.dispatch({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'list_agents', arguments: { include_prs: false, ...args } },
+      }).result.content[0].text,
+    );
+  try {
+    const slim = call({});
+    const full = call({ detail: true });
+    assert.equal('worktree' in slim.agents[0], false, 'radar lane drops the worktree path');
+    assert.equal(slim.agents[0].dirty, 2, 'radar dirty is a count');
+    assert.equal(slim.agents[0].locks, 1, 'radar locks is a count');
+    assert.equal(slim.agents[0].pr, 7, 'radar pr collapses to its number');
+    assert.equal('worktree' in full.agents[0], true, 'detail keeps the worktree path');
+    assert.deepEqual(full.agents[0].dirty, ['a.js', 'b.js'], 'detail keeps the dirty file list');
+  } finally {
+    collect.collectAllAgents = orig;
+  }
+});
+
+test('tools/call serializes results compactly (no pretty-print whitespace)', () => {
+  const text = server.dispatch({
+    jsonrpc: '2.0',
+    id: 8,
+    method: 'tools/call',
+    params: { name: 'my_context', arguments: {} },
+  }).result.content[0].text;
+  assert.ok(!text.includes('\n'), 'tool result is single-line compact JSON');
+});

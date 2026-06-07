@@ -329,6 +329,29 @@ function whoOwns(file, { cwd = process.cwd(), repoPath } = {}) {
   return { file: rel, owner: owners.length === 1 ? owners[0] : null, owners, conflict: owners.length > 1 };
 }
 
+// Slim "radar" projection of a lane for list_agents — who-is-on-what at a
+// glance, ~80% smaller than the full record. File LISTS collapse to counts and
+// the worktree path is dropped; an agent that needs detail (worktree path,
+// exact dirty/lock files, full PR) calls repo_state / my_context, or passes
+// detail:true to list_agents. Pure.
+function radarRecord(a) {
+  const r = { repo: a.repo, branch: a.branch };
+  if (a.agent) r.agent = a.agent;
+  if (a.task && a.task !== a.branch) r.task = a.task;
+  if (a.dirty && a.dirty.length) r.dirty = a.dirty.length;
+  if (a.locks && a.locks.length) r.locks = a.locks.length;
+  if (a.pr && a.pr.number != null) r.pr = a.pr.number;
+  if (a.prLookupError) r.prLookupError = a.prLookupError;
+  if (a.lastCommit && a.lastCommit.date) r.last = a.lastCommit.date.slice(0, 10);
+  if (a.stale) {
+    r.stale = true;
+    if (a.ageDays != null) r.ageDays = a.ageDays; // age is the actionable bit for a prune candidate
+  }
+  if (a.warning) r.onPrimary = true; // lane editing the primary checkout (unsafe)
+  if (a.pushed === false) r.unpushed = true;
+  return r;
+}
+
 function myContext({ cwd = process.cwd(), includePr = true } = {}) {
   const here = git(cwd, ['rev-parse', '--show-toplevel']);
   if (!here) return { error: 'not a git repo', cwd };
@@ -358,6 +381,7 @@ module.exports = {
   repoState,
   whoOwns,
   myContext,
+  radarRecord,
   indexPrsByBranch,
   daysSince,
   STALE_DAYS,

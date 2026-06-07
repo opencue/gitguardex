@@ -19,7 +19,7 @@ const TOOLS = [
   {
     name: 'list_agents',
     description:
-      'List every active agent lane across all discovered repos: repo, branch, worktree, task, dirty (files changed RIGHT NOW), held file locks, last commit, ageDays, the PR it is shipping (with prLookupError set when the gh lookup itself failed, vs no open PR), stale (old + no PR + clean = a prune candidate), and warnings — e.g. a lane editing the primary checkout (the harness should act on that warning by moving to `gx branch start`). Use this to see who is working on what before you start. Read-only.',
+      'List every active agent lane across all discovered repos. Returns a COMPACT radar by default — per lane: repo, branch, agent, task, dirty (count of files changed right now), locks (count), pr (number), last (commit date), and flags stale / onPrimary / unpushed when set. Use it to see who is working on what before you start. For full detail on a lane (worktree path, the actual dirty/lock file lists, full PR), call repo_state or my_context, or pass detail:true here (where the onPrimary flag appears as warning + onPrimaryCheckout instead). Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -33,6 +33,7 @@ const TOOLS = [
           description: 'Override repo search roots. Default: ~/Documents, ~/code, ~/src, ~/projects.',
         },
         limit: { type: 'number', description: 'Max number of repos to scan.' },
+        detail: { type: 'boolean', description: 'Return full lane records (worktree path, dirty/lock file lists, full PR) instead of the compact radar. Default false.' },
       },
     },
   },
@@ -71,14 +72,19 @@ const TOOLS = [
 
 function callTool(name, args = {}) {
   switch (name) {
-    case 'list_agents':
+    case 'list_agents': {
       // PRs on by default: one gh call per repo that has active lanes (most
       // repos have none, so they cost nothing). Pass include_prs:false to skip.
-      return collect.collectAllAgents({
+      const full = collect.collectAllAgents({
         roots: args.roots,
         includePrs: args.include_prs !== false,
         limit: args.limit,
       });
+      // Compact radar by default (~80% fewer tokens); detail:true keeps the
+      // full records for callers that need worktree paths / file lists.
+      if (args.detail) return full;
+      return { ...full, agents: full.agents.map(collect.radarRecord) };
+    }
     case 'repo_state':
       return collect.repoState(args.repo || process.cwd(), { includePrs: args.include_prs !== false });
     case 'who_owns':
@@ -118,7 +124,7 @@ function dispatch(msg) {
       const name = params && params.name;
       const args = (params && params.arguments) || {};
       const result = callTool(name, args);
-      return ok(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+      return ok(id, { content: [{ type: 'text', text: JSON.stringify(result) }] });
     }
     if (method === 'ping') return ok(id, {});
     if (isNotification) return null; // e.g. notifications/initialized

@@ -227,3 +227,41 @@ test('an agent editing on the PRIMARY checkout is surfaced with a warning', () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('radarRecord slims a lane to counts + essentials (well under 40% of the full record)', () => {
+  const full = {
+    repo: 'gitguardex',
+    repoPath: '/home/u/Documents/gitguardex',
+    branch: 'agent/claude/some-fairly-long-task-slug-2026-06-07-18-29',
+    agent: 'claude',
+    task: 'some fairly long task slug',
+    worktree: '/home/u/Documents/gitguardex/.omc/agent-worktrees/gitguardex__claude__some-fairly-long-task-slug-2026-06-07-18-29',
+    onPrimaryCheckout: false,
+    pushed: false,
+    dirty: ['src/a.js', 'src/b.js', 'src/c.js', 'test/a.test.js'],
+    locks: ['src/a.js'],
+    lastCommit: { date: '2026-06-07T10:00:00.000Z', subject: 'feat: a reasonably descriptive commit subject line' },
+    pr: { number: 42, url: 'https://github.com/o/r/pull/42', state: 'OPEN', isDraft: false, reviewDecision: null },
+    prLookupError: null,
+    ageDays: 1,
+    stale: false,
+  };
+  const r = collect.radarRecord(full);
+
+  // Counts replace file lists; worktree + repoPath dropped.
+  assert.equal(r.dirty, 4, 'dirty is a count');
+  assert.equal(r.locks, 1, 'locks is a count');
+  assert.equal(r.pr, 42, 'pr collapses to its number');
+  assert.equal(r.unpushed, true, 'unpushed flag set when not pushed');
+  assert.equal(r.last, '2026-06-07', 'last is the commit date (day)');
+  assert.equal('worktree' in r, false, 'no worktree path in the radar');
+  assert.equal('repoPath' in r, false, 'no repoPath in the radar');
+  assert.equal('stale' in r, false, 'falsey flags omitted');
+
+  const fullBytes = Buffer.byteLength(JSON.stringify(full), 'utf8');
+  const slimBytes = Buffer.byteLength(JSON.stringify(r), 'utf8');
+  assert.ok(
+    slimBytes < fullBytes * 0.4,
+    `radar record must be < 40% of full (${slimBytes}/${fullBytes} = ${Math.round((100 * slimBytes) / fullBytes)}%)`,
+  );
+});
