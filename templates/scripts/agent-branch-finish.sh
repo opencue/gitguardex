@@ -145,8 +145,6 @@ WAIT_FOR_MERGE="$(normalize_bool "$WAIT_FOR_MERGE_RAW" "1")"
 WAIT_TIMEOUT_SECONDS="$(normalize_int "$WAIT_TIMEOUT_SECONDS_RAW" "1800" "30")"
 WAIT_POLL_SECONDS="$(normalize_int "$WAIT_POLL_SECONDS_RAW" "10" "0")"
 PARENT_GITLINK_AUTO_COMMIT="$(normalize_bool "$PARENT_GITLINK_AUTO_COMMIT_RAW" "1")"
-PREFLIGHT_ENABLED="$(normalize_bool "$PREFLIGHT_ENABLED_RAW" "1")"
-AUTO_PROMOTE_DRAFT="$(normalize_bool "$AUTO_PROMOTE_DRAFT_RAW" "1")"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -265,6 +263,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Normalize toggles whose flags set the RAW value DURING the parse loop
+# (--no-preflight/--preflight, --no-auto-promote/--auto-promote). These MUST be
+# normalized AFTER the loop — doing it before (as the env-only defaults above do)
+# silently ignored the flags, leaving --no-preflight inert. Flags that set the
+# normalized var directly in-loop (--cleanup, --wait-for-merge, ...) are unaffected.
+PREFLIGHT_ENABLED="$(normalize_bool "$PREFLIGHT_ENABLED_RAW" "1")"
+AUTO_PROMOTE_DRAFT="$(normalize_bool "$AUTO_PROMOTE_DRAFT_RAW" "1")"
 
 if [[ "$CLEANUP_AFTER_MERGE" -eq 1 && "$DELETE_REMOTE_BRANCH_EXPLICIT" -eq 0 ]]; then
   DELETE_REMOTE_BRANCH=1
