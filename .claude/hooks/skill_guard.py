@@ -334,6 +334,33 @@ def is_linked_worktree(repo_root: Path) -> bool:
     return git_dir_path != common_dir_path
 
 
+def git_common_dir(repo_root: Path) -> "str | None":
+    """Absolute git common dir for a checkout, or None. Linked worktrees of the
+    same repository share one common dir, so two checkouts belong to the SAME
+    repo iff their common dirs match — used to tell a sibling agent worktree
+    (judge by its own branch) apart from a nested independent repo/submodule
+    (judge by the session branch)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(repo_root) / path
+    return str(path.resolve())
+
+
 def branch_agent_name(branch: str) -> str:
     parts = branch.split("/")
     if len(parts) >= 3 and parts[0] == "agent":
@@ -723,9 +750,25 @@ def main() -> None:
     # checked out on an agent branch, so editing it can never touch the protected
     # branch and must be allowed even while the session sits on a protected base.
     # Block on the first target that actually resolves to a protected branch.
+    session_common_dir = git_common_dir(repo_root)
     for target_path in in_repo_targets:
         abs_target = resolve_target_path(target_path, repo_root, cwd)
-        protected_branch_error = ensure_protected_branch_edit_allowed(str(abs_target))
+        target_root = find_repo_root(str(abs_target))
+        # Judge by the target's OWN branch only when it lives in a linked
+        # worktree of the SAME repo (shared git common dir). For the session
+        # repo itself, or a nested independent repo / submodule, fall back to the
+        # session branch (prior behavior): over-blocking a foreign nested repo is
+        # worse than the worktree carve-out is good, and only the worktree case
+        # is the bug we are fixing.
+        if (
+            target_root != repo_root
+            and session_common_dir
+            and git_common_dir(target_root) == session_common_dir
+        ):
+            judge_path = str(abs_target)
+        else:
+            judge_path = str(repo_root)
+        protected_branch_error = ensure_protected_branch_edit_allowed(judge_path)
         if protected_branch_error:
             emit_event(
                 session_id,

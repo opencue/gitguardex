@@ -106,3 +106,27 @@ defineSpawnSuite('agent-file-locks agent identity', () => {
     assert.equal(owner.status, 0, owner.stderr || owner.stdout);
   });
 });
+
+defineSpawnSuite('agent-file-locks migration path', () => {
+  test('a named agent can adopt a pre-existing anonymous lock on its own branch', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'fileA.txt');
+    const branch = 'agent/team/shared';
+
+    // Pre-feature anonymous claim (no agent id).
+    assert.equal(runLockTool(['claim', '--branch', branch, 'fileA.txt'], repoDir).status, 0);
+
+    // An agent id is now in play (fleet rollout). The owner must be able to
+    // re-claim and commit its own file, not get locked out.
+    const adopt = runLockTool(['claim', '--branch', branch, '--agent', 'alice', 'fileA.txt'], repoDir);
+    assert.equal(adopt.status, 0, `named agent must adopt anonymous lock: ${adopt.stderr}`);
+
+    assert.equal(runHumanCmd('git', ['add', 'fileA.txt'], repoDir).status, 0);
+    const val = runLockTool(['validate', '--branch', branch, '--agent', 'alice', '--staged'], repoDir);
+    assert.equal(val.status, 0, `owner must commit after adopting: ${val.stderr}`);
+
+    // After adoption a DIFFERENT named agent is still excluded.
+    const bob = runLockTool(['claim', '--branch', branch, '--agent', 'bob', 'fileA.txt'], repoDir);
+    assert.equal(bob.status, 1, `different agent still blocked after adoption: ${bob.stdout}${bob.stderr}`);
+  });
+});

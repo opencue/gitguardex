@@ -383,3 +383,26 @@ test('skill_guard STILL BLOCKS editing the main checkout itself while a nested a
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('skill_guard ALLOWS editing a nested INDEPENDENT repo on main from an agent-branch session', () => {
+  // A separate git repo (e.g. a submodule / vendored repo) living inside the
+  // session checkout, on its own `main`, must NOT be blocked: the guard judges
+  // by the session repo (on an agent branch), not the foreign nested repo.
+  const dir = makeRepoOn('agent/sess/x');
+  const gitRun = (cwd, ...args) => cp.spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const nested = path.join(dir, 'vendor', 'sub');
+  fs.mkdirSync(nested, { recursive: true });
+  assert.equal(gitRun(nested, 'init', '-q', '-b', 'main').status, 0);
+  assert.equal(gitRun(nested, 'config', 'user.email', 't@e.com').status, 0);
+  assert.equal(gitRun(nested, 'config', 'user.name', 'T').status, 0);
+  assert.equal(gitRun(nested, 'config', 'commit.gpgsign', 'false').status, 0);
+  fs.writeFileSync(path.join(nested, 'seed.txt'), 'seed\n');
+  assert.equal(gitRun(nested, 'add', '.').status, 0);
+  assert.equal(gitRun(nested, 'commit', '-q', '-m', 'seed').status, 0);
+  try {
+    const result = invokeHook(dir, writePayload(path.join(nested, 'note.md'), dir));
+    assert.equal(result.status, 0, `nested independent repo edit must be allowed: ${result.stderr || result.stdout}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

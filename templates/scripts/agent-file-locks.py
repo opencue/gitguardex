@@ -101,10 +101,6 @@ def resolve_agent(args: argparse.Namespace) -> str:
     return (value or '').strip()
 
 
-def entry_identity(entry: dict[str, Any]) -> tuple[str, str]:
-    return (str(entry.get('branch', '')), str(entry.get('agent', '')))
-
-
 def owner_label(entry: dict[str, Any]) -> str:
     branch = str(entry.get('branch', ''))
     agent = str(entry.get('agent', ''))
@@ -114,15 +110,19 @@ def owner_label(entry: dict[str, Any]) -> str:
 def owner_matches(entry: dict[str, Any], branch: str, agent: str) -> bool:
     """Does this branch+agent own the entry?
 
-    With an agent id, ownership is exact (branch AND agent). Without one
-    (agent == ''), it falls back to branch-only ownership so legacy callers and
-    branch-wide operations keep working.
+    Branch must always match. The agent dimension is a *refinement*: when either
+    side is unscoped (agent == '' — the legacy branch-only owner) ownership falls
+    back to branch level, so anonymous callers and branch-wide operations keep
+    working and a named agent can adopt a pre-existing anonymous lock on its own
+    branch. Two DIFFERENT named agents on the same branch do not match — that is
+    the mutual exclusion this feature adds.
     """
     if str(entry.get('branch', '')) != branch:
         return False
-    if not agent:
+    entry_agent = str(entry.get('agent', ''))
+    if not agent or not entry_agent:
         return True
-    return str(entry.get('agent', '')) == agent
+    return entry_agent == agent
 
 
 def load_state(repo_root: Path) -> dict[str, Any]:
@@ -213,7 +213,7 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
 
     for file_path in files:
         existing = locks.get(file_path)
-        if existing and entry_identity(existing) != (args.branch, claim_agent):
+        if existing and not owner_matches(existing, args.branch, claim_agent):
             conflicts.append((file_path, owner_label(existing)))
 
     if conflicts:
@@ -225,11 +225,14 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     for file_path in files:
         existing = locks.get(file_path, {})
         existing_allow_delete = bool(existing.get('allow_delete', False))
+        # A named claim adopts/upgrades the entry's agent; an anonymous claim
+        # keeps any existing agent rather than silently downgrading it.
+        resolved_owner_agent = claim_agent or str(existing.get('agent', ''))
         locks[file_path] = LockEntry(
             branch=args.branch,
             claimed_at=now_iso(),
             allow_delete=args.allow_delete or existing_allow_delete,
-            agent=claim_agent,
+            agent=resolved_owner_agent,
         ).__dict__
 
     write_state(repo_root, state)
