@@ -1,0 +1,30 @@
+# Local agent/runtime artifacts that should not be loaded into Codex context by default.
+.omc/logs/
+.omc/state/
+.omc/agent-worktrees/**/target/
+.omc/agent-worktrees/**/node_modules/
+.omc/agent-worktrees/**/pnpm-lock.yaml
+.omc/agent-worktrees/**/package-lock.json
+.omx/logs/
+.omx/state/
+.omx/agent-worktrees/**/target/
+.omx/agent-worktrees/**/node_modules/
+.omx/agent-worktrees/**/pnpm-lock.yaml
+.omx/agent-worktrees/**/package-lock.json
+.claude/worktrees/
+
+# Build, dependency, and cache output.
+target/
+node_modules/
+**/node_modules/
+dist/
+build/
+coverage/
+.turbo/
+.pnpm-store/
+.yarn/cache/
+
+# Large generated or captured logs.
+*.log
+*.jsonl
+*.ndjson
