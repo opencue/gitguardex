@@ -169,6 +169,21 @@ def resolve_repo_root(file_path: str, cwd: str) -> Path:
     return Path.cwd()
 
 
+def resolve_target_path(target: str, repo_root: Path, cwd: str) -> Path:
+    """Absolute, canonicalized path for a tool target.
+
+    Relative targets resolve against the session cwd (which is inside the repo),
+    absolute targets are taken as-is; both are `.resolve()`d so `..`/symlinks are
+    canonicalized. Shared by containment checks and per-target branch resolution
+    so they agree on exactly which file an edit lands on.
+    """
+    candidate = Path(target).expanduser()
+    if not candidate.is_absolute():
+        base = Path(cwd) if cwd else repo_root
+        candidate = base / candidate
+    return candidate.resolve()
+
+
 def path_within_repo(target: str, repo_root: Path, cwd: str) -> bool:
     """True when `target` resolves to a path inside the guarded repo working tree.
 
@@ -185,11 +200,7 @@ def path_within_repo(target: str, repo_root: Path, cwd: str) -> bool:
     if not target:
         return False
     try:
-        candidate = Path(target).expanduser()
-        if not candidate.is_absolute():
-            base = Path(cwd) if cwd else repo_root
-            candidate = base / candidate
-        candidate = candidate.resolve()
+        candidate = resolve_target_path(target, repo_root, cwd)
         candidate.relative_to(Path(repo_root).resolve())
         return True
     except (ValueError, OSError):
@@ -321,6 +332,33 @@ def is_linked_worktree(repo_root: Path) -> bool:
         common_dir_path = common_dir_path.resolve()
 
     return git_dir_path != common_dir_path
+
+
+def git_common_dir(repo_root: Path) -> "str | None":
+    """Absolute git common dir for a checkout, or None. Linked worktrees of the
+    same repository share one common dir, so two checkouts belong to the SAME
+    repo iff their common dirs match — used to tell a sibling agent worktree
+    (judge by its own branch) apart from a nested independent repo/submodule
+    (judge by the session branch)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(repo_root) / path
+    return str(path.resolve())
 
 
 def branch_agent_name(branch: str) -> str:
@@ -706,21 +744,45 @@ def main() -> None:
     if not in_repo_targets:
         sys.exit(0)
 
-    protected_branch_error = ensure_protected_branch_edit_allowed(repo_root)
-    if protected_branch_error:
-        emit_event(
-            session_id,
-            "hook.invoked",
-            {
-                "hook": "skill_guard",
-                "trigger": "PreToolUse",
-                "outcome": "protected_branch_blocked",
-                "matched_count": 1,
-                "exit_code": 2,
-            },
-        )
-        print(protected_branch_error, file=sys.stderr)
-        sys.exit(2)
+    # Judge each in-repo target by the branch of ITS OWN worktree, not the
+    # session cwd's. A file nested in a linked agent worktree (e.g. under
+    # .omc/agent-worktrees/) is physically inside the protected checkout but is
+    # checked out on an agent branch, so editing it can never touch the protected
+    # branch and must be allowed even while the session sits on a protected base.
+    # Block on the first target that actually resolves to a protected branch.
+    session_common_dir = git_common_dir(repo_root)
+    for target_path in in_repo_targets:
+        abs_target = resolve_target_path(target_path, repo_root, cwd)
+        target_root = find_repo_root(str(abs_target))
+        # Judge by the target's OWN branch only when it lives in a linked
+        # worktree of the SAME repo (shared git common dir). For the session
+        # repo itself, or a nested independent repo / submodule, fall back to the
+        # session branch (prior behavior): over-blocking a foreign nested repo is
+        # worse than the worktree carve-out is good, and only the worktree case
+        # is the bug we are fixing.
+        if (
+            target_root != repo_root
+            and session_common_dir
+            and git_common_dir(target_root) == session_common_dir
+        ):
+            judge_path = str(abs_target)
+        else:
+            judge_path = str(repo_root)
+        protected_branch_error = ensure_protected_branch_edit_allowed(judge_path)
+        if protected_branch_error:
+            emit_event(
+                session_id,
+                "hook.invoked",
+                {
+                    "hook": "skill_guard",
+                    "trigger": "PreToolUse",
+                    "outcome": "protected_branch_blocked",
+                    "matched_count": 1,
+                    "exit_code": 2,
+                },
+            )
+            print(protected_branch_error, file=sys.stderr)
+            sys.exit(2)
 
     for target_path in in_repo_targets:
         lock_error = ensure_main_rs_lock(target_path, session_id)

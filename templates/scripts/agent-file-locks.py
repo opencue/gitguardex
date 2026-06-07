@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Per-file lock registry for concurrent agent branches.
 
+Locks are scoped by *owner identity* = (branch, agent). The agent dimension is
+optional: pass `--agent <id>` or set GUARDEX_AGENT_ID. It exists so that two
+agents sharing ONE worktree (and therefore one branch) can still hold distinct
+claims against each other — without it the owner is the branch alone, so
+same-branch agents never conflict and silently overwrite each other. When no
+agent identity is supplied anywhere, behavior is byte-identical to branch-only
+locking (every identity collapses to (branch, "")).
+
 Usage examples:
   gx locks claim --branch agent/a path/to/file1 path/to/file2
+  gx locks claim --branch agent/a --agent alice path/to/file1
   gx locks claim --branch agent/a --allow-delete path/to/obsolete-file
   gx locks allow-delete --branch agent/a path/to/obsolete-file
-  gx locks validate --branch agent/a --staged
+  gx locks validate --branch agent/a --agent alice --staged
   gx locks release --branch agent/a
 """
 
@@ -23,6 +32,7 @@ from typing import Any
 
 
 LOCK_FILE_RELATIVE = Path('.omx/state/agent-file-locks.json')
+AGENT_ID_ENV = 'GUARDEX_AGENT_ID'
 CRITICAL_GUARDRAIL_PATHS = {
     'AGENTS.md',
     '.githooks/pre-commit',
@@ -39,6 +49,7 @@ class LockEntry:
     branch: str
     claimed_at: str
     allow_delete: bool = False
+    agent: str = ''
 
 
 class LockError(Exception):
@@ -79,6 +90,41 @@ def lock_file_path(repo_root: Path) -> Path:
     return repo_root / LOCK_FILE_RELATIVE
 
 
+def resolve_agent(args: argparse.Namespace) -> str:
+    """Owner agent id: explicit --agent wins, else GUARDEX_AGENT_ID, else ''.
+
+    Empty string means "no agent identity" — the legacy branch-only owner.
+    """
+    value = getattr(args, 'agent', None)
+    if not value:
+        value = os.environ.get(AGENT_ID_ENV, '')
+    return (value or '').strip()
+
+
+def owner_label(entry: dict[str, Any]) -> str:
+    branch = str(entry.get('branch', ''))
+    agent = str(entry.get('agent', ''))
+    return f'{branch} as {agent}' if agent else branch
+
+
+def owner_matches(entry: dict[str, Any], branch: str, agent: str) -> bool:
+    """Does this branch+agent own the entry?
+
+    Branch must always match. The agent dimension is a *refinement*: when either
+    side is unscoped (agent == '' — the legacy branch-only owner) ownership falls
+    back to branch level, so anonymous callers and branch-wide operations keep
+    working and a named agent can adopt a pre-existing anonymous lock on its own
+    branch. Two DIFFERENT named agents on the same branch do not match — that is
+    the mutual exclusion this feature adds.
+    """
+    if str(entry.get('branch', '')) != branch:
+        return False
+    entry_agent = str(entry.get('agent', ''))
+    if not agent or not entry_agent:
+        return True
+    return entry_agent == agent
+
+
 def load_state(repo_root: Path) -> dict[str, Any]:
     path = lock_file_path(repo_root)
     if not path.exists():
@@ -94,7 +140,7 @@ def load_state(repo_root: Path) -> dict[str, Any]:
     if not isinstance(locks, dict):
         return {'locks': {}}
 
-    # Backward-compat normalization for older lock schema.
+    # Backward-compat normalization for older lock schema (no `agent` field).
     normalized_locks: dict[str, dict[str, Any]] = {}
     for file_path, entry in locks.items():
         if not isinstance(entry, dict):
@@ -102,10 +148,12 @@ def load_state(repo_root: Path) -> dict[str, Any]:
         branch = str(entry.get('branch', ''))
         claimed_at = str(entry.get('claimed_at', ''))
         allow_delete = bool(entry.get('allow_delete', False))
+        agent = str(entry.get('agent', ''))
         normalized_locks[str(file_path)] = {
             'branch': branch,
             'claimed_at': claimed_at,
             'allow_delete': allow_delete,
+            'agent': agent,
         }
 
     return {'locks': normalized_locks}
@@ -159,32 +207,38 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
 
+    claim_agent = resolve_agent(args)
     files = [normalize_repo_path(repo_root, p) for p in args.files]
     conflicts: list[tuple[str, str]] = []
 
     for file_path in files:
         existing = locks.get(file_path)
-        if existing and existing.get('branch') != args.branch:
-            conflicts.append((file_path, str(existing.get('branch'))))
+        if existing and not owner_matches(existing, args.branch, claim_agent):
+            conflicts.append((file_path, owner_label(existing)))
 
     if conflicts:
-        print('[agent-file-locks] Cannot claim files already locked by other branches:', file=sys.stderr)
-        for file_path, owner_branch in conflicts:
-            print(f'  - {file_path} (locked by {owner_branch})', file=sys.stderr)
+        print('[agent-file-locks] Cannot claim files already locked by another owner:', file=sys.stderr)
+        for file_path, owner in conflicts:
+            print(f'  - {file_path} (locked by {owner})', file=sys.stderr)
         return 1
 
     for file_path in files:
         existing = locks.get(file_path, {})
         existing_allow_delete = bool(existing.get('allow_delete', False))
+        # A named claim adopts/upgrades the entry's agent; an anonymous claim
+        # keeps any existing agent rather than silently downgrading it.
+        resolved_owner_agent = claim_agent or str(existing.get('agent', ''))
         locks[file_path] = LockEntry(
             branch=args.branch,
             claimed_at=now_iso(),
             allow_delete=args.allow_delete or existing_allow_delete,
+            agent=resolved_owner_agent,
         ).__dict__
 
     write_state(repo_root, state)
     delete_note = ' (delete-approved)' if args.allow_delete else ''
-    print(f"[agent-file-locks] Claimed {len(files)} file(s) for {args.branch}{delete_note}.")
+    agent_note = f' as {claim_agent}' if claim_agent else ''
+    print(f"[agent-file-locks] Claimed {len(files)} file(s) for {args.branch}{agent_note}{delete_note}.")
     return 0
 
 
@@ -192,6 +246,7 @@ def cmd_allow_delete(args: argparse.Namespace, repo_root: Path) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
     files = [normalize_repo_path(repo_root, p) for p in args.files]
+    agent = resolve_agent(args)
 
     missing: list[str] = []
     foreign: list[tuple[str, str]] = []
@@ -200,9 +255,8 @@ def cmd_allow_delete(args: argparse.Namespace, repo_root: Path) -> int:
         if not entry:
             missing.append(file_path)
             continue
-        owner = str(entry.get('branch', ''))
-        if owner != args.branch:
-            foreign.append((file_path, owner))
+        if not owner_matches(entry, args.branch, agent):
+            foreign.append((file_path, owner_label(entry)))
             continue
         entry['allow_delete'] = True
 
@@ -212,7 +266,7 @@ def cmd_allow_delete(args: argparse.Namespace, repo_root: Path) -> int:
             for file_path in missing:
                 print(f'  - {file_path}', file=sys.stderr)
         if foreign:
-            print('[agent-file-locks] Cannot enable delete: files are owned by another branch:', file=sys.stderr)
+            print('[agent-file-locks] Cannot enable delete: files are owned by another owner:', file=sys.stderr)
             for file_path, owner in foreign:
                 print(f'  - {file_path} (owner: {owner})', file=sys.stderr)
         return 1
@@ -225,13 +279,14 @@ def cmd_allow_delete(args: argparse.Namespace, repo_root: Path) -> int:
 def cmd_release(args: argparse.Namespace, repo_root: Path) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
+    agent = resolve_agent(args)
 
     to_release: set[str]
     if args.files:
         requested = {normalize_repo_path(repo_root, p) for p in args.files}
-        to_release = {p for p in requested if locks.get(p, {}).get('branch') == args.branch}
+        to_release = {p for p in requested if owner_matches(locks.get(p, {}), args.branch, agent)}
     else:
-        to_release = {p for p, entry in locks.items() if entry.get('branch') == args.branch}
+        to_release = {p for p, entry in locks.items() if owner_matches(entry, args.branch, agent)}
 
     for file_path in to_release:
         locks.pop(file_path, None)
@@ -244,30 +299,36 @@ def cmd_release(args: argparse.Namespace, repo_root: Path) -> int:
 def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
+    agent_filter = resolve_agent(args)
 
-    rows: list[tuple[str, str, str, bool]] = []
+    rows: list[tuple[str, str, str, str, bool]] = []
     for file_path, entry in sorted(locks.items()):
         branch = str(entry.get('branch', ''))
         if args.branch and branch != args.branch:
             continue
+        agent = str(entry.get('agent', ''))
+        if agent_filter and agent != agent_filter:
+            continue
         claimed_at = str(entry.get('claimed_at', ''))
         allow_delete = bool(entry.get('allow_delete', False))
-        rows.append((file_path, branch, claimed_at, allow_delete))
+        rows.append((file_path, branch, agent, claimed_at, allow_delete))
 
     if not rows:
         print('[agent-file-locks] No active locks.')
         return 0
 
     print('[agent-file-locks] Active locks:')
-    for file_path, branch, claimed_at, allow_delete in rows:
+    for file_path, branch, agent, claimed_at, allow_delete in rows:
         delete_flag = ' delete-ok' if allow_delete else ''
-        print(f'  - {file_path} | {branch} | {claimed_at}{delete_flag}')
+        agent_flag = f' [{agent}]' if agent else ''
+        print(f'  - {file_path} | {branch}{agent_flag} | {claimed_at}{delete_flag}')
     return 0
 
 
 def cmd_validate(args: argparse.Namespace, repo_root: Path) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
+    agent = resolve_agent(args)
 
     if args.staged:
         file_changes = staged_changes(repo_root)
@@ -295,9 +356,8 @@ def cmd_validate(args: argparse.Namespace, repo_root: Path) -> int:
             missing.append(file_path)
             continue
 
-        owner = str(entry.get('branch', ''))
-        if owner != args.branch:
-            foreign.append((file_path, owner))
+        if not owner_matches(entry, args.branch, agent):
+            foreign.append((file_path, owner_label(entry)))
             continue
 
         if status == 'D':
@@ -311,13 +371,13 @@ def cmd_validate(args: argparse.Namespace, repo_root: Path) -> int:
     if not missing and not foreign and not delete_not_allowed and not guardrail_delete_blocked:
         return 0
 
-    print('[agent-file-locks] Commit blocked: staged files must be safely claimed by this branch first.', file=sys.stderr)
+    print('[agent-file-locks] Commit blocked: staged files must be safely claimed by this owner first.', file=sys.stderr)
     if missing:
         print('  Unclaimed files:', file=sys.stderr)
         for file_path in missing:
             print(f'    - {file_path}', file=sys.stderr)
     if foreign:
-        print('  Files claimed by another branch:', file=sys.stderr)
+        print('  Files claimed by another owner:', file=sys.stderr)
         for file_path, owner in foreign:
             print(f'    - {file_path} (owner: {owner})', file=sys.stderr)
     if delete_not_allowed:
@@ -347,12 +407,21 @@ def cmd_validate(args: argparse.Namespace, repo_root: Path) -> int:
     return 1
 
 
+def add_agent_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        '--agent',
+        default=None,
+        help=f'Owner agent id (defaults to ${AGENT_ID_ENV}); scopes ownership within a shared branch',
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Concurrent agent file-lock utility')
     sub = parser.add_subparsers(dest='command', required=True)
 
     claim = sub.add_parser('claim', help='Claim file locks for a branch')
     claim.add_argument('--branch', required=True, help='Owner branch name (e.g., agent/foo/...)')
+    add_agent_arg(claim)
     claim.add_argument(
         '--allow-delete',
         action='store_true',
@@ -362,17 +431,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     allow_delete = sub.add_parser('allow-delete', help='Enable delete approval on already claimed files')
     allow_delete.add_argument('--branch', required=True, help='Owner branch name')
+    add_agent_arg(allow_delete)
     allow_delete.add_argument('files', nargs='+', help='Files to mark as delete-approved')
 
     release = sub.add_parser('release', help='Release file locks for a branch')
     release.add_argument('--branch', required=True, help='Owner branch name')
+    add_agent_arg(release)
     release.add_argument('files', nargs='*', help='Optional files; omit to release all branch locks')
 
     status = sub.add_parser('status', help='Show lock status')
     status.add_argument('--branch', help='Filter by branch')
+    add_agent_arg(status)
 
     validate = sub.add_parser('validate', help='Validate staged files are locked by branch')
     validate.add_argument('--branch', required=True, help='Owner branch name')
+    add_agent_arg(validate)
     validate.add_argument('--staged', action='store_true', help='Validate staged files from git index')
     validate.add_argument('files', nargs='*', help='Files to validate when --staged is not used')
 
