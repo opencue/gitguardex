@@ -9,6 +9,7 @@ const {
   assert,
   fs,
   path,
+  cp,
   runLockTool,
   runNodeWithEnv,
   initRepo,
@@ -128,5 +129,58 @@ defineSpawnSuite('agent-file-locks migration path', () => {
     // After adoption a DIFFERENT named agent is still excluded.
     const bob = runLockTool(['claim', '--branch', branch, '--agent', 'bob', 'fileA.txt'], repoDir);
     assert.equal(bob.status, 1, `different agent still blocked after adoption: ${bob.stdout}${bob.stderr}`);
+  });
+});
+
+const LOCK_PY = path.resolve(__dirname, '..', 'templates', 'scripts', 'agent-file-locks.py');
+// Drive the python tool directly with an explicit cwd so a LINKED worktree
+// resolves to itself (git rev-parse --show-toplevel), exercising the real
+// cross-worktree path rather than whatever the CLI collapses cwd to.
+function locksAt(cwd, args) {
+  return cp.spawnSync('python3', [LOCK_PY, ...args], { cwd, encoding: 'utf8' });
+}
+
+defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
+  test('a claim in one worktree blocks a claim AND a commit of the same file from a sibling worktree', () => {
+    const repoDir = makeRepo(); // wt1
+    writeFile(repoDir, 'shared.txt');
+    const wt2 = path.join(repoDir, '..', 'wt2');
+    assert.equal(
+      runHumanCmd('git', ['worktree', 'add', '-q', '-b', 'agent/two/lane', wt2], repoDir).status,
+      0,
+      'git worktree add must succeed',
+    );
+
+    // wt2 (agent/two/lane) claims shared.txt.
+    const c2 = locksAt(wt2, ['claim', '--branch', 'agent/two/lane', 'shared.txt']);
+    assert.equal(c2.status, 0, c2.stderr || c2.stdout);
+
+    // wt1 (agent/one/lane) tries to claim the SAME repo-relative file -> blocked
+    // by the sibling worktree's claim (cross-worktree enforcement).
+    const c1 = locksAt(repoDir, ['claim', '--branch', 'agent/one/lane', 'shared.txt']);
+    assert.equal(c1.status, 1, `cross-worktree claim must conflict: ${c1.status} ${c1.stdout}${c1.stderr}`);
+    assert.match(c1.stderr, /agent\/two\/lane/, 'names the sibling owner');
+
+    // wt1 stages shared.txt and validates -> blocked (foreign owner in wt2).
+    assert.equal(runHumanCmd('git', ['add', 'shared.txt'], repoDir).status, 0);
+    const v1 = locksAt(repoDir, ['validate', '--branch', 'agent/one/lane', '--staged']);
+    assert.equal(v1.status, 1, `cross-worktree validate must block the commit: ${v1.stderr}`);
+    assert.match(v1.stderr, /another owner/);
+  });
+
+  test('a lane can still claim + commit a file no other worktree owns', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'mine.txt');
+    const wt2 = path.join(repoDir, '..', 'wt2b');
+    assert.equal(runHumanCmd('git', ['worktree', 'add', '-q', '-b', 'agent/two/lane', wt2], repoDir).status, 0);
+
+    // wt2 claims a DIFFERENT file; wt1's own file stays free.
+    writeFile(wt2, 'theirs.txt');
+    assert.equal(locksAt(wt2, ['claim', '--branch', 'agent/two/lane', 'theirs.txt']).status, 0);
+
+    assert.equal(locksAt(repoDir, ['claim', '--branch', 'agent/one/lane', 'mine.txt']).status, 0, 'own claim succeeds');
+    assert.equal(runHumanCmd('git', ['add', 'mine.txt'], repoDir).status, 0);
+    const v = locksAt(repoDir, ['validate', '--branch', 'agent/one/lane', '--staged']);
+    assert.equal(v.status, 0, `committing one's own claim must pass: ${v.stderr}`);
   });
 });

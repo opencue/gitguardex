@@ -203,6 +203,36 @@ def staged_changes(repo_root: Path) -> list[tuple[str, str]]:
     return results
 
 
+def list_worktree_roots(repo_root: Path) -> list[Path]:
+    """Every worktree path for this repo (porcelain). Falls back to [repo_root]
+    when git cannot enumerate, so single-checkout behavior is unchanged."""
+    try:
+        out = run_git(['worktree', 'list', '--porcelain'], cwd=repo_root)
+    except LockError:
+        return [repo_root]
+    roots: list[Path] = []
+    for line in out.splitlines():
+        if line.startswith('worktree '):
+            roots.append(Path(line[len('worktree '):].strip()).resolve())
+    return roots or [repo_root]
+
+
+def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
+    """Union of EVERY worktree's lock map: file path -> list of owner entries
+    (one per worktree that claims it). Each worktree owns a separate lock file on
+    disk, so a file's full ownership is only visible by reading them all. With a
+    single worktree this is exactly that worktree's own locks (unchanged)."""
+    merged: dict[str, list[dict[str, Any]]] = {}
+    for root in list_worktree_roots(repo_root):
+        try:
+            state = load_state(root)
+        except LockError:
+            continue
+        for file_path, entry in state['locks'].items():
+            merged.setdefault(file_path, []).append(entry)
+    return merged
+
+
 def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
@@ -211,10 +241,15 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     files = [normalize_repo_path(repo_root, p) for p in args.files]
     conflicts: list[tuple[str, str]] = []
 
+    # Conflict detection spans EVERY worktree of the repo, not just this one: a
+    # file claimed by another owner in a sibling worktree must still block this
+    # claim (each worktree keeps a separate lock file). The write below still
+    # records the claim in THIS worktree's lock file.
+    all_locks = load_all_locks(repo_root)
     for file_path in files:
-        existing = locks.get(file_path)
-        if existing and not owner_matches(existing, args.branch, claim_agent):
-            conflicts.append((file_path, owner_label(existing)))
+        foreign = [e for e in all_locks.get(file_path, []) if not owner_matches(e, args.branch, claim_agent)]
+        if foreign:
+            conflicts.append((file_path, owner_label(foreign[0])))
 
     if conflicts:
         print('[agent-file-locks] Cannot claim files already locked by another owner:', file=sys.stderr)
@@ -326,8 +361,6 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
 
 
 def cmd_validate(args: argparse.Namespace, repo_root: Path) -> int:
-    state = load_state(repo_root)
-    locks: dict[str, dict[str, Any]] = state['locks']
     agent = resolve_agent(args)
 
     if args.staged:
@@ -350,21 +383,26 @@ def cmd_validate(args: argparse.Namespace, repo_root: Path) -> int:
 
     allow_guardrail_delete = env_truthy(os.environ.get(ALLOW_GUARDRAIL_DELETE_ENV))
 
+    # Enforce claims across ALL worktrees: a file owned by another agent in a
+    # sibling worktree blocks this commit, not just one claimed in this worktree.
+    all_locks = load_all_locks(repo_root)
     for status, file_path in file_changes:
-        entry = locks.get(file_path)
-        if not entry:
+        owners = all_locks.get(file_path, [])
+        if not owners:
             missing.append(file_path)
             continue
 
-        if not owner_matches(entry, args.branch, agent):
-            foreign.append((file_path, owner_label(entry)))
+        foreign_owners = [e for e in owners if not owner_matches(e, args.branch, agent)]
+        if foreign_owners:
+            foreign.append((file_path, owner_label(foreign_owners[0])))
             continue
 
         if status == 'D':
             if file_path in CRITICAL_GUARDRAIL_PATHS and not allow_guardrail_delete:
                 guardrail_delete_blocked.append(file_path)
 
-            allow_delete = bool(entry.get('allow_delete', False))
+            mine = next((e for e in owners if owner_matches(e, args.branch, agent)), None)
+            allow_delete = bool(mine.get('allow_delete', False)) if mine else False
             if not allow_delete:
                 delete_not_allowed.append(file_path)
 
