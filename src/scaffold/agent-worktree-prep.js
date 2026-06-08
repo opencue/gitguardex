@@ -20,6 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { provisionFromConfig } = require('./provision-config');
 
 const ENV_FILE_CANDIDATES = [
   '.env',
@@ -190,10 +191,16 @@ function prepareAgentWorktree(repoRoot, worktreePath) {
   if (!repoRoot || !worktreePath) return [];
   if (repoRoot === worktreePath) return [];
   if (!fs.existsSync(worktreePath)) return [];
-  const apps = detectAppPackages(repoRoot);
-  if (apps.length === 0) return [];
 
   const operations = [];
+
+  // Declarative `.guardex.json` provisioning runs for ANY repo (monorepo or
+  // not) — copy/symlink gitignored files and run post_create hooks.
+  operations.push(...provisionFromConfig(repoRoot, worktreePath));
+
+  // Built-in apps/* monorepo convenience: env-file symlinks + a free dev port
+  // per app. Stays as the zero-config default for monorepos.
+  const apps = detectAppPackages(repoRoot);
   const takenPorts = new Set();
   for (const appName of apps) {
     operations.push(...symlinkAppEnvFiles(repoRoot, worktreePath, appName));
