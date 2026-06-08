@@ -11,6 +11,7 @@ const { resolveRepoRoot } = require('../../git');
 const { run } = require('../../core/runtime');
 const agentInspect = require('../../agents/inspect');
 const agentStatus = require('../../agents/status');
+const agentActivity = require('../../agents/activity');
 const agentCleanupSessions = require('../../agents/cleanup-sessions');
 const agentsFinishModule = require('../../agents/finish');
 const agentsStart = require('../../agents/start');
@@ -170,6 +171,22 @@ function agents(rawArgs) {
 
   const repoRoot = resolveRepoRoot(options.target);
   const statePath = agentsStatePathForRepo(repoRoot);
+
+  if (options.subcommand === 'set-status') {
+    const result = agentActivity.runSetStatusCommand(repoRoot, options);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exitCode = result.status;
+    return;
+  }
+
+  if (options.subcommand === 'jump') {
+    const result = agentActivity.runJumpCommand(repoRoot, options);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exitCode = result.status;
+    return;
+  }
 
   if (options.subcommand === 'finish') {
     const result = finishAgentSession(repoRoot, options);

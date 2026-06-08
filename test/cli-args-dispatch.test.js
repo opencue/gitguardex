@@ -124,6 +124,12 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
     json: false,
     sessionId: '',
     finishArgs: [],
+    activity: '',
+    worktree: '',
+    backend: '',
+    waiting: false,
+    done: false,
+    print: false,
   });
 
   const dryRunOptions = parseAgentsArgs([

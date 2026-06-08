@@ -373,6 +373,12 @@ function parseAgentsArgs(rawArgs) {
     sessionId: '',
     finishArgs: [],
     metadata: {},
+    activity: '',
+    worktree: '',
+    backend: '',
+    waiting: false,
+    done: false,
+    print: false,
   };
   let terminalProvided = false;
 
@@ -419,6 +425,54 @@ function parseAgentsArgs(rawArgs) {
       }
       options.branch = next;
       index += 1;
+      continue;
+    }
+    if (arg === '--session') {
+      const next = rest[index + 1];
+      if (!next) {
+        throw new Error('--session requires an agent session id');
+      }
+      options.sessionId = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--activity' || arg === '--status') {
+      const next = rest[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error('--activity requires a state (working, waiting, done, idle)');
+      }
+      options.activity = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--worktree') {
+      const next = rest[index + 1];
+      if (!next) {
+        throw new Error('--worktree requires a path');
+      }
+      options.worktree = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--backend') {
+      const next = rest[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error('--backend requires auto, kitty, or tmux');
+      }
+      options.backend = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--waiting') {
+      options.waiting = true;
+      continue;
+    }
+    if (arg === '--done') {
+      options.done = true;
+      continue;
+    }
+    if (arg === '--print') {
+      options.print = true;
       continue;
     }
     if (arg === '--json') {
@@ -592,7 +646,7 @@ function parseAgentsArgs(rawArgs) {
     throw new Error(`Unknown option: ${arg}`);
   }
 
-  if (!['start', 'stop', 'status', 'files', 'diff', 'locks', 'finish', 'cleanup-sessions'].includes(options.subcommand)) {
+  if (!['start', 'stop', 'status', 'files', 'diff', 'locks', 'finish', 'cleanup-sessions', 'set-status', 'jump'].includes(options.subcommand)) {
     throw new Error(`Unknown agents subcommand: ${options.subcommand}`);
   }
   if (options.pid !== null && options.subcommand !== 'stop') {
@@ -638,8 +692,17 @@ function parseAgentsArgs(rawArgs) {
       throw new Error('agents finish accepts only one of --session or --branch');
     }
   }
-  if (options.branch && !['files', 'diff', 'locks', 'finish'].includes(options.subcommand)) {
-    throw new Error('--branch is only supported with `gx agents files|diff|locks|finish`');
+  if (options.branch && !['files', 'diff', 'locks', 'finish', 'set-status', 'jump'].includes(options.subcommand)) {
+    throw new Error('--branch is only supported with `gx agents files|diff|locks|finish|set-status|jump`');
+  }
+  if ((options.activity || options.worktree) && !['set-status'].includes(options.subcommand)) {
+    throw new Error('--activity and --worktree are only supported with `gx agents set-status`');
+  }
+  if ((options.waiting || options.done || options.print) && !['jump'].includes(options.subcommand)) {
+    throw new Error('--waiting, --done, and --print are only supported with `gx agents jump`');
+  }
+  if (options.subcommand === 'set-status' && !options.activity) {
+    throw new Error('gx agents set-status requires --activity <working|waiting|done|idle>');
   }
   if (
     options.json &&
