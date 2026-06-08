@@ -109,6 +109,15 @@ function createBackend(options = {}) {
     focusPane(target) {
       return assertStatus(runTmux(['select-pane', '-t', targetId(target)]), 'tmux could not focus pane');
     },
+    setWindowStatus(target, label) {
+      // Non-destructive: set the pane title (shown via pane-border-format) instead
+      // of renaming the user's window/session. Surfaces the W1 status icon per lane.
+      const title = String(label === undefined || label === null ? '' : label);
+      return assertStatus(
+        runTmux(['select-pane', '-t', targetId(target), '-T', title]),
+        'tmux could not set pane status',
+      );
+    },
     closePane(target) {
       return assertStatus(runTmux(['kill-pane', '-t', targetId(target)]), 'tmux could not close pane');
     },

@@ -304,6 +304,11 @@ function buildKittyCloseCommand(target, options = {}) {
   return commandShape(['@', 'close-window', '--match', targetMatch(target)], options);
 }
 
+function buildKittySetWindowTitleCommand(target, title, options = {}) {
+  const value = title === undefined || title === null ? '' : String(title);
+  return commandShape(['@', 'set-window-title', '--match', targetMatch(target), value], options);
+}
+
 function buildKittySendTextCommand(target, options = {}) {
   const shape = commandShape(['@', 'send-text', '--match', targetMatch(target), '--stdin'], options);
   if (Object.prototype.hasOwnProperty.call(options, 'input') || Object.prototype.hasOwnProperty.call(options, 'text') || options.submit) {
@@ -325,6 +330,10 @@ function buildClosePaneCommand(target, config = {}) {
 
 function buildSendTextCommand(target, config = {}) {
   return buildKittySendTextCommand(target, { kittyBin: kittyBin(config, { allowEnv: true }) });
+}
+
+function buildSetWindowStatusCommand(target, title, config = {}) {
+  return buildKittySetWindowTitleCommand(target, title, { kittyBin: kittyBin(config, { allowEnv: true }) });
 }
 
 function sendTextInput(value, options = {}) {
@@ -584,6 +593,16 @@ function createKittyBackend(config = {}) {
         'kitty could not send text',
       );
     },
+    setWindowStatus(target, label) {
+      // Non-destructive: relabel the lane window's title (a kitty window is one
+      // cockpit pane) to surface the W1 status icon.
+      return execute(
+        'set-window-status',
+        buildSetWindowStatusCommand(target, label, config),
+        {},
+        'kitty could not set window title',
+      );
+    },
   };
 }
 
@@ -600,6 +619,7 @@ module.exports = {
   buildKittyFocusCommand,
   buildKittyCloseCommand,
   buildKittySendTextCommand,
+  buildKittySetWindowTitleCommand,
   buildKittyLsCommand,
   buildKittyVersionCommand,
   buildVersionCommand,
