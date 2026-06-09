@@ -168,6 +168,36 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.match(v1.stderr, /another owner/);
   });
 
+  test('claims in a submodule under a LINKED worktree are visible to validate (gitdir-root quirk)', () => {
+    // A submodule checked out inside a linked worktree reports its gitdir
+    // (<parent>/.git/worktrees/<wt>/modules/<sub>) as the worktree path in
+    // `git worktree list`, so load_all_locks used to miss the REAL working
+    // tree's lock file — validate rejected claims it had just recorded.
+    const subSrc = makeRepo();
+    const parent = makeRepo();
+    assert.equal(
+      runHumanCmd('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', subSrc, 'sub'], parent).status,
+      0,
+      'submodule add must succeed',
+    );
+    assert.equal(runHumanCmd('git', ['commit', '-m', 'add submodule'], parent).status, 0);
+
+    const wtSub = path.join(parent, '..', 'wt-sub');
+    assert.equal(runHumanCmd('git', ['worktree', 'add', '-q', '-b', 'agent/sub/lane', wtSub], parent).status, 0);
+    assert.equal(
+      runHumanCmd('git', ['-c', 'protocol.file.allow=always', 'submodule', 'update', '--init'], wtSub).status,
+      0,
+      'submodule init inside the linked worktree must succeed',
+    );
+
+    const subWt = path.join(wtSub, 'sub');
+    writeFile(subWt, 'sub-file.txt');
+    assert.equal(locksAt(subWt, ['claim', '--branch', 'agent/sub/lane', 'sub-file.txt']).status, 0);
+
+    const v = locksAt(subWt, ['validate', '--branch', 'agent/sub/lane', 'sub-file.txt']);
+    assert.equal(v.status, 0, `validate must see the claim it just wrote: ${v.stderr}`);
+  });
+
   test('a lane can still claim + commit a file no other worktree owns', () => {
     const repoDir = makeRepo();
     writeFile(repoDir, 'mine.txt');

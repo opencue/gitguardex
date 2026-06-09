@@ -210,8 +210,13 @@ def staged_changes(repo_root: Path) -> list[tuple[str, str]]:
 
 
 def list_worktree_roots(repo_root: Path) -> list[Path]:
-    """Every worktree path for this repo (porcelain). Falls back to [repo_root]
-    when git cannot enumerate, so single-checkout behavior is unchanged."""
+    """Every worktree path for this repo (porcelain), ALWAYS including the
+    caller's own repo_root. Submodules checked out inside a LINKED worktree
+    report their gitdir (<parent>/.git/worktrees/<wt>/modules/<sub>) as the
+    worktree path, not the actual working tree — repo_root (resolved via
+    --show-toplevel) is where claims are written, so it must be in the list
+    or claim/validate/status never see this checkout's own lock file. Falls
+    back to [repo_root] when git cannot enumerate."""
     try:
         out = run_git(['worktree', 'list', '--porcelain'], cwd=repo_root)
     except LockError:
@@ -221,7 +226,9 @@ def list_worktree_roots(repo_root: Path) -> list[Path]:
     for line in out.splitlines():
         if line.startswith('worktree '):
             roots.append(Path(line[len('worktree '):].strip()).resolve())
-    return roots or [repo_root]
+    if repo_root not in roots:
+        roots.append(repo_root)
+    return roots
 
 
 def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
