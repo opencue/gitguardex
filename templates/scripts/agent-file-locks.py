@@ -237,16 +237,7 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
     disk, so a file's full ownership is only visible by reading them all. With a
     single worktree this is exactly that worktree's own locks (unchanged)."""
     merged: dict[str, list[dict[str, Any]]] = {}
-    roots = list_worktree_roots(repo_root)
-    # Submodules checked out inside a LINKED worktree report their gitdir
-    # (<parent>/.git/worktrees/<wt>/modules/<sub>) as the worktree path in
-    # `git worktree list`, not the actual working tree. The caller's own
-    # repo_root (resolved via --show-toplevel) is the real working tree where
-    # claims are written, so always include it — otherwise validate never sees
-    # the claims it itself just recorded.
-    if repo_root not in roots:
-        roots.append(repo_root)
-    for root in roots:
+    for root in list_worktree_roots(repo_root):
         try:
             state = load_state(root)
         except LockError:
