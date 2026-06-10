@@ -324,6 +324,38 @@ test('agent-branch-start restores protected-branch changes when startup fails af
   assert.doesNotMatch(stashList.stdout, /guardex-auto-transfer-/);
 });
 
+test('agent-branch-start archives the auto-transfer stash instead of leaking it when restore also fails', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  // A dirty, tracked, non-excluded file so protected-branch auto-transfer fires.
+  fs.writeFileSync(path.join(repoDir, 'work.txt'), 'original\n', 'utf8');
+  let result = runCmd('git', ['add', 'work.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'add work.txt'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(repoDir, 'work.txt'), 'local edit\n', 'utf8');
+
+  // Force capture-then-fail AND a failed restore-apply so the archive path runs.
+  const scriptPath = path.resolve(__dirname, '..', 'scripts', 'agent-branch-start.sh');
+  result = runCmd('bash', [scriptPath, 'archive-leak-fix', 'bot'], repoDir, {
+    GUARDEX_TEST_FAIL_AFTER_AUTO_TRANSFER_STASH: '1',
+    GUARDEX_TEST_FAIL_RESTORE_APPLY: '1',
+  });
+  assert.notEqual(result.status, 0, 'branch start should fail after the simulated error');
+
+  // The un-appliable stash must NOT pile up in the stash list...
+  const stashList = runCmd('git', ['stash', 'list'], repoDir);
+  assert.doesNotMatch(stashList.stdout, /guardex-auto-transfer-/, 'stash must not leak');
+
+  // ...it must be preserved as a permanent archive ref instead.
+  const archived = runCmd('git', ['for-each-ref', '--format=%(refname)', 'refs/stash-archive'], repoDir);
+  assert.match(archived.stdout, /refs\/stash-archive\/.*guardex-auto-transfer-/, 'work must be archived to a ref');
+  assert.match(result.stderr, /Changes archived at refs\/stash-archive\//);
+});
+
 test('installed agent-branch-start script survives auto-transfer stash lookup under pipefail', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

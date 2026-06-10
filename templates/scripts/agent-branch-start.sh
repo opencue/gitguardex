@@ -861,6 +861,20 @@ auto_transfer_message=""
 auto_transfer_source_branch=""
 auto_transfer_completed=0
 
+# Preserve an un-appliable auto-transfer stash as a permanent ref instead of
+# leaving it to pile up in the stash list forever. Stash entries are already
+# commits, so we just point a ref at the same object and drop the stash entry;
+# the work stays fully recoverable via `git stash apply <ref>`. Echoes the ref.
+archive_auto_transfer_stash() {
+  local ref="$1"
+  local sha archive_ref
+  sha="$(git -C "$repo_root" rev-parse --verify "$ref" 2>/dev/null)" || return 1
+  archive_ref="refs/stash-archive/${auto_transfer_message:-auto-transfer}-${sha:0:8}"
+  git -C "$repo_root" update-ref "$archive_ref" "$sha" 2>/dev/null || return 1
+  git -C "$repo_root" stash drop "$ref" >/dev/null 2>&1 || true
+  printf '%s' "$archive_ref"
+}
+
 restore_auto_transfer_stash_on_failure() {
   local exit_code="${1:-0}"
   if [[ "$exit_code" -eq 0 ]] || [[ -z "$auto_transfer_stash_ref" ]] || [[ "$auto_transfer_completed" -eq 1 ]]; then
@@ -868,13 +882,23 @@ restore_auto_transfer_stash_on_failure() {
   fi
 
   local transfer_label="${auto_transfer_source_branch:-$BASE_BRANCH}"
-  if git -C "$repo_root" stash apply "$auto_transfer_stash_ref" >/dev/null 2>&1; then
+  # GUARDEX_TEST_FAIL_RESTORE_APPLY forces the restore-apply to fail so the
+  # archive path can be exercised deterministically in tests.
+  if ! env_flag_truthy "${GUARDEX_TEST_FAIL_RESTORE_APPLY:-}" \
+    && git -C "$repo_root" stash apply "$auto_transfer_stash_ref" >/dev/null 2>&1; then
     git -C "$repo_root" stash drop "$auto_transfer_stash_ref" >/dev/null 2>&1 || true
     auto_transfer_stash_ref=""
     echo "[agent-branch-start] Restored moved changes back to '${transfer_label}' after startup failure." >&2
   else
-    echo "[agent-branch-start] Startup failed and auto-restore also failed." >&2
-    echo "[agent-branch-start] Changes are preserved in ${auto_transfer_stash_ref} on ${transfer_label}." >&2
+    local archived_ref
+    if archived_ref="$(archive_auto_transfer_stash "$auto_transfer_stash_ref")"; then
+      auto_transfer_stash_ref=""
+      echo "[agent-branch-start] Startup failed and auto-restore also failed." >&2
+      echo "[agent-branch-start] Changes archived at ${archived_ref} on ${transfer_label} (recover with: git stash apply ${archived_ref})." >&2
+    else
+      echo "[agent-branch-start] Startup failed and auto-restore also failed." >&2
+      echo "[agent-branch-start] Changes are preserved in ${auto_transfer_stash_ref} on ${transfer_label}." >&2
+    fi
   fi
 }
 
