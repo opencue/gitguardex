@@ -491,7 +491,7 @@ stored_worktree_root_rel="$(git -C "$repo_root" config --get "branch.${SOURCE_BR
 if [[ -z "$stored_worktree_root_rel" ]]; then
   stored_worktree_root_rel=".omx/agent-worktrees"
 fi
-agent_worktree_root="${repo_common_root}/${stored_worktree_root_rel}"
+agent_worktree_root="${repo_root}/${stored_worktree_root_rel}"
 runtime_state_root_rel="$(dirname "$stored_worktree_root_rel")"
 temp_worktree_root="${repo_common_root}/${runtime_state_root_rel}/.tmp-worktrees"
 
