@@ -210,6 +210,18 @@ test('package manifest pins runtime and dev dependency versions exactly', () => 
   assert.match(lockfile, /"fast-check": "3\.23\.2"/);
 });
 
+test('package publish lifecycle bumps already-published direct npm publish versions', () => {
+  const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  const scriptPath = path.join(repoRoot, 'scripts', 'prepublish-bump-version.js');
+  const scriptSource = fs.readFileSync(scriptPath, 'utf8');
+
+  assert.equal(pkg.scripts?.prepublishOnly, 'node scripts/prepublish-bump-version.js');
+  assert.match(pkg.files.join('\n'), /^scripts\/prepublish-bump-version\.js$/m);
+  assert.match(scriptSource, /npm view/);
+  assert.match(scriptSource, /GITHUB_ACTIONS/);
+  assert.match(scriptSource, /package-lock\.json/);
+});
+
 test('frontend mirror workflow skips cleanly when the mirror PAT is missing', () => {
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'sync-frontend-mirror.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
