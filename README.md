@@ -308,6 +308,15 @@ Being honest about where this still has issues:
 <details open>
 <summary><strong>v7.x</strong></summary>
 
+### v7.1.1
+- Bumped `@imdeadpool/guardex` from `7.1.0` to `7.1.1` so the current
+  `main` payload can publish under a fresh npm version after `7.1.0` reached
+  the registry.
+- Direct maintainer `npm publish` now checks npm during `prepublishOnly` and
+  bumps package release metadata to the next unpublished patch version when the
+  committed version is already published. GitHub Actions release publishes keep
+  the committed metadata so packed and signed assets stay aligned.
+
 ### v7.0.43
 - Budget-friendly CI defaults for gitguardex-managed projects: live
   workflows drop `push: main`, gate per-PR jobs on `pull_request.draft

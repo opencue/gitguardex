@@ -1,6 +1,6 @@
 {
   "name": "@imdeadpool/guardex",
-  "version": "7.1.0",
+  "version": "7.1.1",
   "description": "Guardian T-Rex for your multi-agent repo. Isolated worktrees, file locks, and PR-only merges stop parallel Codex & Claude agents from overwriting each other's work. Auto-wires Oh My Codex, Oh My Claude, OpenSpec, and Caveman.",
   "license": "MIT",
   "preferGlobal": true,
@@ -12,6 +12,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
+    "prepublishOnly": "node scripts/prepublish-bump-version.js",
     "agent:codex": "bash ./scripts/codex-agent.sh",
     "agent:branch:start": "bash ./scripts/agent-branch-start.sh",
     "agent:branch:finish": "bash ./scripts/agent-branch-finish.sh",
@@ -40,6 +41,7 @@
   "files": [
     "bin",
     "src",
+    "scripts/prepublish-bump-version.js",
     "skills",
     "templates",
     "README.md",
