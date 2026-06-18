@@ -12,6 +12,10 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage test/*.test.js",
+    "lint": "biome lint bin src scripts test",
+    "format": "biome format --write bin src scripts test",
+    "format:check": "biome format bin src scripts test",
     "prepublishOnly": "node scripts/prepublish-bump-version.js",
     "agent:codex": "bash ./scripts/codex-agent.sh",
     "agent:branch:start": "bash ./scripts/agent-branch-start.sh",
@@ -56,7 +60,17 @@
     "git-hooks",
     "branch-guard",
     "agent-safety",
-    "codex"
+    "codex",
+    "claude",
+    "claude-code",
+    "ai-agents",
+    "git-worktree",
+    "file-locks",
+    "worktree",
+    "openspec",
+    "agent-orchestration",
+    "pull-request",
+    "cli"
   ],
   "author": "recodeecom",
   "repository": {
@@ -72,6 +86,7 @@
     "access": "public"
   },
   "devDependencies": {
+    "@biomejs/biome": "1.9.4",
     "fast-check": "3.23.2"
   },
   "dependencies": {
