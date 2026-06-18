@@ -10,10 +10,13 @@ const {
   AI_SETUP_PROMPT,
   AI_SETUP_COMMANDS,
 } = require('../../context');
+const { compressBlock } = require('../../output');
 
 function printAgentsSnippet() {
   const snippetPath = path.join(TEMPLATE_ROOT, 'AGENTS.multiagent-safety.md');
-  process.stdout.write(fs.readFileSync(snippetPath, 'utf8'));
+  // Route the large AGENTS narrative through the optional compressor
+  // (GUARDEX_COMPRESS_CMD). No compressor configured -> unchanged passthrough.
+  process.stdout.write(compressBlock(fs.readFileSync(snippetPath, 'utf8')));
 }
 
 function copyPrompt() {

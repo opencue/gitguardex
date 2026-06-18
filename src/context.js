@@ -474,6 +474,9 @@ const AI_SETUP_PART_ALIASES = new Map([
   ['compact-commands', 'rtk'],
   ['command-compression', 'rtk'],
   ['token-commands', 'rtk'],
+  ['compress', 'headroom'],
+  ['compression', 'headroom'],
+  ['headroom-mcp', 'headroom'],
   ['reviewbot', 'review-bot'],
   ['forksync', 'fork-sync'],
 ]);
@@ -535,6 +538,17 @@ const AI_SETUP_PARTS = [
       'Tests/build: `rtk test <cmd>`, `rtk err <cmd>`, `rtk jest`, `rtk vitest`, `rtk playwright test`, `rtk pytest`, `rtk cargo test`, `rtk tsc`, `rtk lint`.',
       'Use `rtk gain`, `rtk discover`, and `rtk session` to audit savings; use `rtk proxy <command>` only when raw passthrough is required.',
       'Do not wrap machine-readable commands with RTK when code parses stdout (`--porcelain`, `--json`, NUL-delimited output, or exact stdout contracts).',
+    ],
+  },
+  {
+    name: 'headroom',
+    label: 'Headroom context compression',
+    promptLines: [
+      'When the headroom MCP/proxy is available, compress large blobs before they enter context; it is reversible (retrieve restores the original), so prefer it over truncating. Fall back to plain text when headroom is absent.',
+      'Compress noisy `gx` output, long logs, and large file/diff dumps with headroom_compress; keep PR URLs, branch names, and file paths visible so you can still act on them.',
+      'Pull a dropped detail back with headroom_retrieve <hash>; audit savings with headroom_stats.',
+      'Runtime hook: set GUARDEX_COMPRESS_CMD="<filter>" so gx routes its own large narrative output (e.g. `gx prompt --snippet`) through your compressor; unset leaves output byte-for-byte unchanged.',
+      'Do not compress machine-readable output (`--json`, `--porcelain`, NUL-delimited, exact stdout contracts) or any value you must use verbatim.',
     ],
   },
   {
