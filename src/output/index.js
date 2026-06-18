@@ -659,17 +659,77 @@ function printAutoFinishSummary(summary, options = {}) {
 
 const COMPRESS_MIN_CHARS = 400;
 
-// resolveCompressCommand parses GUARDEX_COMPRESS_CMD into an argv array (split
-// on whitespace, run with shell:false so no shell interpolation). Returns null
-// when unset/empty so callers fall straight through to plain output. Commands
-// needing args with embedded spaces should be wrapped in a small script.
+// tokenizeCommand splits a command string into an argv array, honoring single
+// quotes, double quotes (with \" and \\ escapes), and backslash escaping, so a
+// value like  sh -c "tr a-z A-Z"  parses to ['sh','-c','tr a-z A-Z'] instead of
+// being naively split on whitespace. Returns null on an unterminated quote
+// (malformed) so callers fall back to plain output rather than run a half-parsed
+// command. No shell-metacharacter handling (globs, $vars, pipes): tokens are
+// passed to spawnSync with shell:false as literal argv.
+function tokenizeCommand(raw) {
+  const text = String(raw);
+  const tokens = [];
+  let current = '';
+  let started = false;
+  let quote = null; // "'" or '"' while inside a quoted run
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      else if (ch === '\\' && (text[i + 1] === '"' || text[i + 1] === '\\')) {
+        current += text[i + 1];
+        i += 1;
+        started = true;
+      } else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (ch === '\\') {
+      if (i + 1 >= text.length) return null; // dangling backslash -> malformed
+      current += text[i + 1];
+      i += 1;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) {
+        tokens.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  if (quote) return null; // unterminated quote -> malformed
+  if (started) tokens.push(current);
+  return tokens;
+}
+
+// resolveCompressCommand parses GUARDEX_COMPRESS_CMD into an argv array via
+// tokenizeCommand (shell-quote aware), run with shell:false so no shell
+// interpolation. Returns null when unset/empty/malformed so callers fall
+// straight through to plain output.
 function resolveCompressCommand(env = process.env) {
   const raw = String(env.GUARDEX_COMPRESS_CMD || '').trim();
   if (!raw) {
     return null;
   }
-  const argv = raw.split(/\s+/).filter(Boolean);
-  return argv.length > 0 ? argv : null;
+  const argv = tokenizeCommand(raw);
+  if (!argv || argv.length === 0) {
+    return null;
+  }
+  return argv;
 }
 
 // looksMachineReadable keeps JSON / structured payloads (status --json, lock
@@ -758,6 +818,7 @@ module.exports = {
   detectRecoverableAutoFinishConflict,
   summarizeAutoFinishDetail,
   printAutoFinishSummary,
+  tokenizeCommand,
   resolveCompressCommand,
   compressBlock,
   printCompressible,
