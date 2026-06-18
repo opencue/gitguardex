@@ -5,6 +5,7 @@ const {
   printAutoFinishSummary,
   compressBlock,
   resolveCompressCommand,
+  tokenizeCommand,
 } = require('../src/output');
 
 // A large lowercase block so the `tr a-z A-Z` stub visibly transforms it and it
@@ -133,4 +134,49 @@ test('compressBlock respects the terse-mode gate (skips when verbose)', () => {
       process.env.GUARDEX_VERBOSE = prev;
     }
   }
+});
+
+test('tokenizeCommand honors double and single quotes with embedded spaces', () => {
+  assert.deepEqual(tokenizeCommand('sh -c "tr a-z A-Z"'), ['sh', '-c', 'tr a-z A-Z']);
+  assert.deepEqual(tokenizeCommand("sh -c 'a b c'"), ['sh', '-c', 'a b c']);
+  assert.deepEqual(tokenizeCommand('  tr   a-z   A-Z  '), ['tr', 'a-z', 'A-Z']);
+  assert.deepEqual(tokenizeCommand('a "b c" d'), ['a', 'b c', 'd']);
+});
+
+test('tokenizeCommand returns null on malformed input (unterminated quote or dangling backslash)', () => {
+  assert.equal(tokenizeCommand('sh -c "oops no close'), null);
+  assert.equal(tokenizeCommand("it's"), null);
+  assert.equal(tokenizeCommand('foo\\'), null);
+});
+
+test('resolveCompressCommand parses a shell-quoted command into argv', () => {
+  assert.deepEqual(
+    resolveCompressCommand({ GUARDEX_COMPRESS_CMD: 'sh -c "tr a-z A-Z"' }),
+    ['sh', '-c', 'tr a-z A-Z'],
+  );
+  // malformed (unterminated quote) -> null so the caller falls back to plain output
+  assert.equal(resolveCompressCommand({ GUARDEX_COMPRESS_CMD: 'sh -c "broken' }), null);
+});
+
+test('compressBlock runs a shell-quoted compressor command end to end', () => {
+  const out = compressBlock(BIG_BLOCK, {
+    env: { GUARDEX_COMPRESS_CMD: 'sh -c "tr a-z A-Z"' },
+    force: true,
+  });
+  assert.equal(out, BIG_BLOCK.toUpperCase());
+});
+
+test('compressBlock falls back to the original when the compressor times out (discards partial stdout)', () => {
+  const out = compressBlock(BIG_BLOCK, {
+    env: {
+      // emits partial stdout, then sleeps well past the timeout so it is always
+      // killed mid-run (long sleep removes any chance the child exits early).
+      GUARDEX_COMPRESS_CMD: 'sh -c "printf PARTIAL; sleep 30"',
+      GUARDEX_COMPRESS_TIMEOUT_MS: '200',
+    },
+    force: true,
+  });
+  // Whether killed before or after the printf, the partial/empty stdout is
+  // discarded and the original block is returned.
+  assert.equal(out, BIG_BLOCK);
 });
