@@ -1,0 +1,43 @@
+# GitGuardex
+
+> Guardian T-Rex for multi-agent repos. GitGuardex gives parallel Codex,
+> Claude, and human teammates isolated git worktrees, file locks, and
+> PR-only merges so concurrent AI agents never overwrite each other's work.
+
+GitGuardex (CLI commands: `gx`, `guardex`, `gitguardex`) is an MIT-licensed
+Node.js tool published to npm as `@imdeadpool/guardex`. It auto-wires Oh My
+Codex, Oh My Claude, OpenSpec, and Caveman into a repository.
+
+## What it does
+
+- **Isolated worktrees** — every agent task runs on its own `agent/*` branch
+  in a dedicated git worktree, never on the protected base (`main`/`dev`).
+- **File locks** — agents claim files before editing (`gx locks claim`) so two
+  agents cannot edit the same path concurrently.
+- **PR-only merges** — completed work lands through pull requests via
+  `gx branch finish --via-pr --wait-for-merge --cleanup`, never direct pushes.
+- **Multi-agent cockpit** — a tmux/kitty-style cockpit (`gx`) shows live agent
+  status, ownership, and conflicts across the repo.
+
+## Install
+
+```bash
+npm i -g @imdeadpool/guardex
+cd /path/to/your-repo
+gx setup
+```
+
+## Key commands
+
+- `gx setup` — install hooks, state, and OMX / OpenSpec / Caveman wiring.
+- `gx branch start "<task>" "<agent>"` — open an isolated worktree.
+- `gx locks claim --branch "<branch>" <file...>` — claim files before editing.
+- `gx branch finish --via-pr --wait-for-merge --cleanup` — commit, push, PR,
+  merge, and clean up the sandbox in one shot.
+- `gx status` / `gx doctor` — inspect and repair repo guardrails.
+
+## Links
+
+- Source: https://github.com/recodeee/gitguardex
+- npm: https://www.npmjs.com/package/@imdeadpool/guardex
+- License: MIT

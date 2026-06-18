@@ -48,8 +48,11 @@ jobs:
       - name: Install
         run: npm install --ignore-scripts
 
-      - name: Unit tests
-        run: npm test
+      - name: Lint (Biome)
+        run: npm run lint
+
+      - name: Unit tests (with coverage)
+        run: npm run test:coverage
 
       - name: Static check CLI entrypoint
         run: node --check bin/multiagent-safety.js
