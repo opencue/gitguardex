@@ -86,6 +86,9 @@ test('prompt outputs AI setup instructions', () => {
   assert.match(result.stdout, /https:\/\/github\.com\/apps\/pull/);
   assert.match(result.stdout, /https:\/\/github\.com\/apps\/cr-gpt/);
   assert.match(result.stdout, /OPENAI_API_KEY/);
+  assert.match(result.stdout, /Headroom context compression/);
+  assert.match(result.stdout, /headroom_compress/);
+  assert.match(result.stdout, /GUARDEX_COMPRESS_CMD/);
 });
 
 
@@ -138,6 +141,7 @@ test('prompt --list-parts prints the available prompt slices', () => {
   assert.match(result.stdout, /^install$/m);
   assert.match(result.stdout, /^task-loop$/m);
   assert.match(result.stdout, /^rtk$/m);
+  assert.match(result.stdout, /^headroom$/m);
   assert.match(result.stdout, /^openspec$/m);
   assert.match(result.stdout, /^review-bot$/m);
 });
@@ -148,6 +152,31 @@ test('prompt --exec rejects prompt-only parts', () => {
   assert.equal(result.status, 1, 'exec mode should reject prompt-only parts');
   assert.match(result.stderr, /Prompt part 'openspec' is not available with --exec/);
   assert.match(result.stderr, /Exec-capable parts:/);
+});
+
+test('prompt --part headroom outputs the headroom compression slice', () => {
+  const repoDir = initRepo();
+  const result = runNode(['prompt', '--part', 'headroom'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /^Headroom context compression:/m);
+  assert.match(result.stdout, /headroom_compress/);
+  assert.match(result.stdout, /headroom_retrieve <hash>/);
+  assert.match(result.stdout, /GUARDEX_COMPRESS_CMD/);
+  assert.doesNotMatch(result.stdout, /GitGuardex \(gx\) setup checklist/);
+});
+
+test('prompt --part compress aliases to the headroom slice', () => {
+  const repoDir = initRepo();
+  const result = runNode(['prompt', '--part', 'compress'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /^Headroom context compression:/m);
+});
+
+test('prompt --exec rejects the prompt-only headroom part', () => {
+  const repoDir = initRepo();
+  const result = runNode(['prompt', '--exec', '--part', 'headroom'], repoDir);
+  assert.equal(result.status, 1, 'exec mode should reject the prompt-only headroom part');
+  assert.match(result.stderr, /Prompt part 'headroom' is not available with --exec/);
 });
 
 test('prompt --snippet prints the managed AGENTS template with token budget rules', () => {
@@ -164,6 +193,30 @@ test('prompt --snippet prints the managed AGENTS template with token budget rule
   assert.match(result.stdout, /rtk git status/);
   assert.match(result.stdout, /### Verification gates/);
   assert.match(result.stdout, /<!-- multiagent-safety:END -->/);
+});
+
+test('prompt --snippet routes through GUARDEX_COMPRESS_CMD when set', () => {
+  const repoDir = initRepo();
+  const plain = runNode(['prompt', '--snippet'], repoDir);
+  assert.equal(plain.status, 0, plain.stderr || plain.stdout);
+  assert.match(plain.stdout, /<!-- multiagent-safety:START -->/);
+
+  const compressed = runNodeWithEnv(['prompt', '--snippet'], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'tr a-z A-Z',
+  });
+  assert.equal(compressed.status, 0, compressed.stderr || compressed.stdout);
+  // `tr a-z A-Z` uppercases the whole block, proving it was piped through.
+  assert.match(compressed.stdout, /<!-- MULTIAGENT-SAFETY:START -->/);
+  assert.doesNotMatch(compressed.stdout, /<!-- multiagent-safety:START -->/);
+});
+
+test('prompt --snippet is unchanged when GUARDEX_COMPRESS_CMD points at a missing binary', () => {
+  const repoDir = initRepo();
+  const result = runNodeWithEnv(['prompt', '--snippet'], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'guardex-no-such-binary-zzz',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /<!-- multiagent-safety:START -->/);
 });
 
 

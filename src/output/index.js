@@ -1,4 +1,5 @@
 const {
+  cp,
   path,
   packageJson,
   TOOL_NAME,
@@ -640,6 +641,99 @@ function printAutoFinishSummary(summary, options = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Optional output compression (headroom / GUARDEX_COMPRESS_CMD)
+//
+// gitguardex is a published package, so the headroom compressor is never a hard
+// dependency. When GUARDEX_COMPRESS_CMD is set to a stdin->stdout filter
+// command, gx routes its large narrative output through it before printing so
+// the blob costs fewer tokens once it lands in an AI agent's context. The
+// default path (env unset) is byte-for-byte identical to plain console.log, and
+// every failure mode falls back to the original text — fail-open, mirroring
+// headroom's own proxy posture.
+//
+// Guards: only compress in terse (agent / non-TTY) mode, only blocks at or
+// above COMPRESS_MIN_CHARS, and never machine-readable (JSON) payloads whose
+// exact stdout other tools parse.
+// ---------------------------------------------------------------------------
+
+const COMPRESS_MIN_CHARS = 400;
+
+// resolveCompressCommand parses GUARDEX_COMPRESS_CMD into an argv array (split
+// on whitespace, run with shell:false so no shell interpolation). Returns null
+// when unset/empty so callers fall straight through to plain output. Commands
+// needing args with embedded spaces should be wrapped in a small script.
+function resolveCompressCommand(env = process.env) {
+  const raw = String(env.GUARDEX_COMPRESS_CMD || '').trim();
+  if (!raw) {
+    return null;
+  }
+  const argv = raw.split(/\s+/).filter(Boolean);
+  return argv.length > 0 ? argv : null;
+}
+
+// looksMachineReadable keeps JSON / structured payloads (status --json, lock
+// files, MCP responses) from ever being compressed; those have exact stdout
+// contracts downstream parsers depend on. This is a first-character heuristic
+// (leading `{` or `[`), which fully covers the current narrative call-sites
+// (the markdown AGENTS snippet). A future caller that pipes other
+// machine-readable formats (NUL-delimited, TSV, YAML) through compressBlock
+// must guard that itself.
+function looksMachineReadable(text) {
+  const head = String(text || '').trimStart()[0];
+  return head === '{' || head === '[';
+}
+
+// compressBlock returns `text` unchanged unless a compressor is configured AND
+// we are in terse (agent / non-TTY) mode AND the block is large enough AND it
+// is not machine-readable. Any failure (missing binary, non-zero exit, empty
+// output, timeout) falls back to the original text. Never throws. Pass
+// options.force to bypass the terse-mode gate (used by tests).
+function compressBlock(text, options = {}) {
+  const input = String(text == null ? '' : text);
+  const env = options.env || process.env;
+  const argv = resolveCompressCommand(env);
+  if (!argv) {
+    return input;
+  }
+  if (!options.force && !isTerseMode()) {
+    return input;
+  }
+  if (input.length < COMPRESS_MIN_CHARS) {
+    return input;
+  }
+  if (looksMachineReadable(input)) {
+    return input;
+  }
+  let result;
+  try {
+    result = cp.spawnSync(argv[0], argv.slice(1), {
+      input,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: Number(env.GUARDEX_COMPRESS_TIMEOUT_MS) || 5000,
+    });
+  } catch {
+    return input;
+  }
+  if (!result || result.error) {
+    return input;
+  }
+  // Non-zero exit OR signal-killed (status === null, e.g. timeout/OOM) -> fall
+  // back, even if the process emitted partial stdout before dying.
+  if (result.signal || (typeof result.status === 'number' && result.status !== 0)) {
+    return input;
+  }
+  const out = String(result.stdout || '');
+  return out.trim().length > 0 ? out : input;
+}
+
+// printCompressible writes a large narrative block to stdout, compressed when a
+// compressor is configured (see compressBlock). Default path === console.log.
+function printCompressible(text, options = {}) {
+  console.log(compressBlock(text, options));
+}
+
 module.exports = {
   runtimeVersion,
   supportsAnsiColors,
@@ -664,4 +758,7 @@ module.exports = {
   detectRecoverableAutoFinishConflict,
   summarizeAutoFinishDetail,
   printAutoFinishSummary,
+  resolveCompressCommand,
+  compressBlock,
+  printCompressible,
 };
