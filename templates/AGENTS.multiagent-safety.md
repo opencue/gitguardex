@@ -137,8 +137,8 @@ Persist unresolved questions or blockers into `openspec/plan/<plan-slug>/open-qu
 ### Optional companion tooling (use if installed)
 
 - **fff MCP** (file search): prefer for all file search; fall back to `rtk grep`/`rtk find` or `rg`.
-- **rtk** (shell compression): wrap noisy discovery (`rtk ls`/`grep`/`find`/`read`), git/gh (`rtk git status`/`gh pr list`), and verification (`rtk tsc`/`lint`/`test`). Do **not** wrap machine-readable commands (`--porcelain`, `--json`, exact stdout contracts).
-- **headroom** (context compression): when available, run large `gx` output, long logs, and big file/diff dumps through `headroom_compress` before reasoning over them (reversible — `headroom_retrieve` restores). Or set `GUARDEX_COMPRESS_CMD="<filter>"` so gx routes its own large narrative output through your compressor. Keep PR URLs, branch names, and file paths visible; never compress `--json`/`--porcelain` or values you act on verbatim.
+- **rtk** (shell compression): wrap noisy discovery (`rtk ls`/`grep`/`find`/`read`), git/gh (`rtk git status`/`gh pr list`), verification (`rtk tsc`/`lint`/`test`), and noisy gx reads (`rtk gx status`/`rtk gx doctor`). Do **not** wrap machine-readable commands (`--porcelain`, `--json`, exact stdout contracts) or shell-ready output (`gx prompt --exec`).
+- **headroom** (context compression): when available, run large `gx` output, long logs, and big file/diff dumps through `headroom_compress` before reasoning over them (reversible — `headroom_retrieve` restores). Or set `GUARDEX_COMPRESS_CMD="<filter>"` so gx routes its own large narrative output — `gx prompt`, `gx prompt --snippet` — through your compressor (terse/non-TTY only, fail-open, JSON skipped; `--exec` stays raw). Keep PR URLs, branch names, and file paths visible; never compress `--json`/`--porcelain` or values you act on verbatim.
 - **OpenSpec**: keep `openspec/changes/<slug>/tasks.md` current during work, not batched. Validate with `openspec validate --specs` before archive.
 
 ### Token / context budget

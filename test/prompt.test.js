@@ -219,6 +219,33 @@ test('prompt --snippet is unchanged when GUARDEX_COMPRESS_CMD points at a missin
   assert.match(result.stdout, /<!-- multiagent-safety:START -->/);
 });
 
+test('prompt (default checklist) routes through GUARDEX_COMPRESS_CMD when set', () => {
+  const repoDir = initRepo();
+  const plain = runNode(['prompt'], repoDir);
+  assert.equal(plain.status, 0, plain.stderr || plain.stdout);
+  assert.match(plain.stdout, /GitGuardex \(gx\) setup checklist/);
+
+  const compressed = runNodeWithEnv(['prompt'], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'tr a-z A-Z',
+  });
+  assert.equal(compressed.status, 0, compressed.stderr || compressed.stdout);
+  // `tr a-z A-Z` uppercases the whole block, proving it was piped through.
+  assert.match(compressed.stdout, /GITGUARDEX \(GX\) SETUP CHECKLIST/);
+  assert.doesNotMatch(compressed.stdout, /GitGuardex \(gx\) setup checklist/);
+});
+
+test('prompt --exec is never compressed (shell-ready output stays runnable)', () => {
+  const repoDir = initRepo();
+  // Even with a compressor configured, --exec output must pass through raw so
+  // the commands an agent pastes are not mangled.
+  const result = runNodeWithEnv(['prompt', '--exec'], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'tr a-z A-Z',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /^npm i -g @imdeadpool\/guardex/m);
+  assert.doesNotMatch(result.stdout, /NPM I -G @IMDEADPOOL/);
+});
+
 
 test('deprecated copy-prompt alias still works and warns', () => {
   const repoDir = initRepo();
