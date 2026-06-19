@@ -20,11 +20,16 @@ function printAgentsSnippet() {
 }
 
 function copyPrompt() {
-  process.stdout.write(AI_SETUP_PROMPT);
+  // AI_SETUP_PROMPT is the large narrative checklist an agent reads each
+  // session, so route it through the optional compressor (GUARDEX_COMPRESS_CMD)
+  // exactly like the main `gx prompt` path and `printAgentsSnippet`.
+  process.stdout.write(compressBlock(AI_SETUP_PROMPT));
   process.exitCode = 0;
 }
 
 function copyCommands() {
+  // AI_SETUP_COMMANDS is shell-ready output (runnable commands), so it is never
+  // compressed — a compressor would corrupt the commands an agent pastes.
   process.stdout.write(AI_SETUP_COMMANDS);
   process.exitCode = 0;
 }
@@ -83,7 +88,11 @@ function prompt(rawArgs) {
     process.exitCode = 0;
     return;
   }
-  process.stdout.write(renderAiSetupPrompt({ exec: variant === 'exec', parts: selectedParts }));
+  const rendered = renderAiSetupPrompt({ exec: variant === 'exec', parts: selectedParts });
+  // The default/prompt variant is the large narrative checklist; route it
+  // through the optional compressor. The --exec variant is shell-ready output
+  // (runnable commands) and must never be compressed.
+  process.stdout.write(variant === 'exec' ? rendered : compressBlock(rendered));
   process.exitCode = 0;
 }
 
