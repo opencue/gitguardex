@@ -6,6 +6,8 @@ const {
   compressBlock,
   resolveCompressCommand,
   tokenizeCommand,
+  isExecutableOnPath,
+  describeCompressor,
 } = require('../src/output');
 
 // A large lowercase block so the `tr a-z A-Z` stub visibly transforms it and it
@@ -92,6 +94,36 @@ test('resolveCompressCommand returns null when unset and argv when set', () => {
 
 test('compressBlock passes text through unchanged when no compressor is configured', () => {
   assert.equal(compressBlock(BIG_BLOCK, { env: {}, force: true }), BIG_BLOCK);
+});
+
+test('isExecutableOnPath finds a bare command on PATH and rejects a missing one', () => {
+  const env = { PATH: process.env.PATH || '' };
+  // `node` is on PATH (we are running under it); a random name is not.
+  assert.equal(isExecutableOnPath('node', env), true);
+  assert.equal(isExecutableOnPath('guardex-no-such-bin-zzz', env), false);
+  assert.equal(isExecutableOnPath('', env), false);
+});
+
+test('isExecutableOnPath checks an explicit path directly', () => {
+  assert.equal(isExecutableOnPath(process.execPath, { PATH: '' }), true);
+  assert.equal(isExecutableOnPath('/no/such/guardex/bin', { PATH: '' }), false);
+});
+
+test('describeCompressor reports configuration and binary availability', () => {
+  assert.deepEqual(describeCompressor({}), {
+    configured: false,
+    command: null,
+    available: null,
+  });
+  assert.deepEqual(describeCompressor({ GUARDEX_COMPRESS_CMD: 'node --version', PATH: process.env.PATH }), {
+    configured: true,
+    command: 'node',
+    available: true,
+  });
+  assert.deepEqual(
+    describeCompressor({ GUARDEX_COMPRESS_CMD: 'guardex-no-such-bin-zzz', PATH: process.env.PATH }),
+    { configured: true, command: 'guardex-no-such-bin-zzz', available: false },
+  );
 });
 
 test('compressBlock runs the configured compressor on large blocks', () => {
