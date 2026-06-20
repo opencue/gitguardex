@@ -284,12 +284,18 @@ function cleanupProtectedBaseSandbox(repoRoot, metadata) {
     if (isSpawnFailure(removeResult)) {
       throw removeResult.error;
     }
-    if (removeResult.status !== 0) {
-      throw new Error(
-        (removeResult.stderr || removeResult.stdout || 'failed to remove sandbox worktree').trim(),
-      );
+    if (removeResult.status === 0) {
+      result.worktree = 'removed';
+    } else {
+      // The path exists but git no longer tracks it as a registered worktree
+      // (common after a crash or a partial/manual cleanup). Treating this as
+      // fatal stranded the agent branch — the branch-delete step below never
+      // ran. Recover instead: prune stale worktree metadata, remove the
+      // leftover directory, and continue. Both operations are idempotent.
+      run('git', ['-C', repoRoot, 'worktree', 'prune'], { timeout: 20_000 });
+      fs.rmSync(metadata.worktreePath, { recursive: true, force: true });
+      result.worktree = 'pruned';
     }
-    result.worktree = 'removed';
   } else {
     result.worktree = 'missing';
   }
