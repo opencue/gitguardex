@@ -17,8 +17,9 @@ const {
 const toolchainModule = require('../../toolchain');
 const doctorModule = require('../../doctor');
 const speckitModule = require('../../speckit');
-const { printAutoFinishSummary } = require('../../output');
+const { printAutoFinishSummary, colorize, supportsAnsiColors } = require('../../output');
 const { printOperations } = require('../../scaffold');
+const { hasCompletedOnboarding } = require('./onboard');
 const { parseSetupArgs } = require('../args');
 const {
   runScanInternal,
@@ -217,6 +218,11 @@ function setup(rawArgs) {
     const repoCount = discoveredRepos.length;
     const suffix = repoCount > 1 ? ` (${repoCount} repos)` : '';
     console.log(`[${TOOL_NAME}] ✅ Setup complete.${suffix}`);
+    // First run in this repo: point newcomers at the guided tour exactly once.
+    if (!hasCompletedOnboarding(topRepoRoot)) {
+      const nudge = `👋 New to GitGuardex? Run \`${SHORT_TOOL_NAME} onboard\` for a 2-minute guided tour.`;
+      console.log(`[${TOOL_NAME}] ${supportsAnsiColors() ? colorize(nudge, '1;36') : nudge}`);
+    }
     console.log(`[${TOOL_NAME}] Copy AI setup prompt with: ${SHORT_TOOL_NAME} prompt`);
     console.log(
       `[${TOOL_NAME}] OpenSpec core workflow: /opsx:propose -> /opsx:apply -> /opsx:archive`,
