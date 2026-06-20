@@ -76,6 +76,53 @@ test('doctor warns when required system tool dependencies are missing', () => {
   assert.doesNotMatch(result.stdout, /fff-mcp/);
 });
 
+test('doctor warns when GUARDEX_COMPRESS_CMD is set but the binary is missing (advisory, non-gating)', () => {
+  const repoDir = initRepo();
+
+  const result = runNodeWithEnv(['doctor', '--target', repoDir], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'guardex-no-such-compressor-zzz',
+  });
+
+  // Advisory only: a missing compressor must not flip doctor's exit code.
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(
+    result.stdout,
+    /Token compression: 'guardex-no-such-compressor-zzz' not found on PATH/,
+  );
+});
+
+test('doctor reports a configured compressor and stays silent when unset', () => {
+  const repoDir = initRepo();
+
+  const present = runNodeWithEnv(['doctor', '--target', repoDir], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'tr a-z A-Z',
+  });
+  assert.equal(present.status, 0, present.stderr || present.stdout);
+  assert.match(present.stdout, /Token compression: 'tr' configured\./);
+  assert.doesNotMatch(present.stdout, /not found on PATH/);
+
+  const unset = runNodeWithEnv(['doctor', '--target', repoDir], repoDir, {
+    GUARDEX_COMPRESS_CMD: '',
+  });
+  assert.equal(unset.status, 0, unset.stderr || unset.stdout);
+  assert.doesNotMatch(unset.stdout, /Token compression:/);
+});
+
+test('doctor --json includes the compression health field', () => {
+  const repoDir = initRepo();
+
+  const result = runNodeWithEnv(['doctor', '--target', repoDir, '--json'], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'guardex-no-such-compressor-zzz',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(payload.compression, {
+    configured: true,
+    command: 'guardex-no-such-compressor-zzz',
+    available: false,
+  });
+});
+
 test('doctor --force <managed-path> rewrites only the named managed shim', () => {
   const repoDir = initRepo();
 
