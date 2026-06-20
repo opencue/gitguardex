@@ -1,5 +1,6 @@
 const {
   cp,
+  fs,
   path,
   packageJson,
   TOOL_NAME,
@@ -744,6 +745,55 @@ function looksMachineReadable(text) {
   return head === '{' || head === '[';
 }
 
+// isExecutableOnPath resolves whether `command` can be found, mirroring how a
+// shell would locate it: an explicit path (contains a separator) is checked
+// directly; a bare name is searched across PATH entries (honoring PATHEXT on
+// Windows). Defensive — returns null (unknown) on any unexpected error rather
+// than throwing, so callers can degrade to "configured, presence unknown".
+function isExecutableOnPath(command, env = process.env) {
+  try {
+    const cmd = String(command || '').trim();
+    if (!cmd) {
+      return false;
+    }
+    const exts =
+      process.platform === 'win32'
+        ? String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+            .split(';')
+            .map((ext) => ext.trim())
+            .filter(Boolean)
+        : [''];
+    const candidates = (base) =>
+      exts.some((ext) => {
+        try {
+          return fs.existsSync(ext ? base + ext : base);
+        } catch {
+          return false;
+        }
+      });
+    if (cmd.includes('/') || cmd.includes(path.sep)) {
+      return candidates(cmd);
+    }
+    const dirs = String(env.PATH || '').split(path.delimiter).filter(Boolean);
+    return dirs.some((dir) => candidates(path.join(dir, cmd)));
+  } catch {
+    return null;
+  }
+}
+
+// describeCompressor reports the GUARDEX_COMPRESS_CMD token-compression setup so
+// `gx status` can surface it. The feature fails open (silently prints raw output
+// when the compressor is missing), which makes a misconfiguration invisible and
+// quietly wastes tokens — this gives an operator a way to confirm it is wired.
+// `available` is true/false when resolvable, or null when presence is unknown.
+function describeCompressor(env = process.env) {
+  const argv = resolveCompressCommand(env);
+  if (!argv) {
+    return { configured: false, command: null, available: null };
+  }
+  return { configured: true, command: argv[0], available: isExecutableOnPath(argv[0], env) };
+}
+
 // compressBlock returns `text` unchanged unless a compressor is configured AND
 // we are in terse (agent / non-TTY) mode AND the block is large enough AND it
 // is not machine-readable. Any failure (missing binary, non-zero exit, empty
@@ -820,6 +870,8 @@ module.exports = {
   printAutoFinishSummary,
   tokenizeCommand,
   resolveCompressCommand,
+  isExecutableOnPath,
+  describeCompressor,
   compressBlock,
   printCompressible,
 };

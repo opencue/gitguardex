@@ -192,6 +192,50 @@ exit 1
   assert.equal(ghService.status, 'active');
 });
 
+test('status --json reports token compression as configured + available when the binary resolves', () => {
+  const repoDir = initRepo();
+  const result = runNodeWithEnv(['status', '--target', repoDir, '--json'], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'tr a-z A-Z',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.compression.configured, true);
+  assert.equal(payload.compression.command, 'tr');
+  assert.equal(payload.compression.available, true);
+});
+
+test('status --json reports token compression as unconfigured when GUARDEX_COMPRESS_CMD is unset', () => {
+  const repoDir = initRepo();
+  const result = runNodeWithEnv(['status', '--target', repoDir, '--json'], repoDir, {
+    GUARDEX_COMPRESS_CMD: '',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.compression.configured, false);
+  assert.equal(payload.compression.command, null);
+  assert.equal(payload.compression.available, null);
+});
+
+test('status surfaces a degraded line when the configured compressor binary is missing', () => {
+  const repoDir = initRepo();
+  const missing = runNodeWithEnv(['status', '--target', repoDir], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'guardex-no-such-compressor-zzz',
+  });
+  assert.equal(missing.status, 0, missing.stderr || missing.stdout);
+  assert.match(
+    missing.stdout,
+    /Token compression: .*guardex-no-such-compressor-zzz — not found on PATH/,
+  );
+
+  // A resolvable binary prints the active line without the "not found" warning.
+  const present = runNodeWithEnv(['status', '--target', repoDir], repoDir, {
+    GUARDEX_COMPRESS_CMD: 'tr a-z A-Z',
+  });
+  assert.equal(present.status, 0, present.stderr || present.stdout);
+  assert.match(present.stdout, /Token compression: .*\btr\b/);
+  assert.doesNotMatch(present.stdout, /not found on PATH/);
+});
+
 
 test('warning-only degraded status avoids zero-error wording and points humans at doctor', () => {
   const repoDir = initRepo();

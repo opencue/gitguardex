@@ -13,6 +13,7 @@ const toolchainModule = require('../../toolchain');
 const {
   runtimeVersion,
   statusDot,
+  describeCompressor,
   printToolLogsSummary,
   getInvokedCliName,
 } = require('../../output');
@@ -180,6 +181,7 @@ function status(rawArgs) {
         : null,
     },
     detectionError: toolchain.ok ? null : toolchain.error,
+    compression: describeCompressor(),
   };
 
   if (options.json) {
@@ -212,6 +214,16 @@ function status(rawArgs) {
     for (const service of services) {
       const serviceLabel = service.displayName || service.name;
       console.log(`  - ${statusDot(service.status)} ${serviceLabel}: ${service.status}`);
+    }
+  }
+  if (payload.compression.configured) {
+    const { command, available } = payload.compression;
+    if (available === false) {
+      console.log(
+        `[${TOOL_NAME}] Token compression: ${statusDot('degraded')} ${command} — not found on PATH (gx output is not compressed)`,
+      );
+    } else {
+      console.log(`[${TOOL_NAME}] Token compression: ${statusDot('active')} ${command}`);
     }
   }
   const inactiveOptionalCompanions = [...npmServices, ...localCompanionServices]
