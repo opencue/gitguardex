@@ -16,6 +16,7 @@ const {
   colorizeDoctorOutput,
   formatElapsedDuration,
   printAutoFinishSummary,
+  describeCompressor,
 } = require('../../output');
 const {
   ensureOmxScaffold,
@@ -39,6 +40,29 @@ const {
   isSpawnFailure,
 } = require('../shared/sandbox');
 const { printRequiredSystemToolStatus } = require('./setup');
+
+// Advisory only — the GUARDEX_COMPRESS_CMD token-compression hook fails open, so
+// a misconfigured compressor silently wastes tokens rather than breaking the
+// repo. Doctor surfaces it as a warning but never changes the safe/unsafe exit
+// code (compression is an optimization, not a safety guarantee). Silent when
+// unset so the common case stays quiet.
+function printCompressorHealth() {
+  const compressor = describeCompressor();
+  if (!compressor.configured) {
+    return;
+  }
+  if (compressor.available === false) {
+    console.log(
+      colorizeDoctorOutput(
+        `[${TOOL_NAME}] ⚠️ Token compression: '${compressor.command}' not found on PATH — ` +
+          'GUARDEX_COMPRESS_CMD is set but gx output is not being compressed.',
+        'warn',
+      ),
+    );
+  } else {
+    console.log(`[${TOOL_NAME}] Token compression: '${compressor.command}' configured.`);
+  }
+}
 
 function doctor(rawArgs) {
   const options = parseDoctorArgs(rawArgs);
@@ -160,6 +184,7 @@ function doctor(rawArgs) {
 
   if (!singleRepoOptions.json) {
     printRequiredSystemToolStatus();
+    printCompressorHealth();
   }
 
   const blocked = protectedBaseWriteBlock(singleRepoOptions, { requireBootstrap: false });
@@ -229,6 +254,7 @@ function doctor(rawArgs) {
           },
           autoFinish: autoFinishSummary,
           worktreePrune: prunePayload,
+          compression: describeCompressor(),
         },
         null,
         2,
