@@ -237,7 +237,7 @@ function buildAgentRecord(mainRoot, wt, locks, prInfo, nowMs) {
     && record.dirty.length === 0;
   if (wt.isPrimary) {
     record.warning =
-      'on the PRIMARY checkout, not an isolated worktree — edits here risk auto-stash/revert when another lane switches branches. Use `gx branch start`.';
+      'on the PRIMARY checkout, not an isolated worktree — clean branch switches may be auto-reverted, while dirty work is left in place for manual recovery. Use `gx branch start`.';
   }
   return record;
 }

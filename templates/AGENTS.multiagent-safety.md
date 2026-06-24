@@ -50,9 +50,7 @@ If you are about to type `git checkout agent/...` from the primary checkout, **s
 
 ### Dirty-tree rule
 
-Finish or stash edits inside the worktree they belong to before any branch switch on primary. The post-checkout guard may auto-stash a dirty primary tree as `guardex-auto-revert <ts> <prev>-><new>` — that is a safety net, not a workflow.
-
-Recover: `git stash list | grep 'guardex-auto-revert'`.
+Finish or stash edits inside the worktree they belong to before any branch switch on primary. The post-checkout guard auto-reverts only a clean primary tree. If the primary tree is dirty, it leaves the branch and files in place and prints a manual recovery hint instead of stashing or reverting someone else's work.
 
 ### Ownership
 
