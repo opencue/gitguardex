@@ -67,20 +67,15 @@ echo "[agent-primary-branch-guard] The primary working tree must stay on its bas
 echo "[agent-primary-branch-guard] Use 'git worktree add' (or gx branch start) for feature work." >&2
 
 if [[ "$is_agent" == "1" ]]; then
-  echo "[agent-primary-branch-guard] Agent session detected — reverting to '$prev_branch'." >&2
+  echo "[agent-primary-branch-guard] Agent session detected." >&2
   echo "[agent-primary-branch-guard] Bypass with GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH=1 if truly intentional." >&2
   if git diff --quiet && git diff --cached --quiet; then
+    echo "[agent-primary-branch-guard] Clean tree detected — reverting to '$prev_branch'." >&2
     GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH=1 git checkout "$prev_branch" >/dev/null 2>&1 || true
     echo "[agent-primary-branch-guard] Reverted to '$prev_branch'." >&2
   else
-    stash_msg="guardex-auto-revert $(date +%s) ${prev_branch}->${new_branch}"
-    if git stash push --include-untracked -m "$stash_msg" >/dev/null 2>&1; then
-      GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH=1 git checkout "$prev_branch" >/dev/null 2>&1 || true
-      echo "[agent-primary-branch-guard] Dirty tree auto-stashed as '$stash_msg'; primary reverted to '$prev_branch'." >&2
-      echo "[agent-primary-branch-guard] Restore later with: git stash list | grep 'guardex-auto-revert'" >&2
-    else
-      echo "[agent-primary-branch-guard] Auto-stash failed; working tree left on '$new_branch'. Fix manually: git stash -u && git checkout $prev_branch" >&2
-    fi
+    echo "[agent-primary-branch-guard] Working tree dirty — auto-revert skipped to avoid moving uncommitted work." >&2
+    echo "[agent-primary-branch-guard] Primary checkout left on '$new_branch'. Commit or stash the changes in the correct worktree, then recover manually with: GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH=1 git checkout '$prev_branch'" >&2
   fi
 else
   echo "[agent-primary-branch-guard] Bypass with GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH=1 if intentional." >&2

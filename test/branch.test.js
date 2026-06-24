@@ -954,6 +954,35 @@ test('repo .env GUARDEX_ON=false disables bootstrap scripts and git hook enforce
 });
 
 
+test('post-checkout guard skips auto-revert and auto-stash when primary tree is dirty', () => {
+  const { repoDir } = createBootstrappedRepo({ branch: 'main', committed: true });
+
+  const packageJsonPath = path.join(repoDir, 'package.json');
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  packageJson.description = 'dirty primary edit';
+  fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'untracked-primary.txt'), 'untracked primary work\n', 'utf8');
+
+  const checkoutResult = runCmd('git', ['checkout', '-b', 'feature/dirty-primary'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.equal(checkoutResult.status, 0, checkoutResult.stderr || checkoutResult.stdout);
+  assert.match(checkoutResult.stderr, /Working tree dirty .* auto-revert skipped/);
+
+  const currentBranch = runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoDir);
+  assert.equal(currentBranch.status, 0, currentBranch.stderr || currentBranch.stdout);
+  assert.equal(currentBranch.stdout.trim(), 'feature/dirty-primary');
+
+  const currentPackageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  assert.equal(currentPackageJson.description, 'dirty primary edit');
+  assert.equal(fs.existsSync(path.join(repoDir, 'untracked-primary.txt')), true);
+
+  const stashList = runCmd('git', ['stash', 'list'], repoDir);
+  assert.equal(stashList.status, 0, stashList.stderr || stashList.stdout);
+  assert.doesNotMatch(stashList.stdout, /guardex-auto-revert/);
+});
+
+
 test('post-merge auto-runs cleanup on base branch and skips non-base branches', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
