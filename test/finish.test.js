@@ -1180,7 +1180,7 @@ exit 1
 });
 
 
-test('agent-branch-finish warns instead of pulling dirty local base worktree', () => {
+test('agent-branch-finish guarded-pulls dirty local base worktree when Git can preserve edits', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
   attachOriginRemote(repoDir);
@@ -1211,13 +1211,60 @@ test('agent-branch-finish warns instead of pulling dirty local base worktree', (
   );
   assert.equal(finish.status, 0, finish.stderr || finish.stdout);
   assert.match(
-    finish.stderr,
-    /Warning: local dev worktree is dirty; skipping 'git pull --ff-only origin dev' for /,
+    finish.stdout,
+    /Refreshed local dev worktree with 'git pull --ff-only origin dev': /,
   );
   assert.equal(
     fs.existsSync(path.join(auxWorktree, 'agent-dirty-base-refresh.txt')),
-    false,
-    'dirty local dev worktree should not be pulled implicitly',
+    true,
+    'dirty local dev worktree should still fast-forward when Git can preserve local edits',
+  );
+  assert.equal(
+    fs.readFileSync(path.join(auxWorktree, 'package.json'), 'utf8'),
+    '{"dirty":true}\n',
+    'guarded pull must preserve unrelated dirty local edits',
+  );
+});
+
+
+test('agent-branch-finish leaves dirty local base worktree untouched when guarded pull would overwrite', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  attachOriginRemote(repoDir);
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['add', '.'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['commit', '-m', 'apply gx setup'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['push', 'origin', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+
+  result = runCmd('git', ['checkout', '-b', 'agent/test-dirty-base-refresh-conflict'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  commitFile(repoDir, 'package.json', '{"from":"agent"}\n', 'agent conflicting package change');
+
+  const auxWorktree = path.join(path.dirname(repoDir), 'aux-dirty-conflict-dev');
+  result = runCmd('git', ['worktree', 'add', auxWorktree, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(auxWorktree, 'package.json'), '{"dirty":true}\n', 'utf8');
+
+  const finish = runBranchFinish(
+    ['--branch', 'agent/test-dirty-base-refresh-conflict', '--base', 'dev', '--direct-only', '--no-cleanup'],
+    repoDir,
+  );
+  assert.equal(finish.status, 0, finish.stderr || finish.stdout);
+  assert.match(
+    finish.stderr,
+    /Warning: failed to refresh local dev worktree with 'git pull --ff-only origin dev': /,
+  );
+  assert.equal(
+    fs.readFileSync(path.join(auxWorktree, 'package.json'), 'utf8'),
+    '{"dirty":true}\n',
+    'guarded pull must leave conflicting dirty local edits untouched',
   );
 });
 

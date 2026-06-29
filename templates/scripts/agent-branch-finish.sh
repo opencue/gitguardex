@@ -643,17 +643,16 @@ is_clean_worktree() {
 
 refresh_clean_base_worktree() {
   local wt="$1"
+  local pull_output=""
   [[ -z "$wt" || "$PUSH_ENABLED" -ne 1 ]] && return 0
 
-  if ! is_clean_worktree "$wt"; then
-    echo "[agent-branch-finish] Warning: local ${BASE_BRANCH} worktree is dirty; skipping 'git pull --ff-only origin ${BASE_BRANCH}' for ${wt}." >&2
-    return 0
-  fi
-
-  if GUARDEX_DISABLE_POST_MERGE_CLEANUP=1 GUARDEX_PRUNE_ACTIVE_CWD="$finish_active_cwd" git -C "$wt" pull --ff-only origin "$BASE_BRANCH" >/dev/null; then
+  if pull_output="$(GUARDEX_DISABLE_POST_MERGE_CLEANUP=1 GUARDEX_PRUNE_ACTIVE_CWD="$finish_active_cwd" git -C "$wt" -c rebase.autoStash=false -c merge.autostash=false pull --ff-only origin "$BASE_BRANCH" 2>&1)"; then
     echo "[agent-branch-finish] Refreshed local ${BASE_BRANCH} worktree with 'git pull --ff-only origin ${BASE_BRANCH}': ${wt}"
   else
     echo "[agent-branch-finish] Warning: failed to refresh local ${BASE_BRANCH} worktree with 'git pull --ff-only origin ${BASE_BRANCH}': ${wt}" >&2
+    if [[ -n "$pull_output" ]]; then
+      echo "$pull_output" >&2
+    fi
   fi
 }
 
