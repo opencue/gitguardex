@@ -32,6 +32,7 @@ const { resolveRepoRoot } = require('../git');
 // Subcommand modules (each owns one or a small cluster of verbs).
 const { status } = require('./commands/status');
 const { setup } = require('./commands/setup');
+const { onboard } = require('./commands/onboard');
 const { install, fix, scan } = require('./commands/bootstrap');
 const { doctor } = require('./commands/doctor');
 const { review, prReview } = require('./commands/review');
@@ -208,6 +209,7 @@ async function main() {
     return setup(repairOnly.remaining);
   }
 
+  if (command === 'onboard' || command === 'welcome') return onboard(rest);
   if (command === 'prompt') return prompt(rest);
   if (command === 'pr-review') return prReview(rest);
   if (command === 'pr') return prCommand(rest);

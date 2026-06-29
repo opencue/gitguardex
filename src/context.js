@@ -351,6 +351,7 @@ const COMMAND_TYPO_ALIASES = new Map([
 const SUGGESTIBLE_COMMANDS = [
   'status',
   'setup',
+  'onboard',
   'doctor',
   'branch',
   'pivot',
@@ -394,6 +395,7 @@ const CLI_COMMAND_GROUPS = [
     label: 'Setup & health',
     description: 'Install, repair, and check a repo. Run these first on a new clone.',
     commands: [
+      ['onboard', 'Guided first-run tour: where you are + the exact next command (alias: welcome)'],
       ['setup', 'Install, repair, and verify guardrails (flags: --repair, --install-only, --target, --current)'],
       ['doctor', 'Repair drift + verify (flags: --target, --current; auto-sandboxes on protected main)'],
       ['status', 'Show GitGuardex CLI + service health without modifying files'],

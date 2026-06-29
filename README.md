@@ -42,7 +42,8 @@
 ```bash
 npm i -g @imdeadpool/guardex
 cd /path/to/your-repo
-gx setup   # hooks, state, OMX / OpenSpec / caveman wiring — one shot
+gx setup     # hooks, state, OMX / OpenSpec / caveman wiring — one shot
+gx onboard   # optional: 2-minute guided tour — where you are + the exact next command
 ```
 
 <p align="center">
@@ -224,6 +225,7 @@ the compact layout everywhere.
 
 | command | does |
 | --- | --- |
+| `gx onboard` | Guided first-run tour: where you are + the exact next command (alias: `gx welcome`). |
 | `gx status` | Health check (the default when you type `gx`). |
 | `gx status --strict` | Exit non-zero on findings. |
 | `gx setup` | Full bootstrap. |
