@@ -11,6 +11,7 @@ const {
   OMX_SCAFFOLD_FILES,
   AGENT_WORKTREE_RELATIVE_DIRS,
   defaultAgentWorktreeRelativeDir,
+  envFlagIsTruthy,
 } = require('../context');
 const { runPackageAsset } = require('../core/runtime');
 
@@ -50,6 +51,7 @@ const {
 const { ensureOmxScaffold, configureHooks } = require('../scaffold');
 const { detectRecoverableAutoFinishConflict, printAutoFinishSummary, isTerseMode } = require('../output');
 const { autoCommitWorktreeForFinish } = require('../finish');
+const { runReviewGate } = require('../finish/review-gate');
 
 /**
  * @typedef {Object} SandboxMetadata
@@ -863,6 +865,34 @@ function syncDoctorLockRegistryAfterMerge(repoRoot, sandboxLockContent) {
   };
 }
 
+// When GUARDEX_AUTO_SHIP is on, the unattended auto-finish sweep must honor the
+// same merge gate as `gx finish` (clean AI review + green CI + GitHub-mergeable)
+// before merging an agent branch to base. The gate only applies to the PR path;
+// the direct/local fallbacks have no PR or CI to gate, so they pass through
+// unchanged. `runReviewGate` is injectable via `deps.runReviewGate` for tests.
+// Returns `{ skip: true, reason }` when the gate blocks the merge.
+function runAutoShipGateForBranch({ autoShip, fallbackMode, repoRoot, branch, baseBranch }, deps = {}) {
+  if (!autoShip || fallbackMode !== '') {
+    return { skip: false };
+  }
+  const gate = deps.runReviewGate || runReviewGate;
+  // Override the reviewer for unattended runs: if the default provider is
+  // unavailable in the sweep environment, GUARDEX_AUTO_SHIP_REVIEW_PROVIDER
+  // avoids a permanent gate-block on every branch.
+  const reviewProvider = process.env.GUARDEX_AUTO_SHIP_REVIEW_PROVIDER || 'codex';
+  try {
+    gate({
+      repoRoot,
+      branch,
+      baseBranch,
+      options: { reviewProvider, allowNoChecks: false },
+    });
+    return { skip: false };
+  } catch (error) {
+    return { skip: true, reason: `merge gate blocked (${error.message})` };
+  }
+}
+
 function autoFinishReadyAgentBranches(repoRoot, options = {}) {
   const baseBranch = String(options.baseBranch || '').trim();
   const dryRun = Boolean(options.dryRun);
@@ -872,6 +902,7 @@ function autoFinishReadyAgentBranches(repoRoot, options = {}) {
       ? options.excludeBranches.map((branch) => String(branch || '').trim()).filter(Boolean)
       : [],
   );
+  const autoShip = envFlagIsTruthy(process.env.GUARDEX_AUTO_SHIP);
 
   const summary = {
     enabled: true,
@@ -984,6 +1015,16 @@ function autoFinishReadyAgentBranches(repoRoot, options = {}) {
       continue;
     }
 
+    const gateOutcome = runAutoShipGateForBranch(
+      { autoShip, fallbackMode, repoRoot, branch, baseBranch },
+      { runReviewGate: options.runReviewGate },
+    );
+    if (gateOutcome.skip) {
+      summary.skipped += 1;
+      summary.details.push(`[skip] ${branch}: ${gateOutcome.reason}`);
+      continue;
+    }
+
     summary.attempted += 1;
     const finishArgs = [
       '--branch',
@@ -1000,6 +1041,7 @@ function autoFinishReadyAgentBranches(repoRoot, options = {}) {
     }
     finishArgs.push(waitForMerge ? '--wait-for-merge' : '--no-wait-for-merge');
     finishArgs.push('--cleanup');
+
     const finishResult = runPackageAsset('branchFinish', finishArgs, { cwd: repoRoot });
     const combinedOutput = [finishResult.stdout || '', finishResult.stderr || ''].join('\n').trim();
 
@@ -1336,6 +1378,7 @@ module.exports = {
   emitDoctorSandboxJsonOutput,
   emitDoctorSandboxConsoleOutput,
   autoFinishReadyAgentBranches,
+  runAutoShipGateForBranch,
   pruneStaleAgentWorktrees,
   runDoctorInSandbox,
 };
