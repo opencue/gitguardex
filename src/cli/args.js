@@ -2,6 +2,7 @@ const {
   path,
   DEFAULT_SHADOW_CLEANUP_IDLE_MINUTES,
   TARGETED_FORCEABLE_MANAGED_PATHS,
+  envFlagIsTruthy,
 } = require('../context');
 const { DEFAULT_NESTED_REPO_MAX_DEPTH } = require('../git');
 
@@ -1140,6 +1141,13 @@ function parseMergeArgs(rawArgs) {
 }
 
 function parseFinishArgs(rawArgs, defaults = {}) {
+  // `GUARDEX_AUTO_SHIP=1` (opt-in) makes a bare `gx finish` / `gx branch finish`
+  // behave like `gx ship`: open a PR from the worktree, wait for merge, clean up,
+  // and enforce the merge gate (clean AI review + green CI) before merging to base.
+  // via-pr / wait-for-merge / cleanup are already the defaults, so the only delta
+  // is flipping the gate-review default on. Explicit flags (e.g. --no-gate-review)
+  // still override below.
+  const autoShip = envFlagIsTruthy(process.env.GUARDEX_AUTO_SHIP);
   const options = {
     target: process.cwd(),
     base: '',
@@ -1156,7 +1164,11 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     commitMessage: '',
     mergeMode: defaults.mergeMode || 'pr',
     skipPreflight: false,
-    gateReview: defaults.gateReview ?? false,
+    // Precedence: explicit flag (set in the loop below) > defaults (caller) >
+    // GUARDEX_AUTO_SHIP env > hardcoded off. Note `defaults.gateReview === false`
+    // (not undefined) also wins over the env toggle, since `??` only falls
+    // through on null/undefined.
+    gateReview: defaults.gateReview ?? autoShip,
     reviewProvider: defaults.reviewProvider || 'codex',
     allowNoChecks: false,
   };
