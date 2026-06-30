@@ -155,6 +155,28 @@ test('UserPromptSubmit stays quiet when the editing set is unchanged', () => {
   }
 });
 
+test('a corrupt (non-dict) state file never breaks the tracker or the advisor', () => {
+  const dir = makeRepoOn('agent/test/lane');
+  const a = freshSessionId(); // owner of the corrupt record
+  const b = freshSessionId(); // reader
+  try {
+    // Simulate a half-written / hand-edited record that parses to a non-object.
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(sessionStatePath(a), 'null');
+
+    // Tracker must recover (read non-dict -> {}), record cleanly, and exit 0.
+    recordEdit(dir, a, 'src/foo.ts');
+    const rec = JSON.parse(fs.readFileSync(sessionStatePath(a), 'utf8'));
+    assert.equal(rec.current_file, 'src/foo.ts');
+
+    // Advisor must not crash on any leftover non-dict record and must exit 0.
+    const result = invokeAdvisor(dir, 'SessionStart', b);
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    cleanup(dir, a, b);
+  }
+});
+
 test('protected-branch advisory and live presence combine in one banner', () => {
   const dir = makeRepoOn('main');
   const a = freshSessionId();

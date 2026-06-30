@@ -127,7 +127,9 @@ def _write_state(session_id: str, data: dict) -> None:
     try:
         path = _advisor_state_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data))
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, path)  # atomic: never leave a truncated state file
     except OSError:
         pass
 

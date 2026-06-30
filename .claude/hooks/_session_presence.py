@@ -90,7 +90,9 @@ def _relpath(file_path: str, base: str) -> "str | None":
     if not file_path:
         return None
     if not base:
-        return os.path.basename(file_path)
+        # No worktree to scope against — cannot place this path in a tree, so
+        # it is not trackable presence (and must not leak in as a phantom peer).
+        return None
     try:
         rel = os.path.relpath(file_path, base)
     except (ValueError, TypeError):
@@ -113,9 +115,13 @@ def is_trackable(rel: str) -> bool:
 
 def _read_record(session_id: str) -> dict:
     try:
-        return json.loads(_record_path(session_id).read_text())
+        result = json.loads(_record_path(session_id).read_text())
     except (OSError, ValueError):
         return {}
+    # A corrupt/older state file may parse to a non-object (null, list, number).
+    # Returning it would raise AttributeError on .get() in record_edit and escape
+    # the fail-open guard, so normalize to an empty dict.
+    return result if isinstance(result, dict) else {}
 
 
 def _iso(now: "float | None") -> str:
@@ -187,7 +193,7 @@ def record_edit(
         tmp.write_text(json.dumps(record, indent=2))
         os.replace(tmp, path)  # atomic
         return record
-    except OSError:
+    except Exception:  # noqa: BLE001 - fail-open: a tracker error must never block an edit
         return None
 
 
@@ -216,11 +222,16 @@ def read_live_sessions(
             record = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
+        if not isinstance(record, dict):
+            continue
         sid = record.get("session_id")
         if not sid or sid == exclude_session:
             continue
-        if root_real and record.get("repo_root"):
-            if os.path.realpath(record["repo_root"]) != root_real:
+        if root_real:
+            # A record with no/empty repo_root cannot be confirmed to belong to
+            # this worktree — exclude it rather than letting it leak in as a peer.
+            record_root = record.get("repo_root")
+            if not record_root or os.path.realpath(record_root) != root_real:
                 continue
         age = None
         seen = _parse_iso(record.get("last_seen"))
