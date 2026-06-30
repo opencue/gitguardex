@@ -8,7 +8,7 @@ This change is complete only when **all** of the following are true:
 
 ## Handoff
 
-- Handoff: change=`agent-claude-autofinish-watcher-lock-ttl-orphan-sweep-2026-06-30-02-05`; branch=`agent/<your-name>/<branch-slug>`; scope=`TODO`; action=`continue this sandbox or finish cleanup after a usage-limit/manual takeover`.
+- Handoff: change=`agent-claude-autofinish-watcher-lock-ttl-orphan-sweep-2026-06-30-02-05`; branch=`agent/<your-name>/<branch-slug>`; scope=`watcher + lock reap + finish --all orphan sweep; distribution to target repos is a follow-up (blocked by foreign lock on src/cli/commands/claude.js)`; action=`continue this sandbox or finish cleanup after a usage-limit/manual takeover`.
 - Copy prompt: Continue `agent-claude-autofinish-watcher-lock-ttl-orphan-sweep-2026-06-30-02-05` on branch `agent/<your-name>/<branch-slug>`. Work inside the existing sandbox, review `openspec/changes/agent-claude-autofinish-watcher-lock-ttl-orphan-sweep-2026-06-30-02-05/tasks.md`, continue from the current state instead of creating a new sandbox, and when the work is done run `gx branch finish --branch agent/<your-name>/<branch-slug> --base dev --via-pr --wait-for-merge --cleanup`.
 
 ## 1. Specification
@@ -23,9 +23,9 @@ This change is complete only when **all** of the following are true:
 
 ## 3. Verification
 
-- [ ] 3.1 Run targeted project verification commands.
-- [ ] 3.2 Run `openspec validate agent-claude-autofinish-watcher-lock-ttl-orphan-sweep-2026-06-30-02-05 --type change --strict`.
-- [ ] 3.3 Run `openspec validate --specs`.
+- [x] 3.1 Run targeted project verification commands.
+- [x] 3.2 Run `openspec validate agent-claude-autofinish-watcher-lock-ttl-orphan-sweep-2026-06-30-02-05 --type change --strict`.
+- [x] 3.3 Run `openspec validate --specs`.
 
 ## 4. Cleanup (mandatory; run before claiming completion)
 
