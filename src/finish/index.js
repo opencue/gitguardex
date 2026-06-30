@@ -324,6 +324,20 @@ function merge(rawArgs) {
  * @returns {void}
  * @throws {Error} When `--branch` references an unknown ref, or when any branch fails to finish (after the loop completes).
  */
+/**
+ * Decide whether a finish run should sweep merged-but-stranded worktree dirs
+ * after the per-lane loop. Only for bulk `--all`, never on a dry run, only when
+ * every lane succeeded (failed === 0), and honoring the --no-sweep-orphans
+ * opt-out. Pure so the guard can be tested without the gh/PR finish flow.
+ *
+ * @param {{all?: boolean, sweepOrphans?: boolean, dryRun?: boolean}} options
+ * @param {number} failed Count of lanes that failed to finish.
+ * @returns {boolean}
+ */
+function shouldSweepOrphans(options, failed) {
+  return Boolean(options.all && options.sweepOrphans && !options.dryRun && failed === 0);
+}
+
 function finish(rawArgs, defaults = {}) {
   const activeCwd = process.cwd();
   const options = parseFinishArgs(rawArgs, defaults);
@@ -518,6 +532,28 @@ function finish(rawArgs, defaults = {}) {
     `[${TOOL_NAME}] Finish summary: total=${candidates.length}, success=${succeeded}, failed=${failed}, autoCommitted=${autoCommitted}`,
   );
 
+  // Bulk `--all` finish self-cleans: sweep merged-but-stranded worktree dirs
+  // whose branch was merged out-of-band and never reaped (the post-merge
+  // "retained for now" gap in agent-branch-finish.sh). Only when every lane
+  // succeeded, never on a dry run, and opt-out via --no-sweep-orphans. The
+  // sweep is best-effort: a failure warns but does not fail the finish.
+  if (shouldSweepOrphans(options, failed)) {
+    const baseForSweep = options.base || candidates[0].baseBranch;
+    const sweepArgs = ['--include-pr-merged', '--delete-branches'];
+    if (baseForSweep) {
+      sweepArgs.push('--base', baseForSweep);
+    }
+    console.log(`[${TOOL_NAME}] Sweeping merged-but-stranded worktrees...`);
+    const sweep = runPackageAsset('worktreePrune', sweepArgs, {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      env: { GUARDEX_PRUNE_ACTIVE_CWD: activeCwd },
+    });
+    if (sweep.status !== 0) {
+      console.error(`[${TOOL_NAME}] Warning: orphan sweep failed (non-fatal).`);
+    }
+  }
+
   if (failed > 0) {
     throw new Error('finish command failed for one or more agent branches');
   }
@@ -701,4 +737,5 @@ module.exports = {
   finish,
   sync,
   autoCommitWorktreeForFinish,
+  shouldSweepOrphans,
 };
