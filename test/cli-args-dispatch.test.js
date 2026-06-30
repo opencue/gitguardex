@@ -300,6 +300,15 @@ test('parseFinishArgs rejects non-agent branches and preserves explicit override
   assert.equal(options.commitMessage, 'Finish the active lane');
 });
 
+test('parseFinishArgs sweepOrphans defaults on and toggles', () => {
+  assert.equal(parseFinishArgs([]).sweepOrphans, true);
+  assert.equal(parseFinishArgs(['--all']).sweepOrphans, true);
+  assert.equal(parseFinishArgs(['--all', '--no-sweep-orphans']).sweepOrphans, false);
+  assert.equal(parseFinishArgs(['--no-sweep-orphans', '--sweep-orphans']).sweepOrphans, true);
+  // Caller defaults can opt out without a flag.
+  assert.equal(parseFinishArgs([], { sweepOrphans: false }).sweepOrphans, false);
+});
+
 test('dispatch helpers preserve suggestion, alias, deprecation, and flag extraction behavior', () => {
   assert.equal(maybeSuggestCommand('docto'), 'doctor');
 

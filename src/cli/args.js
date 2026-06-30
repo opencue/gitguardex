@@ -1171,6 +1171,10 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     gateReview: defaults.gateReview ?? autoShip,
     reviewProvider: defaults.reviewProvider || 'codex',
     allowNoChecks: false,
+    // After a bulk `--all` finish, sweep merged-but-stranded worktree dirs whose
+    // branch was merged out-of-band and never reaped (the post-merge "retained"
+    // gap). Only fires for `--all`; opt out with --no-sweep-orphans.
+    sweepOrphans: defaults.sweepOrphans ?? true,
   };
 
   for (let index = 0; index < rawArgs.length; index += 1) {
@@ -1213,6 +1217,14 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     }
     if (arg === '--all') {
       options.all = true;
+      continue;
+    }
+    if (arg === '--no-sweep-orphans') {
+      options.sweepOrphans = false;
+      continue;
+    }
+    if (arg === '--sweep-orphans') {
+      options.sweepOrphans = true;
       continue;
     }
     if (arg === '--dry-run') {

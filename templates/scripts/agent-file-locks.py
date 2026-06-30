@@ -48,6 +48,11 @@ CRITICAL_GUARDRAIL_PATHS = {
     'scripts/guardex-env.sh',
 }
 ALLOW_GUARDRAIL_DELETE_ENV = 'AGENT_ALLOW_GUARDRAIL_DELETE'
+LOCK_TTL_HOURS_ENV = 'GUARDEX_LOCK_TTL_HOURS'
+LOCK_NOW_EPOCH_ENV = 'GUARDEX_LOCK_NOW_EPOCH'
+# Generous default so an active long-running lane is never reaped; `reap` is an
+# explicit, opt-in maintenance command, not an automatic background sweep.
+DEFAULT_LOCK_TTL_HOURS = 168.0  # 7 days
 
 
 @dataclass
@@ -174,13 +179,78 @@ def write_state(repo_root: Path, state: dict[str, Any]) -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.fromtimestamp(now_epoch(), tz=timezone.utc).isoformat()
 
 
 def env_truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def now_epoch() -> float:
+    """Current unix time, overridable via GUARDEX_LOCK_NOW_EPOCH for tests."""
+    override = os.environ.get(LOCK_NOW_EPOCH_ENV)
+    if override:
+        try:
+            return float(override)
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc).timestamp()
+
+
+def parse_iso_epoch(value: str) -> float | None:
+    """Parse a `claimed_at` ISO-8601 stamp to a unix epoch, or None if unset
+    or unparseable. Naive stamps are assumed UTC (claims are written in UTC)."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def has_live_process_in_worktree(worktree: Path) -> bool:
+    """True when any running process has its cwd inside `worktree` (Linux /proc
+    only; best-effort no elsewhere). Guards reap from touching an active lane."""
+    proc = Path('/proc')
+    if not proc.is_dir():
+        return False
+    wt = str(worktree)
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            target = os.readlink(entry / 'cwd')
+        except OSError:
+            continue
+        if target.endswith(' (deleted)'):
+            target = target[: -len(' (deleted)')]
+        if target == wt or target.startswith(wt + os.sep):
+            return True
+    return False
+
+
+def resolve_ttl_hours(args: argparse.Namespace) -> float:
+    """Reap TTL in hours: --ttl-hours wins, then GUARDEX_LOCK_TTL_HOURS, then
+    the 7-day default."""
+    explicit = getattr(args, 'ttl_hours', None)
+    if explicit is not None:
+        return float(explicit)
+    env = os.environ.get(LOCK_TTL_HOURS_ENV)
+    if env:
+        try:
+            return float(env)
+        except ValueError:
+            pass
+    return DEFAULT_LOCK_TTL_HOURS
 
 
 def staged_changes(repo_root: Path) -> list[tuple[str, str]]:
@@ -304,15 +374,27 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     # claim (each worktree keeps a separate lock file). The write below still
     # records the claim in THIS worktree's lock file.
     all_locks = load_all_locks(repo_root)
+    ttl_seconds = resolve_ttl_hours(args) * 3600.0
+    now = now_epoch()
+    any_stale = False
     for file_path in files:
         foreign = [e for e in all_locks.get(file_path, []) if not owner_matches(e, args.branch, claim_agent)]
         if foreign:
             conflicts.append((file_path, owner_label(foreign[0])))
+            claimed = parse_iso_epoch(str(foreign[0].get('claimed_at', '')))
+            if claimed is not None and (now - claimed) >= ttl_seconds:
+                any_stale = True
 
     if conflicts:
         print('[agent-file-locks] Cannot claim files already locked by another owner:', file=sys.stderr)
         for file_path, owner in conflicts:
             print(f'  - {file_path} (locked by {owner})', file=sys.stderr)
+        if any_stale:
+            print(
+                '[agent-file-locks] Some blocking locks are past the staleness TTL; if their '
+                'lane is abandoned, run `gx locks reap` to clear them.',
+                file=sys.stderr,
+            )
         return 1
 
     for file_path in files:
@@ -391,6 +473,49 @@ def cmd_release(args: argparse.Namespace, repo_root: Path) -> int:
 
     write_state(repo_root, state)
     print(f"[agent-file-locks] Released {len(to_release)} file(s) for {args.branch}.")
+    return 0
+
+
+def cmd_reap(args: argparse.Namespace, repo_root: Path) -> int:
+    # Clear locks held by ABANDONED worktrees: present on disk, idle past the
+    # TTL, and with no live process inside. Dead worktrees self-clean (their lock
+    # file lives inside them), so this targets the lingering-but-idle case where
+    # a crashed or forgotten lane keeps blocking a file forever. The caller's own
+    # worktree always has a live process, so reap never clears its active locks.
+    ttl_hours = resolve_ttl_hours(args)
+    ttl_seconds = ttl_hours * 3600.0
+    now = now_epoch()
+    roots = list_worktree_roots(repo_root)
+    reaped: list[tuple[str, str, str, int]] = []  # worktree, file, branch, age_hours
+    for root in roots:
+        try:
+            state = load_state(root)
+        except LockError:
+            continue
+        locks = state['locks']
+        if not locks:
+            continue
+        if has_live_process_in_worktree(root):
+            continue
+        survivors: dict[str, Any] = {}
+        changed = False
+        for file_path, entry in locks.items():
+            claimed = parse_iso_epoch(str(entry.get('claimed_at', '')))
+            if claimed is not None and (now - claimed) >= ttl_seconds:
+                reaped.append((str(root), file_path, str(entry.get('branch', '')), int((now - claimed) // 3600)))
+                changed = True
+            else:
+                survivors[file_path] = entry
+        if changed and not args.dry_run:
+            write_state(root, {**state, 'locks': survivors})
+
+    if not reaped:
+        print(f'[agent-file-locks] reap: no stale locks (ttl={int(ttl_hours)}h, scanned {len(roots)} worktree(s)).')
+        return 0
+    label = '[agent-file-locks] [dry-run] would reap' if args.dry_run else '[agent-file-locks] reaped'
+    print(f'{label} {len(reaped)} stale lock(s) (ttl={int(ttl_hours)}h):')
+    for root, file_path, branch, age_hours in reaped:
+        print(f'  - {file_path} | {branch} | idle {age_hours}h | {root}')
     return 0
 
 
@@ -555,6 +680,15 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument('--branch', help='Filter by branch')
     add_agent_arg(status)
 
+    reap = sub.add_parser('reap', help='Clear stale locks from abandoned (idle past TTL, no live process) worktrees')
+    reap.add_argument(
+        '--ttl-hours',
+        type=float,
+        default=None,
+        help=f'Idle hours before a lock is stale (default {int(DEFAULT_LOCK_TTL_HOURS)}h or ${LOCK_TTL_HOURS_ENV})',
+    )
+    reap.add_argument('--dry-run', action='store_true', help='Report stale locks without removing them')
+
     validate = sub.add_parser('validate', help='Validate staged files are locked by branch')
     validate.add_argument('--branch', required=True, help='Owner branch name')
     add_agent_arg(validate)
@@ -571,6 +705,8 @@ def dispatch_command(args: argparse.Namespace, repo_root: Path) -> int:
         return cmd_allow_delete(args, repo_root)
     if args.command == 'release':
         return cmd_release(args, repo_root)
+    if args.command == 'reap':
+        return cmd_reap(args, repo_root)
     if args.command == 'status':
         return cmd_status(args, repo_root)
     if args.command == 'validate':
@@ -589,7 +725,7 @@ def main() -> int:
         # Serialize state-changing commands (and validate's snapshot read) across
         # ALL worktrees with one shared lock, so concurrent runs can't clobber
         # each other or both win the same file. status is a pure read -> unlocked.
-        if args.command in {'claim', 'allow-delete', 'release', 'validate'}:
+        if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate'}:
             with cross_worktree_lock(repo_root):
                 return dispatch_command(args, repo_root)
         return dispatch_command(args, repo_root)

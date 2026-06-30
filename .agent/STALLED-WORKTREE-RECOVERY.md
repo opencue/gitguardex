@@ -7,10 +7,14 @@ The Guardex Codex launcher auto-finishes a branch only when the codex CLI exits 
 To act on the report:
 
 - Inspect: `bash scripts/agent-autofinish-watch.sh --once --dry-run`
-- Auto-finish once (commit dirty changes, push, create PR, attempt merge): `bash scripts/agent-autofinish-watch.sh --once --auto-merge`
-- Run the daemon (poll forever, auto-finish after `--idle-seconds`): `bash scripts/agent-autofinish-watch.sh --daemon --auto-merge`
+- Reap merged lanes (prune worktrees whose PR already merged): `bash scripts/agent-autofinish-watch.sh --once --auto-merge`
+- Run the daemon (poll forever, reaping merged lanes each cycle): `bash scripts/agent-autofinish-watch.sh --daemon --auto-merge --interval 300`
 
-Defaults: `--idle-seconds=900` (15 min of file silence before auto-commit) and `--branch-prefix=agent/`. The watcher is conservative — it never touches branches outside the configured prefix and only commits worktrees whose files have stopped changing.
+Flags: `--idle-minutes` (default 60, or `GUARDEX_AUTOFINISH_IDLE_MINUTES`) gates how long a lane must be quiet before it counts as stalled; `--interval` sets the daemon poll seconds; `--base` overrides the inferred base branch.
+
+The watcher is deliberately conservative. It only ever **reports** agent worktrees with unmerged work (committed-no-PR or uncommitted) — it never auto-commits, pushes, or opens a PR for un-reviewed work. `--auto-merge` only reaps lanes whose PR has already **merged** (delegating to `gx worktree prune --include-pr-merged --delete-branches`), which is what fixes the post-merge "retained for now" gap. Finishing an un-PR'd lane stays a manual `gx branch finish`. Healthy in-flight lanes (open PR, or a live process in the worktree) produce no output.
+
+A stalled lane that holds file locks can keep blocking other agents; clear those with `gx locks reap` (removes locks from worktrees idle past `--ttl-hours` / `GUARDEX_LOCK_TTL_HOURS`, default 7 days, with no live process inside).
 
 ## Source-probe temp worktree cleanup
 
