@@ -12,7 +12,7 @@ const claudeModule = require('../src/cli/commands/claude');
 
 function makeRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-claude-'));
-  const run = (...args) => cp.spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  const run = (...args) => cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: dir, encoding: 'utf8' });
   assert.equal(run('init', '-q', '-b', 'main').status, 0);
   assert.equal(run('config', 'user.email', 'test@example.com').status, 0);
   assert.equal(run('config', 'user.name', 'Test').status, 0);
@@ -275,4 +275,15 @@ test('branch advisor is wired into SessionStart and UserPromptSubmit', () => {
   const sessionCmds = (merged.hooks.SessionStart || []).flatMap((g) =>
     (g.hooks || []).map((h) => h.command || ''));
   assert.ok(sessionCmds.some((cmd) => cmd.includes('agent-stalled-report.sh')), 'stalled report preserved');
+});
+
+test('Claude Stop hook is wired to finish agent worktrees', () => {
+  const merged = claudeModule.mergeSettings(null, claudeModule.TEMPLATE_DEFAULT_SETTINGS);
+  const commands = (merged.hooks.Stop || []).flatMap((g) =>
+    (g.hooks || []).map((h) => h.command || ''));
+  assert.ok(
+    commands.some((cmd) => cmd.includes('agent-claude-stop-finish.sh')),
+    'Stop should invoke agent-claude-stop-finish.sh',
+  );
+  assert.deepEqual(claudeModule.EXPECTED_HOOK_MATCHERS.Stop, ['agent-claude-stop-finish.sh']);
 });

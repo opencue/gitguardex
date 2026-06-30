@@ -1,0 +1,1 @@
+../templates/scripts/agent-claude-stop-finish.sh

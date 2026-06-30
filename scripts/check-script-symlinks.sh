@@ -18,6 +18,7 @@ required_symlinks=(
   scripts/agent-branch-start.sh
   scripts/agent-branch-finish.sh
   scripts/agent-branch-merge.sh
+  scripts/agent-claude-stop-finish.sh
   scripts/agent-file-locks.py
   scripts/agent-preflight.sh
   scripts/agent-stalled-report.sh

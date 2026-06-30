@@ -143,7 +143,7 @@ function toDestinationPath(relativeTemplatePath) {
 
 // scripts/ ↔ templates/scripts/ layout convention (single source of truth):
 //
-// 1. PAIRED files (10): tracked on both sides; scripts/<file> is a symlink
+// 1. PAIRED files: tracked on both sides; scripts/<file> is a symlink
 //    to ../templates/scripts/<file> per PR #548. See
 //    scripts/check-script-symlinks.sh for the exact list. CI + the
 //    .githooks/pre-commit shim both enforce that no symlink is ever
@@ -165,6 +165,7 @@ const TEMPLATE_FILES = [
   'scripts/agent-preflight.sh',
   'scripts/agent-stalled-report.sh',
   'scripts/agent-autofinish-watch.sh',
+  'scripts/agent-claude-stop-finish.sh',
   'scripts/guardex-docker-loader.sh',
   'scripts/guardex-env.sh',
   'github/pull.yml.example',

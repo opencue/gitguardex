@@ -52,6 +52,7 @@ const EXPECTED_HOOK_MATCHERS = {
   UserPromptSubmit: ['skill_activation.py', 'agent_branch_advisor.py'],
   PreToolUse: ['skill_guard.py'],
   PostToolUse: ['post_edit_tracker.py', 'skill_tracker.py'],
+  Stop: ['agent-claude-stop-finish.sh'],
 };
 
 const TEMPLATE_DEFAULT_SETTINGS = {
@@ -111,6 +112,16 @@ const TEMPLATE_DEFAULT_SETTINGS = {
           {
             type: 'command',
             command: 'python3 "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude/hooks/skill_tracker.py"',
+          },
+        ],
+      },
+    ],
+    Stop: [
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: 'bash "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/scripts/agent-claude-stop-finish.sh"',
           },
         ],
       },
