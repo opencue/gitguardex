@@ -14,11 +14,13 @@ cd "$repo_root"
 # in src/context.js. Files that are intentionally gitignored or scaffolded
 # locally (e.g. guardex-env.sh, guardex-docker-loader.sh) are excluded.
 required_symlinks=(
+  scripts/agent-autofinish-watch.sh
   scripts/agent-branch-start.sh
   scripts/agent-branch-finish.sh
   scripts/agent-branch-merge.sh
   scripts/agent-file-locks.py
   scripts/agent-preflight.sh
+  scripts/agent-stalled-report.sh
   scripts/agent-worktree-prune.sh
   scripts/codex-agent.sh
   scripts/install-agent-git-hooks.sh
