@@ -4,6 +4,8 @@ The Guardex Codex launcher auto-finishes a branch only when the codex CLI exits 
 
 `scripts/agent-stalled-report.sh` is a quiet wrapper around `scripts/agent-autofinish-watch.sh --once --dry-run` that surfaces stalled worktrees. It is wired as a `SessionStart` hook in `.claude/settings.json`, so each Claude Code session begins with a one-line summary per stalled branch (and is silent when nothing is stalled).
 
+`scripts/agent-claude-stop-finish.sh` is wired as a Claude `Stop` hook. When Claude stops inside an `agent/*` worktree and there is committed or dirty work, it delegates to `gx branch finish --branch <branch> --base <base> --via-pr --wait-for-merge --cleanup`. Set `GUARDEX_CLAUDE_STOP_FINISH=clean` to only finish already-committed lanes, or `GUARDEX_CLAUDE_STOP_FINISH=off` to disable the stop-time handoff.
+
 To act on the report:
 
 - Inspect: `bash scripts/agent-autofinish-watch.sh --once --dry-run`

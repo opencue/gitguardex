@@ -86,6 +86,7 @@ test('setup provisions workflow files and repo config', () => {
     'scripts/guardex-env.sh',
     'scripts/agent-stalled-report.sh',
     'scripts/agent-autofinish-watch.sh',
+    'scripts/agent-claude-stop-finish.sh',
     '.githooks/pre-commit',
     '.githooks/pre-push',
     '.githooks/post-merge',
