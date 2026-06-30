@@ -41,11 +41,19 @@ while [[ $# -gt 0 ]]; do
     --daemon) MODE="daemon"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --auto-merge) AUTO_MERGE=1; shift ;;
-    --interval) INTERVAL="${2:-300}"; shift 2 ;;
-    --idle-minutes) IDLE_MINUTES="${2:-60}"; shift 2 ;;
-    --base) BASE_BRANCH="${2:-}"; shift 2 ;;
+    --interval)
+      [[ $# -ge 2 ]] || { echo "[agent-autofinish-watch] --interval requires a value" >&2; exit 1; }
+      INTERVAL="$2"; shift 2 ;;
+    --idle-minutes)
+      [[ $# -ge 2 ]] || { echo "[agent-autofinish-watch] --idle-minutes requires a value" >&2; exit 1; }
+      IDLE_MINUTES="$2"; shift 2 ;;
+    --base)
+      [[ $# -ge 2 ]] || { echo "[agent-autofinish-watch] --base requires a value" >&2; exit 1; }
+      BASE_BRANCH="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: $0 [--once|--daemon] [--dry-run] [--auto-merge] [--interval SEC] [--idle-minutes MIN] [--base BRANCH]"
+      echo "Note: merged/open PR detection reads the most recent 200 PRs per state; a"
+      echo "      branch whose merged PR is older than that will not be auto-reaped."
       exit 0
       ;;
     *)
@@ -206,8 +214,8 @@ run_once() {
     "$scanned" "$stalled" "$merged" "$reaped"
 }
 
-# process_lane mutates scanned/stalled/merged/reaped/merged_lanes in the caller
-# scope (bash dynamic scope via run_once locals).
+# process_lane mutates scanned/stalled/merged in the caller scope (bash dynamic
+# scope via run_once's locals); reaped is a top-level global set by reap_merged.
 process_lane() {
   local wt="$1" branch="$2"
   [[ -n "$wt" && -n "$branch" ]] || return 0
