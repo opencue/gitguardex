@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
-"""PostToolUse hook — track code file modifications.
+"""PostToolUse hook — record this session's live editing presence.
 
 Matcher: Edit|Write|MultiEdit
 
-Records modified code files in dirty-{session_id}.json.
+On every edit, upsert a per-session presence record
+(.claude/hooks/state/session-<session_id>.json) capturing the file just
+touched, the branch/worktree, and a fresh last_seen heartbeat. A sibling
+session reads these back (via _session_presence.read_live_sessions, surfaced by
+agent_branch_advisor.py) to see who else is editing the same tree right now.
+
+Unlike the old tracker this is NOT restricted to Python backend files — any
+edited path in the tree counts, since the whole point is to surface concurrent
+edits to the SAME file (e.g. a .tsx storefront page) across sessions.
+
+Fail-open: any error → exit 0, never blocks the edit.
 """
 
 import json
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
+
+try:
+    from _session_presence import record_edit
+except ImportError:  # presence module missing → nothing to record, fail open
+    def record_edit(**_kwargs: object) -> None:
+        return None
 
 try:
     from _analytics import emit_event
@@ -19,32 +33,6 @@ except ImportError:
         pass
 
 
-# Code file extensions (backend only)
-CODE_EXTENSIONS = {".py"}
-
-# Code directories (relative to project root)
-CODE_DIRS = {"app/", "tests/"}
-
-# Exclusion patterns
-EXCLUDE_PATTERNS = {"__pycache__/", ".claude/", ".agents/"}
-
-
-def is_code_file(file_path: str, project_dir: str) -> bool:
-    """Determine if the given path is a code file."""
-    if Path(file_path).suffix not in CODE_EXTENSIONS:
-        return False
-
-    try:
-        rel = str(Path(file_path).relative_to(project_dir))
-    except ValueError:
-        return False
-
-    if any(excl in rel for excl in EXCLUDE_PATTERNS):
-        return False
-
-    return any(rel.startswith(d) for d in CODE_DIRS)
-
-
 def main() -> None:
     try:
         input_data = json.loads(sys.stdin.read())
@@ -52,38 +40,20 @@ def main() -> None:
         sys.exit(0)
 
     session_id = input_data.get("session_id", "unknown")
-    tool_input = input_data.get("tool_input", {})
+    tool_input = input_data.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "")
-    project_dir = input_data.get("cwd", "")
+    cwd = input_data.get("cwd", "") or ""
+    tool = input_data.get("tool_name", "") or None
 
-    if not file_path or not is_code_file(file_path, project_dir):
+    if not file_path:
         sys.exit(0)
 
-    # Record dirty state
-    hook_dir = Path(__file__).resolve().parent
-    state_dir = hook_dir / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state_path = state_dir / f"dirty-{session_id}.json"
-
-    # Load existing state
-    state: dict[str, object] = {"modified": True, "files": [], "last_modified": ""}
-    if state_path.exists():
-        try:
-            with open(state_path) as f:
-                state = json.load(f)
-        except (json.JSONDecodeError, PermissionError):
-            pass
-
-    # Add file (deduplicate)
-    files = state.get("files", [])
-    if isinstance(files, list) and file_path not in files:
-        files.append(file_path)
-    state["files"] = files
-    state["modified"] = True
-    state["last_modified"] = datetime.now(timezone.utc).isoformat()
-
-    with open(state_path, "w") as f:
-        json.dump(state, f, indent=2)
+    record = record_edit(
+        session_id=session_id,
+        cwd=cwd,
+        file_path=file_path,
+        tool=tool,
+    )
 
     emit_event(
         session_id,
@@ -91,8 +61,8 @@ def main() -> None:
         {
             "hook": "post_edit_tracker",
             "trigger": "PostToolUse",
-            "outcome": "tracked",
-            "matched_count": 1,
+            "outcome": "tracked" if record else "skipped",
+            "matched_count": 1 if record else 0,
             "exit_code": 0,
         },
     )

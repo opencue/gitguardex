@@ -57,6 +57,18 @@ try:
 except Exception:  # noqa: BLE001 - fail open if sibling hook is missing/older
     sys.exit(0)
 
+try:
+    # Live-session presence is additive: the protected-branch advisory still
+    # works if this sibling module is missing/older.
+    from _session_presence import (
+        format_block,
+        presence_fingerprint,
+        read_live_sessions,
+        worktree_top,
+    )
+except Exception:  # noqa: BLE001
+    read_live_sessions = None
+
 
 SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit")
 
@@ -99,26 +111,71 @@ def _advisor_state_path(session_id: str) -> Path:
     return Path(__file__).resolve().parent / "state" / f"advisor-{session_id}.json"
 
 
-def already_advised(session_id: str) -> bool:
-    """True if this session already saw the full advisory. Fail-open to False."""
+def _read_state(session_id: str) -> dict:
+    """Per-session marker contents (advised flag + presence fingerprint)."""
     if not session_id:
-        return False
+        return {}
     try:
-        return _advisor_state_path(session_id).exists()
-    except OSError:
-        return False
+        return json.loads(_advisor_state_path(session_id).read_text())
+    except (OSError, ValueError):
+        return {}
 
 
-def mark_advised(session_id: str) -> None:
-    """Record that the full advisory fired for this session. Best-effort."""
+def _write_state(session_id: str, data: dict) -> None:
     if not session_id:
         return
     try:
         path = _advisor_state_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"advised": True}))
+        path.write_text(json.dumps(data))
     except OSError:
         pass
+
+
+def already_advised(session_id: str) -> bool:
+    """True if this session already saw the full advisory. Fail-open to False.
+
+    Reads the `advised` flag rather than mere file existence — the presence
+    surfacing may create this state file before the advisory ever fires.
+    """
+    return bool(_read_state(session_id).get("advised"))
+
+
+def mark_advised(session_id: str) -> None:
+    """Record that the full advisory fired for this session. Best-effort."""
+    state = _read_state(session_id)
+    state["advised"] = True
+    _write_state(session_id, state)
+
+
+def presence_text(cwd: str, session_id: str, event: str) -> "str | None":
+    """Banner block for OTHER live sessions editing this worktree, or None.
+
+    Surfaces on ANY branch (agent worktrees included — that is where concurrent
+    edits actually collide). SessionStart always announces; UserPromptSubmit
+    only re-announces when the set of who-is-editing-what changed, so a quiet
+    turn stays quiet.
+    """
+    if read_live_sessions is None:
+        return None
+    try:
+        # Scope to THIS worktree, matched on the same basis the tracker records
+        # (`git rev-parse --show-toplevel`), so unrelated trees never leak in.
+        root = worktree_top(cwd)
+        if not root:
+            return None
+        sessions = read_live_sessions(exclude_session=session_id, repo_root=root)
+    except Exception:  # noqa: BLE001 - presence is best-effort, never blocks
+        return None
+    if not sessions:
+        return None
+    fingerprint = presence_fingerprint(sessions)
+    state = _read_state(session_id)
+    if event == "UserPromptSubmit" and state.get("presence_fp") == fingerprint:
+        return None
+    state["presence_fp"] = fingerprint
+    _write_state(session_id, state)
+    return format_block(sessions)
 
 
 def main() -> None:
@@ -140,25 +197,33 @@ def main() -> None:
     except Exception:  # noqa: BLE001 - never let a git/env hiccup block the agent
         sys.exit(0)
 
-    if not branch or is_agent_branch(branch):
-        sys.exit(0)
-    if branch not in resolve_protected_branches(repo_root):
-        sys.exit(0)
+    # Branch advisory: ONLY on a protected base. Per-session dedup — full
+    # advisory once (educates), one-line reminder after (catches drift back
+    # onto a protected branch without re-paying the full text every turn).
+    advisory = None
+    try:
+        protected = resolve_protected_branches(repo_root)
+    except Exception:  # noqa: BLE001
+        protected = set()
+    if branch and not is_agent_branch(branch) and branch in protected:
+        if already_advised(session_id):
+            advisory = reminder_text(branch)
+        else:
+            advisory = advisory_text(branch)
+            mark_advised(session_id)
 
-    # Per-session dedup: full advisory once (educates), one-line reminder after
-    # (still catches drift back onto a protected branch without re-paying the
-    # full text on every turn).
-    if already_advised(session_id):
-        text = reminder_text(branch)
-    else:
-        text = advisory_text(branch)
-        mark_advised(session_id)
+    # Live-session presence: on ANY branch (agent worktrees too).
+    presence = presence_text(cwd, session_id, event)
+
+    parts = [part for part in (advisory, presence) if part]
+    if not parts:
+        sys.exit(0)
 
     hook_event = event if event in SUPPORTED_EVENTS else "SessionStart"
     payload = {
         "hookSpecificOutput": {
             "hookEventName": hook_event,
-            "additionalContext": text,
+            "additionalContext": "\n\n".join(parts),
         }
     }
     print(json.dumps(payload))

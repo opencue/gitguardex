@@ -31,6 +31,10 @@ const MANAGED_HOOK_FILES = [
   'agent_branch_advisor.py',
   'post_edit_tracker.py',
   'skill_tracker.py',
+  // Shared module imported by agent_branch_advisor.py + post_edit_tracker.py
+  // for live-session presence. Must ship with them or those hooks fail their
+  // import (fail-open, but then presence is silently absent on target repos).
+  '_session_presence.py',
 ];
 
 const MANAGED_SLASH_COMMANDS = [
