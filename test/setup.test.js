@@ -84,6 +84,8 @@ test('setup provisions workflow files and repo config', () => {
     '.omx/project-memory.json',
     'scripts/guardex-docker-loader.sh',
     'scripts/guardex-env.sh',
+    'scripts/agent-stalled-report.sh',
+    'scripts/agent-autofinish-watch.sh',
     '.githooks/pre-commit',
     '.githooks/pre-push',
     '.githooks/post-merge',
