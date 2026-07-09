@@ -1,7 +1,7 @@
 // `gx branch`, `gx pivot`, `gx ship`, `gx locks`, `gx worktree` — branch
 // workflow surface. Pure code-motion from src/cli/main.js.
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
-const { resolveRepoRoot, resolveBaseBranch, currentBranchName } = require('../../git');
+const { resolveRepoRoot, resolveFinishBaseBranch, currentBranchName } = require('../../git');
 const {
   run,
   extractTargetedArgs,
@@ -54,10 +54,14 @@ function branch(rawArgs) {
     // GitHub will not merge. Throwing here means the script never runs, so
     // the merge never happens.
     if (gateReview) {
+      const gatedBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
       runReviewGate({
         repoRoot,
-        branch: readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot),
-        baseBranch: resolveBaseBranch(repoRoot, readFlagValue(scriptArgs, '--base')),
+        branch: gatedBranch,
+        // Must match how the shell resolves --base when it is omitted, which
+        // honors branch.<name>.guardexBase. Resolving differently would gate one
+        // base and merge into another.
+        baseBranch: resolveFinishBaseBranch(repoRoot, gatedBranch, readFlagValue(scriptArgs, '--base')),
         options: {},
       });
     }

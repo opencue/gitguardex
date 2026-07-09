@@ -23,9 +23,12 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
     require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
   };
 
+  // Mirrors the real resolveFinishBaseBranch: explicit --base wins, otherwise the
+  // per-branch `branch.<name>.guardexBase`, otherwise the repo default.
+  const perBranchBase = { 'agent/claude/on-dev': 'dev' };
   stub('src/git/index.js', {
     resolveRepoRoot: () => '/fake/repo',
-    resolveBaseBranch: (_root, base) => base || 'main',
+    resolveFinishBaseBranch: (_root, branch, base) => base || perBranchBase[branch] || 'main',
     currentBranchName: () => 'agent/claude/from-head',
   });
   stub('src/core/runtime.js', {
@@ -96,4 +99,37 @@ test('branch finish --gate-review without --branch gates the current HEAD branch
 
   assert.equal(calls.gate[0].branch, 'agent/claude/from-head');
   assert.equal(calls.gate[0].baseBranch, 'main');
+});
+
+// The gate must resolve the base the same way agent-branch-finish.sh does when
+// --base is omitted: via branch.<name>.guardexBase. Resolving it differently
+// would review one base and merge into another.
+test('branch finish --gate-review honors a per-branch base when --base is omitted', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--branch', 'agent/claude/on-dev', '--via-pr', '--gate-review']);
+
+  assert.equal(calls.gate[0].baseBranch, 'dev', 'gate must target the branch-configured base');
+  assert.ok(!calls.script[0].args.includes('--base'), 'script re-resolves the base itself');
+});
+
+test('branch finish --gate-review reads the inline --branch=/--base= form', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--branch=agent/claude/inline', '--base=dev', '--via-pr', '--gate-review']);
+
+  assert.equal(calls.gate[0].branch, 'agent/claude/inline');
+  assert.equal(calls.gate[0].baseBranch, 'dev');
+});
+
+// Regression guard for every repo using `gx branch finish` without the gate:
+// argv must reach the shell script byte-for-byte unchanged.
+test('branch finish without any gate flag is an unchanged passthrough', () => {
+  const { branch, calls } = loadBranchWithStubs();
+  const argv = ['--branch', 'agent/claude/plain', '--base', 'main', '--via-pr', '--wait-for-merge', '--cleanup'];
+
+  branch(['finish', ...argv]);
+
+  assert.equal(calls.gate.length, 0, 'no gate without the flag');
+  assert.deepEqual(calls.script[0].args, argv, 'argv must pass through untouched');
 });
