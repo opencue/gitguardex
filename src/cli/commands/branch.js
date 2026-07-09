@@ -1,14 +1,42 @@
 // `gx branch`, `gx pivot`, `gx ship`, `gx locks`, `gx worktree` — branch
 // workflow surface. Pure code-motion from src/cli/main.js.
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
-const { resolveRepoRoot } = require('../../git');
+const { resolveRepoRoot, resolveFinishBaseBranch, currentBranchName } = require('../../git');
 const {
   run,
   extractTargetedArgs,
   runPackageAsset,
   invokePackageAsset,
 } = require('../../core/runtime');
+const { runReviewGate } = require('../../finish/review-gate');
 const { finish, merge } = require('./finish');
+
+// `--gate-review` and its opt-outs are gx-level flags. agent-branch-finish.sh
+// does not parse them (it exits 1 on the unknown argument), and its --via-pr
+// path merges the moment the PR opens, so the shell cannot enforce the gate
+// itself. Pull the flags out of the script's argv and honor them here.
+function splitGateReviewFlags(args) {
+  const scriptArgs = [];
+  let gateReview = false;
+  for (const arg of args) {
+    if (arg === '--gate-review') {
+      gateReview = true;
+    } else if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
+      gateReview = false;
+    } else {
+      scriptArgs.push(arg);
+    }
+  }
+  return { gateReview, scriptArgs };
+}
+
+// Read `--flag value` or `--flag=value` out of an argv array.
+function readFlagValue(args, flag) {
+  const index = args.indexOf(flag);
+  if (index >= 0 && index + 1 < args.length) return args[index + 1];
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  return inline ? inline.slice(flag.length + 1) : undefined;
+}
 
 function branch(rawArgs) {
   const activeCwd = process.cwd();
@@ -20,8 +48,25 @@ function branch(rawArgs) {
   }
   if (subcommand === 'finish') {
     const { target, passthrough } = extractTargetedArgs(rest);
-    invokePackageAsset('branchFinish', passthrough, {
-      cwd: resolveRepoRoot(target),
+    const repoRoot = resolveRepoRoot(target);
+    const { gateReview, scriptArgs } = splitGateReviewFlags(passthrough);
+    // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
+    // GitHub will not merge. Throwing here means the script never runs, so
+    // the merge never happens.
+    if (gateReview) {
+      const gatedBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
+      runReviewGate({
+        repoRoot,
+        branch: gatedBranch,
+        // Must match how the shell resolves --base when it is omitted, which
+        // honors branch.<name>.guardexBase. Resolving differently would gate one
+        // base and merge into another.
+        baseBranch: resolveFinishBaseBranch(repoRoot, gatedBranch, readFlagValue(scriptArgs, '--base')),
+        options: {},
+      });
+    }
+    invokePackageAsset('branchFinish', scriptArgs, {
+      cwd: repoRoot,
       env: { GUARDEX_FINISH_ACTIVE_CWD: activeCwd },
     });
     return;
