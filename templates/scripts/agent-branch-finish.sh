@@ -1354,6 +1354,10 @@ run_pr_flow() {
       echo "[agent-branch-finish] Merge hold lifted (explicit --auto-promote)." >&2
     else
       MERGE_HELD=1
+      # Re-demote in case an outer layer (gate-review markReady, a human)
+      # promoted the held PR since the hold was placed. Idempotent when the
+      # PR is already draft; best-effort like the placement disarm.
+      "$GH_BIN" pr ready --undo "$pr_url" >/dev/null 2>&1 || true
       echo "[agent-branch-finish] Existing merge hold (${HOLD_MARKER}) honored; not promoting or merging." >&2
       return 2
     fi
