@@ -423,6 +423,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/doctor-autofinish"
     exit 0
@@ -519,6 +523,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/doctor-autofinish-unmerged"
     exit 0
@@ -575,6 +583,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/doctor-auto-finish-ready"
     exit 0
@@ -730,6 +742,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/doctor-no-wait"
     exit 0
@@ -1144,6 +1160,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/nested-doctor-pending"
     exit 0
@@ -1285,4 +1305,23 @@ test('gx doctor preserves stranded worktrees when GUARDEX_SKIP_AUTO_WORKTREE_PRU
   );
 });
 
+});
+
+// Pure classifier guard: a held merge (--no-auto-promote / guardex:merge-hold)
+// exits 0 with the PR open and the lane deliberately retained. It MUST classify
+// as pending — anything else sends the doctor sandbox cleanup after a live held
+// PR, force-deleting its worktree, local branch, and remote branch.
+test('doctorFinishFlowIsPending treats a held merge as pending', () => {
+  const { doctorFinishFlowIsPending } = require('../src/doctor');
+  assert.equal(doctorFinishFlowIsPending('prelude\nMERGE_HELD=1\n'), true);
+  assert.equal(
+    doctorFinishFlowIsPending('[agent-branch-finish] Merge hold active; worktree retained.'),
+    true,
+  );
+  assert.equal(
+    doctorFinishFlowIsPending("[agent-branch-finish] Merged 'agent/x' into 'main' via pr flow."),
+    false,
+  );
+  // The trailer must match as a full line, not inside prose.
+  assert.equal(doctorFinishFlowIsPending('note: set MERGE_HELD=1 to hold'), false);
 });

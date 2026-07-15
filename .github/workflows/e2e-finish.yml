@@ -62,3 +62,6 @@ jobs:
 
       - name: Run e2e finish-via-pr smoke test
         run: bash test/e2e/finish-via-pr.sh
+
+      - name: Run e2e finish merge-hold smoke test (--no-auto-promote)
+        run: bash test/e2e/finish-merge-hold.sh

@@ -51,8 +51,8 @@ its working directory. It MUST return non-zero to block a push.
 ## Auto-promote on pass
 
 After pre-flight passes, `gx branch finish` creates the PR. If the PR
-is in draft state (manually opened earlier, or via a future `--draft`
-option here), the finish script automatically marks it
+is in draft state (manually opened earlier, or opened by the merge
+hold below), the finish script automatically marks it
 ready-for-review by calling `gh pr ready`. With the budget-friendly
 CI defaults (draft PRs skip CI), this is the moment CI is allowed to
 fire — once, on a known-passing commit.
@@ -60,13 +60,70 @@ fire — once, on a known-passing commit.
 Disable per-call with `--no-auto-promote`, or globally with
 `GUARDEX_FINISH_AUTO_PROMOTE=0`.
 
+## Merge hold (`--no-auto-promote`)
+
+`--no-auto-promote` is a **merge hold**, not just a promote skip. With
+it, `gx branch finish`:
+
+- opens the PR as a **draft** (falls back to a ready PR on plans that
+  don't support drafts — the hold still applies),
+- disarms anything already primed to land the PR: previously-enabled
+  GitHub auto-merge is disabled and a ready PR is demoted back to draft,
+- **persists the hold** as a `guardex:merge-hold` marker in the PR body,
+- **skips the merge entirely** — no immediate `gh pr merge`, no
+  auto-merge enable, no merge-wait polling,
+- forces the PR path: it refuses `--direct-only` and upgrades
+  `--mode auto` to `--mode pr`, so nothing lands by direct push either,
+- exits 0 with the worktree retained, and prints a machine-readable
+  `MERGE_HELD=1` trailer so automation can tell "held" from "merged".
+
+The persisted marker is what makes the hold real: **every** finish
+re-run through the PR flow — the Claude stop hook, the doctor
+auto-finish sweep, `gx finish --all`, another agent following the
+finish contract — sees the marker and refuses to promote or merge.
+Without persistence, any unflagged re-run would promote the draft and
+land it, recreating the incident the hold exists to prevent.
+
+Use it when a gate outside CI (an e2e run, a manual review) must pass
+before the merge. When the gate passes, lift the hold with an
+**explicit** `--auto-promote`:
+
+```bash
+gx branch finish --branch <agent-branch> --auto-promote
+# removes the marker, promotes the draft, merges, cleans up
+```
+
+Only the explicit flag lifts it — `GUARDEX_FINISH_AUTO_PROMOTE=1` or
+the default does not. (Deleting the marker from the PR body by hand
+also lifts it.)
+
+Caveats:
+
+- `--gate-review` marks the PR ready before the shell script runs; the
+  hold re-demotes it to draft, but the two flags are an odd pairing —
+  prefer running the gate when you lift the hold instead.
+- The finish flow consults the marker on its direct-push path too
+  (`--mode auto` diverts to the PR flow, `--direct-only` refuses), but a
+  raw `git push` outside `gx branch finish` to an unprotected base still
+  bypasses PRs entirely — base branch protection remains the backstop.
+- `GUARDEX_FINISH_AUTO_PROMOTE=0` as an ambient env var now means
+  "every finish in this environment holds its merge" — set it per-call
+  unless a fleet-wide merge moratorium is what you want.
+- Custom `GUARDEX_GH_BIN` wrappers must answer `gh pr view --json body`
+  (real `gh` always does): the marker check fails **closed**, so a
+  wrapper that errors on it turns every PR-flow finish into a held,
+  unmerged exit.
+
+Without the hold, the default finish flow merges the PR the moment the
+base branch has no blocking checks — there is no window to stop it.
+
 ## Flags + env vars
 
 | CLI flag | Env var | Default | Effect |
 | --- | --- | --- | --- |
 | `--preflight` / `--no-preflight` | `GUARDEX_FINISH_PREFLIGHT` | `true` | Run/skip the pre-flight gate. |
 | `--preflight-script <path>` | `GUARDEX_FINISH_PREFLIGHT_SCRIPT` | `scripts/agent-preflight.sh` | Override the script path (relative to worktree, or absolute). |
-| `--auto-promote` / `--no-auto-promote` | `GUARDEX_FINISH_AUTO_PROMOTE` | `true` | Promote a draft PR to ready-for-review after pre-flight passes. |
+| `--auto-promote` / `--no-auto-promote` | `GUARDEX_FINISH_AUTO_PROMOTE` | `true` | On: promote a draft PR to ready-for-review after pre-flight passes. Off: merge hold — open the PR as draft and leave it unmerged (see above). |
 
 ## When to bypass
 

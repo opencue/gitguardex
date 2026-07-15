@@ -165,7 +165,11 @@ echo "[agent-claude-stop-finish] ${branch}: handing off to gx ${finish_cmd[*]}" 
 finish_output=""
 if finish_output="$(run_guardex_cli "${finish_cmd[@]}" 2>&1)"; then
   printf '%s\n' "$finish_output"
-  echo "[agent-claude-stop-finish] ${branch}: finish completed." >&2
+  if grep -q '^MERGE_HELD=1$' <<<"$finish_output"; then
+    echo "[agent-claude-stop-finish] ${branch}: merge held (guardex:merge-hold); sandbox kept at ${worktree_path}. Lift with: gx branch finish --branch ${branch} --auto-promote" >&2
+  else
+    echo "[agent-claude-stop-finish] ${branch}: finish completed." >&2
+  fi
   exit 0
 fi
 

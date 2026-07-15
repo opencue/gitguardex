@@ -22,6 +22,10 @@ AUTO_RESOLVE_SAFE_GLOBS_RAW="${GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS-$AUTO_RESO
 PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
+# Only an explicit --auto-promote FLAG lifts a persisted merge hold; the env
+# default (or GUARDEX_FINISH_AUTO_PROMOTE=1) must not, or any unflagged
+# re-run would silently lift holds placed by earlier runs.
+AUTO_PROMOTE_EXPLICIT=0
 
 run_guardex_cli() {
   if [[ -n "$CLI_ENTRY" ]]; then
@@ -114,6 +118,63 @@ run_preflight() {
   fi
   echo "[agent-branch-finish] Pre-flight FAILED; refusing push. Override with --no-preflight if you really mean it." >&2
   return 1
+}
+
+# Persisted merge hold. The hold must bind EVERY finish run on the lane, not
+# just the one that placed it — otherwise any unflagged re-run (the Claude
+# stop hook, the doctor auto-finish sweep, `gx finish --all`) would promote
+# the draft and merge, recreating exactly the incident the hold exists to
+# prevent. The durable artifact is a marker in the PR body; only an explicit
+# --auto-promote finish lifts it.
+HOLD_MARKER='guardex:merge-hold'
+HOLD_MARKER_COMMENT="<!-- ${HOLD_MARKER} -->"
+
+# Marker state for the PR selected by $1 (URL or branch).
+# Returns: 0 = marker present; 1 = no marker; 2 = PR body unreadable (no PR,
+# gh missing, transient failure). Callers pick the failure direction: the PR
+# flow fails CLOSED (unknown => held), the direct-push guard fails open
+# (unknown usually means "no PR at all").
+pr_hold_marker_state() {
+  local body
+  if ! body="$("$GH_BIN" pr view "$1" --json body --jq '.body' 2>/dev/null)"; then
+    return 2
+  fi
+  if grep -qF "$HOLD_MARKER_COMMENT" <<<"$body"; then
+    return 0
+  fi
+  return 1
+}
+
+place_hold_marker() {
+  local pr_url="$1" body
+  if ! body="$("$GH_BIN" pr view "$pr_url" --json body --jq '.body' 2>/dev/null)"; then
+    echo "[agent-branch-finish] Warning: could not read the PR body; NOT writing the ${HOLD_MARKER} marker (refusing to clobber the body). The hold will NOT survive an unflagged re-run." >&2
+    return 0
+  fi
+  if grep -qF "$HOLD_MARKER_COMMENT" <<<"$body"; then
+    return 0
+  fi
+  if ! "$GH_BIN" pr edit "$pr_url" --body "${body}"$'\n\n'"${HOLD_MARKER_COMMENT}" >/dev/null 2>&1; then
+    echo "[agent-branch-finish] Warning: could not write the ${HOLD_MARKER} marker to the PR body; the hold will NOT survive an unflagged re-run of the finish flow." >&2
+  fi
+}
+
+# Returns non-zero when the marker could not be removed, in which case the
+# caller must keep treating the PR as held.
+remove_hold_marker() {
+  local pr_url="$1" body
+  if ! body="$("$GH_BIN" pr view "$pr_url" --json body --jq '.body' 2>/dev/null)"; then
+    echo "[agent-branch-finish] Warning: could not read the PR body to remove the ${HOLD_MARKER} marker; the hold remains in force." >&2
+    return 1
+  fi
+  if ! grep -qF "$HOLD_MARKER_COMMENT" <<<"$body"; then
+    return 0
+  fi
+  body="$(printf '%s\n' "$body" | grep -vF "$HOLD_MARKER_COMMENT")"
+  if ! "$GH_BIN" pr edit "$pr_url" --body "$body" >/dev/null 2>&1; then
+    echo "[agent-branch-finish] Warning: could not remove the ${HOLD_MARKER} marker; the hold remains in force." >&2
+    return 1
+  fi
 }
 
 # After a PR exists, if it is in draft and auto-promote is enabled,
@@ -250,10 +311,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-auto-promote)
       AUTO_PROMOTE_DRAFT_RAW="false"
+      AUTO_PROMOTE_EXPLICIT=0
       shift
       ;;
     --auto-promote)
       AUTO_PROMOTE_DRAFT_RAW="true"
+      AUTO_PROMOTE_EXPLICIT=1
       shift
       ;;
     *)
@@ -283,6 +346,19 @@ case "$MERGE_MODE" in
     exit 1
     ;;
 esac
+
+# --no-auto-promote is a merge hold: the PR must stay open (draft when the
+# host supports it) until someone deliberately promotes + merges it. A direct
+# push would land the commit with no PR to hold, so the hold forces the PR
+# path and refuses --direct-only outright.
+MERGE_HELD=0
+if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
+  if [[ "$MERGE_MODE" == "direct" ]]; then
+    echo "[agent-branch-finish] The merge hold (set via --no-auto-promote or GUARDEX_FINISH_AUTO_PROMOTE=0) keeps the merge behind a PR; it cannot be combined with --direct-only. Pass --auto-promote to override." >&2
+    exit 1
+  fi
+  MERGE_MODE="pr"
+fi
 
 AUTO_RESOLVE_MODE="$(printf '%s' "$AUTO_RESOLVE_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
 case "$AUTO_RESOLVE_MODE" in
@@ -1230,13 +1306,35 @@ run_pr_flow() {
   fi
   pr_body="Automated by gx branch finish (PR flow)."
 
+  pr_create_args=(
+    --base "$BASE_BRANCH"
+    --head "$SOURCE_BRANCH"
+    --title "$pr_title"
+    --body "$pr_body"
+  )
+  # Merge hold: open the PR as a draft so nothing — required checks going
+  # green, a human clicking merge, repo auto-merge — can land it before the
+  # hold is lifted.
+  if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
+    pr_create_args+=(--draft)
+  fi
   pr_create_output=""
-  if pr_create_output="$("$GH_BIN" pr create \
-    --base "$BASE_BRANCH" \
-    --head "$SOURCE_BRANCH" \
-    --title "$pr_title" \
-    --body "$pr_body" 2>&1)"; then
+  if pr_create_output="$("$GH_BIN" pr create "${pr_create_args[@]}" 2>&1)"; then
     :
+  elif [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]] && grep -qi 'draft pull requests are not supported' <<<"$pr_create_output"; then
+    # Some plans reject drafts (e.g. private repos on GitHub Free). Fall back
+    # to a ready PR — the merge-hold early return below still applies.
+    echo "[agent-branch-finish] Draft PRs unsupported in this repository; opening a ready PR (merge still held)." >&2
+    if ! pr_create_output="$("$GH_BIN" pr create \
+      --base "$BASE_BRANCH" \
+      --head "$SOURCE_BRANCH" \
+      --title "$pr_title" \
+      --body "$pr_body" 2>&1)"; then
+      if ! grep -qiE 'already exists|a pull request for branch' <<<"$pr_create_output"; then
+        echo "[agent-branch-finish] gh pr create failed:" >&2
+        echo "${pr_create_output}" >&2
+      fi
+    fi
   else
     # Idempotent: a PR already opened for this head is fine — fall through
     # to `gh pr view` so we still capture the URL. Anything else is a real
@@ -1259,9 +1357,57 @@ run_pr_flow() {
   fi
   echo "[agent-branch-finish] PR URL: ${pr_url}" >&2
 
+  # Honor a persisted hold BEFORE any promotion or merge. Only an explicit
+  # --auto-promote flag lifts it; the default (env-derived) auto-promote must
+  # not, or every unflagged re-run would lift holds it never placed.
+  hold_state=0
+  pr_hold_marker_state "$pr_url" || hold_state=$?
+  if [[ "$hold_state" -eq 2 ]]; then
+    # Fail closed: a transient failure reading the body must not silently
+    # lift a hold. A spurious hold is recoverable (rerun); a spurious lift
+    # merges the PR.
+    MERGE_HELD=1
+    echo "[agent-branch-finish] Could not read the PR body to check for a merge hold; treating the PR as held (fail closed)." >&2
+    return 2
+  fi
+  if [[ "$hold_state" -eq 0 ]]; then
+    if [[ "$AUTO_PROMOTE_EXPLICIT" -eq 1 && "$AUTO_PROMOTE_DRAFT" -eq 1 ]]; then
+      if ! remove_hold_marker "$pr_url"; then
+        MERGE_HELD=1
+        return 2
+      fi
+      echo "[agent-branch-finish] Merge hold lifted (explicit --auto-promote)." >&2
+    else
+      MERGE_HELD=1
+      # Re-demote in case an outer layer (gate-review markReady, a human)
+      # promoted the held PR since the hold was placed. Idempotent when the
+      # PR is already draft; best-effort like the placement disarm.
+      "$GH_BIN" pr ready --undo "$pr_url" >/dev/null 2>&1 || true
+      echo "[agent-branch-finish] Existing merge hold (${HOLD_MARKER}) honored; not promoting or merging." >&2
+      return 2
+    fi
+  fi
+
   # Pre-flight already passed by the time we reach the PR; promote any
   # existing draft so the budget-friendly CI gate fires once.
   maybe_auto_promote_pr "$pr_url"
+
+  # Merge hold (--no-auto-promote): stop before the merge attempts below.
+  # Without this return the unconditional `gh pr merge` lands the PR the
+  # moment the repo has no blocking checks — the exact accident the flag
+  # exists to prevent.
+  if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
+    MERGE_HELD=1
+    # Disarm anything that could still land the PR while held: GitHub
+    # auto-merge armed by an earlier run, and ready state left by an earlier
+    # run or the gate-review markReady step. Best-effort; the marker below is
+    # the load-bearing hold.
+    "$GH_BIN" pr merge "$pr_url" --disable-auto >/dev/null 2>&1 || true
+    "$GH_BIN" pr ready --undo "$pr_url" >/dev/null 2>&1 || true
+    place_hold_marker "$pr_url"
+    echo "[agent-branch-finish] Merge held (--no-auto-promote): PR left unmerged for review/e2e." >&2
+    return 2
+  fi
 
   merge_output=""
   if merge_output="$("$GH_BIN" pr merge "$SOURCE_BRANCH" --squash --delete-branch 2>&1)"; then
@@ -1298,10 +1444,25 @@ if [[ "$PUSH_ENABLED" -eq 1 ]]; then
     exit 1
   fi
   if [[ "$MERGE_MODE" != "pr" ]]; then
-    maybe_push_changed_submodule_branches "$start_ref" "$SOURCE_BRANCH"
-    if ! direct_push_output="$(git -C "$integration_worktree" push origin "HEAD:${BASE_BRANCH}" 2>&1)"; then
-      direct_push_error="$direct_push_output"
+    # A persisted merge hold must also stop the direct-push shortcut, or a
+    # rerun in auto/direct mode would land the held work without ever
+    # consulting the marker. State 2 (no PR / body unreadable) proceeds:
+    # most direct pushes have no PR at all.
+    direct_hold_state=0
+    pr_hold_marker_state "$SOURCE_BRANCH" || direct_hold_state=$?
+    if [[ "$direct_hold_state" -eq 0 ]]; then
+      if [[ "$MERGE_MODE" == "direct" ]]; then
+        echo "[agent-branch-finish] Existing merge hold (${HOLD_MARKER}) on the PR for '${SOURCE_BRANCH}'; refusing the --direct-only push. Lift with 'gx branch finish --branch ${SOURCE_BRANCH} --auto-promote'." >&2
+        exit 1
+      fi
+      echo "[agent-branch-finish] Existing merge hold (${HOLD_MARKER}) on the PR for '${SOURCE_BRANCH}'; skipping the direct push and using the PR flow." >&2
       merge_completed=0
+    else
+      maybe_push_changed_submodule_branches "$start_ref" "$SOURCE_BRANCH"
+      if ! direct_push_output="$(git -C "$integration_worktree" push origin "HEAD:${BASE_BRANCH}" 2>&1)"; then
+        direct_push_error="$direct_push_output"
+        merge_completed=0
+      fi
     fi
   else
     merge_completed=0
@@ -1325,6 +1486,11 @@ if [[ "$PUSH_ENABLED" -eq 1 ]]; then
         echo "[agent-branch-finish] PR flow created/updated branch '${SOURCE_BRANCH}' against '${BASE_BRANCH}'." >&2
         if [[ -n "$pr_url" ]]; then
           echo "[agent-branch-finish] PR: ${pr_url}" >&2
+        fi
+        if [[ "$MERGE_HELD" -eq 1 ]]; then
+          echo "[agent-branch-finish] Merge hold active; worktree retained. When your gate (review/e2e) passes, lift the hold with: gx branch finish --branch ${SOURCE_BRANCH} --auto-promote" >&2
+          echo "MERGE_HELD=1"
+          exit 0
         fi
         if [[ "$WAIT_FOR_MERGE" -eq 1 ]]; then
           echo "[agent-branch-finish] Merge did not complete within wait window; keeping branch open." >&2
