@@ -109,6 +109,10 @@ Caveats:
 - `GUARDEX_FINISH_AUTO_PROMOTE=0` as an ambient env var now means
   "every finish in this environment holds its merge" — set it per-call
   unless a fleet-wide merge moratorium is what you want.
+- Custom `GUARDEX_GH_BIN` wrappers must answer `gh pr view --json body`
+  (real `gh` always does): the marker check fails **closed**, so a
+  wrapper that errors on it turns every PR-flow finish into a held,
+  unmerged exit.
 
 Without the hold, the default finish flow merges the PR the moment the
 base branch has no blocking checks — there is no window to stop it.
