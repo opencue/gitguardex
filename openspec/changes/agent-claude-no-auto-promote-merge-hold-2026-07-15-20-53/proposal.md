@@ -20,7 +20,14 @@
   - the hold forces the PR path: `--direct-only` is refused, `--mode auto` is
     upgraded to `pr`,
   - the held finish exits 0 with branch, remote branch, and worktree retained,
-    and prints how to lift the hold (`gh pr ready` + rerun finish).
+    prints how to lift the hold, and emits a machine-readable `MERGE_HELD=1`
+    trailer.
+- The hold is **persisted** as a `guardex:merge-hold` marker in the PR body
+  (review finding): every finish PR-flow run honors it before promoting or
+  merging, so unflagged re-runs (Claude stop hook, doctor sweep,
+  `gx finish --all`) cannot lift it. Only an explicit `--auto-promote`
+  removes the marker and proceeds to merge. Placing the hold also disarms
+  primed merge paths (GitHub auto-merge disabled, ready PR demoted to draft).
 - Default behavior (auto-promote on) is unchanged: create ready PR → merge →
   cleanup.
 - `docs/preflight.md` documents the merge hold; static invariants added to

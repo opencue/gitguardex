@@ -91,16 +91,59 @@ test('--no-auto-promote forces the PR path and refuses --direct-only', () => {
   );
 });
 
-test('held merge exits 0 with the worktree retained', () => {
+test('held merge exits 0 with the worktree retained and a machine-readable trailer', () => {
   assert.ok(
     script.includes('"$MERGE_HELD" -eq 1'),
     'the pr_exit=2 handler must branch on MERGE_HELD',
   );
-  const heldIdx = script.indexOf('Merge held by --no-auto-promote');
+  const heldIdx = script.indexOf('Merge hold active');
   assert.notEqual(heldIdx, -1, 'held exit must explain how to lift the hold');
+  assert.ok(
+    script.indexOf('echo "MERGE_HELD=1"', heldIdx) !== -1,
+    'held exit must print the MERGE_HELD=1 trailer so automation can tell held from merged',
+  );
   const exitIdx = script.indexOf('exit 0', heldIdx);
   assert.ok(
     exitIdx !== -1 && exitIdx - heldIdx < 400,
     'held merge must exit 0 right after the held message (intentional hold, not a failure)',
   );
+});
+
+// The hold must survive UNFLAGGED re-runs (stop hook, doctor sweep,
+// `gx finish --all`): a persisted marker in the PR body is checked BEFORE the
+// draft promotion and the merge, and only an explicit --auto-promote lifts it.
+test('persisted hold marker is honored before promotion and merge', () => {
+  const flowIdx = script.indexOf('run_pr_flow() {');
+  const flow = script.slice(flowIdx);
+  const markerIdx = flow.indexOf('pr_has_hold_marker "$pr_url"');
+  const promoteIdx = flow.indexOf('maybe_auto_promote_pr "$pr_url"');
+  const mergeIdx = flow.indexOf('pr merge "$SOURCE_BRANCH" --squash --delete-branch');
+  assert.notEqual(markerIdx, -1, 'run_pr_flow must check the persisted hold marker');
+  assert.ok(
+    markerIdx < promoteIdx,
+    'marker check must come BEFORE draft promotion, else an unflagged re-run lifts the hold',
+  );
+  assert.ok(
+    markerIdx < mergeIdx,
+    'marker check must come BEFORE the immediate merge',
+  );
+  assert.ok(
+    flow.includes('"$AUTO_PROMOTE_EXPLICIT" -eq 1'),
+    'only an EXPLICIT --auto-promote may lift the marker (env default must not)',
+  );
+  assert.ok(
+    script.includes('AUTO_PROMOTE_EXPLICIT=1'),
+    '--auto-promote must record explicitness',
+  );
+});
+
+test('placing the hold disarms auto-merge and demotes a ready PR', () => {
+  const flowIdx = script.indexOf('run_pr_flow() {');
+  const flow = script.slice(flowIdx);
+  const disarmIdx = flow.indexOf('--disable-auto');
+  const demoteIdx = flow.indexOf('pr ready --undo');
+  const placeIdx = flow.indexOf('place_hold_marker "$pr_url"');
+  assert.notEqual(disarmIdx, -1, 'hold must disarm previously-enabled GitHub auto-merge');
+  assert.notEqual(demoteIdx, -1, 'hold must demote a pre-existing ready PR back to draft');
+  assert.notEqual(placeIdx, -1, 'hold must persist the marker on the PR body');
 });

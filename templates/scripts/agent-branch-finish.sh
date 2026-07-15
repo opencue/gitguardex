@@ -22,6 +22,10 @@ AUTO_RESOLVE_SAFE_GLOBS_RAW="${GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS-$AUTO_RESO
 PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
+# Only an explicit --auto-promote FLAG lifts a persisted merge hold; the env
+# default (or GUARDEX_FINISH_AUTO_PROMOTE=1) must not, or any unflagged
+# re-run would silently lift holds placed by earlier runs.
+AUTO_PROMOTE_EXPLICIT=0
 
 run_guardex_cli() {
   if [[ -n "$CLI_ENTRY" ]]; then
@@ -114,6 +118,48 @@ run_preflight() {
   fi
   echo "[agent-branch-finish] Pre-flight FAILED; refusing push. Override with --no-preflight if you really mean it." >&2
   return 1
+}
+
+# Persisted merge hold. The hold must bind EVERY finish run on the lane, not
+# just the one that placed it — otherwise any unflagged re-run (the Claude
+# stop hook, the doctor auto-finish sweep, `gx finish --all`) would promote
+# the draft and merge, recreating exactly the incident the hold exists to
+# prevent. The durable artifact is a marker in the PR body; only an explicit
+# --auto-promote finish lifts it.
+HOLD_MARKER='guardex:merge-hold'
+
+pr_body_text() {
+  "$GH_BIN" pr view "$1" --json body --jq '.body' 2>/dev/null || true
+}
+
+pr_has_hold_marker() {
+  pr_body_text "$1" | grep -qF "$HOLD_MARKER"
+}
+
+place_hold_marker() {
+  local pr_url="$1" body
+  body="$(pr_body_text "$pr_url")"
+  if grep -qF "$HOLD_MARKER" <<<"$body"; then
+    return 0
+  fi
+  if ! "$GH_BIN" pr edit "$pr_url" --body "${body}"$'\n\n'"<!-- ${HOLD_MARKER} -->" >/dev/null 2>&1; then
+    echo "[agent-branch-finish] Warning: could not write the ${HOLD_MARKER} marker to the PR body; the hold will NOT survive an unflagged re-run of the finish flow." >&2
+  fi
+}
+
+# Returns non-zero when the marker could not be removed, in which case the
+# caller must keep treating the PR as held.
+remove_hold_marker() {
+  local pr_url="$1" body
+  body="$(pr_body_text "$pr_url")"
+  if ! grep -qF "$HOLD_MARKER" <<<"$body"; then
+    return 0
+  fi
+  body="$(printf '%s\n' "$body" | grep -vF "$HOLD_MARKER")"
+  if ! "$GH_BIN" pr edit "$pr_url" --body "$body" >/dev/null 2>&1; then
+    echo "[agent-branch-finish] Warning: could not remove the ${HOLD_MARKER} marker; the hold remains in force." >&2
+    return 1
+  fi
 }
 
 # After a PR exists, if it is in draft and auto-promote is enabled,
@@ -250,10 +296,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-auto-promote)
       AUTO_PROMOTE_DRAFT_RAW="false"
+      AUTO_PROMOTE_EXPLICIT=0
       shift
       ;;
     --auto-promote)
       AUTO_PROMOTE_DRAFT_RAW="true"
+      AUTO_PROMOTE_EXPLICIT=1
       shift
       ;;
     *)
@@ -291,7 +339,7 @@ esac
 MERGE_HELD=0
 if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
   if [[ "$MERGE_MODE" == "direct" ]]; then
-    echo "[agent-branch-finish] --no-auto-promote holds the merge behind a PR; it cannot be combined with --direct-only." >&2
+    echo "[agent-branch-finish] The merge hold (set via --no-auto-promote or GUARDEX_FINISH_AUTO_PROMOTE=0) keeps the merge behind a PR; it cannot be combined with --direct-only. Pass --auto-promote to override." >&2
     exit 1
   fi
   MERGE_MODE="pr"
@@ -1294,6 +1342,23 @@ run_pr_flow() {
   fi
   echo "[agent-branch-finish] PR URL: ${pr_url}" >&2
 
+  # Honor a persisted hold BEFORE any promotion or merge. Only an explicit
+  # --auto-promote flag lifts it; the default (env-derived) auto-promote must
+  # not, or every unflagged re-run would lift holds it never placed.
+  if pr_has_hold_marker "$pr_url"; then
+    if [[ "$AUTO_PROMOTE_EXPLICIT" -eq 1 && "$AUTO_PROMOTE_DRAFT" -eq 1 ]]; then
+      if ! remove_hold_marker "$pr_url"; then
+        MERGE_HELD=1
+        return 2
+      fi
+      echo "[agent-branch-finish] Merge hold lifted (explicit --auto-promote)." >&2
+    else
+      MERGE_HELD=1
+      echo "[agent-branch-finish] Existing merge hold (${HOLD_MARKER}) honored; not promoting or merging." >&2
+      return 2
+    fi
+  fi
+
   # Pre-flight already passed by the time we reach the PR; promote any
   # existing draft so the budget-friendly CI gate fires once.
   maybe_auto_promote_pr "$pr_url"
@@ -1304,6 +1369,13 @@ run_pr_flow() {
   # exists to prevent.
   if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
     MERGE_HELD=1
+    # Disarm anything that could still land the PR while held: GitHub
+    # auto-merge armed by an earlier run, and ready state left by an earlier
+    # run or the gate-review markReady step. Best-effort; the marker below is
+    # the load-bearing hold.
+    "$GH_BIN" pr merge "$pr_url" --disable-auto >/dev/null 2>&1 || true
+    "$GH_BIN" pr ready --undo "$pr_url" >/dev/null 2>&1 || true
+    place_hold_marker "$pr_url"
     echo "[agent-branch-finish] Merge held (--no-auto-promote): PR left unmerged for review/e2e." >&2
     return 2
   fi
@@ -1372,7 +1444,8 @@ if [[ "$PUSH_ENABLED" -eq 1 ]]; then
           echo "[agent-branch-finish] PR: ${pr_url}" >&2
         fi
         if [[ "$MERGE_HELD" -eq 1 ]]; then
-          echo "[agent-branch-finish] Merge held by --no-auto-promote; worktree retained. When your gate (review/e2e) passes: 'gh pr ready ${pr_url:-<pr-url>}' then rerun 'gx branch finish --branch ${SOURCE_BRANCH}' to merge + cleanup." >&2
+          echo "[agent-branch-finish] Merge hold active; worktree retained. When your gate (review/e2e) passes, lift the hold with: gx branch finish --branch ${SOURCE_BRANCH} --auto-promote" >&2
+          echo "MERGE_HELD=1"
           exit 0
         fi
         if [[ "$WAIT_FOR_MERGE" -eq 1 ]]; then

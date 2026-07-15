@@ -66,20 +66,48 @@ Disable per-call with `--no-auto-promote`, or globally with
 it, `gx branch finish`:
 
 - opens the PR as a **draft** (falls back to a ready PR on plans that
-  don't support drafts — the hold below still applies),
+  don't support drafts — the hold still applies),
+- disarms anything already primed to land the PR: previously-enabled
+  GitHub auto-merge is disabled and a ready PR is demoted back to draft,
+- **persists the hold** as a `guardex:merge-hold` marker in the PR body,
 - **skips the merge entirely** — no immediate `gh pr merge`, no
   auto-merge enable, no merge-wait polling,
 - forces the PR path: it refuses `--direct-only` and upgrades
   `--mode auto` to `--mode pr`, so nothing lands by direct push either,
-- exits 0 with the worktree retained.
+- exits 0 with the worktree retained, and prints a machine-readable
+  `MERGE_HELD=1` trailer so automation can tell "held" from "merged".
+
+The persisted marker is what makes the hold real: **every** finish
+re-run through the PR flow — the Claude stop hook, the doctor
+auto-finish sweep, `gx finish --all`, another agent following the
+finish contract — sees the marker and refuses to promote or merge.
+Without persistence, any unflagged re-run would promote the draft and
+land it, recreating the incident the hold exists to prevent.
 
 Use it when a gate outside CI (an e2e run, a manual review) must pass
-before the merge. When the gate passes, lift the hold:
+before the merge. When the gate passes, lift the hold with an
+**explicit** `--auto-promote`:
 
 ```bash
-gh pr ready <pr-url>                       # if the PR is still draft
-gx branch finish --branch <agent-branch>   # merges + cleans up
+gx branch finish --branch <agent-branch> --auto-promote
+# removes the marker, promotes the draft, merges, cleans up
 ```
+
+Only the explicit flag lifts it — `GUARDEX_FINISH_AUTO_PROMOTE=1` or
+the default does not. (Deleting the marker from the PR body by hand
+also lifts it.)
+
+Caveats:
+
+- `--gate-review` marks the PR ready before the shell script runs; the
+  hold re-demotes it to draft, but the two flags are an odd pairing —
+  prefer running the gate when you lift the hold instead.
+- The marker only guards the PR flow. A direct push to an unprotected
+  base (`--mode direct` from a separate invocation without the hold
+  env/flag) bypasses PRs entirely, as it always has.
+- `GUARDEX_FINISH_AUTO_PROMOTE=0` as an ambient env var now means
+  "every finish in this environment holds its merge" — set it per-call
+  unless a fleet-wide merge moratorium is what you want.
 
 Without the hold, the default finish flow merges the PR the moment the
 base branch has no blocking checks — there is no window to stop it.
