@@ -284,6 +284,19 @@ case "$MERGE_MODE" in
     ;;
 esac
 
+# --no-auto-promote is a merge hold: the PR must stay open (draft when the
+# host supports it) until someone deliberately promotes + merges it. A direct
+# push would land the commit with no PR to hold, so the hold forces the PR
+# path and refuses --direct-only outright.
+MERGE_HELD=0
+if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
+  if [[ "$MERGE_MODE" == "direct" ]]; then
+    echo "[agent-branch-finish] --no-auto-promote holds the merge behind a PR; it cannot be combined with --direct-only." >&2
+    exit 1
+  fi
+  MERGE_MODE="pr"
+fi
+
 AUTO_RESOLVE_MODE="$(printf '%s' "$AUTO_RESOLVE_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
 case "$AUTO_RESOLVE_MODE" in
   none|safe|full) ;;
@@ -1230,13 +1243,35 @@ run_pr_flow() {
   fi
   pr_body="Automated by gx branch finish (PR flow)."
 
+  pr_create_args=(
+    --base "$BASE_BRANCH"
+    --head "$SOURCE_BRANCH"
+    --title "$pr_title"
+    --body "$pr_body"
+  )
+  # Merge hold: open the PR as a draft so nothing — required checks going
+  # green, a human clicking merge, repo auto-merge — can land it before the
+  # hold is lifted.
+  if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
+    pr_create_args+=(--draft)
+  fi
   pr_create_output=""
-  if pr_create_output="$("$GH_BIN" pr create \
-    --base "$BASE_BRANCH" \
-    --head "$SOURCE_BRANCH" \
-    --title "$pr_title" \
-    --body "$pr_body" 2>&1)"; then
+  if pr_create_output="$("$GH_BIN" pr create "${pr_create_args[@]}" 2>&1)"; then
     :
+  elif [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]] && grep -qi 'draft pull requests are not supported' <<<"$pr_create_output"; then
+    # Some plans reject drafts (e.g. private repos on GitHub Free). Fall back
+    # to a ready PR — the merge-hold early return below still applies.
+    echo "[agent-branch-finish] Draft PRs unsupported in this repository; opening a ready PR (merge still held)." >&2
+    if ! pr_create_output="$("$GH_BIN" pr create \
+      --base "$BASE_BRANCH" \
+      --head "$SOURCE_BRANCH" \
+      --title "$pr_title" \
+      --body "$pr_body" 2>&1)"; then
+      if ! grep -qiE 'already exists|a pull request for branch' <<<"$pr_create_output"; then
+        echo "[agent-branch-finish] gh pr create failed:" >&2
+        echo "${pr_create_output}" >&2
+      fi
+    fi
   else
     # Idempotent: a PR already opened for this head is fine — fall through
     # to `gh pr view` so we still capture the URL. Anything else is a real
@@ -1262,6 +1297,16 @@ run_pr_flow() {
   # Pre-flight already passed by the time we reach the PR; promote any
   # existing draft so the budget-friendly CI gate fires once.
   maybe_auto_promote_pr "$pr_url"
+
+  # Merge hold (--no-auto-promote): stop before the merge attempts below.
+  # Without this return the unconditional `gh pr merge` lands the PR the
+  # moment the repo has no blocking checks — the exact accident the flag
+  # exists to prevent.
+  if [[ "$AUTO_PROMOTE_DRAFT" -ne 1 ]]; then
+    MERGE_HELD=1
+    echo "[agent-branch-finish] Merge held (--no-auto-promote): PR left unmerged for review/e2e." >&2
+    return 2
+  fi
 
   merge_output=""
   if merge_output="$("$GH_BIN" pr merge "$SOURCE_BRANCH" --squash --delete-branch 2>&1)"; then
@@ -1325,6 +1370,10 @@ if [[ "$PUSH_ENABLED" -eq 1 ]]; then
         echo "[agent-branch-finish] PR flow created/updated branch '${SOURCE_BRANCH}' against '${BASE_BRANCH}'." >&2
         if [[ -n "$pr_url" ]]; then
           echo "[agent-branch-finish] PR: ${pr_url}" >&2
+        fi
+        if [[ "$MERGE_HELD" -eq 1 ]]; then
+          echo "[agent-branch-finish] Merge held by --no-auto-promote; worktree retained. When your gate (review/e2e) passes: 'gh pr ready ${pr_url:-<pr-url>}' then rerun 'gx branch finish --branch ${SOURCE_BRANCH}' to merge + cleanup." >&2
+          exit 0
         fi
         if [[ "$WAIT_FOR_MERGE" -eq 1 ]]; then
           echo "[agent-branch-finish] Merge did not complete within wait window; keeping branch open." >&2
