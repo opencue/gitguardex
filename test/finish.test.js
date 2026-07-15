@@ -411,6 +411,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/1"
     exit 0
@@ -475,6 +479,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/skip-integrate"
     exit 0
@@ -548,6 +556,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/2"
     exit 0
@@ -625,6 +637,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/remote-delete-rejected"
     exit 0
@@ -710,6 +726,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/local-delete-race"
     exit 0
@@ -946,6 +966,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/active-cleanup"
     exit 0
@@ -1009,6 +1033,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/2"
     exit 0
@@ -1108,6 +1136,10 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
   if [[ " $* " == *" --json url "* ]]; then
     echo "https://example.test/pr/default"
     exit 0

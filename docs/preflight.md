@@ -102,9 +102,10 @@ Caveats:
 - `--gate-review` marks the PR ready before the shell script runs; the
   hold re-demotes it to draft, but the two flags are an odd pairing —
   prefer running the gate when you lift the hold instead.
-- The marker only guards the PR flow. A direct push to an unprotected
-  base (`--mode direct` from a separate invocation without the hold
-  env/flag) bypasses PRs entirely, as it always has.
+- The finish flow consults the marker on its direct-push path too
+  (`--mode auto` diverts to the PR flow, `--direct-only` refuses), but a
+  raw `git push` outside `gx branch finish` to an unprotected base still
+  bypasses PRs entirely — base branch protection remains the backstop.
 - `GUARDEX_FINISH_AUTO_PROMOTE=0` as an ambient env var now means
   "every finish in this environment holds its merge" — set it per-call
   unless a fleet-wide merge moratorium is what you want.

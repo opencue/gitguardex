@@ -161,6 +161,11 @@ case "${1:-}" in
           url)
             emit_url
             ;;
+          body)
+            # No hold marker in this scenario; the finish flow reads the body
+            # to check for guardex:merge-hold before promoting/merging.
+            printf '\n'
+            ;;
           state,mergedAt,url)
             if [[ -f "${merge_marker}" ]]; then
               printf 'MERGED\x1f2026-01-01T00:00:00Z\x1f%s\n' "$(emit_url)"

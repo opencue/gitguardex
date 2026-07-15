@@ -115,7 +115,7 @@ test('held merge exits 0 with the worktree retained and a machine-readable trail
 test('persisted hold marker is honored before promotion and merge', () => {
   const flowIdx = script.indexOf('run_pr_flow() {');
   const flow = script.slice(flowIdx);
-  const markerIdx = flow.indexOf('pr_has_hold_marker "$pr_url"');
+  const markerIdx = flow.indexOf('pr_hold_marker_state "$pr_url"');
   const promoteIdx = flow.indexOf('maybe_auto_promote_pr "$pr_url"');
   const mergeIdx = flow.indexOf('pr merge "$SOURCE_BRANCH" --squash --delete-branch');
   assert.notEqual(markerIdx, -1, 'run_pr_flow must check the persisted hold marker');
@@ -134,6 +134,21 @@ test('persisted hold marker is honored before promotion and merge', () => {
   assert.ok(
     script.includes('AUTO_PROMOTE_EXPLICIT=1'),
     '--auto-promote must record explicitness',
+  );
+  assert.ok(
+    flow.includes('treating the PR as held (fail closed)'),
+    'an unreadable PR body must fail CLOSED in the PR flow, not silently lift the hold',
+  );
+});
+
+test('persisted hold marker also stops the direct-push shortcut', () => {
+  const guardIdx = script.indexOf('pr_hold_marker_state "$SOURCE_BRANCH"');
+  const directPushIdx = script.indexOf('push origin "HEAD:${BASE_BRANCH}"');
+  assert.notEqual(guardIdx, -1, 'direct-push path must consult the hold marker');
+  assert.notEqual(directPushIdx, -1, 'direct push must exist');
+  assert.ok(
+    guardIdx < directPushIdx,
+    'the marker check must run BEFORE the direct push, or auto/direct-mode reruns land held work',
   );
 });
 

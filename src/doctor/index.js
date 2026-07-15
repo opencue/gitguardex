@@ -332,7 +332,13 @@ function doctorFinishFlowIsPending(output) {
   return (
     /\[agent-branch-finish\] PR merge not completed yet; leaving PR open\./.test(output) ||
     /\[agent-branch-finish\] PR pending review\/check policy\./.test(output) ||
-    /\[agent-branch-finish\] PR auto-merge enabled; waiting for required checks\/reviews\./.test(output)
+    /\[agent-branch-finish\] PR auto-merge enabled; waiting for required checks\/reviews\./.test(output) ||
+    // A held merge (--no-auto-promote / guardex:merge-hold marker) exits 0
+    // with the PR open and the lane deliberately retained. Anything but
+    // 'pending' here sends the sandbox cleanup after a live held PR —
+    // force-deleting its worktree, local branch, and remote branch.
+    /^MERGE_HELD=1$/m.test(output) ||
+    /\[agent-branch-finish\] Merge hold active/.test(output)
   );
 }
 
@@ -1362,6 +1368,7 @@ function runDoctorInSandbox(options, blocked, rawIntegrations = {}) {
 }
 
 module.exports = {
+  doctorFinishFlowIsPending,
   extractAgentBranchStartMetadata,
   resolveSandboxTarget,
   buildSandboxDoctorArgs,
