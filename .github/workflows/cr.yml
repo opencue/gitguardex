@@ -37,7 +37,7 @@ jobs:
         if: ${{ env.OPENAI_API_KEY == '' }}
         run: echo "OPENAI_API_KEY is not configured; skipping Code Review workflow."
 
-      - uses: anc95/ChatGPT-CodeReview@1e3df152c1b85c12da580b206c91ad343460c584 # v1.0.23
+      - uses: anc95/ChatGPT-CodeReview@1af98686be7c2079f7be2f16ae887c8c023cc506 # v1.0.24
         if: ${{ env.OPENAI_API_KEY != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
