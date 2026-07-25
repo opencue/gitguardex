@@ -50,7 +50,7 @@ test('listWorkflowTemplates returns only github/workflows/* templates', () => {
     assert.match(entry, /^github\/workflows\//);
   }
   assert.ok(list.includes('github/workflows/ci.yml'));
-  assert.ok(list.includes('github/workflows/cr.yml'));
+  assert.ok(list.includes('github/workflows/ci-full.yml'));
 });
 
 test('planCiInitOperations + performCiInitOperations copy workflow templates into an empty target', () => {
@@ -128,7 +128,7 @@ test('formatCiInitReport surfaces dry-run + counts', () => {
   const text = formatCiInitReport({
     targetRoot: '/repo',
     summary: {
-      copied: ['.github/workflows/ci.yml', '.github/workflows/cr.yml'],
+      copied: ['.github/workflows/ci.yml', '.github/workflows/ci-full.yml'],
       overwritten: [],
       skipped: [],
       missing: [],
@@ -148,5 +148,5 @@ test('renderCiInitHelp covers documented flags + file list', () => {
   assert.match(help, /--dry-run/);
   assert.match(help, /--force/);
   assert.match(help, /ci\.yml/);
-  assert.match(help, /cr\.yml/);
+  assert.match(help, /ci-full\.yml/);
 });

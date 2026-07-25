@@ -92,7 +92,7 @@ test('setup provisions workflow files and repo config', () => {
     '.githooks/post-merge',
     '.githooks/post-checkout',
     '.github/pull.yml.example',
-    '.github/workflows/cr.yml',
+    '.github/workflows/ci.yml',
     '.omx/state/agent-file-locks.json',
     '.gitignore',
     '.vscode/settings.json',
@@ -123,13 +123,14 @@ test('setup provisions workflow files and repo config', () => {
   assert.match(preCommitShim, /exec "\$node_bin" "\$GUARDEX_CLI_ENTRY" 'hook' 'run' 'pre-commit' "\$@"/);
   assert.match(preCommitShim, /exec "\$cli_bin" 'hook' 'run' 'pre-commit' "\$@"/);
 
-  const crWorkflow = fs.readFileSync(path.join(repoDir, '.github', 'workflows', 'cr.yml'), 'utf8');
-  assert.match(crWorkflow, /name:\s+Code Review/);
-  assert.match(crWorkflow, /pull_request:/);
-  assert.match(crWorkflow, /OPENAI_API_KEY/);
-  assert.match(crWorkflow, /anc95\/ChatGPT-CodeReview@1e3df152c1b85c12da580b206c91ad343460c584/);
-  assert.match(crWorkflow, /if:\s+\$\{\{\s*env\.OPENAI_API_KEY != ''\s*\}\}/);
-  assert.doesNotMatch(crWorkflow, /if:\s+\$\{\{\s*secrets\.OPENAI_API_KEY/);
+  const ciWorkflow = fs.readFileSync(path.join(repoDir, '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.match(ciWorkflow, /pull_request:/);
+  assert.match(ciWorkflow, /concurrency:/);
+  assert.match(ciWorkflow, /cancel-in-progress:\s+true/);
+  // No AI-code-review workflow is scaffolded; review runs from the CLI
+  // (`gx review`, `gx branch finish --gate-review`) where a missing
+  // provider fails closed instead of reporting a green empty check.
+  assert.equal(fs.existsSync(path.join(repoDir, '.github', 'workflows', 'cr.yml')), false);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoDir, 'package.json'), 'utf8'));
   const managedAgentScripts = Object.keys(packageJson.scripts || {}).filter((name) => name.startsWith('agent:'));
@@ -292,12 +293,12 @@ test('setup --force <managed-path> rewrites the named managed template', () => {
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
-  const workflowPath = path.join(repoDir, '.github', 'workflows', 'cr.yml');
+  const workflowPath = path.join(repoDir, '.github', 'workflows', 'ci.yml');
   const managedWorkflow = fs.readFileSync(workflowPath, 'utf8');
   fs.writeFileSync(workflowPath, '# custom workflow\n', 'utf8');
 
   result = runNode(
-    ['setup', '--target', repoDir, '--force', '.github/workflows/cr.yml', '--no-global-install'],
+    ['setup', '--target', repoDir, '--force', '.github/workflows/ci.yml', '--no-global-install'],
     repoDir,
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);

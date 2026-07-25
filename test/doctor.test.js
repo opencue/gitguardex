@@ -130,7 +130,7 @@ test('doctor --force <managed-path> rewrites only the named managed shim', () =>
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const reviewScriptPath = path.join(repoDir, 'scripts', 'review-bot-watch.sh');
-  const workflowPath = path.join(repoDir, '.github', 'workflows', 'cr.yml');
+  const workflowPath = path.join(repoDir, '.github', 'workflows', 'ci.yml');
   fs.writeFileSync(reviewScriptPath, '#!/usr/bin/env bash\nprintf "custom review shim\\n"\n', 'utf8');
   fs.chmodSync(reviewScriptPath, 0o755);
   fs.writeFileSync(workflowPath, '# custom workflow\n', 'utf8');
@@ -145,7 +145,7 @@ test('doctor --force <managed-path> rewrites only the named managed shim', () =>
   assert.match(managedReviewShim, /exec "\$node_bin" "\$GUARDEX_CLI_ENTRY" 'internal' 'run-shell' 'reviewBot' "\$@"/);
   assert.match(managedReviewShim, /exec "\$cli_bin" 'internal' 'run-shell' 'reviewBot' "\$@"/);
   assert.equal(fs.readFileSync(workflowPath, 'utf8'), '# custom workflow\n');
-  assert.match(result.stdout, /skipped-conflict\s+\.github\/workflows\/cr\.yml/);
+  assert.match(result.stdout, /skipped-conflict\s+\.github\/workflows\/ci\.yml/);
 });
 
 

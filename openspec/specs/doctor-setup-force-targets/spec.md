@@ -17,10 +17,10 @@ TBD - created by archiving change agent-codex-fix-doctor-setup-force-conflict-ux
 
 #### Scenario: setup rewrites one named managed template
 
-- **GIVEN** a repo has a conflicting managed `.github/workflows/cr.yml`
-- **WHEN** the user runs `gx setup --force .github/workflows/cr.yml`
+- **GIVEN** a repo has a conflicting managed `.github/workflows/ci.yml`
+- **WHEN** the user runs `gx setup --force .github/workflows/ci.yml`
 - **THEN** the command succeeds
-- **AND** `.github/workflows/cr.yml` is rewritten to the current managed template
+- **AND** `.github/workflows/ci.yml` is rewritten to the current managed template
 
 ### Requirement: conflict output teaches targeted and global force recovery
 
