@@ -137,7 +137,7 @@ test('README keeps the problem-solution visuals aligned', () => {
 
 test('security workflows are present and use pinned GitHub Actions SHAs', () => {
   const workflowDir = path.join(repoRoot, '.github', 'workflows');
-  const expected = ['ci.yml', 'release.yml', 'scorecard.yml', 'codeql.yml', 'cr.yml'];
+  const expected = ['ci.yml', 'release.yml', 'scorecard.yml', 'codeql.yml'];
   for (const file of expected) {
     const filePath = path.join(workflowDir, file);
     assert.equal(fs.existsSync(filePath), true, `${file} missing`);
@@ -173,12 +173,12 @@ test('CodeQL workflow runs on a weekly schedule, not per-PR', () => {
   assert.doesNotMatch(codeqlWorkflow, /\n\s*pull_request:\s*\n/s);
 });
 
-test('code review workflow does not gate startup on secrets context', () => {
-  const workflowPath = path.join(repoRoot, '.github', 'workflows', 'cr.yml');
-  const workflow = fs.readFileSync(workflowPath, 'utf8');
-  assert.doesNotMatch(workflow, /if:\s+\$\{\{\s*secrets\.OPENAI_API_KEY/);
-  assert.match(workflow, /OPENAI_API_KEY:\s+\$\{\{\s*secrets\.OPENAI_API_KEY\s*\}\}/);
-  assert.match(workflow, /if:\s+\$\{\{\s*env\.OPENAI_API_KEY != ''\s*\}\}/);
+test('no AI code review workflow ships in this repo', () => {
+  // Review runs from the CLI (`gx review`, `gx branch finish --gate-review`),
+  // which fails closed without a provider. A per-PR review workflow reported a
+  // passing `review` check in seconds when OPENAI_API_KEY was unset, which
+  // reads as "reviewed" on the PR page. One gate, one place.
+  assert.equal(fs.existsSync(path.join(repoRoot, '.github', 'workflows', 'cr.yml')), false);
 });
 
 test('security metadata points at the live repo and dependabot covers npm plus actions', () => {

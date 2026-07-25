@@ -25,17 +25,17 @@ Every GitHub Actions workflow in `.github/workflows/` of this repo SHALL:
 - **AND** its `on` block MUST contain `workflow_dispatch:`
 - **AND** its `on` block MUST NOT contain a `pull_request:` or `push:` trigger.
 
-#### Scenario: cr.yml skips agent/* head branches
-- **GIVEN** the live `.github/workflows/cr.yml`
-- **WHEN** parsed by a YAML loader
-- **THEN** its `review` job's `if:` expression MUST include `!startsWith(github.event.pull_request.head.ref, 'agent/')`.
+#### Scenario: no AI-code-review workflow ships or is scaffolded
+- **GIVEN** the live `.github/workflows/` directory and the `templates/github/workflows/` directory
+- **THEN** neither MUST contain a `cr.yml` (or any other AI-code-review) workflow
+- **AND** AI review SHALL be driven from the CLI (`gx review`, `gx branch finish --gate-review`), which fails closed when no review provider is configured, rather than from a per-PR workflow that reports a passing check when its `OPENAI_API_KEY` secret is unset.
 
 ### Requirement: Templates seed the same posture in downstream projects
 The `templates/github/workflows/` directory SHALL carry workflow files that bootstrap the same budget posture into a downstream gitguardex-managed project.
 
 #### Scenario: Templates exist and parse
 - **GIVEN** the `templates/github/workflows/` directory in this repo
-- **THEN** it MUST contain `ci.yml`, `ci-full.yml`, `cr.yml`, and `README.md`
+- **THEN** it MUST contain `ci.yml`, `ci-full.yml`, and `README.md`
 - **AND** each `.yml` file MUST parse cleanly with a standard YAML loader
 - **AND** each `.yml` template MUST carry the same `concurrency:` + `if: draft == false` (or equivalent agent-skip) posture as the live file it mirrors.
 

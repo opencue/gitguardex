@@ -197,7 +197,6 @@ function renderCiInitHelp() {
     'Files copied (from gitguardex templates/github/workflows/):',
     `  - ci.yml          PR-time CI with draft-skip + concurrency-cancel.`,
     `  - ci-full.yml     Weekly cross-runtime matrix + label opt-in.`,
-    `  - cr.yml          AI code review with agent/* + draft skip.`,
     `  - README.md       Documents the budget posture and customization knobs.`,
     '',
     'The command stages copied files with git add when the target is a git repo;',

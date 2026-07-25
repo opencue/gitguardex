@@ -171,7 +171,6 @@ const TEMPLATE_FILES = [
   'github/pull.yml.example',
   'github/workflows/ci.yml',
   'github/workflows/ci-full.yml',
-  'github/workflows/cr.yml',
   'github/workflows/README.md',
 ];
 
