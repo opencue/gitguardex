@@ -133,3 +133,42 @@ test('branch finish without any gate flag is an unchanged passthrough', () => {
   assert.equal(calls.gate.length, 0, 'no gate without the flag');
   assert.deepEqual(calls.script[0].args, argv, 'argv must pass through untouched');
 });
+
+// `gx ship` / `gx finish` honor `--review-provider` (args.js -> finish/index.js
+// passes the whole options object to the gate), but `gx branch finish` handed
+// the gate a bare `options: {}`, so it always ran review-gate.js's `codex`
+// default. On a machine where codex is unavailable the gate then fails closed on
+// every run and the only way forward is --skip-review-gate — the gate turned off
+// by the very mechanism meant to enforce it.
+test('branch finish --gate-review forwards the review provider to the gate', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--branch', 'agent/claude/p', '--via-pr', '--gate-review', '--review-provider', 'claude']);
+
+  assert.equal(calls.gate[0].options.reviewProvider, 'claude');
+  const argv = calls.script[0].args;
+  assert.ok(!argv.includes('--review-provider'), 'agent-branch-finish.sh exits 1 on the unknown flag');
+  assert.ok(!argv.includes('claude'), 'the provider value must not leak into the script argv either');
+  assert.deepEqual(argv, ['--branch', 'agent/claude/p', '--via-pr']);
+});
+
+test('branch finish --gate-review reads the inline --review-provider= form', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review', '--review-provider=claude']);
+
+  assert.equal(calls.gate[0].options.reviewProvider, 'claude');
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
+});
+
+// Fail closed on a typo rather than silently falling back to codex: a caller who
+// asked for a specific provider must not get a different one.
+test('branch finish rejects an unknown review provider before the script runs', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  assert.throws(
+    () => branch(['finish', '--via-pr', '--gate-review', '--review-provider', 'gpt']),
+    /codex\|claude/,
+  );
+  assert.equal(calls.script.length, 0, 'the merge must never run on a bad provider');
+});

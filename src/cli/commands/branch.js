@@ -11,23 +11,45 @@ const {
 const { runReviewGate } = require('../../finish/review-gate');
 const { finish, merge } = require('./finish');
 
-// `--gate-review` and its opt-outs are gx-level flags. agent-branch-finish.sh
-// does not parse them (it exits 1 on the unknown argument), and its --via-pr
-// path merges the moment the PR opens, so the shell cannot enforce the gate
-// itself. Pull the flags out of the script's argv and honor them here.
+const REVIEW_PROVIDERS = ['codex', 'claude'];
+
+// `--gate-review`, its opt-outs, and `--review-provider` are gx-level flags.
+// agent-branch-finish.sh does not parse them (it exits 1 on the unknown
+// argument), and its --via-pr path merges the moment the PR opens, so the shell
+// cannot enforce the gate itself. Pull the flags out of the script's argv and
+// honor them here.
 function splitGateReviewFlags(args) {
   const scriptArgs = [];
   let gateReview = false;
-  for (const arg of args) {
+  let reviewProvider;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === '--gate-review') {
       gateReview = true;
     } else if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
       gateReview = false;
+    } else if (arg === '--review-provider') {
+      // Consume the value too — leaving it behind would hand the script a bare
+      // "claude" positional and it would exit 1.
+      reviewProvider = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith('--review-provider=')) {
+      reviewProvider = arg.slice('--review-provider='.length);
     } else {
       scriptArgs.push(arg);
     }
   }
-  return { gateReview, scriptArgs };
+
+  if (reviewProvider !== undefined) {
+    reviewProvider = String(reviewProvider).trim().toLowerCase();
+    // Fail closed on a typo rather than silently falling back to the default: a
+    // caller who named a provider must not quietly get a different one.
+    if (!REVIEW_PROVIDERS.includes(reviewProvider)) {
+      throw new Error(`--review-provider requires a value of ${REVIEW_PROVIDERS.join('|')}`);
+    }
+  }
+
+  return { gateReview, reviewProvider, scriptArgs };
 }
 
 // Read `--flag value` or `--flag=value` out of an argv array.
@@ -49,7 +71,7 @@ function branch(rawArgs) {
   if (subcommand === 'finish') {
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
-    const { gateReview, scriptArgs } = splitGateReviewFlags(passthrough);
+    const { gateReview, reviewProvider, scriptArgs } = splitGateReviewFlags(passthrough);
     // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
     // GitHub will not merge. Throwing here means the script never runs, so
     // the merge never happens.
@@ -62,7 +84,9 @@ function branch(rawArgs) {
         // honors branch.<name>.guardexBase. Resolving differently would gate one
         // base and merge into another.
         baseBranch: resolveFinishBaseBranch(repoRoot, gatedBranch, readFlagValue(scriptArgs, '--base')),
-        options: {},
+        // review-gate.js falls back to its own default when this is undefined,
+        // which keeps a bare --gate-review behaving exactly as before.
+        options: { reviewProvider },
       });
     }
     invokePackageAsset('branchFinish', scriptArgs, {
