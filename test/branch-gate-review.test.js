@@ -172,3 +172,16 @@ test('branch finish rejects an unknown review provider before the script runs', 
   );
   assert.equal(calls.script.length, 0, 'the merge must never run on a bad provider');
 });
+
+// args.js throws when the value is missing ("--review-provider requires a value
+// of codex|claude"). branch.js must match: a silent fall back to the default is
+// how a caller who asked for claude ends up gated by codex without being told.
+test('branch finish rejects --review-provider with no value', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  assert.throws(
+    () => branch(['finish', '--via-pr', '--gate-review', '--review-provider']),
+    /codex\|claude/,
+  );
+  assert.equal(calls.script.length, 0);
+});

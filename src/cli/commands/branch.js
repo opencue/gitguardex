@@ -30,8 +30,10 @@ function splitGateReviewFlags(args) {
       gateReview = false;
     } else if (arg === '--review-provider') {
       // Consume the value too — leaving it behind would hand the script a bare
-      // "claude" positional and it would exit 1.
-      reviewProvider = args[index + 1];
+      // "claude" positional and it would exit 1. A missing value becomes "" so
+      // the check below rejects it, matching args.js: falling back to the
+      // default here would gate with codex a caller who asked for claude.
+      reviewProvider = args[index + 1] ?? '';
       index += 1;
     } else if (arg.startsWith('--review-provider=')) {
       reviewProvider = arg.slice('--review-provider='.length);
