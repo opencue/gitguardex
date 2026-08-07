@@ -19,6 +19,19 @@ const {
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
+// Conclusions that mean "this check did not pass". Kept in one place so the PR
+// rollup and the base-branch baseline classify identically — a name that counts
+// as failing on the PR must count as failing on the base, or the comparison
+// would report a phantom new failure.
+const FAILING_CONCLUSIONS = new Set([
+  'FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE',
+]);
+
+/** Display name of a check, spanning check-runs (`name`) and legacy statuses (`context`). */
+function checkName(check) {
+  return String(check?.name || check?.context || '').trim();
+}
+
 class PrError extends Error {
   constructor(message, { code = 'pr-error', cause = null } = {}) {
     super(message);
@@ -242,6 +255,7 @@ function getPullRequestStatus(repoRoot, branch) {
   if (!pr) return null;
 
   const checks = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
+  const failedNames = [];
   const summary = checks.reduce(
     (acc, check) => {
       const state = String(check?.conclusion || check?.status || '').toUpperCase();
@@ -250,6 +264,10 @@ function getPullRequestStatus(repoRoot, branch) {
       else if (state === 'PENDING' || state === 'IN_PROGRESS' || state === 'QUEUED') acc.pending += 1;
       else if (state === 'CANCELLED') acc.cancelled += 1;
       else acc.other += 1;
+      if (state !== 'SUCCESS' && FAILING_CONCLUSIONS.has(state)) {
+        const name = checkName(check);
+        if (name) failedNames.push(name);
+      }
       return acc;
     },
     { success: 0, failed: 0, pending: 0, cancelled: 0, other: 0, total: checks.length },
@@ -267,6 +285,107 @@ function getPullRequestStatus(repoRoot, branch) {
     head: pr.headRefName,
     base: pr.baseRefName,
     checks: summary,
+    failedNames,
+  };
+}
+
+/**
+ * Check outcomes recorded against `ref` (a branch name or SHA).
+ *
+ * Returns `{ failing, total }` — `total` matters as much as `failing`, because
+ * "no checks ran here" and "checks ran and all passed" are different facts and
+ * only the second one is a usable baseline. Covers check-runs (GitHub Actions)
+ * and legacy commit statuses (external CI).
+ *
+ * Best effort: an unreachable API yields `{ failing: ∅, total: 0 }`, which the
+ * caller reads as "unknown", never as "green".
+ */
+function checkOutcomes(repoRoot, ref, runner = run) {
+  const failing = new Set();
+  let total = 0;
+  const collect = (result) => {
+    if (result.status !== 0) return;
+    for (const line of String(result.stdout || '').split('\n')) {
+      if (!line.trim()) continue;
+      const [state, ...rest] = line.split('\t');
+      const name = rest.join('\t').trim();
+      if (!name) continue;
+      total += 1;
+      if (FAILING_CONCLUSIONS.has(String(state || '').trim().toUpperCase())) {
+        failing.add(name);
+      }
+    }
+  };
+
+  collect(runner(GH_BIN, [
+    'api', '--paginate',
+    `repos/:owner/:repo/commits/${ref}/check-runs?per_page=100`,
+    '-q', '.check_runs[] | select(.status == "completed") | "\\(.conclusion)\\t\\(.name)"',
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true }));
+
+  collect(runner(GH_BIN, [
+    'api',
+    `repos/:owner/:repo/commits/${ref}/status`,
+    '-q', '.statuses[] | "\\(.state)\\t\\(.context)"',
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true }));
+
+  return { failing, total };
+}
+
+/** Head SHA of the most recently merged PR into `baseBranch`, or ''. */
+function lastMergedPrHead(repoRoot, baseBranch, runner = run) {
+  const result = runner(GH_BIN, [
+    'api',
+    `repos/:owner/:repo/pulls?base=${encodeURIComponent(baseBranch)}&state=closed&per_page=10`,
+    '-q', '[.[] | select(.merged_at != null)][0].head.sha // ""',
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
+  if (result.status !== 0) return '';
+  return String(result.stdout || '').trim();
+}
+
+/**
+ * The set of check names already failing on the base — the baseline a PR's
+ * failures are measured against.
+ *
+ * Reads TWO sources and unions them:
+ *
+ *  1. the base branch's own HEAD, and
+ *  2. the head of the most recently merged PR into that base.
+ *
+ * Both are needed. Many repos (this one included) trigger CI only on
+ * `pull_request`, so the base branch HEAD never gets the jobs that matter —
+ * yet it may still carry an unrelated check-run or two, which makes any
+ * "does the base have checks?" heuristic answer yes and hide the gap. The last
+ * merged PR is the newest CI verdict on what is now base code, so a failure
+ * there is by definition already in the base.
+ *
+ * @returns {{failing: Set<string>, source: string}} `source` is for logging.
+ */
+function baselineFailures(repoRoot, baseBranch, runner = run) {
+  const sources = [];
+  const failing = new Set();
+  let observed = 0;
+
+  const direct = checkOutcomes(repoRoot, baseBranch, runner);
+  if (direct.total > 0) {
+    observed += direct.total;
+    for (const name of direct.failing) failing.add(name);
+    sources.push(`branch '${baseBranch}'`);
+  }
+
+  const sha = lastMergedPrHead(repoRoot, baseBranch, runner);
+  if (sha) {
+    const merged = checkOutcomes(repoRoot, sha, runner);
+    if (merged.total > 0) {
+      observed += merged.total;
+      for (const name of merged.failing) failing.add(name);
+      sources.push(`last merged PR (${sha.slice(0, 7)})`);
+    }
+  }
+
+  return {
+    failing,
+    source: observed > 0 ? sources.join(' + ') : 'unavailable',
   };
 }
 
@@ -372,6 +491,8 @@ module.exports = {
   pushBranch,
   openPullRequest,
   getPullRequestStatus,
+  checkOutcomes,
+  baselineFailures,
   enableAutoMerge,
   markPullRequestReady,
   watchPullRequest,

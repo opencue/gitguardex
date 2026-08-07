@@ -1182,6 +1182,9 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     gateReview: defaults.gateReview ?? autoShip,
     reviewProvider: defaults.reviewProvider || 'codex',
     allowNoChecks: false,
+    // Gate on "no NEW failing checks vs the base branch" instead of absolute
+    // green, so a repo whose base is already red can still ship unattended.
+    gateBaseline: false,
     // Let the gate repair its own blocking findings instead of only reporting
     // them. Off by default: this writes commits to the branch.
     gateAutofix: false,
@@ -1324,6 +1327,14 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     }
     if (arg === '--allow-no-checks') {
       options.allowNoChecks = true;
+      continue;
+    }
+    if (arg === '--gate-baseline') {
+      options.gateBaseline = true;
+      continue;
+    }
+    if (arg === '--no-gate-baseline') {
+      options.gateBaseline = false;
       continue;
     }
     if (arg === '--gate-autofix') {
