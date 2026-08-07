@@ -172,7 +172,7 @@ test('waitForGreenCi times out when CI never settles', () => {
 function gateDeps(over = {}) {
   return {
     openPullRequest: () => ({ pr: { number: 42 } }),
-    runPrReview: () => ({ findings: [] }),
+    runPrReview: () => ({ findings: [], posted: true }),
     markPullRequestReady: () => {},
     evaluateReviewGate, // real
     waitForGreenCi: () => ({ status: 'green', pr: { mergeStateStatus: 'CLEAN' } }),
@@ -192,7 +192,7 @@ test('runReviewGate fails CLOSED when the AI review provider throws', () => {
 
 test('runReviewGate blocks on a high/critical finding', () => {
   const deps = gateDeps({
-    runPrReview: () => ({ findings: [{ severity: 'high', path: 'a.js', line: 5, message: 'bug' }] }),
+    runPrReview: () => ({ findings: [{ severity: 'high', path: 'a.js', line: 5, message: 'bug' }], posted: true }),
   });
   assert.throws(() => runReviewGate(gateArgs, deps), /blocking finding/);
 });
@@ -231,4 +231,38 @@ test('parseFinishArgs: --review-provider validates and --allow-no-checks parses'
   assert.equal(parseFinishArgs(['--gate-review', '--review-provider', 'claude']).reviewProvider, 'claude');
   assert.equal(parseFinishArgs(['--gate-review', '--allow-no-checks']).allowNoChecks, true);
   assert.throws(() => parseFinishArgs(['--review-provider', 'bogus']), /codex\|claude/);
+});
+
+test('runReviewGate refuses to merge when the review was not posted', () => {
+  // A verdict that never reached the PR leaves no evidence the diff was read,
+  // and an empty-findings result from a provider that silently returned
+  // nothing is indistinguishable from a genuine clean pass.
+  const deps = gateDeps({ runPrReview: () => ({ findings: [], posted: false }) });
+  assert.throws(() => runReviewGate(gateArgs, deps), /was not posted/);
+});
+
+test('runReviewGate names the auth cause and the artifact when nothing was posted', () => {
+  const deps = gateDeps({
+    runPrReview: () => ({
+      findings: [],
+      posted: false,
+      reason: 'github-auth-unavailable',
+      artifactPath: '/tmp/pr-1.md',
+    }),
+  });
+  assert.throws(
+    () => runReviewGate(gateArgs, deps),
+    (err) => /GitHub auth was unavailable/.test(err.message)
+      && /\/tmp\/pr-1\.md/.test(err.message),
+  );
+});
+
+test('runReviewGate does not merge on an unposted review even with zero findings', () => {
+  let merged = false;
+  const deps = gateDeps({
+    runPrReview: () => ({ findings: [], posted: undefined }),
+    markPullRequestReady: () => { merged = true; },
+  });
+  assert.throws(() => runReviewGate(gateArgs, deps));
+  assert.equal(merged, false, 'the PR must not even be promoted to ready');
 });

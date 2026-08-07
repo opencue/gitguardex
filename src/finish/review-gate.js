@@ -269,9 +269,30 @@ function runReviewGate({
       + '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.',
     );
   }
+  // The review must leave evidence on the PR. A verdict that exists only in
+  // this process's memory cannot be audited afterwards, and "clean" becomes
+  // indistinguishable from "the provider returned nothing" — which is how
+  // lifted.sk-storefront #463, #465 and #466 each merged carrying zero reviews
+  // while the gate had announced it was enforcing one.
+  //
+  // Fail closed, in keeping with the rest of this gate: a review that was not
+  // posted is not a review. The artifact path is surfaced so the operator can
+  // read what the provider actually said before re-running or bypassing.
+  if (!review.posted) {
+    const why = review.reason === 'github-auth-unavailable'
+      ? 'GitHub auth was unavailable to the review runner'
+      : `the review runner reported posted=${JSON.stringify(review.posted)}`;
+    throw new Error(
+      `review gate: the AI review was not posted to PR #${prNumber} (${why}). Refusing to merge — `
+      + 'an unposted review leaves no evidence the diff was examined, and a provider that returns '
+      + 'nothing then looks exactly like a clean pass.'
+      + (review.artifactPath ? `\nLocal artifact: ${review.artifactPath}` : '')
+      + '\nFix the provider/auth issue and re-run, or bypass with --skip-review-gate.',
+    );
+  }
+
   gateLog(
-    `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s))`
-    + (review.reason === 'github-auth-unavailable' ? ' [not posted: github-auth-unavailable]' : ''),
+    `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`,
   );
 
   // 3. Promote draft -> ready so required CI checks fire.
