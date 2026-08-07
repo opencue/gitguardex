@@ -65,6 +65,17 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
   // the original absolute-green behavior exactly.
   const baseline = options.baselineFailures instanceof Set ? options.baselineFailures : new Set();
   const baselineMode = baseline.size > 0;
+  // Loop-invariant, so build them once. In baseline mode UNSTABLE moves from
+  // "blocked" to "trusted": it is exactly what GitHub reports for a red
+  // non-required check, and those failures are cleared as pre-existing below.
+  // BLOCKED/DIRTY/BEHIND stay blocking either way — they mean GitHub itself
+  // will refuse the merge, which no baseline can excuse.
+  const blockedStates = baselineMode
+    ? new Set([...BLOCKED_STATES].filter((state) => state !== 'UNSTABLE'))
+    : BLOCKED_STATES;
+  const trustedStates = baselineMode
+    ? new Set([...MERGEABLE_STATES, 'UNSTABLE'])
+    : MERGEABLE_STATES;
 
   const start = now();
   const deadline = start + timeoutSeconds * 1000;
@@ -80,9 +91,10 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // introduce it. A failing check with no resolvable name always blocks: an
     // unnameable failure cannot be proven pre-existing.
     const failedNames = Array.isArray(snap.failedNames) ? snap.failedNames : [];
-    // Coerce explicitly: a snapshot missing `cancelled` would make the sum NaN,
-    // and `NaN > 0` is false — which would wave a failing check straight through.
-    const failingCount = (Number(c.failed) || 0) + (Number(c.cancelled) || 0);
+    // Coerce every counter: a snapshot missing one would make the sums NaN, and
+    // `NaN > 0` is false — which would wave a failing check straight through.
+    const count = (key) => Number(c[key]) || 0;
+    const failingCount = count('failed') + count('cancelled');
     if (failingCount > 0) {
       const named = failedNames.length === failingCount;
       const novel = failedNames.filter((name) => !baseline.has(name));
@@ -92,14 +104,7 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     }
 
     const mss = snap.mergeStateStatus;
-    // GitHub says this can't merge as-is and won't self-resolve within a finish
-    // run. In baseline mode UNSTABLE is expected — it is what GitHub reports for
-    // a non-required check that is red — and the failures were already cleared
-    // as pre-existing above. BLOCKED/DIRTY/BEHIND still block: those mean GitHub
-    // itself will refuse the merge, which no baseline can excuse.
-    const blockedStates = baselineMode
-      ? new Set([...BLOCKED_STATES].filter((state) => state !== 'UNSTABLE'))
-      : BLOCKED_STATES;
+    // GitHub says this can't merge as-is and won't self-resolve within a finish run.
     if (mss && blockedStates.has(mss)) return { status: 'merge-blocked', pr: snap };
 
     const settled = c.pending === 0;
@@ -112,12 +117,9 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // pre-existing: UNSTABLE joins the trusted verdicts, and the no-verdict
     // fallback accounts every check as success-or-cleared-failure. `other` must
     // still be zero either way — an ambiguous state is never a pass.
-    const trustedStates = baselineMode
-      ? new Set([...MERGEABLE_STATES, 'UNSTABLE'])
-      : MERGEABLE_STATES;
     const allAccountedFor = baselineMode
-      ? c.other === 0 && c.success + c.failed + c.cancelled === c.total
-      : c.other === 0 && c.success === c.total;
+      ? count('other') === 0 && count('success') + failingCount === count('total')
+      : count('other') === 0 && count('success') === count('total');
     const trusted = mss ? trustedStates.has(mss) : allAccountedFor;
 
     if (settled && mergeable && hasChecks && trusted) return { status: 'green', pr: snap };

@@ -336,7 +336,11 @@ function checkOutcomes(repoRoot, ref, runner = run) {
 function lastMergedPrHead(repoRoot, baseBranch, runner = run) {
   const result = runner(GH_BIN, [
     'api',
-    `repos/:owner/:repo/pulls?base=${encodeURIComponent(baseBranch)}&state=closed&per_page=10`,
+    // GitHub cannot sort by merge time; `updated` desc correlates with it far
+    // better than the `created` desc default, which would rank a long-lived PR
+    // by when it was opened.
+    `repos/:owner/:repo/pulls?base=${encodeURIComponent(baseBranch)}&state=closed`
+      + '&sort=updated&direction=desc&per_page=10',
     '-q', '[.[] | select(.merged_at != null)][0].head.sha // ""',
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
   if (result.status !== 0) return '';
