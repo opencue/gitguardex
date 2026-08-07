@@ -213,11 +213,27 @@ if [[ "$branch" == agent/* ]]; then
     # Auto-claim non-deletion staged paths. Deletions need an explicit
     # `--allow-delete` flag below so `locks validate --staged` doesn't
     # reject the commit on the same trip the user staged the delete.
+    # Claim in ONE call: each `locks claim` spawns node -> python and rescans
+    # every worktree's lock file, so a per-file loop cost ~150ms per staged
+    # path (3.6s for 24 files across 12 worktrees) on every single commit.
+    _staged_files=()
     while IFS= read -r staged_file; do
       [[ -z "$staged_file" ]] && continue
       [[ "$staged_file" == ".omx/state/agent-file-locks.json" ]] && continue
-      run_guardex_cli locks claim --branch "$branch" "$staged_file" >/dev/null 2>&1 || true
+      _staged_files+=("$staged_file")
     done < <(git diff --cached --name-only --diff-filter=ACMRTUXB)
+    if (( ${#_staged_files[@]} > 0 )); then
+      # `locks claim` is atomic: one foreign-owned path rejects the whole
+      # batch. Fall back to per-file claims so the rest still get claimed and
+      # the `validate` below names only the genuinely conflicting path instead
+      # of reporting every staged file as unclaimed.
+      if ! run_guardex_cli locks claim --branch "$branch" \
+        "${_staged_files[@]}" >/dev/null 2>&1; then
+        for staged_file in "${_staged_files[@]}"; do
+          run_guardex_cli locks claim --branch "$branch" "$staged_file" >/dev/null 2>&1 || true
+        done
+      fi
+    fi
 
     # Auto-approve deletions for the same branch (gated separately so
     # operators can disable this single behavior without disabling the
