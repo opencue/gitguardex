@@ -1011,6 +1011,20 @@ delete_local_branch_for_cleanup() {
     return 0
   fi
 
+  # `git branch -d` insists on an ancestor link to HEAD. A squash merge — the
+  # default this flow uses (`gh pr merge --squash`) — never creates one, so the
+  # refusal here is the NORMAL post-merge outcome, not a sign the work is
+  # unmerged. GitHub is the authority on that, so ask whether this exact head
+  # landed in a merged PR and only then force the delete. When it did not (a
+  # rebase during finish, or commits pushed after the merge), fall through and
+  # keep the branch rather than destroying commits that never landed.
+  if read_merged_pr_for_head "$(git -C "$repo_root" rev-parse "$branch" 2>/dev/null || true)"; then
+    if git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1; then
+      echo "[agent-branch-finish] Local branch '${branch}' had no ancestor link to '${BASE_BRANCH}' (squash merge), but its head landed in a merged PR; deleted it." >&2
+      return 0
+    fi
+  fi
+
   echo "$delete_output" >&2
   return 1
 }
@@ -1509,6 +1523,16 @@ if [[ "$PUSH_ENABLED" -eq 1 ]]; then
   fi
 fi
 
+# Reaching here means the merge landed. That is the outcome the caller cares
+# about, so state it once, unmistakably, BEFORE any best-effort cleanup runs —
+# otherwise a warning from worktree/branch teardown reads as the headline and
+# the merge scrolls away. Everything below this line is cleanup: it can warn,
+# it must not fail the run, because the work is already in the base branch.
+echo "[agent-branch-finish] ✅ MERGED  ${SOURCE_BRANCH} -> ${BASE_BRANCH} (${merge_status} flow)"
+if [[ -n "$pr_url" ]]; then
+  echo "[agent-branch-finish] ✅ PR: ${pr_url}"
+fi
+
 run_guardex_cli locks release --branch "$SOURCE_BRANCH" >/dev/null 2>&1 || true
 
 base_worktree="$(get_worktree_for_branch "$BASE_BRANCH")"
@@ -1549,11 +1573,19 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
     git -C "$repo_root" worktree remove "$source_worktree" --force >/dev/null 2>&1 || true
   fi
 
+  # The merge already landed (see the MERGED banner above), so a branch that
+  # refuses to delete is a leftover to report, not a reason to fail the run and
+  # make a successful ship look broken. Keep the branch AND its remote in that
+  # case: the commits it still holds exist nowhere else.
+  local_branch_cleaned=1
   if ! delete_local_branch_for_cleanup "$SOURCE_BRANCH"; then
-    exit 1
+    local_branch_cleaned=0
+    echo "[agent-branch-finish] Warning: kept local branch '${SOURCE_BRANCH}' — it holds commits that never landed in '${BASE_BRANCH}' (rebased during finish, or pushed after the merge)." >&2
+    echo "[agent-branch-finish] Inspect: git log ${BASE_BRANCH}..${SOURCE_BRANCH}" >&2
+    echo "[agent-branch-finish] Delete once you are satisfied: git branch -D ${SOURCE_BRANCH}" >&2
   fi
 
-  if [[ "$PUSH_ENABLED" -eq 1 && "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then
+  if [[ "$local_branch_cleaned" -eq 1 && "$PUSH_ENABLED" -eq 1 && "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then
     if git -C "$repo_root" ls-remote --exit-code --heads origin "$SOURCE_BRANCH" >/dev/null 2>&1; then
       remote_delete_output=""
       if ! remote_delete_output="$(git -C "$repo_root" push origin --delete "$SOURCE_BRANCH" 2>&1)"; then
@@ -1567,9 +1599,18 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
     fi
   fi
 
-  prune_args=(--base "$BASE_BRANCH" --only-dirty-worktrees --delete-branches)
-  if [[ "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then
-    prune_args+=(--delete-remote-branches)
+  # prune deletes with `git branch -D`, so handing it --delete-branches right
+  # after we deliberately kept a branch with unlanded commits would force-delete
+  # exactly what we just protected. Skip branch deletion for this run; the next
+  # finish or an explicit `gx cleanup` sweeps the rest.
+  prune_args=(--base "$BASE_BRANCH" --only-dirty-worktrees)
+  if [[ "$local_branch_cleaned" -eq 1 ]]; then
+    prune_args+=(--delete-branches)
+    if [[ "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then
+      prune_args+=(--delete-remote-branches)
+    fi
+  else
+    echo "[agent-branch-finish] Skipping branch deletion during prune so '${SOURCE_BRANCH}' survives; sweep later with: gx cleanup --base ${BASE_BRANCH}" >&2
   fi
 
   pivot_to_repo_root_before_prune
@@ -1578,12 +1619,22 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
     echo "[agent-branch-finish] You can run manual cleanup: gx cleanup --base ${BASE_BRANCH}" >&2
   fi
 
+  # Say what actually happened: claiming the branch was cleaned when it was
+  # deliberately kept is the same misreport in the other direction. The two
+  # cleaned wordings differ ("branch/remote" vs "branch/worktree") and callers
+  # match on them, so keep each one exactly as it was.
+  if [[ "$local_branch_cleaned" -eq 1 ]]; then
+    kept_branch_summary=""
+  else
+    kept_branch_summary="kept source branch (commits not in '${BASE_BRANCH}')"
+  fi
+
   if [[ "$source_worktree" == "$current_worktree" && "$source_worktree" == "${agent_worktree_root}"/* && -d "$source_worktree" ]]; then
-    echo "[agent-branch-finish] Merged '${SOURCE_BRANCH}' into '${BASE_BRANCH}' via ${merge_status} flow and cleaned source branch/remote."
+    echo "[agent-branch-finish] Merged '${SOURCE_BRANCH}' into '${BASE_BRANCH}' via ${merge_status} flow and ${kept_branch_summary:-cleaned source branch/remote}."
     echo "[agent-branch-finish] Current worktree '${source_worktree}' still exists because it is the active shell cwd." >&2
     echo "[agent-branch-finish] Leave this directory, then run: gx cleanup --base ${BASE_BRANCH}" >&2
   else
-    echo "[agent-branch-finish] Merged '${SOURCE_BRANCH}' into '${BASE_BRANCH}' via ${merge_status} flow and cleaned source branch/worktree."
+    echo "[agent-branch-finish] Merged '${SOURCE_BRANCH}' into '${BASE_BRANCH}' via ${merge_status} flow and ${kept_branch_summary:-cleaned source branch/worktree}."
   fi
 else
   pivot_to_repo_root_before_prune
