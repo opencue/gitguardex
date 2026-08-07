@@ -691,6 +691,95 @@ fi
   );
 });
 
+test('agent-branch-finish reports MERGED and succeeds when the post-merge local branch delete is refused', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  attachOriginRemote(repoDir);
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['add', '.'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['commit', '-m', 'apply gx setup'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['push', 'origin', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+
+  result = runCmd('git', ['checkout', '-b', 'agent/test-merged-branch-delete-refused'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  commitFile(repoDir, 'agent-merged-delete-refused.txt', 'agent change\n', 'agent change');
+
+  // `pr merge` succeeds but leaves the local branch in place, and `pr list`
+  // reports no merged PR for this head — so `git branch -d` refuses (the
+  // branch's commits are not ancestors of dev) and the force-delete is not
+  // authorized. The merge still happened, so the run must still succeed.
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "create" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
+  if [[ " $* " == *" --json url "* ]]; then
+    echo "https://example.test/pr/merged-delete-refused"
+    exit 0
+  fi
+  echo "unexpected gh pr view args: $*" >&2
+  exit 1
+fi
+if [[ "$1" == "pr" && "$2" == "list" ]]; then
+  echo ""
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then
+  # A real squash merge lands the work as a brand new commit and (with
+  # --delete-branch) drops the remote branch. That leaves the local branch
+  # covered by neither dev nor its upstream, which is what makes 'git branch
+  # -d' refuse it.
+  git_bin="$(command -v git)"
+  "$git_bin" -C "${'${GUARDEX_TEST_REPO_DIR}'}" update-ref -d "refs/remotes/origin/$3" >/dev/null 2>&1 || true
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+
+  const finish = runBranchFinish(
+    ['--branch', 'agent/test-merged-branch-delete-refused', '--mode', 'pr', '--cleanup'],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      GUARDEX_TEST_REPO_DIR: repoDir,
+    },
+  );
+
+  // The merge is the outcome: it must be stated, and it must not exit non-zero
+  // just because the local branch could not be torn down afterwards.
+  assert.equal(finish.status, 0, finish.stderr || finish.stdout);
+  assert.match(
+    finish.stdout,
+    /✅ MERGED {2}agent\/test-merged-branch-delete-refused -> dev \(pr flow\)/,
+  );
+  assert.match(finish.stdout, /✅ PR: https:\/\/example\.test\/pr\/merged-delete-refused/);
+  assert.match(
+    finish.stderr,
+    /Warning: kept local branch 'agent\/test-merged-branch-delete-refused'/,
+  );
+
+  // The branch it declined to delete must still be there — that is the whole
+  // point of declining.
+  const branchStillThere = runCmd(
+    'git',
+    ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-merged-branch-delete-refused'],
+    repoDir,
+  );
+  assert.equal(branchStillThere.status, 0, 'branch with unlanded commits must be kept');
+});
+
 test('agent-branch-finish cleanup tolerates an already-deleted local branch after gh delete warning', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
