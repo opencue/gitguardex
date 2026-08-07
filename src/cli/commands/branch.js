@@ -24,12 +24,17 @@ function splitGateReviewFlags(args) {
   let reviewProvider;
   let gateAutofix = false;
   let gateAutofixRounds = 1;
+  let gateBaseline = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--gate-review') {
       gateReview = true;
     } else if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
       gateReview = false;
+    } else if (arg === '--gate-baseline') {
+      gateBaseline = true;
+    } else if (arg === '--no-gate-baseline') {
+      gateBaseline = false;
     } else if (arg === '--gate-autofix') {
       gateAutofix = true;
     } else if (arg === '--no-gate-autofix') {
@@ -74,7 +79,7 @@ function splitGateReviewFlags(args) {
   }
 
   return {
-    gateReview, reviewProvider, gateAutofix, gateAutofixRounds, scriptArgs,
+    gateReview, reviewProvider, gateAutofix, gateAutofixRounds, gateBaseline, scriptArgs,
   };
 }
 
@@ -98,7 +103,7 @@ function branch(rawArgs) {
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
     const {
-      gateReview, reviewProvider, gateAutofix, gateAutofixRounds, scriptArgs,
+      gateReview, reviewProvider, gateAutofix, gateAutofixRounds, gateBaseline, scriptArgs,
     } = splitGateReviewFlags(passthrough);
     // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
     // GitHub will not merge. Throwing here means the script never runs, so
@@ -114,7 +119,9 @@ function branch(rawArgs) {
         baseBranch: resolveFinishBaseBranch(repoRoot, gatedBranch, readFlagValue(scriptArgs, '--base')),
         // review-gate.js falls back to its own default when this is undefined,
         // which keeps a bare --gate-review behaving exactly as before.
-        options: { reviewProvider, gateAutofix, gateAutofixRounds },
+        options: {
+          reviewProvider, gateAutofix, gateAutofixRounds, gateBaseline,
+        },
       });
     }
     invokePackageAsset('branchFinish', scriptArgs, {

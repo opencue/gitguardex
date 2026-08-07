@@ -61,6 +61,21 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
   const sleep = options.sleep || ((seconds) => run('sleep', [String(seconds)], { cwd: repoRoot }));
   const now = options.now || (() => Date.now());
   const getStatus = options.getStatus || ((r, b) => pr.getPullRequestStatus(r, b));
+  // Checks already failing on the base branch. Empty (the default) reproduces
+  // the original absolute-green behavior exactly.
+  const baseline = options.baselineFailures instanceof Set ? options.baselineFailures : new Set();
+  const baselineMode = baseline.size > 0;
+  // Loop-invariant, so build them once. In baseline mode UNSTABLE moves from
+  // "blocked" to "trusted": it is exactly what GitHub reports for a red
+  // non-required check, and those failures are cleared as pre-existing below.
+  // BLOCKED/DIRTY/BEHIND stay blocking either way — they mean GitHub itself
+  // will refuse the merge, which no baseline can excuse.
+  const blockedStates = baselineMode
+    ? new Set([...BLOCKED_STATES].filter((state) => state !== 'UNSTABLE'))
+    : BLOCKED_STATES;
+  const trustedStates = baselineMode
+    ? new Set([...MERGEABLE_STATES, 'UNSTABLE'])
+    : MERGEABLE_STATES;
 
   const start = now();
   const deadline = start + timeoutSeconds * 1000;
@@ -71,21 +86,41 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     const snap = getStatus(repoRoot, branch);
     if (!snap) return { status: 'no-pr' };
     const c = snap.checks;
-    // A failed or cancelled check is terminal and never a pass.
-    if (c.failed > 0 || c.cancelled > 0) return { status: 'checks-failed', pr: snap };
+    // A failed or cancelled check is terminal and never a pass — UNLESS it is
+    // already failing on the base branch, in which case this change did not
+    // introduce it. A failing check with no resolvable name always blocks: an
+    // unnameable failure cannot be proven pre-existing.
+    const failedNames = Array.isArray(snap.failedNames) ? snap.failedNames : [];
+    // Coerce every counter: a snapshot missing one would make the sums NaN, and
+    // `NaN > 0` is false — which would wave a failing check straight through.
+    const count = (key) => Number(c[key]) || 0;
+    const failingCount = count('failed') + count('cancelled');
+    if (failingCount > 0) {
+      const named = failedNames.length === failingCount;
+      const novel = failedNames.filter((name) => !baseline.has(name));
+      if (!baselineMode || !named || novel.length > 0) {
+        return { status: 'checks-failed', pr: snap, newFailures: novel };
+      }
+    }
 
     const mss = snap.mergeStateStatus;
     // GitHub says this can't merge as-is and won't self-resolve within a finish run.
-    if (mss && BLOCKED_STATES.has(mss)) return { status: 'merge-blocked', pr: snap };
+    if (mss && blockedStates.has(mss)) return { status: 'merge-blocked', pr: snap };
 
     const settled = c.pending === 0;
     const mergeable = !snap.isDraft && snap.mergeable === 'MERGEABLE';
     const hasChecks = c.total > 0;
     // Trust GitHub's CLEAN/HAS_HOOKS verdict; with no verdict, demand all-success
     // (every check SUCCESS, zero `other`/ambiguous states).
-    const trusted = mss
-      ? MERGEABLE_STATES.has(mss)
-      : (c.other === 0 && c.success === c.total);
+    //
+    // Baseline mode widens both halves by exactly the failures already proven
+    // pre-existing: UNSTABLE joins the trusted verdicts, and the no-verdict
+    // fallback accounts every check as success-or-cleared-failure. `other` must
+    // still be zero either way — an ambiguous state is never a pass.
+    const allAccountedFor = baselineMode
+      ? count('other') === 0 && count('success') + failingCount === count('total')
+      : count('other') === 0 && count('success') === count('total');
+    const trusted = mss ? trustedStates.has(mss) : allAccountedFor;
 
     if (settled && mergeable && hasChecks && trusted) return { status: 'green', pr: snap };
     if (settled && mergeable && !hasChecks && (mss ? MERGEABLE_STATES.has(mss) : true)) {
@@ -112,6 +147,7 @@ function runReviewGate({
   const markReady = deps.markPullRequestReady || pr.markPullRequestReady;
   const evaluate = deps.evaluateReviewGate || prReview.evaluateReviewGate;
   const waitGreen = deps.waitForGreenCi || waitForGreenCi;
+  const readBaseline = deps.baselineFailures || pr.baselineFailures;
   const runFix = deps.runReviewFix || reviewFix.runReviewFix;
   const pushBranch = deps.pushBranch || pr.pushBranch;
 
@@ -194,13 +230,32 @@ function runReviewGate({
   // 4. Wait for CI to settle green + GitHub to report mergeable. waitForGreenCi
   //    is fully fail-closed (failed/cancelled checks, blocked mergeStateStatus,
   //    timeout, and check-less PRs all return non-green statuses).
+  //    With --gate-baseline, checks already red on the base branch are excluded
+  //    from that judgement, so a repo whose base is red can still gate on the
+  //    only question that matters: does this change ADD a failure?
+  let baselineFailures = new Set();
+  if (options.gateBaseline) {
+    const baseline = readBaseline(repoRoot, baseBranch);
+    baselineFailures = baseline.failing;
+    gateLog(baselineFailures.size > 0
+      ? `baseline from ${baseline.source}: ${baselineFailures.size} check(s) already failing — [${[...baselineFailures].join(', ')}]`
+      : `baseline from ${baseline.source}: no known failures — every failing check counts as new`);
+  }
+
   const ci = waitGreen(repoRoot, branch, {
     timeoutSeconds: options.gateTimeoutSeconds,
     pollSeconds: options.gatePollSeconds,
     requireChecks,
+    baselineFailures,
   });
   if (ci.status === 'checks-failed') {
-    throw new Error(`review gate: CI checks failed/cancelled on PR #${prNumber}. Refusing to merge.`);
+    const novel = Array.isArray(ci.newFailures) && ci.newFailures.length > 0
+      ? ` New failure(s) vs '${baseBranch}': ${ci.newFailures.join(', ')}.`
+      : '';
+    throw new Error(
+      `review gate: CI checks failed/cancelled on PR #${prNumber}. Refusing to merge.${novel}`
+      + (options.gateBaseline ? '' : ' Pass --gate-baseline to ignore failures already red on the base branch.'),
+    );
   }
   if (ci.status === 'merge-blocked') {
     const mss = (ci.pr && ci.pr.mergeStateStatus) || 'BLOCKED';
