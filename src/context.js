@@ -432,7 +432,7 @@ const CLI_COMMAND_GROUPS = [
     description: 'Review / cleanup bots, AI setup prompts, and safety reports.',
     commands: [
       ['agents', 'Start/stop repo-scoped review + cleanup bots'],
-      ['pr-review', 'Run local Codex/Claude PR review and post inline GitHub comments or write an artifact'],
+      ['pr-review', 'Run local Codex/Claude PR review; post inline GitHub comments, write an artifact, or --fix the findings'],
       ['cockpit', 'Create or attach to a repo tmux cockpit session'],
       ['install-agent-skills', 'Install Guardex Codex/Claude skills into the user home'],
       ['speckit', 'Install Spec Kit (specify-cli) SDD slash skills (/speckit-specify, /speckit-plan, ...) into the current repo'],

@@ -19,12 +19,96 @@ test('normalizeFindings parses fenced provider JSON and drops malformed findings
   assert.deepEqual(findings, [
     {
       path: 'src/a.js',
+      startLine: 0,
       line: 7,
       severity: 'high',
+      category: '',
       message: 'bug',
       suggestion: '',
     },
   ]);
+});
+
+
+test('normalizeFindings keeps a multi-line range and strips a fenced suggestion', () => {
+  const [finding] = prReview.normalizeFindings(JSON.stringify({
+    findings: [{
+      path: 'src/a.js',
+      start_line: 4,
+      line: 7,
+      severity: 'high',
+      category: 'Security',
+      message: 'bug',
+      suggestion: '```js\nconst safe = true\n```',
+    }],
+  }));
+  assert.equal(finding.startLine, 4);
+  assert.equal(finding.category, 'security');
+  assert.equal(finding.suggestion, 'const safe = true');
+});
+
+
+test('normalizeFindings drops start_line that is not strictly before line', () => {
+  // GitHub rejects start_line >= line; such a finding must collapse to single-line.
+  const [equal] = prReview.normalizeFindings('{"findings":[{"path":"a.js","start_line":7,"line":7,"severity":"low","message":"m"}]}');
+  const [after] = prReview.normalizeFindings('{"findings":[{"path":"a.js","start_line":9,"line":7,"severity":"low","message":"m"}]}');
+  assert.equal(equal.startLine, 0);
+  assert.equal(after.startLine, 0);
+});
+
+
+test('findingBody renders a severity alert, folds a long tail, and carries a fingerprint', () => {
+  const finding = {
+    path: 'a.js',
+    startLine: 0,
+    line: 3,
+    severity: 'critical',
+    category: 'security',
+    message: `Token is logged in plaintext. ${'x'.repeat(600)}`,
+    suggestion: 'redact(token)',
+  };
+  const body = prReview.findingBody(finding);
+  assert.match(body, /> \[!CAUTION\]/, 'critical maps to the red GitHub alert');
+  assert.match(body, /🔴 \*\*CRITICAL\*\* · security/);
+  assert.match(body, /<details><summary>Why this matters<\/summary>/, 'long tail is folded');
+  assert.match(body, /```suggestion\nredact\(token\)\n```/);
+  assert.match(body, new RegExp(`gitguardex:f:${prReview.findingFingerprint(finding)} -->`));
+});
+
+
+test('renderReviewSummary reports the gate verdict and unanchored findings', () => {
+  const blocking = {
+    path: 'a.js', line: 3, severity: 'high', category: '', message: 'boom', suggestion: '',
+  };
+  const stray = {
+    path: 'b.js', line: 99, severity: 'low', category: '', message: 'stray', suggestion: '',
+  };
+  const blocked = prReview.renderReviewSummary({
+    provider: 'codex',
+    findings: [blocking, stray],
+    unanchored: [stray],
+    commit: 'abcdef1234',
+    gate: { clean: false, blocking: [blocking], blockSeverities: ['high', 'critical'] },
+  });
+  assert.match(blocked, /⛔ \*\*Merge gate: blocked\*\* — 1 blocking finding/);
+  assert.match(blocked, /🟠 1 high · 🔵 1 low/);
+  assert.match(blocked, /could not be anchored to the diff/);
+  assert.match(blocked, /commit `abcdef1`/);
+
+  const passing = prReview.renderReviewSummary({
+    provider: 'codex',
+    findings: [stray],
+    gate: { clean: true, blocking: [], blockSeverities: ['high', 'critical'] },
+  });
+  assert.match(passing, /✅ \*\*Merge gate: pass\*\*/);
+});
+
+
+test('capDiff flags truncation so a partial review never reads as a full one', () => {
+  assert.deepEqual(prReview.capDiff('short', 100), { diff: 'short', truncated: false });
+  const capped = prReview.capDiff('y'.repeat(50), 10);
+  assert.equal(capped.truncated, true);
+  assert.match(capped.diff, /\[diff truncated at 10 characters\]/);
 });
 
 
@@ -37,11 +121,20 @@ test('gx pr-review posts one GitHub review when auth is available', () => {
   const fakeGh = createFakeBin('gh', `
 if [[ "$1" == "pr" && "$2" == "diff" ]]; then
   printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
+  printf '%s\\n' '--- a/src/a.js'
+  printf '%s\\n' '+++ b/src/a.js'
   printf '%s\\n' '@@ -1 +1 @@'
   printf '%s\\n' '+const broken = true'
   exit 0
 fi
 if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  printf '%s\\n' 'deadbeefcafe0000'
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
   exit 0
 fi
 if [[ "$1" == "api" ]]; then
@@ -58,7 +151,7 @@ echo "unexpected gh args: $*" >&2
 exit 1
 `);
   const fakeCodex = createFakeBin('codex', `
-printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","message":"Use a real assertion","suggestion":"const broken = false"}]}'
+printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","category":"tests","message":"Use a real assertion","suggestion":"const broken = false"}]}'
 `);
 
   const result = runNodeWithEnv(['pr-review', '--provider', 'codex', '--pr', '12', '--post', '--target', repoDir], repoDir, {
@@ -66,14 +159,110 @@ printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","me
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /Posted PR review with 1 finding/);
+  assert.match(result.stdout, /Posted PR review: 1 finding\(s\), 1 new inline comment\(s\)/);
   assert.match(fs.readFileSync(ghMarker, 'utf8'), /repos\/:owner\/:repo\/pulls\/12\/reviews/);
   const payload = JSON.parse(fs.readFileSync(apiPayload, 'utf8'));
   assert.equal(payload.event, 'COMMENT');
+  assert.equal(payload.commit_id, 'deadbeefcafe0000', 'comments anchor to the PR head sha');
   assert.equal(payload.comments.length, 1);
   assert.equal(payload.comments[0].path, 'src/a.js');
   assert.equal(payload.comments[0].line, 1);
-  assert.match(payload.comments[0].body, /MEDIUM/);
+  assert.match(payload.comments[0].body, /🟡 \*\*MEDIUM\*\* · tests/);
+  assert.match(payload.body, /Merge gate: pass/, 'summary states the gate verdict');
+});
+
+
+test('gx pr-review skips findings it already posted instead of stacking duplicates', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-pr-review-dedupe-'));
+  const apiPayload = path.join(markerDir, 'api-payload.json');
+  const finding = {
+    path: 'src/a.js', startLine: 0, line: 1, severity: 'medium', category: '', message: 'Use a real assertion', suggestion: '',
+  };
+  const fingerprint = prReview.findingFingerprint(finding);
+  const fakeGh = createFakeBin('gh', `
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then
+  printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
+  printf '%s\\n' '--- a/src/a.js'
+  printf '%s\\n' '+++ b/src/a.js'
+  printf '%s\\n' '@@ -1 +1 @@'
+  printf '%s\\n' '+const broken = true'
+  exit 0
+fi
+if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then printf '%s\\n' 'deadbeefcafe0000'; exit 0; fi
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
+  printf '%s\\n' '<!-- gitguardex:f:${fingerprint} -->'
+  exit 0
+fi
+if [[ "$1" == "api" ]]; then
+  while [[ "$#" -gt 0 ]]; do
+    if [[ "$1" == "--input" ]]; then cp "$2" "${apiPayload}"; exit 0; fi
+    shift
+  done
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+  const fakeCodex = createFakeBin('codex', `
+printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","message":"Use a real assertion"}]}'
+`);
+
+  const result = runNodeWithEnv(['pr-review', '--provider', 'codex', '--pr', '14', '--post', '--target', repoDir], repoDir, {
+    PATH: `${fakeGh.fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}`,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /0 new inline comment\(s\) \(1 already reported\)/);
+  const payload = JSON.parse(fs.readFileSync(apiPayload, 'utf8'));
+  assert.equal(payload.comments.length, 0, 'a re-run posts no duplicate inline comment');
+  assert.match(payload.body, /1 already reported/);
+});
+
+
+test('gx pr-review demotes a finding that does not anchor to the diff', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-pr-review-anchor-'));
+  const apiPayload = path.join(markerDir, 'api-payload.json');
+  const fakeGh = createFakeBin('gh', `
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then
+  printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
+  printf '%s\\n' '--- a/src/a.js'
+  printf '%s\\n' '+++ b/src/a.js'
+  printf '%s\\n' '@@ -1 +1 @@'
+  printf '%s\\n' '+const broken = true'
+  exit 0
+fi
+if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then printf '%s\\n' 'deadbeefcafe0000'; exit 0; fi
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then exit 0; fi
+if [[ "$1" == "api" ]]; then
+  while [[ "$#" -gt 0 ]]; do
+    if [[ "$1" == "--input" ]]; then cp "$2" "${apiPayload}"; exit 0; fi
+    shift
+  done
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+  // Line 940 is nowhere near the one-line diff: posting it inline would 422 the
+  // whole review, which in gate mode blocks a merge over a bad line number.
+  const fakeCodex = createFakeBin('codex', `
+printf '%s\\n' '{"findings":[{"path":"src/a.js","line":940,"severity":"high","message":"hallucinated anchor"}]}'
+`);
+
+  const result = runNodeWithEnv(['pr-review', '--provider', 'codex', '--pr', '15', '--post', '--target', repoDir], repoDir, {
+    PATH: `${fakeGh.fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}`,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /1 not anchored to the diff/);
+  const payload = JSON.parse(fs.readFileSync(apiPayload, 'utf8'));
+  assert.equal(payload.comments.length, 0, 'unanchorable findings never become inline comments');
+  assert.match(payload.body, /could not be anchored to the diff/);
+  assert.match(payload.body, /Merge gate: blocked/);
 });
 
 
@@ -83,6 +272,8 @@ test('gx pr-review writes markdown artifact when GitHub auth is unavailable', ()
   const fakeGh = createFakeBin('gh', `
 if [[ "$1" == "pr" && "$2" == "diff" ]]; then
   printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
+  printf '%s\\n' '--- a/src/a.js'
+  printf '%s\\n' '+++ b/src/a.js'
   printf '%s\\n' '@@ -1 +1 @@'
   printf '%s\\n' '+const broken = true'
   exit 0
