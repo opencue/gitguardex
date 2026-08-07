@@ -294,6 +294,9 @@ function parsePrReviewArgs(rawArgs) {
     post: false,
     artifact: '',
     timeoutMs: 10 * 60 * 1000,
+    // Apply the findings as commits on the current agent branch instead of only
+    // reporting them. Off by default: this writes to the working tree.
+    fix: false,
   };
 
   for (let index = 0; index < parsed.args.length; index += 1) {
@@ -318,6 +321,14 @@ function parsePrReviewArgs(rawArgs) {
     }
     if (arg === '--no-post') {
       options.post = false;
+      continue;
+    }
+    if (arg === '--fix') {
+      options.fix = true;
+      continue;
+    }
+    if (arg === '--no-fix') {
+      options.fix = false;
       continue;
     }
     if (arg === '--artifact' || arg === '--output') {
@@ -1171,6 +1182,10 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     gateReview: defaults.gateReview ?? autoShip,
     reviewProvider: defaults.reviewProvider || 'codex',
     allowNoChecks: false,
+    // Let the gate repair its own blocking findings instead of only reporting
+    // them. Off by default: this writes commits to the branch.
+    gateAutofix: false,
+    gateAutofixRounds: 1,
     // After a bulk `--all` finish, sweep merged-but-stranded worktree dirs whose
     // branch was merged out-of-band and never reaped (the post-merge "retained"
     // gap). Only fires for `--all`; opt out with --no-sweep-orphans.
@@ -1309,6 +1324,25 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     }
     if (arg === '--allow-no-checks') {
       options.allowNoChecks = true;
+      continue;
+    }
+    if (arg === '--gate-autofix') {
+      options.gateAutofix = true;
+      continue;
+    }
+    if (arg === '--no-gate-autofix') {
+      options.gateAutofix = false;
+      continue;
+    }
+    if (arg === '--gate-autofix-rounds') {
+      const raw = rawArgs[index + 1];
+      const rounds = Number.parseInt(String(raw ?? ''), 10);
+      if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) {
+        throw new Error('--gate-autofix-rounds requires an integer between 1 and 5');
+      }
+      options.gateAutofixRounds = rounds;
+      options.gateAutofix = true;
+      index += 1;
       continue;
     }
     if (arg === '--review-provider') {

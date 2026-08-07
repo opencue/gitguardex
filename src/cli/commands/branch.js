@@ -22,12 +22,34 @@ function splitGateReviewFlags(args) {
   const scriptArgs = [];
   let gateReview = false;
   let reviewProvider;
+  let gateAutofix = false;
+  let gateAutofixRounds = 1;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--gate-review') {
       gateReview = true;
     } else if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
       gateReview = false;
+    } else if (arg === '--gate-autofix') {
+      gateAutofix = true;
+    } else if (arg === '--no-gate-autofix') {
+      gateAutofix = false;
+    } else if (arg === '--gate-autofix-rounds' || arg.startsWith('--gate-autofix-rounds=')) {
+      // Consume the value too, for the same reason as --review-provider: a bare
+      // number left behind becomes a positional the shell script rejects.
+      let raw;
+      if (arg.includes('=')) {
+        raw = arg.slice('--gate-autofix-rounds='.length);
+      } else {
+        raw = args[index + 1];
+        index += 1;
+      }
+      const rounds = Number.parseInt(String(raw ?? ''), 10);
+      if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) {
+        throw new Error('--gate-autofix-rounds requires an integer between 1 and 5');
+      }
+      gateAutofixRounds = rounds;
+      gateAutofix = true;
     } else if (arg === '--review-provider') {
       // Consume the value too — leaving it behind would hand the script a bare
       // "claude" positional and it would exit 1. A missing value becomes "" so
@@ -51,7 +73,9 @@ function splitGateReviewFlags(args) {
     }
   }
 
-  return { gateReview, reviewProvider, scriptArgs };
+  return {
+    gateReview, reviewProvider, gateAutofix, gateAutofixRounds, scriptArgs,
+  };
 }
 
 // Read `--flag value` or `--flag=value` out of an argv array.
@@ -73,7 +97,9 @@ function branch(rawArgs) {
   if (subcommand === 'finish') {
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
-    const { gateReview, reviewProvider, scriptArgs } = splitGateReviewFlags(passthrough);
+    const {
+      gateReview, reviewProvider, gateAutofix, gateAutofixRounds, scriptArgs,
+    } = splitGateReviewFlags(passthrough);
     // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
     // GitHub will not merge. Throwing here means the script never runs, so
     // the merge never happens.
@@ -88,7 +114,7 @@ function branch(rawArgs) {
         baseBranch: resolveFinishBaseBranch(repoRoot, gatedBranch, readFlagValue(scriptArgs, '--base')),
         // review-gate.js falls back to its own default when this is undefined,
         // which keeps a bare --gate-review behaving exactly as before.
-        options: { reviewProvider },
+        options: { reviewProvider, gateAutofix, gateAutofixRounds },
       });
     }
     invokePackageAsset('branchFinish', scriptArgs, {

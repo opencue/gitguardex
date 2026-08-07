@@ -11,6 +11,8 @@ const { run } = require('../core/runtime');
 const { TOOL_NAME } = require('../context');
 const pr = require('../pr');
 const prReview = require('../pr-review');
+const reviewFix = require('../review-fix');
+const { mapWorktreePathsByBranch } = require('../git');
 
 const DEFAULT_GATE_TIMEOUT_SECONDS = 1800; // 30 min — CI can be slow.
 const DEFAULT_GATE_POLL_SECONDS = 15;
@@ -24,6 +26,15 @@ const BLOCKED_STATES = new Set(['DIRTY', 'BLOCKED', 'BEHIND', 'UNSTABLE']);
 
 function gateLog(message) {
   console.log(`[${TOOL_NAME}] [gate] ${message}`);
+}
+
+/** Worktree holding `branch`, or `repoRoot` when git cannot tell us. */
+function resolveWorktreeForBranch(repoRoot, branch) {
+  try {
+    return mapWorktreePathsByBranch(repoRoot).get(branch) || repoRoot;
+  } catch (_error) {
+    return repoRoot;
+  }
 }
 
 /**
@@ -93,15 +104,25 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
  * passes a clean AI review AND green CI AND GitHub reports it mergeable. Returns
  * `{ prNumber }` on pass; the caller then proceeds to the real merge.
  */
-function runReviewGate({ repoRoot, branch, baseBranch, options = {} }, deps = {}) {
+function runReviewGate({
+  repoRoot, worktreePath, branch, baseBranch, options = {},
+}, deps = {}) {
   const openPullRequest = deps.openPullRequest || pr.openPullRequest;
   const runPrReview = deps.runPrReview || prReview.runPrReview;
   const markReady = deps.markPullRequestReady || pr.markPullRequestReady;
   const evaluate = deps.evaluateReviewGate || prReview.evaluateReviewGate;
   const waitGreen = deps.waitForGreenCi || waitForGreenCi;
+  const runFix = deps.runReviewFix || reviewFix.runReviewFix;
+  const pushBranch = deps.pushBranch || pr.pushBranch;
 
   const provider = options.reviewProvider || 'codex';
   const requireChecks = !options.allowNoChecks;
+  // Fix rounds are opt-in and bounded: an unfixable finding must fall through to
+  // the block rather than spin the provider forever.
+  const maxFixRounds = options.gateAutofix ? Math.max(1, options.gateAutofixRounds || 1) : 0;
+  // Fixes are edits to the checked-out branch, so they run in the worktree that
+  // holds it — repoRoot may be the primary checkout sitting on a protected base.
+  const fixCwd = worktreePath || resolveWorktreeForBranch(repoRoot, branch);
 
   // 1. Ensure a PR exists (push + open as draft so CI is deferred until the
   //    review passes and we explicitly promote).
@@ -111,23 +132,55 @@ function runReviewGate({ repoRoot, branch, baseBranch, options = {} }, deps = {}
 
   // 2. AI review — FAIL CLOSED. A provider error / timeout / unparseable output
   //    throws here; convert it to a block, never a silent pass.
+  //
+  //    With --gate-autofix, a dirty verdict gets up to `maxFixRounds` repair
+  //    rounds: fix in the worktree, push, then RE-REVIEW with a fresh provider
+  //    run so the fixer never grades its own homework.
   let review;
-  try {
-    review = runPrReview({ target: repoRoot, pr: prNumber, provider, post: true });
-  } catch (err) {
-    throw new Error(
-      `review gate: AI review did not complete (${err.message}). Refusing to merge. `
-      + 'Fix the provider/auth issue or rerun with --skip-review-gate.',
-    );
+  let verdict;
+  for (let round = 0; round <= maxFixRounds; round += 1) {
+    try {
+      review = runPrReview({ target: repoRoot, pr: prNumber, provider, post: true });
+    } catch (err) {
+      throw new Error(
+        `review gate: AI review did not complete (${err.message}). Refusing to merge. `
+        + 'Fix the provider/auth issue or rerun with --skip-review-gate.',
+      );
+    }
+    verdict = evaluate(review.findings);
+    if (verdict.clean || round === maxFixRounds) break;
+
+    gateLog(`PR #${prNumber}: ${verdict.blocking.length} blocking finding(s) — auto-fix round ${round + 1}/${maxFixRounds}`);
+    let fix;
+    try {
+      fix = runFix({
+        repoRoot: fixCwd, provider, findings: verdict.blocking, expectBranch: branch,
+      });
+    } catch (err) {
+      gateLog(`auto-fix failed: ${err.message}`);
+      break;
+    }
+    if (fix.status !== 'fixed') {
+      gateLog(`auto-fix changed nothing (${fix.reason || fix.status})`);
+      break;
+    }
+    gateLog(`auto-fix committed ${fix.changedFiles.length} file(s): ${fix.changedFiles.slice(0, 5).join(', ')}`);
+    const pushed = pushBranch(fixCwd, branch);
+    if (!pushed.ok) {
+      gateLog(`push after auto-fix failed: ${pushed.output}`);
+      break;
+    }
   }
-  const verdict = evaluate(review.findings);
+
   if (!verdict.clean) {
     const detail = verdict.blocking
       .map((f) => `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`)
       .join('\n');
     throw new Error(
       `review gate: ${verdict.blocking.length} blocking finding(s). Refusing to merge.\n${detail}\n`
-      + 'Fix the findings or rerun with --skip-review-gate.',
+      + (maxFixRounds > 0
+        ? 'Auto-fix did not clear them. Fix manually or rerun with --skip-review-gate.'
+        : 'Fix the findings, rerun with --gate-autofix to let the agent repair them, or bypass with --skip-review-gate.'),
     );
   }
   gateLog(

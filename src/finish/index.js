@@ -500,7 +500,9 @@ function finish(rawArgs, defaults = {}) {
       // green CI + GitHub-mergeable verdict BEFORE the shell merge runs. Throws on
       // failure, which the catch below turns into a finish failure (no merge).
       if (options.mergeMode === 'pr' && options.gateReview) {
-        runReviewGate({ repoRoot, branch, baseBranch, options });
+        runReviewGate({
+          repoRoot, worktreePath, branch, baseBranch, options,
+        });
       }
 
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
