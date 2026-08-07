@@ -28,6 +28,29 @@ function gateLog(message) {
   console.log(`[${TOOL_NAME}] [gate] ${message}`);
 }
 
+/**
+ * A review that never reached the PR does not count as a review.
+ *
+ * `runPrReview` can come back `posted: false` — GitHub auth unavailable to the
+ * runner, or any path that writes a local artifact instead of posting. Treating
+ * that as a pass makes two failures look like success: an in-memory verdict
+ * cannot be audited after the merge, and a provider that returned nothing is
+ * indistinguishable from a clean review.
+ */
+function requirePostedReview(review, prNumber) {
+  if (review.posted) return;
+  const why = review.reason === 'github-auth-unavailable'
+    ? 'GitHub auth was unavailable to the review runner'
+    : `the review runner reported posted=${JSON.stringify(review.posted)}`;
+  throw new Error(
+    `review gate: the AI review was not posted to PR #${prNumber} (${why}). Refusing to merge — `
+    + 'an unposted review leaves no evidence the diff was examined, and a provider that returns '
+    + 'nothing then looks exactly like a clean pass.'
+    + (review.artifactPath ? `\nLocal artifact: ${review.artifactPath}` : '')
+    + '\nFix the provider/auth issue and re-run, or bypass with --skip-review-gate.',
+  );
+}
+
 /** Worktree holding `branch`, or `repoRoot` when git cannot tell us. */
 function resolveWorktreeForBranch(repoRoot, branch) {
   try {
@@ -214,6 +237,20 @@ function runReviewGate({
         + 'Fix the provider/auth issue or rerun with --skip-review-gate.',
       );
     }
+    // Evidence check, before anything is spent on this review. A review that
+    // did not reach the PR cannot be audited afterwards, and a provider that
+    // returned nothing then looks exactly like a clean pass — which is how
+    // lifted.sk-storefront #463, #465 and #466 each merged carrying zero
+    // reviews while this gate announced it was enforcing one.
+    //
+    // Here rather than after the loop: `posted` is known the moment the first
+    // review returns and its cause does not change between rounds, so deferring
+    // would burn every --gate-autofix round and push agent-authored fix commits
+    // before refusing. It also keeps the error honest when the review is both
+    // unposted and dirty, where the blocking-findings message would otherwise
+    // send the operator to a PR that has no review on it.
+    requirePostedReview(review, prNumber);
+
     verdict = evaluate(review.findings);
     for (const finding of verdict.blocking) {
       if (finding && finding.path) blockedPaths.add(finding.path);
@@ -269,28 +306,6 @@ function runReviewGate({
       + '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.',
     );
   }
-  // The review must leave evidence on the PR. A verdict that exists only in
-  // this process's memory cannot be audited afterwards, and "clean" becomes
-  // indistinguishable from "the provider returned nothing" — which is how
-  // lifted.sk-storefront #463, #465 and #466 each merged carrying zero reviews
-  // while the gate had announced it was enforcing one.
-  //
-  // Fail closed, in keeping with the rest of this gate: a review that was not
-  // posted is not a review. The artifact path is surfaced so the operator can
-  // read what the provider actually said before re-running or bypassing.
-  if (!review.posted) {
-    const why = review.reason === 'github-auth-unavailable'
-      ? 'GitHub auth was unavailable to the review runner'
-      : `the review runner reported posted=${JSON.stringify(review.posted)}`;
-    throw new Error(
-      `review gate: the AI review was not posted to PR #${prNumber} (${why}). Refusing to merge — `
-      + 'an unposted review leaves no evidence the diff was examined, and a provider that returns '
-      + 'nothing then looks exactly like a clean pass.'
-      + (review.artifactPath ? `\nLocal artifact: ${review.artifactPath}` : '')
-      + '\nFix the provider/auth issue and re-run, or bypass with --skip-review-gate.',
-    );
-  }
-
   gateLog(
     `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`,
   );
