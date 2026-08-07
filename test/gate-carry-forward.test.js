@@ -54,7 +54,7 @@ test('a blocking finding that silently vanishes after an unrelated fix blocks th
   const deps = gateDeps({
     runPrReview: () => {
       round += 1;
-      return { findings: round === 1 ? [HIGH, OTHER_HIGH] : [] };
+      return { findings: round === 1 ? [HIGH, OTHER_HIGH] : [], posted: true };
     },
     runReviewFix: () => ({ status: 'fixed', changedFiles: ['src/pages/store.tsx'], sha: 'abc' }),
   });
@@ -72,7 +72,7 @@ test('a blocking finding whose file the fix actually edited clears normally', ()
   const deps = gateDeps({
     runPrReview: () => {
       round += 1;
-      return { findings: round === 1 ? [HIGH] : [] };
+      return { findings: round === 1 ? [HIGH] : [], posted: true };
     },
     runReviewFix: () => ({
       status: 'fixed', changedFiles: ['src/components/product-card-compact.tsx'], sha: 'abc',
@@ -88,7 +88,7 @@ test('a finding downgraded below the block threshold still counts as reviewed', 
   const deps = gateDeps({
     runPrReview: () => {
       round += 1;
-      return { findings: round === 1 ? [HIGH] : [{ ...HIGH, severity: 'medium' }] };
+      return { findings: round === 1 ? [HIGH] : [{ ...HIGH, severity: 'medium' }], posted: true };
     },
     runReviewFix: () => ({ status: 'fixed', changedFiles: ['unrelated.ts'], sha: 'abc' }),
   });
@@ -99,7 +99,7 @@ test('carry-forward never fires without --gate-autofix', () => {
   // One review round only, so there is no later round for a finding to vanish
   // from. Behavior must be byte-identical to before this change.
   const deps = gateDeps({
-    runPrReview: () => ({ findings: [] }),
+    runPrReview: () => ({ findings: [], posted: true }),
     runReviewFix: () => assert.fail('no fix without the flag'),
   });
   assert.deepEqual(gate(deps, {}), { prNumber: 440 });
@@ -107,7 +107,7 @@ test('carry-forward never fires without --gate-autofix', () => {
 
 test('a clean first review merges even with autofix armed', () => {
   const deps = gateDeps({
-    runPrReview: () => ({ findings: [{ path: 'a.tsx', line: 1, severity: 'low', message: 'nit' }] }),
+    runPrReview: () => ({ findings: [{ path: 'a.tsx', line: 1, severity: 'low', message: 'nit' }], posted: true }),
     runReviewFix: () => assert.fail('nothing blocking, nothing to fix'),
   });
   assert.deepEqual(gate(deps, { gateAutofix: true }), { prNumber: 440 });
@@ -115,7 +115,7 @@ test('a clean first review merges even with autofix armed', () => {
 
 test('an aborted fix still blocks on the original finding, not the carry-forward path', () => {
   const deps = gateDeps({
-    runPrReview: () => ({ findings: [HIGH] }),
+    runPrReview: () => ({ findings: [HIGH], posted: true }),
     runReviewFix: () => ({ status: 'no-op', changedFiles: [], reason: 'provider made no edits' }),
   });
   assert.throws(() => gate(deps, { gateAutofix: true }), /1 blocking finding/);

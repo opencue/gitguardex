@@ -124,7 +124,7 @@ function gateDeps(overrides = {}) {
 
 test('gate without --gate-autofix blocks on a high finding and never runs a fix', () => {
   const deps = gateDeps({
-    runPrReview: () => ({ findings: [FINDING] }),
+    runPrReview: () => ({ findings: [FINDING], posted: true }),
     runReviewFix: () => assert.fail('auto-fix must be opt-in'),
   });
   assert.throws(
@@ -138,7 +138,7 @@ test('gate with --gate-autofix repairs, pushes, re-reviews, and then merges', ()
   const deps = gateDeps({
     runPrReview: () => {
       calls.reviews += 1;
-      return { findings: calls.reviews === 1 ? [FINDING] : [] };
+      return { findings: calls.reviews === 1 ? [FINDING] : [], posted: true };
     },
     runReviewFix: (args) => {
       calls.fixes += 1;
@@ -165,7 +165,7 @@ test('gate with --gate-autofix repairs, pushes, re-reviews, and then merges', ()
 test('gate stops fixing after the round budget and still blocks', () => {
   let fixes = 0;
   const deps = gateDeps({
-    runPrReview: () => ({ findings: [FINDING] }),
+    runPrReview: () => ({ findings: [FINDING], posted: true }),
     runReviewFix: () => {
       fixes += 1;
       return { status: 'fixed', changedFiles: ['src/a.js'], sha: 'abc' };
@@ -183,7 +183,7 @@ test('gate stops fixing after the round budget and still blocks', () => {
 test('gate falls through to the block when the fix changes nothing', () => {
   let fixes = 0;
   const deps = gateDeps({
-    runPrReview: () => ({ findings: [FINDING] }),
+    runPrReview: () => ({ findings: [FINDING], posted: true }),
     runReviewFix: () => {
       fixes += 1;
       return { status: 'no-op', changedFiles: [], reason: 'provider made no edits' };
