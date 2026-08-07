@@ -86,6 +86,42 @@ gx branch finish --branch "<agent-branch>" --via-pr --wait-for-merge --cleanup
 gx finish --all
 ```
 
+**Default to the self-repairing gated ship.** Unless the user says keep-local, end
+a task with the gate armed so review findings are fixed and re-verified before the
+merge, instead of leaving a PR open for a human to chase:
+
+```bash
+gx branch finish --branch "<agent-branch>" --base <base> \
+  --via-pr --wait-for-merge --cleanup \
+  --gate-review --gate-autofix
+```
+
+What each flag buys, and why they are not optional in an unattended run:
+
+- `--gate-review` — fail-CLOSED. Blocks the merge on any HIGH/CRITICAL finding, on
+  red CI, and on GitHub reporting the PR unmergeable. A provider error or timeout
+  also blocks; it is never read as clean.
+- `--gate-autofix` — on a blocking verdict, repairs the findings in the worktree,
+  pushes, and RE-REVIEWS with a fresh provider run before deciding. Bounded by
+  `--gate-autofix-rounds N` (1-5, default 1). A repair round that changes nothing
+  stops the loop rather than spinning.
+- `--gate-baseline` — add this only in a repo whose base branch CI is already red.
+  It gates on "this change adds no NEW failing check" instead of absolute green,
+  comparing against the base branch and the last merged PR.
+
+Two things the gate deliberately will NOT do, so do not expect them:
+
+- **It never accepts a finding's disappearance as a fix.** A file that carried a
+  blocking finding must either still be under review or have actually been edited
+  by a repair round; otherwise the merge blocks. Review providers are
+  nondeterministic, and a HIGH that simply fails to reappear is not a fixed HIGH.
+- **It never lets the fixer grade its own work.** Every repair is judged by a
+  separate review invocation.
+
+Posting a review is NOT merging. `gx pr-review` / `gx review` post findings and
+exit; only `gx branch finish` (or `gx ship`) merges. A PR sitting open with a
+clean review means the finish flow was never run.
+
 Task scaffolds and manual task edits must include a final completion/cleanup section that ends with PR merge + sandbox cleanup and records PR URL + final `MERGED` evidence.
 
 Task is complete only when **all six** are true:

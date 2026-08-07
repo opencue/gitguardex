@@ -135,6 +135,32 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
 }
 
 /**
+ * Files that carried a blocking finding earlier but can no longer be accounted
+ * for: not edited by any auto-fix, and not mentioned by the latest review.
+ *
+ * Exists because provider output varies run to run. Observed in the wild: a HIGH
+ * ("the compact card drops the set-total price line") blocked round 2, the fix
+ * round edited a different file entirely, and round 3 just did not report it —
+ * flipping the gate to pass with the bug still in the branch. Absence of a
+ * finding is not evidence of a fix.
+ *
+ * @param {Set<string>} blockedPaths every file that has held a blocking finding
+ * @param {Set<string>} repairedPaths every file an auto-fix actually edited
+ * @param {Array<object>} currentFindings the latest review's findings, any severity
+ * @returns {string[]} paths whose disappearance is unexplained
+ */
+function resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings) {
+  const stillReported = new Set(
+    (Array.isArray(currentFindings) ? currentFindings : [])
+      .map((finding) => finding && finding.path)
+      .filter(Boolean),
+  );
+  return [...blockedPaths]
+    .filter((path) => !repairedPaths.has(path) && !stillReported.has(path))
+    .sort();
+}
+
+/**
  * Enforce the merge gate for `branch`. Throws (blocking the merge) unless the PR
  * passes a clean AI review AND green CI AND GitHub reports it mergeable. Returns
  * `{ prNumber }` on pass; the caller then proceeds to the real merge.
@@ -174,6 +200,11 @@ function runReviewGate({
   //    run so the fixer never grades its own homework.
   let review;
   let verdict;
+  // Files that have ever carried a BLOCKING finding, and files an auto-fix has
+  // actually edited. A blocking finding that vanishes from a later round is only
+  // treated as repaired when its file was touched — see resolveCarriedFindings.
+  const blockedPaths = new Set();
+  const repairedPaths = new Set();
   for (let round = 0; round <= maxFixRounds; round += 1) {
     try {
       review = runPrReview({ target: repoRoot, pr: prNumber, provider, post: true });
@@ -184,6 +215,9 @@ function runReviewGate({
       );
     }
     verdict = evaluate(review.findings);
+    for (const finding of verdict.blocking) {
+      if (finding && finding.path) blockedPaths.add(finding.path);
+    }
     if (verdict.clean || round === maxFixRounds) break;
 
     gateLog(`PR #${prNumber}: ${verdict.blocking.length} blocking finding(s) — auto-fix round ${round + 1}/${maxFixRounds}`);
@@ -200,6 +234,7 @@ function runReviewGate({
       gateLog(`auto-fix changed nothing (${fix.reason || fix.status})`);
       break;
     }
+    for (const changed of fix.changedFiles) repairedPaths.add(changed);
     gateLog(`auto-fix committed ${fix.changedFiles.length} file(s): ${fix.changedFiles.slice(0, 5).join(', ')}`);
     const pushed = pushBranch(fixCwd, branch);
     if (!pushed.ok) {
@@ -217,6 +252,21 @@ function runReviewGate({
       + (maxFixRounds > 0
         ? 'Auto-fix did not clear them. Fix manually or rerun with --skip-review-gate.'
         : 'Fix the findings, rerun with --gate-autofix to let the agent repair them, or bypass with --skip-review-gate.'),
+    );
+  }
+
+  // A clean final verdict is not enough on its own. Review providers are
+  // nondeterministic: a blocking finding can simply fail to reappear in a later
+  // round, and reading that silence as "repaired" merges the bug. Every file
+  // that ever blocked must either still be under review or have actually been
+  // edited by a fix.
+  const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, review.findings);
+  if (unexplained.length > 0) {
+    throw new Error(
+      `review gate: ${unexplained.length} earlier blocking finding(s) disappeared without their file being changed. `
+      + `Refusing to merge — a finding that is merely absent from a later review is not a fixed finding.\n`
+      + unexplained.map((p) => `  - ${p} (blocked earlier, never edited, no current finding)`).join('\n')
+      + '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.',
     );
   }
   gateLog(
@@ -284,6 +334,7 @@ function runReviewGate({
 
 module.exports = {
   runReviewGate,
+  resolveCarriedFindings,
   waitForGreenCi,
   DEFAULT_GATE_TIMEOUT_SECONDS,
   MERGEABLE_STATES,
