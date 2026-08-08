@@ -144,6 +144,11 @@ test('agents finish raises the capture flag around the runner and restores it', 
   const before = process.env[CAPTURE_ENV];
   delete process.env[CAPTURE_ENV];
   let flagDuringRun = null;
+  // Sampled inside the try, before this test's own cleanup runs — asserting on
+  // the live env after the finally below would pass even with the restore in
+  // captureProcessOutput deleted, and that restore is the only thing keeping a
+  // single --json finish from pinning every later asset spawn to 'pipe'.
+  let flagAfterRun = null;
 
   try {
     finishAgentSession(repoRoot, {
@@ -158,11 +163,12 @@ test('agents finish raises the capture flag around the runner and restores it', 
         return { ok: true };
       },
     });
+    flagAfterRun = process.env[CAPTURE_ENV];
   } finally {
     if (before === undefined) delete process.env[CAPTURE_ENV];
     else process.env[CAPTURE_ENV] = before;
   }
 
   assert.equal(flagDuringRun, '1');
-  assert.equal(process.env[CAPTURE_ENV], before);
+  assert.equal(flagAfterRun, undefined);
 });
