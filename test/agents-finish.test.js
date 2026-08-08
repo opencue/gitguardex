@@ -122,3 +122,47 @@ test('agents finish --json returns PR, merge, and cleanup evidence', () => {
   });
   assert.deepEqual(session.finishEvidence, result.evidence);
 });
+
+// The evidence above only survives because branch-finish pipes while this
+// capture runs: the capture works by patching process.stdout.write, which a
+// child spawned on 'inherit' bypasses entirely. The injected runner here writes
+// in-process, so it would be captured either way — what this pins is the signal
+// the real spawn reads to make that choice, and that it is left as it was found.
+test('agents finish raises the capture flag around the runner and restores it', () => {
+  const repoRoot = makeRepoRoot();
+  createAgentSession(repoRoot, {
+    id: 'session-finish-capture',
+    task: 'Finish capture flag',
+    agent: 'codex',
+    branch: 'agent/codex/capture-flag',
+    worktreePath: path.join(repoRoot, 'worktree'),
+    base: 'main',
+    status: 'working',
+  });
+
+  const CAPTURE_ENV = 'GUARDEX_CAPTURE_ASSET_OUTPUT';
+  const before = process.env[CAPTURE_ENV];
+  delete process.env[CAPTURE_ENV];
+  let flagDuringRun = null;
+
+  try {
+    finishAgentSession(repoRoot, {
+      sessionId: 'session-finish-capture',
+      branch: '',
+      finishArgs: ['--cleanup'],
+      json: true,
+    }, {
+      finishRunner() {
+        flagDuringRun = process.env[CAPTURE_ENV];
+        process.stdout.write('[agent-branch-finish] PR: https://github.com/example/repo/pull/13\n');
+        return { ok: true };
+      },
+    });
+  } finally {
+    if (before === undefined) delete process.env[CAPTURE_ENV];
+    else process.env[CAPTURE_ENV] = before;
+  }
+
+  assert.equal(flagDuringRun, '1');
+  assert.equal(process.env[CAPTURE_ENV], before);
+});

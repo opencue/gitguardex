@@ -1,7 +1,7 @@
 // @ts-check
 const { TOOL_NAME, LOCK_FILE_RELATIVE, path, fs } = require('../context');
 const { isTerseMode } = require('../output');
-const { run, runPackageAsset } = require('../core/runtime');
+const { run, runPackageAsset, assetStdio } = require('../core/runtime');
 const {
   resolveRepoRoot,
   uniquePreserveOrder,
@@ -513,12 +513,12 @@ function finish(rawArgs, defaults = {}) {
       //
       // The exception is `gx agents finish --json`, which reads this script's
       // output through a process.stdout.write patch to recover the merged-PR
-      // URL. A child on 'inherit' writes past that patch, so it raises
-      // GUARDEX_CAPTURE_ASSET_OUTPUT and we pipe for the duration.
-      const capturing = process.env.GUARDEX_CAPTURE_ASSET_OUTPUT === '1';
+      // URL — a child on 'inherit' writes past that patch. assetStdio owns that
+      // decision for every caller, so this path and invokePackageAsset cannot
+      // drift apart.
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
         cwd: repoRoot,
-        stdio: capturing ? 'pipe' : 'inherit',
+        stdio: assetStdio('branchFinish'),
         env: { GUARDEX_FINISH_ACTIVE_CWD: activeCwd },
       });
       // Null under 'inherit'; kept so an explicit pipe still prints.
