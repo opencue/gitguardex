@@ -505,11 +505,17 @@ function finish(rawArgs, defaults = {}) {
         });
       }
 
+      // Streamed, not piped: the script can sit for minutes waiting on the PR
+      // merge, and buffering means the operator sees nothing until it exits —
+      // and sees NOTHING AT ALL if the process is killed while waiting, since
+      // the buffer dies with it. Lanes run sequentially here, so streaming
+      // cannot interleave two branches' output.
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
         cwd: repoRoot,
-        stdio: 'pipe',
+        stdio: 'inherit',
         env: { GUARDEX_FINISH_ACTIVE_CWD: activeCwd },
       });
+      // Null under 'inherit'; kept so an explicit pipe still prints.
       if (finishResult.stdout) {
         process.stdout.write(finishResult.stdout);
       }
