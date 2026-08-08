@@ -85,9 +85,19 @@ function buildFinishEvidence(session, finishArgs, status, result, captured = {})
   };
 }
 
+// Patching process.stdout.write only catches what THIS process writes. A child
+// spawned on 'inherit' writes straight to fd 1 and sails past the patch, so an
+// asset that streams has to be told to pipe while a capture is in flight —
+// otherwise the merged-PR line never reaches buildFinishEvidence and the
+// session records MERGED with an empty prUrl. Read by src/core/runtime.js and
+// src/finish/index.js when they pick an asset's stdio.
+const CAPTURE_ENV = 'GUARDEX_CAPTURE_ASSET_OUTPUT';
+
 function captureProcessOutput(fn) {
   let stdout = '';
   let stderr = '';
+  const previousCapture = process.env[CAPTURE_ENV];
+  process.env[CAPTURE_ENV] = '1';
   const originalStdoutWrite = process.stdout.write;
   const originalStderrWrite = process.stderr.write;
   process.stdout.write = function captureStdout(chunk, encoding, callback) {
@@ -107,6 +117,11 @@ function captureProcessOutput(fn) {
   } finally {
     process.stdout.write = originalStdoutWrite;
     process.stderr.write = originalStderrWrite;
+    if (previousCapture === undefined) {
+      delete process.env[CAPTURE_ENV];
+    } else {
+      process.env[CAPTURE_ENV] = previousCapture;
+    }
   }
 }
 

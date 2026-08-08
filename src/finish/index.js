@@ -508,11 +508,17 @@ function finish(rawArgs, defaults = {}) {
       // Streamed, not piped: the script can sit for minutes waiting on the PR
       // merge, and buffering means the operator sees nothing until it exits —
       // and sees NOTHING AT ALL if the process is killed while waiting, since
-      // the buffer dies with it. Lanes run sequentially here, so streaming
-      // cannot interleave two branches' output.
+      // the buffer dies with it. Streaming cannot interleave two branches'
+      // output, because lanes run sequentially here.
+      //
+      // The exception is `gx agents finish --json`, which reads this script's
+      // output through a process.stdout.write patch to recover the merged-PR
+      // URL. A child on 'inherit' writes past that patch, so it raises
+      // GUARDEX_CAPTURE_ASSET_OUTPUT and we pipe for the duration.
+      const capturing = process.env.GUARDEX_CAPTURE_ASSET_OUTPUT === '1';
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
         cwd: repoRoot,
-        stdio: 'inherit',
+        stdio: capturing ? 'pipe' : 'inherit',
         env: { GUARDEX_FINISH_ACTIVE_CWD: activeCwd },
       });
       // Null under 'inherit'; kept so an explicit pipe still prints.

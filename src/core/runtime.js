@@ -119,8 +119,18 @@ function runReviewBotCommand(repoRoot, rawArgs, options = {}) {
 // leaves no trace of whether the merge ran. Stream them instead.
 const STREAMED_ASSETS = new Set(['branchFinish']);
 
+// `gx agents finish --json` scrapes an asset's output by patching
+// process.stdout.write (src/agents/finish.js), which a child on 'inherit'
+// bypasses entirely. It raises this while a capture is active; honour it, or
+// the capture comes back empty and the JSON evidence loses its PR URL.
+function assetStdio(assetKey, requested) {
+  if (requested) return requested;
+  if (!STREAMED_ASSETS.has(assetKey)) return undefined;
+  return process.env.GUARDEX_CAPTURE_ASSET_OUTPUT === '1' ? 'pipe' : 'inherit';
+}
+
 function invokePackageAsset(assetKey, rawArgs, options = {}) {
-  const stdio = options.stdio || (STREAMED_ASSETS.has(assetKey) ? 'inherit' : undefined);
+  const stdio = assetStdio(assetKey, options.stdio);
   const result = runPackageAsset(assetKey, rawArgs, { ...options, stdio });
   // Null under 'inherit' — the child already wrote straight to our streams.
   if (result.stdout) process.stdout.write(result.stdout);
@@ -134,6 +144,7 @@ function invokePackageAsset(assetKey, rawArgs, options = {}) {
 
 module.exports = {
   run,
+  assetStdio,
   extractTargetedArgs,
   packageAssetEnv,
   packageAssetPath,
