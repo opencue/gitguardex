@@ -109,6 +109,18 @@ What each flag buys, and why they are not optional in an unattended run:
   It gates on "this change adds no NEW failing check" instead of absolute green,
   comparing against the base branch and the last merged PR.
 
+Two knobs for how long the gate takes, neither of which changes what it enforces:
+
+- CI runs **alongside** the review by default: the PR is promoted to ready before
+  the review starts, so the gate costs `max(review, CI)` rather than
+  `review + CI`. Both must still pass before the merge. `--gate-serial-ci` goes
+  back to promoting only after a clean review — slower, but it spends no CI
+  minutes on a PR the review is going to block.
+- `--review-model <name>` (or `GUARDEX_REVIEW_MODEL`) picks the review model, and
+  `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` name the binary to run
+  — useful when the provider's name on PATH resolves to a launcher whose startup
+  is charged to every review round.
+
 Two things the gate deliberately will NOT do, so do not expect them:
 
 - **It never accepts a finding's disappearance as a fix.** A file that carried a

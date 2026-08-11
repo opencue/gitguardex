@@ -77,7 +77,7 @@ function findOpenPrForBranch(repoRoot, branch) {
     'pr', 'list',
     '--head', branch,
     '--state', 'open',
-    '--json', 'number,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefName,baseRefName,title,statusCheckRollup',
+    '--json', 'number,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefName,headRefOid,baseRefName,title,statusCheckRollup',
     '--limit', '5',
   ]);
   if (!result.ok) {
@@ -289,6 +289,10 @@ function getPullRequestStatus(repoRoot, branch) {
     reviewDecision: pr.reviewDecision,
     title: pr.title,
     head: pr.headRefName,
+    // The commit the rollup above describes. Callers that pushed during the run
+    // need it to tell "CI is green on my code" from "CI is green on the commit
+    // my push replaced".
+    headSha: pr.headRefOid || '',
     base: pr.baseRefName,
     checks: summary,
     failedNames,

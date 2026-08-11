@@ -1181,6 +1181,12 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     // through on null/undefined.
     gateReview: defaults.gateReview ?? autoShip,
     reviewProvider: defaults.reviewProvider || 'codex',
+    // Empty = the provider's own default model.
+    reviewModel: defaults.reviewModel || '',
+    // Hold CI until the review comes in clean, instead of running both at once.
+    // Slower by a full CI round-trip; spends no CI minutes on a PR the review
+    // is going to block.
+    gateSerialCi: false,
     allowNoChecks: false,
     // Gate on "no NEW failing checks vs the base branch" instead of absolute
     // green, so a repo whose base is already red can still ship unattended.
@@ -1363,6 +1369,23 @@ function parseFinishArgs(rawArgs, defaults = {}) {
       }
       options.reviewProvider = next;
       index += 1;
+      continue;
+    }
+    if (arg === '--review-model') {
+      const next = String(rawArgs[index + 1] ?? '').trim();
+      if (!next || next.startsWith('-')) {
+        throw new Error('--review-model requires a model name (e.g. sonnet)');
+      }
+      options.reviewModel = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--gate-serial-ci') {
+      options.gateSerialCi = true;
+      continue;
+    }
+    if (arg === '--no-gate-serial-ci') {
+      options.gateSerialCi = false;
       continue;
     }
     throw new Error(`Unknown option: ${arg}`);
