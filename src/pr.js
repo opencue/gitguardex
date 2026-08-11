@@ -203,17 +203,23 @@ function openPullRequest(options) {
     });
   }
 
-  // Try to find an existing open PR first.
-  const existing = findOpenPrForBranch(repoRoot, branch);
-  if (existing) {
-    return { created: false, pr: existing };
-  }
-
+  // Push BEFORE looking for an existing PR, not only on the create path. The
+  // merge gate calls this on every run and then reviews the PR's REMOTE head,
+  // so skipping the push once a PR exists made a rerun re-review the old head:
+  // the gate's own "fix the findings, rerun" loop could never converge, and it
+  // reported the identical finding while the fix sat unpushed on disk
+  // (lifted.sk-storefront #512). `push: false` still opts out.
   if (options.push !== false) {
     const push = pushBranch(repoRoot, branch);
     if (!push.ok) {
       throw new PrError(`git push failed:\n${push.output}`, { code: 'push-failed' });
     }
+  }
+
+  // Try to find an existing open PR first.
+  const existing = findOpenPrForBranch(repoRoot, branch);
+  if (existing) {
+    return { created: false, pr: existing };
   }
 
   const base = options.base || detectDefaultBaseBranch(repoRoot);
