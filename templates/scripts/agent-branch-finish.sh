@@ -969,12 +969,28 @@ if [[ "$should_create_integration_helper" -eq 1 ]]; then
   fi
 fi
 
+# True when `gh pr merge` landed the PR server-side and only its LOCAL cleanup
+# failed — the merge succeeded, so the caller must continue rather than retry.
+#
+# gh reports that cleanup two different ways, and matching only the first costs
+# a full WAIT_TIMEOUT_SECONDS wait loop per finish:
+#   1. "failed to delete local branch <b>: ... used by worktree ..."
+#   2. "failed to run git: fatal: '<base>' is already used by worktree at ..."
+# The second comes from the checkout to the base that precedes the delete, and
+# it is the NORMAL case here: gitguardex puts every agent on its own worktree
+# while the primary checkout sits on the base branch, so `--delete-branch` can
+# never check that base out. Treating it as a failed merge sent the flow into
+# the retry loop against an already-merged PR (lifted.sk-storefront #512, which
+# merged at 21:44:56Z while the finish reported nothing and kept polling).
 is_local_branch_delete_error() {
   local output="$1"
-  if [[ "$output" != *"failed to delete local branch"* ]]; then
+  if [[ "$output" == *"failed to delete local branch"* ]]; then
+    if [[ "$output" == *"cannot delete branch"* ]] || [[ "$output" == *"used by worktree"* ]]; then
+      return 0
+    fi
     return 1
   fi
-  if [[ "$output" == *"cannot delete branch"* ]] || [[ "$output" == *"used by worktree"* ]]; then
+  if [[ "$output" == *"failed to run git"* ]] && [[ "$output" == *"already used by worktree"* ]]; then
     return 0
   fi
   return 1
