@@ -1,7 +1,7 @@
 // @ts-check
 const { TOOL_NAME, LOCK_FILE_RELATIVE, path, fs } = require('../context');
 const { isTerseMode } = require('../output');
-const { run, runPackageAsset } = require('../core/runtime');
+const { run, runPackageAsset, assetStdio } = require('../core/runtime');
 const {
   resolveRepoRoot,
   uniquePreserveOrder,
@@ -505,11 +505,23 @@ function finish(rawArgs, defaults = {}) {
         });
       }
 
+      // Streamed, not piped: the script can sit for minutes waiting on the PR
+      // merge, and buffering means the operator sees nothing until it exits —
+      // and sees NOTHING AT ALL if the process is killed while waiting, since
+      // the buffer dies with it. Streaming cannot interleave two branches'
+      // output, because lanes run sequentially here.
+      //
+      // The exception is `gx agents finish --json`, which reads this script's
+      // output through a process.stdout.write patch to recover the merged-PR
+      // URL — a child on 'inherit' writes past that patch. assetStdio owns that
+      // decision for every caller, so this path and invokePackageAsset cannot
+      // drift apart.
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
         cwd: repoRoot,
-        stdio: 'pipe',
+        stdio: assetStdio('branchFinish'),
         env: { GUARDEX_FINISH_ACTIVE_CWD: activeCwd },
       });
+      // Null under 'inherit'; kept so an explicit pipe still prints.
       if (finishResult.stdout) {
         process.stdout.write(finishResult.stdout);
       }
