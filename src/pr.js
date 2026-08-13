@@ -15,6 +15,7 @@ const {
   hasOriginRemote,
   detectDefaultBaseBranch,
 } = require('./git');
+const { repoApiPath } = require('./github-api');
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -329,13 +330,13 @@ function checkOutcomes(repoRoot, ref, runner = run) {
 
   collect(runner(GH_BIN, [
     'api', '--paginate',
-    `repos/:owner/:repo/commits/${ref}/check-runs?per_page=100`,
+    repoApiPath(repoRoot, `commits/${ref}/check-runs?per_page=100`, runner),
     '-q', '.check_runs[] | select(.status == "completed") | "\\(.conclusion)\\t\\(.name)"',
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true }));
 
   collect(runner(GH_BIN, [
     'api',
-    `repos/:owner/:repo/commits/${ref}/status`,
+    repoApiPath(repoRoot, `commits/${ref}/status`, runner),
     '-q', '.statuses[] | "\\(.state)\\t\\(.context)"',
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true }));
 
@@ -349,8 +350,11 @@ function lastMergedPrHead(repoRoot, baseBranch, runner = run) {
     // GitHub cannot sort by merge time; `updated` desc correlates with it far
     // better than the `created` desc default, which would rank a long-lived PR
     // by when it was opened.
-    `repos/:owner/:repo/pulls?base=${encodeURIComponent(baseBranch)}&state=closed`
-      + '&sort=updated&direction=desc&per_page=10',
+    repoApiPath(
+      repoRoot,
+      `pulls?base=${encodeURIComponent(baseBranch)}&state=closed&sort=updated&direction=desc&per_page=10`,
+      runner,
+    ),
     '-q', '[.[] | select(.merged_at != null)][0].head.sha // ""',
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
   if (result.status !== 0) return '';

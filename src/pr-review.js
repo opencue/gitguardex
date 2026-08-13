@@ -6,6 +6,7 @@ const {
   GH_BIN,
 } = require('./context');
 const { run } = require('./core/runtime');
+const { repoApiPath } = require('./github-api');
 const { resolveProviderBin } = require('./provider-binary');
 const { partitionByAnchor } = require('./review-diff');
 
@@ -385,7 +386,7 @@ function fetchPostedFingerprints(pr, repoRoot, runner = run) {
   const result = runner(GH_BIN, [
     'api',
     '--paginate',
-    `repos/:owner/:repo/pulls/${pr}/comments?per_page=100`,
+    repoApiPath(repoRoot, `pulls/${pr}/comments?per_page=100`, runner),
     '-q',
     '.[].body',
   ], { cwd: repoRoot, timeout: 60_000 });
@@ -417,7 +418,7 @@ function postReviewPayload(pr, payload, repoRoot, runner = run) {
   try {
     return runner(GH_BIN, [
       'api',
-      `repos/:owner/:repo/pulls/${pr}/reviews`,
+      repoApiPath(repoRoot, `pulls/${pr}/reviews`, runner),
       '--method',
       'POST',
       '--input',

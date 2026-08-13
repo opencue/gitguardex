@@ -36,6 +36,9 @@ profile launcher or wrapper script — pays its startup on every review round.
   `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` overrides still win.
   Claude invocations also run with `--safe-mode` so local hooks, MCP servers,
   and project customizations cannot stall the noninteractive review subprocess.
+- GitHub API calls that need a `repos/<owner>/<name>/...` route resolve the
+  canonical repository slug with `gh repo view` first. This avoids a moved
+  remote making `gh api repos/:owner/:repo/...` write calls fail with HTTP 307.
 - `--review-model` / `GUARDEX_REVIEW_MODEL` select the review model.
 - `--review-timeout-ms` forwards a shorter provider timeout through the merge
   gate, matching `gx pr-review --timeout-ms`.
@@ -43,8 +46,8 @@ profile launcher or wrapper script — pays its startup on every review round.
 ## Impact
 
 - **Affected surfaces**: `src/finish/review-gate.js`, `src/pr-review.js`,
-  `src/pr.js` (adds `headSha` to the status snapshot), `src/cli/args.js`,
-  `src/cli/commands/branch.js`.
+  `src/pr.js` (adds `headSha` to the status snapshot and canonical GitHub API
+  routes), `src/github-api.js`, `src/cli/args.js`, `src/cli/commands/branch.js`.
 - **Behavior change, opt-out available**: a blocked review now leaves a promoted
   PR with CI having run. Nothing merges — `runReviewGate` still throws — but the
   PR is no longer a draft afterwards. `--gate-serial-ci` opts out.

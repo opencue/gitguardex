@@ -124,6 +124,9 @@ test('checkOutcomes collects failing check-runs and legacy statuses', () => {
   const calls = [];
   const runner = (_bin, args) => {
     calls.push(args.join(' '));
+    if (args[0] === 'repo' && args[1] === 'view') {
+      return { status: 0, stdout: 'opencue/gitguardex\n', stderr: '' };
+    }
     if (args.some((a) => a.includes('check-runs'))) {
       return { status: 0, stdout: 'failure\ttest (node 20)\nsuccess\tbuild\ntimed_out\te2e\n', stderr: '' };
     }
@@ -132,7 +135,10 @@ test('checkOutcomes collects failing check-runs and legacy statuses', () => {
   const { failing, total } = checkOutcomes('/repo', 'main', runner);
   assert.deepEqual([...failing].sort(), ['ci/external', 'e2e', 'test (node 20)']);
   assert.equal(total, 5, 'total counts every observed check, not just the failures');
-  assert.match(calls[0], /commits\/main\/check-runs/);
+  assert.ok(
+    calls.some((call) => call.includes('repos/opencue/gitguardex/commits/main/check-runs')),
+    'check-run API call uses the canonical repository route',
+  );
 });
 
 test('checkOutcomes reports zero total when the API is unreachable', () => {

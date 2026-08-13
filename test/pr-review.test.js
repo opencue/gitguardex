@@ -155,6 +155,10 @@ test('gx pr-review posts one GitHub review when auth is available', () => {
   const ghMarker = path.join(markerDir, 'gh-args.log');
   const apiPayload = path.join(markerDir, 'api-payload.json');
   const fakeGh = createFakeBin('gh', `
+if [[ "$1" == "repo" && "$2" == "view" ]]; then
+  printf '%s\n' 'opencue/gitguardex'
+  exit 0
+fi
 if [[ "$1" == "pr" && "$2" == "diff" ]]; then
   printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
   printf '%s\\n' '--- a/src/a.js'
@@ -196,7 +200,7 @@ printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","ca
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /Posted PR review: 1 finding\(s\), 1 new inline comment\(s\)/);
-  assert.match(fs.readFileSync(ghMarker, 'utf8'), /repos\/:owner\/:repo\/pulls\/12\/reviews/);
+  assert.match(fs.readFileSync(ghMarker, 'utf8'), /repos\/opencue\/gitguardex\/pulls\/12\/reviews/);
   const payload = JSON.parse(fs.readFileSync(apiPayload, 'utf8'));
   assert.equal(payload.event, 'COMMENT');
   assert.equal(payload.commit_id, 'deadbeefcafe0000', 'comments anchor to the PR head sha');

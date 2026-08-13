@@ -72,3 +72,19 @@ project customizations do not block a noninteractive review.
 #### Scenario: A named review timeout must be positive
 - **WHEN** `--review-timeout-ms` is passed with no value, zero, or a non-integer
 - **THEN** the command fails rather than falling back to the default timeout
+
+### Requirement: GitHub API routes use the canonical repository slug
+GitHub API helpers SHALL resolve the repository's canonical `owner/name` with
+`gh repo view` before constructing `repos/...` API paths. If that resolution is
+unavailable, they SHALL fall back to the GitHub CLI's `repos/:owner/:repo`
+placeholder rather than blocking offline callers.
+
+#### Scenario: A moved remote still receives review posts
+- **WHEN** a checkout remote points at an old owner/name but `gh repo view`
+  resolves the current canonical owner/name
+- **THEN** review comment fingerprint fetches and review post calls use
+  `repos/<canonical-owner>/<canonical-name>/pulls/...`
+
+#### Scenario: Canonical route lookup is best-effort
+- **WHEN** `gh repo view` cannot resolve a valid owner/name
+- **THEN** API paths fall back to `repos/:owner/:repo/...`
