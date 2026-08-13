@@ -170,6 +170,34 @@ test('branch finish --gate-review forwards the review model and keeps it out of 
   assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr']);
 });
 
+test('branch finish --gate-review forwards the review timeout and keeps it out of the shell argv', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--branch', 'agent/claude/p', '--via-pr', '--gate-review', '--review-timeout-ms', '60000']);
+
+  assert.equal(calls.gate[0].options.reviewTimeoutMs, 60_000);
+  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr']);
+});
+
+test('branch finish --gate-review reads the inline --review-timeout-ms= form', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review', '--review-timeout-ms=60000']);
+
+  assert.equal(calls.gate[0].options.reviewTimeoutMs, 60_000);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
+});
+
+test('branch finish rejects --review-timeout-ms with no value', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  assert.throws(
+    () => branch(['finish', '--via-pr', '--gate-review', '--review-timeout-ms']),
+    /positive integer/,
+  );
+  assert.equal(calls.script.length, 0);
+});
+
 test('branch finish --gate-review reads the inline --review-model= form', () => {
   const { branch, calls } = loadBranchWithStubs();
 

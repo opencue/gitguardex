@@ -281,6 +281,13 @@ test('parseFinishArgs: --review-model names the model, and demands a value', () 
   assert.throws(() => parseFinishArgs(['--review-model', '--cleanup']), /requires a model name/);
 });
 
+test('parseFinishArgs: --review-timeout-ms sets the provider timeout, and demands a positive integer', () => {
+  assert.equal(parseFinishArgs([]).reviewTimeoutMs, undefined);
+  assert.equal(parseFinishArgs(['--gate-review', '--review-timeout-ms', '60000']).reviewTimeoutMs, 60_000);
+  assert.throws(() => parseFinishArgs(['--review-timeout-ms']), /positive integer/);
+  assert.throws(() => parseFinishArgs(['--review-timeout-ms', '0']), /positive integer/);
+});
+
 test('parseFinishArgs: CI overlaps the review unless --gate-serial-ci says otherwise', () => {
   assert.equal(parseFinishArgs(['--gate-review']).gateSerialCi, false);
   assert.equal(parseFinishArgs(['--gate-review', '--gate-serial-ci']).gateSerialCi, true);
@@ -392,6 +399,22 @@ test('runReviewGate pins the CI wait to the commit an auto-fix pushed', () => {
   });
   runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps);
   assert.equal(seenExpect, 'sha-after-fix');
+});
+
+test('runReviewGate passes review model and timeout through to the provider runner', () => {
+  let seen = null;
+  const deps = gateDeps({
+    runPrReview: (args) => {
+      seen = args;
+      return { findings: [], posted: true };
+    },
+  });
+  runReviewGate({
+    ...gateArgs,
+    options: { reviewModel: 'sonnet', reviewTimeoutMs: 60_000 },
+  }, deps);
+  assert.equal(seen.model, 'sonnet');
+  assert.equal(seen.timeoutMs, 60_000);
 });
 
 test('runReviewGate blocks when the PR head never catches up to the auto-fix commit', () => {

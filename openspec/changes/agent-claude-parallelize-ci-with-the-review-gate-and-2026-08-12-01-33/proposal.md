@@ -31,9 +31,12 @@ profile launcher or wrapper script — pays its startup on every review round.
 - The CI wait can be pinned to a specific commit (`expectHeadSha`). With
   `--gate-autofix`, the gate pins it to the commit the fix round pushed, so a
   rollup still describing the replaced commit can never read as green.
+- Review/fix provider invocations resolve the real `claude`/`codex` binary by
+  default, skipping Cue's `cue launch ...` shims and `codex-guard`; explicit
+  `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` overrides still win.
 - `--review-model` / `GUARDEX_REVIEW_MODEL` select the review model.
-- `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` select the binary
-  that runs the review, so a slow PATH shim can be bypassed.
+- `--review-timeout-ms` forwards a shorter provider timeout through the merge
+  gate, matching `gx pr-review --timeout-ms`.
 
 ## Impact
 
@@ -47,5 +50,6 @@ profile launcher or wrapper script — pays its startup on every review round.
   commit an auto-fix later replaces. The `expectHeadSha` pin makes that case
   fail closed (`stale-head`) rather than merge a green belonging to the old
   commit.
-- **Defaults unchanged elsewhere**: with no `--review-model` and no env knobs,
-  the provider, model, and binary resolve exactly as before.
+- **Provider startup is safer by default**: with no env knobs, a PATH that starts
+  with Cue shims now resolves to the real provider binary behind them instead of
+  recursively booting a full profiled agent.

@@ -27,6 +27,7 @@ function splitGateReviewFlags(args) {
   let gateBaseline = false;
   let gateSerialCi = false;
   let reviewModel;
+  let reviewTimeoutMs;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--gate-review') {
@@ -44,6 +45,10 @@ function splitGateReviewFlags(args) {
       index += 1;
     } else if (arg.startsWith('--review-model=')) {
       reviewModel = arg.slice('--review-model='.length);
+    } else if (arg === '--review-timeout-ms' || arg.startsWith('--review-timeout-ms=')) {
+      // The shell script does not know this gx-level gate flag either.
+      reviewTimeoutMs = arg.includes('=') ? arg.slice('--review-timeout-ms='.length) : (args[index + 1] ?? '');
+      if (!arg.includes('=')) index += 1;
     } else if (arg === '--gate-baseline') {
       gateBaseline = true;
     } else if (arg === '--no-gate-baseline') {
@@ -100,10 +105,18 @@ function splitGateReviewFlags(args) {
     }
   }
 
+  if (reviewTimeoutMs !== undefined) {
+    reviewTimeoutMs = Number.parseInt(String(reviewTimeoutMs ?? ''), 10);
+    if (!Number.isInteger(reviewTimeoutMs) || reviewTimeoutMs <= 0) {
+      throw new Error('--review-timeout-ms requires a positive integer');
+    }
+  }
+
   return {
     gateReview,
     reviewProvider,
     reviewModel,
+    reviewTimeoutMs,
     gateAutofix,
     gateAutofixRounds,
     gateBaseline,
@@ -135,6 +148,7 @@ function branch(rawArgs) {
       gateReview,
       reviewProvider,
       reviewModel,
+      reviewTimeoutMs,
       gateAutofix,
       gateAutofixRounds,
       gateBaseline,
@@ -156,7 +170,13 @@ function branch(rawArgs) {
         // review-gate.js falls back to its own default when this is undefined,
         // which keeps a bare --gate-review behaving exactly as before.
         options: {
-          reviewProvider, reviewModel, gateAutofix, gateAutofixRounds, gateBaseline, gateSerialCi,
+          reviewProvider,
+          reviewModel,
+          reviewTimeoutMs,
+          gateAutofix,
+          gateAutofixRounds,
+          gateBaseline,
+          gateSerialCi,
         },
       });
     }

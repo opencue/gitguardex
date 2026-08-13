@@ -267,7 +267,12 @@ function runReviewGate({
   for (let round = 0; round <= maxFixRounds; round += 1) {
     try {
       review = runPrReview({
-        target: repoRoot, pr: prNumber, provider, post: true, model: options.reviewModel,
+        target: repoRoot,
+        pr: prNumber,
+        provider,
+        post: true,
+        model: options.reviewModel,
+        timeoutMs: options.reviewTimeoutMs,
       });
     } catch (err) {
       throw new Error(

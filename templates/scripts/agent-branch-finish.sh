@@ -210,7 +210,7 @@ PARENT_GITLINK_AUTO_COMMIT="$(normalize_bool "$PARENT_GITLINK_AUTO_COMMIT_RAW" "
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
-      echo "Usage: $0 [--base <branch>] [--branch <branch>] [--no-push] [--cleanup|--no-cleanup] [--wait-for-merge|--no-wait-for-merge] [--wait-timeout-seconds <n>] [--wait-poll-seconds <n>] [--parent-gitlink-commit|--no-parent-gitlink-commit] [--keep-remote-branch|--delete-remote-branch] [--mode auto|direct|pr|--via-pr|--direct-only] [--auto-resolve[=none|safe|full]|--no-auto-resolve] [--no-preflight|--preflight] [--preflight-script <path>] [--no-auto-promote|--auto-promote]"
+      echo "Usage: $0 [--base <branch>] [--branch <branch>] [--no-push] [--cleanup|--no-cleanup] [--wait-for-merge|--no-wait-for-merge] [--wait-timeout-seconds <n>] [--wait-poll-seconds <n>] [--parent-gitlink-commit|--no-parent-gitlink-commit] [--keep-remote-branch|--delete-remote-branch] [--mode auto|direct|pr|--via-pr|--direct-only] [--gate-review] [--review-provider codex|claude] [--review-model <name>] [--review-timeout-ms <n>] [--gate-serial-ci] [--auto-resolve[=none|safe|full]|--no-auto-resolve] [--no-preflight|--preflight] [--preflight-script <path>] [--no-auto-promote|--auto-promote]"
       exit 0
       ;;
     --base)
@@ -321,7 +321,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[agent-branch-finish] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--branch <branch>] [--no-push] [--cleanup|--no-cleanup] [--wait-for-merge|--no-wait-for-merge] [--wait-timeout-seconds <n>] [--wait-poll-seconds <n>] [--parent-gitlink-commit|--no-parent-gitlink-commit] [--keep-remote-branch|--delete-remote-branch] [--mode auto|direct|pr|--via-pr|--direct-only] [--auto-resolve[=none|safe|full]|--no-auto-resolve] [--no-preflight|--preflight] [--preflight-script <path>] [--no-auto-promote|--auto-promote]" >&2
+      echo "Usage: $0 [--base <branch>] [--branch <branch>] [--no-push] [--cleanup|--no-cleanup] [--wait-for-merge|--no-wait-for-merge] [--wait-timeout-seconds <n>] [--wait-poll-seconds <n>] [--parent-gitlink-commit|--no-parent-gitlink-commit] [--keep-remote-branch|--delete-remote-branch] [--mode auto|direct|pr|--via-pr|--direct-only] [--gate-review] [--review-provider codex|claude] [--review-model <name>] [--review-timeout-ms <n>] [--gate-serial-ci] [--auto-resolve[=none|safe|full]|--no-auto-resolve] [--no-preflight|--preflight] [--preflight-script <path>] [--no-auto-promote|--auto-promote]" >&2
       exit 1
       ;;
   esac

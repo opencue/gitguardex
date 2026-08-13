@@ -18,12 +18,12 @@ This change is complete only when **all** of the following are true:
 
 ## 2. Implementation
 
-- [x] 2.1 Implement scoped behavior changes (early promote + `--gate-serial-ci`, `expectHeadSha` pin, `--review-model`, provider-bin env knobs).
-- [x] 2.2 Add/update focused regression coverage (`test/review-gate.test.js`, `test/pr-review.test.js`).
+- [x] 2.1 Implement scoped behavior changes (early promote + `--gate-serial-ci`, `expectHeadSha` pin, `--review-model`, provider-bin env knobs, automatic Cue-shim bypass, `--review-timeout-ms`).
+- [x] 2.2 Add/update focused regression coverage (`test/review-gate.test.js`, `test/pr-review.test.js`, `test/provider-binary.test.js`, review timeout routing tests).
 
 ## 3. Verification
 
-- [x] 3.1 Run targeted project verification commands (`npm test` on branch vs `main`: 41 failures on both, failing set byte-identical, +17 new passing tests; `npx biome lint bin src scripts test` clean).
+- [x] 3.1 Run targeted project verification commands (`node --test test/provider-binary.test.js test/pr-review-timeout.test.js test/pr-review.test.js test/review-fix.test.js test/branch-gate-review.test.js test/review-gate.test.js`: 96 pass, 0 fail; `npx --yes --package @biomejs/biome@1.9.4 biome lint <12 touched files>` clean; `node -c <12 touched files>` clean).
 - [x] 3.2 Run `openspec validate agent-claude-parallelize-ci-with-the-review-gate-and-2026-08-12-01-33 --type change --strict`.
 - [x] 3.3 Run `openspec validate --specs` (133 passed, 0 failed).
 

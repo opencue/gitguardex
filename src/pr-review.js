@@ -6,6 +6,7 @@ const {
   GH_BIN,
 } = require('./context');
 const { run } = require('./core/runtime');
+const { resolveProviderBin } = require('./provider-binary');
 const { partitionByAnchor } = require('./review-diff');
 
 const TOOL_PREFIX = '[gitguardex]';
@@ -48,19 +49,6 @@ function normalizeProvider(raw) {
     throw new Error(`Invalid provider: ${raw}`);
   }
   return provider;
-}
-
-/**
- * Which binary runs the review. Defaults to the provider's own name on PATH.
- *
- * The override exists because a PATH shim — a profile launcher, a wrapper
- * script, a version manager — can add tens of seconds of startup to a command
- * that is invoked once per review round. Pointing this at the real binary skips
- * that without changing which provider is being asked.
- */
-function resolveProviderBin(provider, env = process.env) {
-  const key = provider === 'claude' ? 'GUARDEX_REVIEW_CLAUDE_BIN' : 'GUARDEX_REVIEW_CODEX_BIN';
-  return String(env[key] || '').trim() || provider;
 }
 
 /** Explicit option wins; then GUARDEX_REVIEW_MODEL; then the provider default. */
@@ -194,7 +182,7 @@ function normalizeFindings(providerOutput) {
  * so a later run can tell "already reported" from "new" without re-parsing prose.
  */
 function findingFingerprint(finding) {
-  const key = [finding.path, finding.startLine || finding.line, finding.line, finding.severity, finding.message].join(' ');
+  const key = [finding.path, finding.startLine || finding.line, finding.line, finding.severity, finding.message].join('\u0000');
   return crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
 }
 

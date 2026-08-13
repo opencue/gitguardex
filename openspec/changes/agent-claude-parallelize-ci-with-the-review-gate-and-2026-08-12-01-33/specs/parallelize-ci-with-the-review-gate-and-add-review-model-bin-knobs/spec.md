@@ -35,10 +35,10 @@ commit, or that carries no head at all, SHALL NOT be accepted as green.
 - **WHEN** the status snapshot carries no head commit while a pin is in force
 - **THEN** the wait refuses to report green
 
-### Requirement: Review model and binary are selectable
-The review runner SHALL accept an explicit model and an explicit provider
-binary. Precedence is explicit option, then environment, then the provider's own
-default.
+### Requirement: Review model, binary, and timeout are selectable
+The review runner SHALL accept an explicit model, an explicit provider binary,
+and an explicit provider timeout. Precedence for model and binary selection is
+explicit option, then environment, then an automatic provider default.
 
 #### Scenario: Model selection
 - **WHEN** `--review-model sonnet` or `GUARDEX_REVIEW_MODEL=sonnet` is set
@@ -49,6 +49,19 @@ default.
 - **WHEN** `GUARDEX_REVIEW_CLAUDE_BIN` or `GUARDEX_REVIEW_CODEX_BIN` names a path
 - **THEN** the review runs that binary instead of resolving the provider name on PATH
 
+#### Scenario: Cue shims are bypassed by default
+- **WHEN** PATH resolves `claude` or `codex` to Cue's `cue launch ...` shim
+- **THEN** the review runner skips that shim and runs the real provider binary
+  behind it when one exists
+
+#### Scenario: Review timeout selection
+- **WHEN** `--review-timeout-ms 60000` is passed to the merge gate
+- **THEN** the provider review run receives `timeoutMs=60000`
+
 #### Scenario: A named model must have a value
 - **WHEN** `--review-model` is passed with no value, or with another flag as its value
 - **THEN** the command fails rather than falling back to the default model
+
+#### Scenario: A named review timeout must be positive
+- **WHEN** `--review-timeout-ms` is passed with no value, zero, or a non-integer
+- **THEN** the command fails rather than falling back to the default timeout

@@ -1183,6 +1183,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     reviewProvider: defaults.reviewProvider || 'codex',
     // Empty = the provider's own default model.
     reviewModel: defaults.reviewModel || '',
+    reviewTimeoutMs: defaults.reviewTimeoutMs,
     // Hold CI until the review comes in clean, instead of running both at once.
     // Slower by a full CI round-trip; spends no CI minutes on a PR the review
     // is going to block.
@@ -1377,6 +1378,16 @@ function parseFinishArgs(rawArgs, defaults = {}) {
         throw new Error('--review-model requires a model name (e.g. sonnet)');
       }
       options.reviewModel = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--review-timeout-ms') {
+      const raw = rawArgs[index + 1];
+      const timeoutMs = Number.parseInt(String(raw ?? ''), 10);
+      if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+        throw new Error('--review-timeout-ms requires a positive integer');
+      }
+      options.reviewTimeoutMs = timeoutMs;
       index += 1;
       continue;
     }
