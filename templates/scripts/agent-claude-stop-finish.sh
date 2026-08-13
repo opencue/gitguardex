@@ -153,7 +153,22 @@ if [[ "$dirty" -eq 0 && "$ahead" -eq 0 ]]; then
   exit 0
 fi
 
-finish_cmd=(branch finish --branch "$branch" --base "$base_branch" --via-pr --wait-for-merge --cleanup)
+# --gate-review is not optional here. This hook fires unattended at the end of
+# every agent turn, so a bare --via-pr lands the work with NOTHING having read
+# it: the merge runs as soon as the *required* checks pass, and a repo without
+# branch protection has none. Measured on opencue/gitguardex #700 —
+# ready_for_review at 22:05:56Z, merged at 22:06:00Z, four seconds later, zero
+# reviews on the PR, while a separately launched gated run was still reviewing
+# that very branch.
+#
+# The gate is fail-closed: a CRITICAL/HIGH finding, red CI, or a PR GitHub will
+# not merge each abort before the merge runs. Auto-landing unreviewed agent work
+# is the outcome this tool exists to prevent.
+finish_cmd=(
+  branch finish --branch "$branch" --base "$base_branch" --via-pr
+  --gate-review --review-provider claude
+  --wait-for-merge --cleanup
+)
 
 if [[ "$dirty" -gt 0 && "$mode" == "clean" ]]; then
   echo "[agent-claude-stop-finish] ${branch}: ${dirty} uncommitted change(s); clean-only mode left the sandbox open." >&2

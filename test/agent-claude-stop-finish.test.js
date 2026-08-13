@@ -72,6 +72,13 @@ defineSpawnSuite('agent-claude-stop-finish', () => {
       '--base',
       'main',
       '--via-pr',
+      // The hook runs unattended, so it must hand off a GATED finish. Without
+      // these two flags the merge lands with nothing having reviewed it — four
+      // seconds after the PR left draft, on a repo with no required checks
+      // (opencue/gitguardex #700).
+      '--gate-review',
+      '--review-provider',
+      'claude',
       '--wait-for-merge',
       '--cleanup',
     ]);
