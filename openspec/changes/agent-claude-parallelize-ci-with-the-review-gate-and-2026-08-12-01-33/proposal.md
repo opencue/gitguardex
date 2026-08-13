@@ -37,6 +37,9 @@ profile launcher or wrapper script — pays its startup on every review round.
 - The CI wait keeps polling while required checks are still pending, even when
   GitHub temporarily reports `mergeStateStatus=BLOCKED` / `UNSTABLE` right after
   the draft PR is promoted to ready.
+- With `--gate-baseline`, a settled `BLOCKED` state caused only by checks that
+  are already red on the base is treated like the existing `UNSTABLE` baseline
+  path when GitHub still reports the branch as mergeable.
 - Review/fix provider invocations resolve the real `claude`/`codex` binary by
   default, skipping Cue's `cue launch ...` shims and `codex-guard`; explicit
   `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` overrides still win.

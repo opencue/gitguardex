@@ -109,8 +109,9 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
   // Loop-invariant, so build them once. In baseline mode UNSTABLE moves from
   // "blocked" to "trusted": it is exactly what GitHub reports for a red
   // non-required check, and those failures are cleared as pre-existing below.
-  // BLOCKED/DIRTY/BEHIND stay blocking either way — they mean GitHub itself
-  // will refuse the merge, which no baseline can excuse.
+  // BLOCKED is only trusted when all failed checks are known baseline failures
+  // and GitHub still says the branch is mergeable; DIRTY/BEHIND stay blocking
+  // either way.
   const blockedStates = baselineMode
     ? new Set([...BLOCKED_STATES].filter((state) => state !== 'UNSTABLE'))
     : BLOCKED_STATES;
@@ -147,15 +148,25 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     const count = (key) => Number(c[key]) || 0;
     const failingCount = count('failed') + count('cancelled');
     const settled = count('pending') === 0;
+    const namedFailures = failedNames.length === failingCount;
+    const novelFailures = failedNames.filter((name) => !baseline.has(name));
+    const onlyBaselineFailures = baselineMode
+      && failingCount > 0
+      && namedFailures
+      && novelFailures.length === 0;
     if (failingCount > 0) {
-      const named = failedNames.length === failingCount;
-      const novel = failedNames.filter((name) => !baseline.has(name));
-      if (!baselineMode || !named || novel.length > 0) {
-        return { status: 'checks-failed', pr: snap, newFailures: novel };
+      if (!baselineMode || !namedFailures || novelFailures.length > 0) {
+        return { status: 'checks-failed', pr: snap, newFailures: novelFailures };
       }
     }
 
     const mss = snap.mergeStateStatus;
+    const mergeable = !snap.isDraft && snap.mergeable === 'MERGEABLE';
+    // In baseline mode GitHub can still call the PR BLOCKED solely because a
+    // known-red, non-required check failed. If every failure is already in the
+    // base baseline and GitHub still says the branch is mergeable, that state is
+    // the same "no new failures" verdict as UNSTABLE.
+    const baselineBlockedByKnownChecks = mss === 'BLOCKED' && mergeable && onlyBaselineFailures;
     // GitHub says this can't merge as-is. Some BLOCKED/UNSTABLE snapshots are
     // just "required checks are still pending" immediately after a draft PR is
     // promoted to ready, so wait for pending checks to settle before treating
@@ -164,9 +175,10 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     if (mss && (mss === 'DIRTY' || mss === 'BEHIND')) {
       return { status: 'merge-blocked', pr: snap };
     }
-    if (mss && blockedStates.has(mss) && settled) return { status: 'merge-blocked', pr: snap };
+    if (mss && blockedStates.has(mss) && settled && !baselineBlockedByKnownChecks) {
+      return { status: 'merge-blocked', pr: snap };
+    }
 
-    const mergeable = !snap.isDraft && snap.mergeable === 'MERGEABLE';
     const hasChecks = c.total > 0;
     // Trust GitHub's CLEAN/HAS_HOOKS verdict; with no verdict, demand all-success
     // (every check SUCCESS, zero `other`/ambiguous states).
@@ -178,7 +190,7 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     const allAccountedFor = baselineMode
       ? count('other') === 0 && count('success') + failingCount === count('total')
       : count('other') === 0 && count('success') === count('total');
-    const trusted = mss ? trustedStates.has(mss) : allAccountedFor;
+    const trusted = baselineBlockedByKnownChecks || (mss ? trustedStates.has(mss) : allAccountedFor);
 
     if (settled && mergeable && hasChecks && trusted) return { status: 'green', pr: snap };
     if (settled && mergeable && !hasChecks && (mss ? MERGEABLE_STATES.has(mss) : true)) {

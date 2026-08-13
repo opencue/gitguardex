@@ -45,6 +45,12 @@ commit, or that carries no head at all, SHALL NOT be accepted as green.
 - **THEN** the CI wait keeps polling instead of treating the merge state as a
   terminal block
 
+#### Scenario: Baseline-red checks can explain a blocked merge state
+- **WHEN** `--gate-baseline` is active, every failed check is already failing on
+  the base, and GitHub still reports the PR branch as mergeable
+- **THEN** `mergeStateStatus=BLOCKED` is treated as the known baseline-red check
+  state rather than a new merge blocker
+
 #### Scenario: An unknown head is treated as stale
 - **WHEN** the status snapshot carries no head commit while a pin is in force
 - **THEN** the wait refuses to report green
