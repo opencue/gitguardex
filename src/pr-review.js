@@ -496,26 +496,41 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, se
     bin: resolveProviderBin(provider),
   });
   const limitMs = resolveReviewTimeoutMs(timeoutMs);
-  const result = runner(command.cmd, command.args, { cwd: repoRoot, timeout: limitMs });
-  // spawnSync reports a timeout as error.code ETIMEDOUT with a null status, so
-  // name it: "review failed" with empty stderr sends the operator hunting for a
-  // provider bug that is really just a run that never came back.
-  if (result.error && result.error.code === 'ETIMEDOUT') {
-    throw new Error(
-      `${provider} review timed out after ${Math.round(limitMs / 1000)}s (no verdict). `
-      + 'Refusing to merge — rerun, raise GUARDEX_REVIEW_TIMEOUT_MS, or use --skip-review-gate.',
-    );
+  let parseError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = runner(command.cmd, command.args, { cwd: repoRoot, timeout: limitMs });
+    // spawnSync reports a timeout as error.code ETIMEDOUT with a null status, so
+    // name it: "review failed" with empty stderr sends the operator hunting for a
+    // provider bug that is really just a run that never came back.
+    if (result.error && result.error.code === 'ETIMEDOUT') {
+      throw new Error(
+        `${provider} review timed out after ${Math.round(limitMs / 1000)}s (no verdict). `
+        + 'Refusing to merge — rerun, raise GUARDEX_REVIEW_TIMEOUT_MS, or use --skip-review-gate.',
+      );
+    }
+    if (result.status !== 0) {
+      throw new Error(`${provider} review failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`);
+    }
+    // A compliant provider always emits the findings JSON object (empty array
+    // when nothing is wrong). Empty stdout means the review did NOT run — fail
+    // closed so a silent no-op is never mistaken for "clean" by the merge gate.
+    if (!(result.stdout || '').trim()) {
+      throw new Error(`${provider} review returned no output (review did not run)`);
+    }
+    try {
+      return normalizeFindings(result.stdout || '');
+    } catch (error) {
+      parseError = error;
+      if (attempt === 0 && /parseable JSON findings|JSON must contain a findings array/.test(error.message)) {
+        // Providers occasionally emit prose despite the JSON-only prompt. Retry
+        // once with the same bounded invocation; a second malformed answer still
+        // fails closed below.
+        continue;
+      }
+      throw error;
+    }
   }
-  if (result.status !== 0) {
-    throw new Error(`${provider} review failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`);
-  }
-  // A compliant provider always emits the findings JSON object (empty array when
-  // nothing is wrong). Empty stdout means the review did NOT run — fail closed so
-  // a silent no-op is never mistaken for "clean" by the merge gate.
-  if (!(result.stdout || '').trim()) {
-    throw new Error(`${provider} review returned no output (review did not run)`);
-  }
-  return normalizeFindings(result.stdout || '');
+  throw parseError;
 }
 
 function runPrReview(options, deps = {}) {
@@ -613,6 +628,7 @@ module.exports = {
   resolveProviderBin,
   resolveReviewModel,
   splitMessage,
+  runProviderReview,
   runPrReview,
   evaluateReviewGate,
   printPrReviewResult,

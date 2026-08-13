@@ -40,6 +40,9 @@ profile launcher or wrapper script — pays its startup on every review round.
 - With `--gate-baseline`, a settled `BLOCKED` state caused only by checks that
   are already red on the base is treated like the existing `UNSTABLE` baseline
   path when GitHub still reports the branch as mergeable.
+- Provider output that is not parseable findings JSON is retried once with the
+  same bounded invocation. Timeouts, empty output, and nonzero exits still fail
+  closed immediately.
 - Review/fix provider invocations resolve the real `claude`/`codex` binary by
   default, skipping Cue's `cue launch ...` shims and `codex-guard`; explicit
   `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` overrides still win.

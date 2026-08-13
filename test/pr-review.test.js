@@ -93,6 +93,22 @@ test('normalizeFindings drops start_line that is not strictly before line', () =
 });
 
 
+test('runProviderReview retries once when the provider returns prose instead of JSON', () => {
+  let attempts = 0;
+  const runner = () => {
+    attempts += 1;
+    return attempts === 1
+      ? { status: 0, stdout: 'I reviewed the diff and found no issues.', stderr: '' }
+      : { status: 0, stdout: '{"findings":[]}', stderr: '' };
+  };
+
+  const findings = prReview.runProviderReview('codex', 'diff --git a/a.js b/a.js', '/repo', 1_000, runner);
+
+  assert.deepEqual(findings, []);
+  assert.equal(attempts, 2);
+});
+
+
 test('findingBody renders a severity alert, folds a long tail, and carries a fingerprint', () => {
   const finding = {
     path: 'a.js',

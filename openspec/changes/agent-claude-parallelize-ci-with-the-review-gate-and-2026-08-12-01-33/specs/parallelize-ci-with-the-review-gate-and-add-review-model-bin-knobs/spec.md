@@ -85,6 +85,12 @@ project customizations do not block a noninteractive review.
 - **WHEN** `--review-timeout-ms 60000` is passed to the merge gate
 - **THEN** the provider review run receives `timeoutMs=60000`
 
+#### Scenario: Malformed provider output is retried once
+- **WHEN** the review provider exits successfully but returns prose instead of
+  parseable findings JSON
+- **THEN** the review runner retries the provider once with the same timeout
+- **AND** a second malformed answer still fails closed
+
 #### Scenario: A named model must have a value
 - **WHEN** `--review-model` is passed with no value, or with another flag as its value
 - **THEN** the command fails rather than falling back to the default model
