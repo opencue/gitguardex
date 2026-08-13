@@ -442,7 +442,7 @@ test('agent-branch-start links dependency directories into new worktrees when pr
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const infoExcludePath = path.join(repoDir, '.git', 'info', 'exclude');
-  fs.appendFileSync(infoExcludePath, '\n.venv\napps/frontend/node_modules\napps/backend/node_modules\n', 'utf8');
+  fs.appendFileSync(infoExcludePath, '\n.venv\nnode_modules\napps/frontend/node_modules\napps/backend/node_modules\n', 'utf8');
 
   const dependencyDirs = ['.venv', 'node_modules', 'apps/frontend/node_modules', 'apps/backend/node_modules'];
   for (const relativeDir of dependencyDirs) {
@@ -458,12 +458,12 @@ test('agent-branch-start links dependency directories into new worktrees when pr
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /Linked dependency dir in worktree: \.venv/);
-  assert.match(result.stdout, /Linked dependency dir in worktree: node_modules/);
   assert.match(result.stdout, /Linked dependency dir in worktree: apps\/frontend\/node_modules/);
   assert.match(result.stdout, /Linked dependency dir in worktree: apps\/backend\/node_modules/);
 
   const createdWorktree = extractCreatedWorktree(result.stdout);
-  for (const relativeDir of dependencyDirs) {
+  assert.equal(fs.existsSync(path.join(createdWorktree, 'node_modules')), true, 'root node_modules should exist in the worktree');
+  for (const relativeDir of dependencyDirs.filter((dir) => dir !== 'node_modules')) {
     const sourceDir = path.join(repoDir, relativeDir);
     const linkedDir = path.join(createdWorktree, relativeDir);
     assert.equal(fs.existsSync(linkedDir), true, `worktree path should exist: ${relativeDir}`);

@@ -910,21 +910,50 @@ case "$auto_transfer_enabled_lc" in
   *) AUTO_TRANSFER_ENABLED=1 ;;
 esac
 
-build_auto_transfer_stash_argv() {
-  # Emit NUL-separated argv: --include-untracked --message <msg> [-- :/ :(exclude,glob)PAT ...]
-  local msg="$1"
-  printf '%s\0' --include-untracked --message "$msg"
-  if [[ -z "${AUTO_TRANSFER_EXCLUDE_RAW:-}" ]]; then
-    return 0
-  fi
-  printf '%s\0' '--' ':/'
+path_matches_auto_transfer_exclude() {
+  local rel_path="$1"
+  [[ -n "${AUTO_TRANSFER_EXCLUDE_RAW:-}" ]] || return 1
+
   local -a patterns=()
   IFS=':' read -ra patterns <<< "$AUTO_TRANSFER_EXCLUDE_RAW"
   local pattern
   for pattern in "${patterns[@]}"; do
     [[ -z "$pattern" ]] && continue
-    printf '%s\0' ":(exclude,glob)${pattern}"
+    if [[ "$rel_path" == $pattern ]]; then
+      return 0
+    fi
   done
+  return 1
+}
+
+collect_auto_transfer_paths() {
+  local root="$1"
+  local rel_path
+  declare -A seen_paths=()
+
+  while IFS= read -r -d '' rel_path; do
+    [[ -n "$rel_path" ]] || continue
+    [[ -z "${seen_paths[$rel_path]+seen}" ]] || continue
+    seen_paths["$rel_path"]=1
+    path_matches_auto_transfer_exclude "$rel_path" && continue
+    printf '%s\0' "$rel_path"
+  done < <(
+    git -C "$root" diff --name-only -z
+    git -C "$root" diff --cached --name-only -z
+    git -C "$root" ls-files --others --exclude-standard -z
+  )
+}
+
+build_auto_transfer_stash_argv() {
+  # Emit NUL-separated argv: --include-untracked --message <msg> -- <changed paths...>
+  # Use an explicit changed-file list instead of a root pathspec with excludes.
+  # `git stash push -- :/ :(exclude,glob).omc/** ...` can create a stash but
+  # still exit 1 when the repo has ignored .omc/.omx directories, which made the
+  # auto-transfer path silently skip a usable stash.
+  local root="$1"
+  local msg="$2"
+  printf '%s\0' --include-untracked --message "$msg" --
+  collect_auto_transfer_paths "$root"
 }
 
 current_branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
@@ -939,8 +968,10 @@ if [[ -n "$current_branch" && "$current_branch" != "HEAD" ]] && is_protected_bra
       stash_argv=()
       while IFS= read -r -d '' arg; do
         stash_argv+=("$arg")
-      done < <(build_auto_transfer_stash_argv "$auto_transfer_message")
-      if git -C "$repo_root" stash push "${stash_argv[@]}" >/dev/null 2>&1; then
+      done < <(build_auto_transfer_stash_argv "$repo_root" "$auto_transfer_message")
+      if [[ "${#stash_argv[@]}" -le 4 ]]; then
+        echo "[agent-branch-start] Local changes on '${current_branch}' all match the auto-transfer exclude list; leaving them in place on '${current_branch}'." >&2
+      elif git -C "$repo_root" stash push "${stash_argv[@]}" >/dev/null 2>&1; then
         auto_transfer_stash_ref="$(resolve_stash_ref_by_message "$repo_root" "$auto_transfer_message")"
         if [[ -n "$auto_transfer_stash_ref" ]]; then
           auto_transfer_source_branch="$current_branch"
@@ -948,11 +979,10 @@ if [[ -n "$current_branch" && "$current_branch" != "HEAD" ]] && is_protected_bra
           if ! maybe_fail_after_auto_transfer_stash; then
             exit 1
           fi
-        else
-          if has_local_changes "$repo_root"; then
-            echo "[agent-branch-start] Local changes on '${current_branch}' all match the auto-transfer exclude list; leaving them in place on '${current_branch}'." >&2
-          fi
         fi
+      else
+        echo "[agent-branch-start] Failed to capture local changes on protected branch '${current_branch}' for auto-transfer." >&2
+        exit 1
       fi
     fi
   fi

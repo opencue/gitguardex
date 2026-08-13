@@ -1095,7 +1095,7 @@ test('setup agent-branch-start supports optional OpenSpec auto-bootstrap toggles
   assert.equal(result.status, 0, result.stderr || result.stdout);
   seedCommit(repoDir);
 
-  result = runBranchStart(['openspec-default', 'bot', 'dev'], repoDir, {
+  result = runBranchStart(['--tier', 'T3', 'openspec-default', 'bot', 'dev'], repoDir, {
     GUARDEX_OPENSPEC_AUTO_INIT: 'true',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -1141,15 +1141,15 @@ test('setup agent-branch-start supports optional OpenSpec auto-bootstrap toggles
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const disabledWorktree = extractCreatedWorktree(result.stdout);
-  const disabledPlanSlug = extractOpenSpecPlanSlug(result.stdout);
-  const disabledChangeSlug = extractOpenSpecChangeSlug(result.stdout);
+  assert.match(result.stdout, /OpenSpec change: skipped \(GUARDEX_OPENSPEC_AUTO_INIT disabled\)/);
+  assert.match(result.stdout, /OpenSpec plan: skipped \(GUARDEX_OPENSPEC_AUTO_INIT disabled\)/);
   assert.equal(
-    fs.existsSync(path.join(disabledWorktree, 'openspec', 'plan', disabledPlanSlug, 'summary.md')),
+    fs.existsSync(path.join(disabledWorktree, 'openspec', 'plan')),
     false,
     'OpenSpec auto-bootstrap should be skippable via GUARDEX_OPENSPEC_AUTO_INIT=false',
   );
   assert.equal(
-    fs.existsSync(path.join(disabledWorktree, 'openspec', 'changes', disabledChangeSlug, 'proposal.md')),
+    fs.existsSync(path.join(disabledWorktree, 'openspec', 'changes')),
     false,
     'OpenSpec change bootstrap should be skippable via GUARDEX_OPENSPEC_AUTO_INIT=false',
   );
@@ -1277,7 +1277,7 @@ test('setup skips global install when companion npm tools are already installed'
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@imdeadpool/colony-cli":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
@@ -1329,7 +1329,7 @@ exit 1
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(marker), true, 'global install should run for missing package');
   const args = fs.readFileSync(marker, 'utf8').trim();
-  assert.equal(args, 'i -g oh-my-claude-sisyphus @fission-ai/openspec @imdeadpool/colony-cli @imdeadpool/codex-account-switcher');
+  assert.equal(args, 'i -g oh-my-claude-sisyphus @fission-ai/openspec colonyq @imdeadpool/codex-account-switcher');
 });
 
 
@@ -1340,7 +1340,7 @@ test('setup warns when user declines oh-my-claudecode dependency install', () =>
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@imdeadpool/colony-cli":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
@@ -1371,7 +1371,7 @@ test('setup installs missing local companion tools with explicit approval', () =
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@imdeadpool/colony-cli":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
@@ -1422,7 +1422,7 @@ test('setup warns when required system tool dependencies are missing', () => {
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@imdeadpool/colony-cli":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi

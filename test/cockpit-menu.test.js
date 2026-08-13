@@ -8,6 +8,7 @@ const {
   buildLaneMenu,
   renderLaneMenu,
 } = require('../src/cockpit/menu');
+const { stripAnsi } = require('../src/cockpit/theme');
 
 function itemById(menu, id) {
   return menu.items.find((item) => item.id === id);
@@ -133,15 +134,17 @@ test('renderLaneMenu renders a boxed menu with an ASCII fallback', () => {
   });
 
   const unicodeOutput = renderLaneMenu(menu, { selectedIndex: 2 });
-  assert.match(unicodeOutput, /^┌/);
-  assert.match(unicodeOutput, /Menu: codex/);
-  assert.match(unicodeOutput, /> Close\s+\[x\]/);
-  assert.match(unicodeOutput, /Close\s+\[x\]/);
-  assert.match(unicodeOutput, /Merge \/ Finish\s+\[m\]/);
+  const plainUnicodeOutput = stripAnsi(unicodeOutput);
+  assert.match(plainUnicodeOutput, /^┌/);
+  assert.match(plainUnicodeOutput, /Menu: codex/);
+  assert.match(plainUnicodeOutput, /> Close\s+\[x\]/);
+  assert.match(plainUnicodeOutput, /Close\s+\[x\]/);
+  assert.match(plainUnicodeOutput, /Merge \/ Finish\s+\[m\]/);
   assert.match(unicodeOutput, /Create GitHub PR/);
 
   const asciiOutput = renderLaneMenu(menu, { unicode: false });
-  assert.match(asciiOutput, /^\+/);
-  assert.match(asciiOutput, /\| Menu: codex/);
-  assert.match(asciiOutput, /\[f\]/);
+  const plainAsciiOutput = stripAnsi(asciiOutput);
+  assert.match(plainAsciiOutput, /^\+/);
+  assert.match(plainAsciiOutput, /\| Menu: codex/);
+  assert.match(plainAsciiOutput, /\[f\]/);
 });
