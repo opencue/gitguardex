@@ -146,6 +146,7 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // `NaN > 0` is false — which would wave a failing check straight through.
     const count = (key) => Number(c[key]) || 0;
     const failingCount = count('failed') + count('cancelled');
+    const settled = count('pending') === 0;
     if (failingCount > 0) {
       const named = failedNames.length === failingCount;
       const novel = failedNames.filter((name) => !baseline.has(name));
@@ -155,10 +156,16 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     }
 
     const mss = snap.mergeStateStatus;
-    // GitHub says this can't merge as-is and won't self-resolve within a finish run.
-    if (mss && blockedStates.has(mss)) return { status: 'merge-blocked', pr: snap };
+    // GitHub says this can't merge as-is. Some BLOCKED/UNSTABLE snapshots are
+    // just "required checks are still pending" immediately after a draft PR is
+    // promoted to ready, so wait for pending checks to settle before treating
+    // those states as terminal. DIRTY/BEHIND do not self-resolve within a finish
+    // run and stay immediate blockers.
+    if (mss && (mss === 'DIRTY' || mss === 'BEHIND')) {
+      return { status: 'merge-blocked', pr: snap };
+    }
+    if (mss && blockedStates.has(mss) && settled) return { status: 'merge-blocked', pr: snap };
 
-    const settled = c.pending === 0;
     const mergeable = !snap.isDraft && snap.mergeable === 'MERGEABLE';
     const hasChecks = c.total > 0;
     // Trust GitHub's CLEAN/HAS_HOOKS verdict; with no verdict, demand all-success

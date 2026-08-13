@@ -66,7 +66,12 @@ test('waitForGreenCi waits through pending then returns green', () => {
     ...c,
     pollSeconds: 5,
     getStatus: seqStatus([
-      { checks: { failed: 0, pending: 2, total: 2 }, isDraft: false, mergeable: 'UNKNOWN' },
+      {
+        checks: { failed: 0, pending: 2, total: 2 },
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+      },
       GREEN,
     ]),
   });

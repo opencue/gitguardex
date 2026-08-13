@@ -39,6 +39,12 @@ commit, or that carries no head at all, SHALL NOT be accepted as green.
 - **THEN** the gate keeps polling until the head catches up
 - **AND** it returns `stale-head` at the deadline, which the gate turns into a block
 
+#### Scenario: Pending required checks are not terminal merge blocks
+- **WHEN** GitHub reports `mergeStateStatus=BLOCKED` or `UNSTABLE` while status
+  checks are still pending
+- **THEN** the CI wait keeps polling instead of treating the merge state as a
+  terminal block
+
 #### Scenario: An unknown head is treated as stale
 - **WHEN** the status snapshot carries no head commit while a pin is in force
 - **THEN** the wait refuses to report green

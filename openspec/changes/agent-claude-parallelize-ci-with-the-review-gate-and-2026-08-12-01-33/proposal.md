@@ -34,6 +34,9 @@ profile launcher or wrapper script — pays its startup on every review round.
 - The CI wait can be pinned to a specific commit (`expectHeadSha`). With
   `--gate-autofix`, the gate pins it to the commit the fix round pushed, so a
   rollup still describing the replaced commit can never read as green.
+- The CI wait keeps polling while required checks are still pending, even when
+  GitHub temporarily reports `mergeStateStatus=BLOCKED` / `UNSTABLE` right after
+  the draft PR is promoted to ready.
 - Review/fix provider invocations resolve the real `claude`/`codex` binary by
   default, skipping Cue's `cue launch ...` shims and `codex-guard`; explicit
   `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` overrides still win.
