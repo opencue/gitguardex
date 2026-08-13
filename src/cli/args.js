@@ -1187,7 +1187,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     // Hold CI until the review comes in clean, keeping the draft PR as the
     // GitHub-side hard barrier while the provider runs. Slower by a full CI
     // round-trip; `--no-gate-serial-ci` opts into overlapping CI with review.
-    gateSerialCi: true,
+    gateSerialCi: defaults.gateSerialCi ?? true,
     allowNoChecks: false,
     // Gate on "no NEW failing checks vs the base branch" instead of absolute
     // green, so a repo whose base is already red can still ship unattended.

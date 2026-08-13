@@ -295,6 +295,7 @@ test('parseFinishArgs: --review-timeout-ms sets the provider timeout, and demand
 
 test('parseFinishArgs: CI waits for the review unless --no-gate-serial-ci opts into overlap', () => {
   assert.equal(parseFinishArgs(['--gate-review']).gateSerialCi, true);
+  assert.equal(parseFinishArgs(['--gate-review'], { gateSerialCi: false }).gateSerialCi, false);
   assert.equal(parseFinishArgs(['--gate-review', '--gate-serial-ci']).gateSerialCi, true);
   assert.equal(parseFinishArgs(['--gate-serial-ci', '--no-gate-serial-ci']).gateSerialCi, false);
 });
@@ -380,10 +381,57 @@ test('runReviewGate redrafts an existing ready PR while the default serial revie
   assert.deepEqual(calls, ['draft', 'review', 'ready', 'wait']);
 });
 
+test('runReviewGate fails closed when it cannot redraft before a serial review', () => {
+  let reviewed = false;
+  let waited = false;
+  const deps = gateDeps({
+    openPullRequest: () => ({ pr: { number: 42, isDraft: false } }),
+    markPullRequestDraft: () => ({ ok: false, output: 'draft failed' }),
+    runPrReview: () => {
+      reviewed = true;
+      return { findings: [], posted: true };
+    },
+    waitForGreenCi: () => {
+      waited = true;
+      return { status: 'green', pr: {} };
+    },
+  });
+
+  assert.throws(
+    () => runReviewGate(gateArgs, deps),
+    /could not hold PR #42 as draft before review[\s\S]*draft failed/,
+  );
+  assert.equal(reviewed, false);
+  assert.equal(waited, false);
+});
+
 test('runReviewGate with --no-gate-serial-ci promotes before the review', () => {
   const { calls, deps } = orderedDeps();
   runReviewGate({ ...gateArgs, options: { gateSerialCi: false } }, deps);
   assert.deepEqual(calls, ['ready', 'review', 'wait']);
+});
+
+test('runReviewGate fails closed when it cannot promote before an overlapping review', () => {
+  let reviewed = false;
+  let waited = false;
+  const deps = gateDeps({
+    markPullRequestReady: () => ({ ok: false, output: 'ready failed' }),
+    runPrReview: () => {
+      reviewed = true;
+      return { findings: [], posted: true };
+    },
+    waitForGreenCi: () => {
+      waited = true;
+      return { status: 'green', pr: {} };
+    },
+  });
+
+  assert.throws(
+    () => runReviewGate({ ...gateArgs, options: { gateSerialCi: false } }, deps),
+    /could not promote PR #42 before review[\s\S]*ready failed/,
+  );
+  assert.equal(reviewed, false);
+  assert.equal(waited, false);
 });
 
 test('runReviewGate still blocks a dirty review after promoting early', () => {
