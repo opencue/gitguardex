@@ -22,7 +22,7 @@ function commandForFix(provider, prompt, settings = {}) {
   const cmd = String(settings.bin || '').trim() || provider;
   if (provider === 'claude') {
     // Print mode defaults to asking for permission; acceptEdits lets it write.
-    return { cmd, args: ['-p', '--permission-mode', 'acceptEdits', prompt] };
+    return { cmd, args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', prompt] };
   }
   // `codex exec` sandboxes to read-only by default; workspace-write allows edits
   // inside the worktree and nowhere else.

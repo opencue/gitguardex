@@ -34,6 +34,8 @@ profile launcher or wrapper script — pays its startup on every review round.
 - Review/fix provider invocations resolve the real `claude`/`codex` binary by
   default, skipping Cue's `cue launch ...` shims and `codex-guard`; explicit
   `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` overrides still win.
+  Claude invocations also run with `--safe-mode` so local hooks, MCP servers,
+  and project customizations cannot stall the noninteractive review subprocess.
 - `--review-model` / `GUARDEX_REVIEW_MODEL` select the review model.
 - `--review-timeout-ms` forwards a shorter provider timeout through the merge
   gate, matching `gx pr-review --timeout-ms`.

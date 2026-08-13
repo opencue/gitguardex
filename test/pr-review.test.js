@@ -15,14 +15,14 @@ const prReview = require('../src/pr-review');
 defineSpawnSuite('pr-review suite', () => {
 
 test('commandForProvider defaults to the provider binary and its own model', () => {
-  assert.deepEqual(prReview.commandForProvider('claude', 'P'), { cmd: 'claude', args: ['-p', 'P'] });
+  assert.deepEqual(prReview.commandForProvider('claude', 'P'), { cmd: 'claude', args: ['--safe-mode', '-p', 'P'] });
   assert.deepEqual(prReview.commandForProvider('codex', 'P'), { cmd: 'codex', args: ['exec', 'P'] });
 });
 
 test('commandForProvider passes the model with each provider own flag', () => {
   assert.deepEqual(
     prReview.commandForProvider('claude', 'P', { model: 'sonnet' }),
-    { cmd: 'claude', args: ['--model', 'sonnet', '-p', 'P'] },
+    { cmd: 'claude', args: ['--safe-mode', '--model', 'sonnet', '-p', 'P'] },
   );
   assert.deepEqual(
     prReview.commandForProvider('codex', 'P', { model: 'gpt-5' }),
@@ -33,7 +33,7 @@ test('commandForProvider passes the model with each provider own flag', () => {
 test('commandForProvider runs an explicit binary, so a slow PATH shim can be skipped', () => {
   const command = prReview.commandForProvider('claude', 'P', { bin: '/usr/local/bin/claude' });
   assert.equal(command.cmd, '/usr/local/bin/claude');
-  assert.deepEqual(command.args, ['-p', 'P']);
+  assert.deepEqual(command.args, ['--safe-mode', '-p', 'P']);
 });
 
 test('resolveReviewModel: explicit option beats env, env beats the provider default', () => {

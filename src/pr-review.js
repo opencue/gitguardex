@@ -62,7 +62,7 @@ function commandForProvider(provider, prompt, settings = {}) {
   const cmd = String(settings.bin || '').trim() || provider;
   const model = String(settings.model || '').trim();
   if (provider === 'claude') {
-    return { cmd, args: model ? ['--model', model, '-p', prompt] : ['-p', prompt] };
+    return { cmd, args: model ? ['--safe-mode', '--model', model, '-p', prompt] : ['--safe-mode', '-p', prompt] };
   }
   return { cmd, args: model ? ['exec', '-m', model, prompt] : ['exec', prompt] };
 }

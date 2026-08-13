@@ -18,8 +18,8 @@ This change is complete only when **all** of the following are true:
 
 ## 2. Implementation
 
-- [x] 2.1 Implement scoped behavior changes (early promote + `--gate-serial-ci`, `expectHeadSha` pin, `--review-model`, provider-bin env knobs, automatic Cue-shim bypass, `--review-timeout-ms`).
-- [x] 2.2 Add/update focused regression coverage (`test/review-gate.test.js`, `test/pr-review.test.js`, `test/provider-binary.test.js`, review timeout routing tests).
+- [x] 2.1 Implement scoped behavior changes (early promote + `--gate-serial-ci`, `expectHeadSha` pin, `--review-model`, provider-bin env knobs, automatic Cue-shim bypass, Claude `--safe-mode`, `--review-timeout-ms`).
+- [x] 2.2 Add/update focused regression coverage (`test/review-gate.test.js`, `test/pr-review.test.js`, `test/provider-binary.test.js`, Claude safe-mode expectations, review timeout routing tests).
 
 ## 3. Verification
 

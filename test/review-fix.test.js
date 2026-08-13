@@ -31,8 +31,8 @@ function onAgentBranch() {
 
 test('commandForFix gives each provider a write-enabled invocation', () => {
   assert.deepEqual(commandForFix('codex', 'p'), { cmd: 'codex', args: ['exec', '--sandbox', 'workspace-write', 'p'] });
-  assert.deepEqual(commandForFix('claude', 'p'), { cmd: 'claude', args: ['-p', '--permission-mode', 'acceptEdits', 'p'] });
-  assert.deepEqual(commandForFix('claude', 'p', { bin: '/opt/claude' }), { cmd: '/opt/claude', args: ['-p', '--permission-mode', 'acceptEdits', 'p'] });
+  assert.deepEqual(commandForFix('claude', 'p'), { cmd: 'claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
+  assert.deepEqual(commandForFix('claude', 'p', { bin: '/opt/claude' }), { cmd: '/opt/claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
 });
 
 test('fixPrompt carries the location, the severity, and the proposed replacement', () => {

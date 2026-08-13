@@ -38,7 +38,9 @@ commit, or that carries no head at all, SHALL NOT be accepted as green.
 ### Requirement: Review model, binary, and timeout are selectable
 The review runner SHALL accept an explicit model, an explicit provider binary,
 and an explicit provider timeout. Precedence for model and binary selection is
-explicit option, then environment, then an automatic provider default.
+explicit option, then environment, then an automatic provider default. Claude
+review/fix invocations SHALL run in safe mode so local hooks, MCP servers, and
+project customizations do not block a noninteractive review.
 
 #### Scenario: Model selection
 - **WHEN** `--review-model sonnet` or `GUARDEX_REVIEW_MODEL=sonnet` is set
@@ -53,6 +55,11 @@ explicit option, then environment, then an automatic provider default.
 - **WHEN** PATH resolves `claude` or `codex` to Cue's `cue launch ...` shim
 - **THEN** the review runner skips that shim and runs the real provider binary
   behind it when one exists
+
+#### Scenario: Claude reviews avoid interactive customizations
+- **WHEN** the review or auto-fix provider is `claude`
+- **THEN** the provider command includes `--safe-mode`
+- **AND** the command still uses `-p` print mode plus any selected model or fix permission flag
 
 #### Scenario: Review timeout selection
 - **WHEN** `--review-timeout-ms 60000` is passed to the merge gate
