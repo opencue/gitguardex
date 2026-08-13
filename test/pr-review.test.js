@@ -14,6 +14,42 @@ const prReview = require('../src/pr-review');
 
 defineSpawnSuite('pr-review suite', () => {
 
+test('commandForProvider defaults to the provider binary and its own model', () => {
+  assert.deepEqual(prReview.commandForProvider('claude', 'P'), { cmd: 'claude', args: ['--safe-mode', '-p', 'P'] });
+  assert.deepEqual(prReview.commandForProvider('codex', 'P'), { cmd: 'codex', args: ['exec', 'P'] });
+});
+
+test('commandForProvider passes the model with each provider own flag', () => {
+  assert.deepEqual(
+    prReview.commandForProvider('claude', 'P', { model: 'sonnet' }),
+    { cmd: 'claude', args: ['--safe-mode', '--model', 'sonnet', '-p', 'P'] },
+  );
+  assert.deepEqual(
+    prReview.commandForProvider('codex', 'P', { model: 'gpt-5' }),
+    { cmd: 'codex', args: ['exec', '-m', 'gpt-5', 'P'] },
+  );
+});
+
+test('commandForProvider runs an explicit binary, so a slow PATH shim can be skipped', () => {
+  const command = prReview.commandForProvider('claude', 'P', { bin: '/usr/local/bin/claude' });
+  assert.equal(command.cmd, '/usr/local/bin/claude');
+  assert.deepEqual(command.args, ['--safe-mode', '-p', 'P']);
+});
+
+test('resolveReviewModel: explicit option beats env, env beats the provider default', () => {
+  assert.equal(prReview.resolveReviewModel('opus', { GUARDEX_REVIEW_MODEL: 'sonnet' }), 'opus');
+  assert.equal(prReview.resolveReviewModel('', { GUARDEX_REVIEW_MODEL: 'sonnet' }), 'sonnet');
+  assert.equal(prReview.resolveReviewModel('', {}), '', 'empty leaves the provider default alone');
+  assert.equal(prReview.resolveReviewModel('  ', { GUARDEX_REVIEW_MODEL: '  ' }), '');
+});
+
+test('resolveProviderBin: per-provider env override, provider name otherwise', () => {
+  assert.equal(prReview.resolveProviderBin('claude', { GUARDEX_REVIEW_CLAUDE_BIN: '/opt/claude' }), '/opt/claude');
+  assert.equal(prReview.resolveProviderBin('codex', { GUARDEX_REVIEW_CODEX_BIN: '/opt/codex' }), '/opt/codex');
+  assert.equal(prReview.resolveProviderBin('claude', { GUARDEX_REVIEW_CODEX_BIN: '/opt/codex' }), 'claude');
+  assert.equal(prReview.resolveProviderBin('codex', {}), 'codex');
+});
+
 test('normalizeFindings parses fenced provider JSON and drops malformed findings', () => {
   const findings = prReview.normalizeFindings('```json\n{"findings":[{"path":"src/a.js","line":7,"severity":"high","message":"bug"},{"path":"","line":0,"message":""}]}\n```');
   assert.deepEqual(findings, [
@@ -54,6 +90,22 @@ test('normalizeFindings drops start_line that is not strictly before line', () =
   const [after] = prReview.normalizeFindings('{"findings":[{"path":"a.js","start_line":9,"line":7,"severity":"low","message":"m"}]}');
   assert.equal(equal.startLine, 0);
   assert.equal(after.startLine, 0);
+});
+
+
+test('runProviderReview retries once when the provider returns prose instead of JSON', () => {
+  let attempts = 0;
+  const runner = () => {
+    attempts += 1;
+    return attempts === 1
+      ? { status: 0, stdout: 'I reviewed the diff and found no issues.', stderr: '' }
+      : { status: 0, stdout: '{"findings":[]}', stderr: '' };
+  };
+
+  const findings = prReview.runProviderReview('codex', 'diff --git a/a.js b/a.js', '/repo', 1_000, runner);
+
+  assert.deepEqual(findings, []);
+  assert.equal(attempts, 2);
 });
 
 
@@ -119,6 +171,10 @@ test('gx pr-review posts one GitHub review when auth is available', () => {
   const ghMarker = path.join(markerDir, 'gh-args.log');
   const apiPayload = path.join(markerDir, 'api-payload.json');
   const fakeGh = createFakeBin('gh', `
+if [[ "$1" == "repo" && "$2" == "view" ]]; then
+  printf '%s\n' 'opencue/gitguardex'
+  exit 0
+fi
 if [[ "$1" == "pr" && "$2" == "diff" ]]; then
   printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
   printf '%s\\n' '--- a/src/a.js'
@@ -160,7 +216,7 @@ printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","ca
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /Posted PR review: 1 finding\(s\), 1 new inline comment\(s\)/);
-  assert.match(fs.readFileSync(ghMarker, 'utf8'), /repos\/:owner\/:repo\/pulls\/12\/reviews/);
+  assert.match(fs.readFileSync(ghMarker, 'utf8'), /repos\/opencue\/gitguardex\/pulls\/12\/reviews/);
   const payload = JSON.parse(fs.readFileSync(apiPayload, 'utf8'));
   assert.equal(payload.event, 'COMMENT');
   assert.equal(payload.commit_id, 'deadbeefcafe0000', 'comments anchor to the PR head sha');

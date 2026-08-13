@@ -49,7 +49,7 @@ function makeRunner(providerResult) {
 
 const CLEAN = { status: 0, stdout: JSON.stringify({ findings: [] }), stderr: '' };
 
-const providerCall = (calls) => calls.find((c) => c.cmd === 'claude' || c.cmd === 'codex');
+const providerCall = (calls) => calls.find((c) => !(c.args[0] === 'pr' && c.args[1] === 'diff'));
 
 test('the provider spawn is bounded — an agent review cannot hang the gate forever', () => {
   withTempRepo((repoRoot) => {

@@ -11,6 +11,7 @@ const {
   renderControlFrame,
   startCockpitControl,
 } = require('../src/cockpit/control');
+const { stripAnsi } = require('../src/cockpit/theme');
 
 function snapshot(sessions, overrides = {}) {
   return {
@@ -264,12 +265,13 @@ test('renderControlFrame renders sidebar with details, menu, and settings modes'
   assert.match(details, /session: one/);
 
   const menu = renderControlFrame(applyCockpitAction(baseState, { type: 'key', key: 'm' }));
-  assert.match(menu, /^ {2,}┌/m);
-  assert.match(menu, /Menu: codex/);
-  assert.match(menu, /> View\s+\[v\]/);
-  assert.match(menu, /Merge \/ Finish\s+\[m\]/);
-  assert.match(menu, /Add Terminal to Worktree\s+\[T\]/);
-  assert.doesNotMatch(menu, /Project Focus/);
+  const plainMenu = stripAnsi(menu);
+  assert.match(plainMenu, /^ {2,}┌/m);
+  assert.match(plainMenu, /Menu: codex/);
+  assert.match(plainMenu, /> View\s+\[v\]/);
+  assert.match(plainMenu, /Merge \/ Finish\s+\[m\]/);
+  assert.match(plainMenu, /Add Terminal to Worktree\s+\[T\]/);
+  assert.doesNotMatch(plainMenu, /Project Focus/);
 
   const settings = renderControlFrame(applyCockpitAction(baseState, { type: 'key', key: 's' }));
   assert.match(settings, /gx cockpit settings/);

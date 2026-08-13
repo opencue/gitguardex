@@ -132,13 +132,44 @@ test('finish command auto-commits dirty agent worktree and runs PR finish flow f
 
   fs.writeFileSync(path.join(agentWorktree, 'finisher-note.txt'), 'pending branch finish\n', 'utf8');
 
-  result = runNode(
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "create" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json url "* ]]; then
+    echo "https://example.test/pr/finish-all"
+    exit 0
+  fi
+  if [[ " $* " == *" --json body "* ]]; then
+    echo "Automated by gx branch finish (PR flow)."
+    exit 0
+  fi
+  if [[ " $* " == *" --json state,mergedAt,url "* ]]; then
+    echo -e "MERGED\\x1f2026-04-12T00:00:00Z\\x1fhttps://example.test/pr/finish-all"
+    exit 0
+  fi
+  echo "unexpected gh pr view args: $*" >&2
+  exit 1
+fi
+if [[ "$1" == "pr" && "$2" == "ready" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+
+  result = runNodeWithEnv(
     ['finish', '--target', repoDir, '--branch', agentBranch, '--base', 'main', '--no-wait-for-merge', '--no-cleanup'],
     repoDir,
+    { GUARDEX_GH_BIN: fakeGhPath },
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, new RegExp(`Finishing '${escapeRegexLiteral(agentBranch)}' -> 'main'`));
-  assert.match(result.stdout, /Auto-committed/);
+  assert.match(result.stdout, /auto-committed/i);
   assert.match(result.stdout, /Finish summary: total=1, success=1, failed=0, autoCommitted=1/);
   assert.equal(fs.existsSync(agentWorktree), true, 'finish --no-cleanup should keep the agent worktree');
   let branchResult = runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${agentBranch}`], repoDir);

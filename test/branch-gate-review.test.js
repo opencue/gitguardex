@@ -161,6 +161,88 @@ test('branch finish --gate-review reads the inline --review-provider= form', () 
   assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
+test('branch finish --gate-review forwards the review model and keeps it out of the shell argv', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--branch', 'agent/claude/p', '--via-pr', '--gate-review', '--review-model', 'sonnet']);
+
+  assert.equal(calls.gate[0].options.reviewModel, 'sonnet');
+  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr']);
+});
+
+test('branch finish --gate-review forwards the review timeout and keeps it out of the shell argv', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--branch', 'agent/claude/p', '--via-pr', '--gate-review', '--review-timeout-ms', '60000']);
+
+  assert.equal(calls.gate[0].options.reviewTimeoutMs, 60_000);
+  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr']);
+});
+
+test('branch finish --gate-review reads the inline --review-timeout-ms= form', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review', '--review-timeout-ms=60000']);
+
+  assert.equal(calls.gate[0].options.reviewTimeoutMs, 60_000);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
+});
+
+test('branch finish rejects --review-timeout-ms with no value', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  assert.throws(
+    () => branch(['finish', '--via-pr', '--gate-review', '--review-timeout-ms']),
+    /positive integer/,
+  );
+  assert.equal(calls.script.length, 0);
+});
+
+test('branch finish --gate-review reads the inline --review-model= form', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review', '--review-model=sonnet']);
+
+  assert.equal(calls.gate[0].options.reviewModel, 'sonnet');
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
+});
+
+test('branch finish rejects --review-model with no value', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  assert.throws(
+    () => branch(['finish', '--via-pr', '--gate-review', '--review-model']),
+    /requires a model name/,
+  );
+  assert.equal(calls.script.length, 0);
+});
+
+test('branch finish forwards --gate-serial-ci and strips it from the shell argv', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review', '--gate-serial-ci']);
+
+  assert.equal(calls.gate[0].options.gateSerialCi, true);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
+});
+
+test('branch finish keeps serial CI as the safe default when --gate-serial-ci is absent', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review']);
+
+  assert.equal(calls.gate[0].options.gateSerialCi, true);
+});
+
+test('branch finish forwards --no-gate-serial-ci as explicit overlap opt-in', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review', '--no-gate-serial-ci']);
+
+  assert.equal(calls.gate[0].options.gateSerialCi, false);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
+});
+
 // Fail closed on a typo rather than silently falling back to codex: a caller who
 // asked for a specific provider must not get a different one.
 test('branch finish rejects an unknown review provider before the script runs', () => {

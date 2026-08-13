@@ -14,17 +14,19 @@
 
 const { run } = require('./core/runtime');
 const { gitRun, currentBranchName, readProtectedBranches } = require('./git');
+const { resolveProviderBin } = require('./provider-binary');
 
 const DEFAULT_FIX_TIMEOUT_MS = 15 * 60 * 1000;
 
-function commandForFix(provider, prompt) {
+function commandForFix(provider, prompt, settings = {}) {
+  const cmd = String(settings.bin || '').trim() || provider;
   if (provider === 'claude') {
     // Print mode defaults to asking for permission; acceptEdits lets it write.
-    return { cmd: 'claude', args: ['-p', '--permission-mode', 'acceptEdits', prompt] };
+    return { cmd, args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', prompt] };
   }
   // `codex exec` sandboxes to read-only by default; workspace-write allows edits
   // inside the worktree and nowhere else.
-  return { cmd: 'codex', args: ['exec', '--sandbox', 'workspace-write', prompt] };
+  return { cmd, args: ['exec', '--sandbox', 'workspace-write', prompt] };
 }
 
 function describeFinding(finding, index) {
@@ -140,7 +142,7 @@ function runReviewFix({
   }
   const preExistingUntracked = new Set(before.untracked);
 
-  const command = commandForFix(provider, fixPrompt(findings));
+  const command = commandForFix(provider, fixPrompt(findings), { bin: resolveProviderBin(provider) });
   const result = runner(command.cmd, command.args, { cwd: repoRoot, timeout: timeoutMs });
   if (result.status !== 0) {
     throw new Error(`${provider} fix run failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`);

@@ -62,6 +62,13 @@ test('a check already red on the base branch does not block', () => {
   assert.equal(result.status, 'green', 'pre-existing failure is not this change s fault');
 });
 
+test('baseline mode treats BLOCKED from only known-red checks as green when mergeable', () => {
+  const result = wait(snapshot({ failedNames: ['test (node 20)'], mergeStateStatus: 'BLOCKED' }), {
+    baselineFailures: new Set(['test (node 20)']),
+  });
+  assert.equal(result.status, 'green', 'GitHub can report BLOCKED solely because baseline-red checks failed');
+});
+
 test('a check NOT red on the base branch blocks and is named', () => {
   const result = wait(snapshot({ failedNames: ['test (node 20)', 'lint'] }), {
     baselineFailures: new Set(['test (node 20)']),
@@ -94,13 +101,20 @@ test('an unnameable failing check blocks even in baseline mode', () => {
   assert.equal(result.status, 'checks-failed');
 });
 
-test('baseline mode still blocks BLOCKED/DIRTY/BEHIND, which GitHub itself refuses', () => {
-  for (const mergeStateStatus of ['BLOCKED', 'DIRTY', 'BEHIND']) {
+test('baseline mode still blocks DIRTY/BEHIND, which GitHub itself refuses', () => {
+  for (const mergeStateStatus of ['DIRTY', 'BEHIND']) {
     const result = wait(snapshot({ failedNames: ['test (node 20)'], mergeStateStatus }), {
       baselineFailures: new Set(['test (node 20)']),
     });
     assert.equal(result.status, 'merge-blocked', `${mergeStateStatus} must still block`);
   }
+});
+
+test('baseline mode still blocks BLOCKED when no baseline failure explains it', () => {
+  const result = wait(snapshot({ failedNames: [], mergeStateStatus: 'BLOCKED' }), {
+    baselineFailures: new Set(['test (node 20)']),
+  });
+  assert.equal(result.status, 'merge-blocked');
 });
 
 test('baseline mode still blocks an ambiguous check state', () => {
@@ -124,6 +138,9 @@ test('checkOutcomes collects failing check-runs and legacy statuses', () => {
   const calls = [];
   const runner = (_bin, args) => {
     calls.push(args.join(' '));
+    if (args[0] === 'repo' && args[1] === 'view') {
+      return { status: 0, stdout: 'opencue/gitguardex\n', stderr: '' };
+    }
     if (args.some((a) => a.includes('check-runs'))) {
       return { status: 0, stdout: 'failure\ttest (node 20)\nsuccess\tbuild\ntimed_out\te2e\n', stderr: '' };
     }
@@ -132,7 +149,10 @@ test('checkOutcomes collects failing check-runs and legacy statuses', () => {
   const { failing, total } = checkOutcomes('/repo', 'main', runner);
   assert.deepEqual([...failing].sort(), ['ci/external', 'e2e', 'test (node 20)']);
   assert.equal(total, 5, 'total counts every observed check, not just the failures');
-  assert.match(calls[0], /commits\/main\/check-runs/);
+  assert.ok(
+    calls.some((call) => call.includes('repos/opencue/gitguardex/commits/main/check-runs')),
+    'check-run API call uses the canonical repository route',
+  );
 });
 
 test('checkOutcomes reports zero total when the API is unreachable', () => {

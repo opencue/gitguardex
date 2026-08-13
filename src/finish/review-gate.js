@@ -28,6 +28,14 @@ function gateLog(message) {
   console.log(`[${TOOL_NAME}] [gate] ${message}`);
 }
 
+function requireGhAction(result, failureMessage) {
+  if (result && result.ok === false) {
+    throw new Error(
+      `${failureMessage}${result.output ? `\n${result.output}` : ''}`,
+    );
+  }
+}
+
 /**
  * A review that never reached the PR does not count as a review.
  *
@@ -49,6 +57,12 @@ function requirePostedReview(review, prNumber) {
     + (review.artifactPath ? `\nLocal artifact: ${review.artifactPath}` : '')
     + '\nFix the provider/auth issue and re-run, or bypass with --skip-review-gate.',
   );
+}
+
+/** The commit checked out in `cwd`, or '' when git cannot answer. */
+function readHeadSha(cwd) {
+  const result = run('git', ['-C', cwd, 'rev-parse', 'HEAD'], { cwd, allowFailure: true });
+  return result.status === 0 ? String(result.stdout || '').trim() : '';
 }
 
 /** Worktree holding `branch`, or `repoRoot` when git cannot tell us. */
@@ -74,7 +88,7 @@ function resolveWorktreeForBranch(repoRoot, branch) {
  *  - a check-less PR is only declared `no-checks` after a grace window, so a freshly
  *    promoted PR whose checks have not registered yet is not misread.
  *
- * @returns {{status: 'green'|'checks-failed'|'merge-blocked'|'no-checks'|'timeout'|'no-pr', pr?: object}}
+ * @returns {{status: 'green'|'checks-failed'|'merge-blocked'|'no-checks'|'stale-head'|'timeout'|'no-pr', pr?: object}}
  */
 function waitForGreenCi(repoRoot, branch, options = {}) {
   const timeoutSeconds = options.timeoutSeconds || DEFAULT_GATE_TIMEOUT_SECONDS;
@@ -84,6 +98,10 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
   const sleep = options.sleep || ((seconds) => run('sleep', [String(seconds)], { cwd: repoRoot }));
   const now = options.now || (() => Date.now());
   const getStatus = options.getStatus || ((r, b) => pr.getPullRequestStatus(r, b));
+  // Commit this wait is allowed to judge. Set when the run itself pushed (an
+  // auto-fix round), where the checks GitHub reports can still belong to the
+  // commit that push replaced.
+  const expectHeadSha = String(options.expectHeadSha || '').trim();
   // Checks already failing on the base branch. Empty (the default) reproduces
   // the original absolute-green behavior exactly.
   const baseline = options.baselineFailures instanceof Set ? options.baselineFailures : new Set();
@@ -91,8 +109,9 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
   // Loop-invariant, so build them once. In baseline mode UNSTABLE moves from
   // "blocked" to "trusted": it is exactly what GitHub reports for a red
   // non-required check, and those failures are cleared as pre-existing below.
-  // BLOCKED/DIRTY/BEHIND stay blocking either way — they mean GitHub itself
-  // will refuse the merge, which no baseline can excuse.
+  // BLOCKED is only trusted when all failed checks are known baseline failures
+  // and GitHub still says the branch is mergeable; DIRTY/BEHIND stay blocking
+  // either way.
   const blockedStates = baselineMode
     ? new Set([...BLOCKED_STATES].filter((state) => state !== 'UNSTABLE'))
     : BLOCKED_STATES;
@@ -108,6 +127,16 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
   while (true) {
     const snap = getStatus(repoRoot, branch);
     if (!snap) return { status: 'no-pr' };
+    // A verdict about the wrong commit is not a verdict. Judge nothing — not
+    // green, not even a failure — until the PR head matches the commit we
+    // pushed. Fail closed on a missing headSha too: unable to prove the rollup
+    // is current is the same risk as knowing it is not.
+    if (expectHeadSha && snap.headSha !== expectHeadSha) {
+      if (now() >= deadline) return { status: 'stale-head', pr: snap };
+      sleep(pollSeconds);
+      // eslint-disable-next-line no-continue
+      continue;
+    }
     const c = snap.checks;
     // A failed or cancelled check is terminal and never a pass — UNLESS it is
     // already failing on the base branch, in which case this change did not
@@ -118,20 +147,38 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // `NaN > 0` is false — which would wave a failing check straight through.
     const count = (key) => Number(c[key]) || 0;
     const failingCount = count('failed') + count('cancelled');
+    const settled = count('pending') === 0;
+    const namedFailures = failedNames.length === failingCount;
+    const novelFailures = failedNames.filter((name) => !baseline.has(name));
+    const onlyBaselineFailures = baselineMode
+      && failingCount > 0
+      && namedFailures
+      && novelFailures.length === 0;
     if (failingCount > 0) {
-      const named = failedNames.length === failingCount;
-      const novel = failedNames.filter((name) => !baseline.has(name));
-      if (!baselineMode || !named || novel.length > 0) {
-        return { status: 'checks-failed', pr: snap, newFailures: novel };
+      if (!baselineMode || !namedFailures || novelFailures.length > 0) {
+        return { status: 'checks-failed', pr: snap, newFailures: novelFailures };
       }
     }
 
     const mss = snap.mergeStateStatus;
-    // GitHub says this can't merge as-is and won't self-resolve within a finish run.
-    if (mss && blockedStates.has(mss)) return { status: 'merge-blocked', pr: snap };
-
-    const settled = c.pending === 0;
     const mergeable = !snap.isDraft && snap.mergeable === 'MERGEABLE';
+    // In baseline mode GitHub can still call the PR BLOCKED solely because a
+    // known-red, non-required check failed. If every failure is already in the
+    // base baseline and GitHub still says the branch is mergeable, that state is
+    // the same "no new failures" verdict as UNSTABLE.
+    const baselineBlockedByKnownChecks = mss === 'BLOCKED' && mergeable && onlyBaselineFailures;
+    // GitHub says this can't merge as-is. Some BLOCKED/UNSTABLE snapshots are
+    // just "required checks are still pending" immediately after a draft PR is
+    // promoted to ready, so wait for pending checks to settle before treating
+    // those states as terminal. DIRTY/BEHIND do not self-resolve within a finish
+    // run and stay immediate blockers.
+    if (mss && (mss === 'DIRTY' || mss === 'BEHIND')) {
+      return { status: 'merge-blocked', pr: snap };
+    }
+    if (mss && blockedStates.has(mss) && settled && !baselineBlockedByKnownChecks) {
+      return { status: 'merge-blocked', pr: snap };
+    }
+
     const hasChecks = c.total > 0;
     // Trust GitHub's CLEAN/HAS_HOOKS verdict; with no verdict, demand all-success
     // (every check SUCCESS, zero `other`/ambiguous states).
@@ -143,7 +190,7 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     const allAccountedFor = baselineMode
       ? count('other') === 0 && count('success') + failingCount === count('total')
       : count('other') === 0 && count('success') === count('total');
-    const trusted = mss ? trustedStates.has(mss) : allAccountedFor;
+    const trusted = baselineBlockedByKnownChecks || (mss ? trustedStates.has(mss) : allAccountedFor);
 
     if (settled && mergeable && hasChecks && trusted) return { status: 'green', pr: snap };
     if (settled && mergeable && !hasChecks && (mss ? MERGEABLE_STATES.has(mss) : true)) {
@@ -194,11 +241,13 @@ function runReviewGate({
   const openPullRequest = deps.openPullRequest || pr.openPullRequest;
   const runPrReview = deps.runPrReview || prReview.runPrReview;
   const markReady = deps.markPullRequestReady || pr.markPullRequestReady;
+  const markDraft = deps.markPullRequestDraft || pr.markPullRequestDraft;
   const evaluate = deps.evaluateReviewGate || prReview.evaluateReviewGate;
   const waitGreen = deps.waitForGreenCi || waitForGreenCi;
   const readBaseline = deps.baselineFailures || pr.baselineFailures;
   const runFix = deps.runReviewFix || reviewFix.runReviewFix;
   const pushBranch = deps.pushBranch || pr.pushBranch;
+  const headSha = deps.readHeadSha || readHeadSha;
 
   const provider = options.reviewProvider || 'codex';
   const requireChecks = !options.allowNoChecks;
@@ -209,11 +258,32 @@ function runReviewGate({
   // holds it — repoRoot may be the primary checkout sitting on a protected base.
   const fixCwd = worktreePath || resolveWorktreeForBranch(repoRoot, branch);
 
-  // 1. Ensure a PR exists (push + open as draft so CI is deferred until the
-  //    review passes and we explicitly promote).
+  // 1. Ensure a PR exists (push + open as draft, so promoting to ready is what
+  //    starts CI and we control when that happens).
   const opened = openPullRequest({ repoRoot, branch, base: baseBranch, push: true });
   const prNumber = opened.pr.number;
   gateLog(`PR #${prNumber}: enforcing review + CI gate before merge`);
+
+  // 1b. Keep the PR draft while the review is pending by default. Draft state is
+  //     the only GitHub-side hard barrier this gate controls before its verdict:
+  //     even if CI is green, a draft PR cannot be merged manually or by an
+  //     already-armed automation. `--no-gate-serial-ci` opts into the faster but
+  //     less isolated path that promotes first so CI overlaps the review.
+  const serialCi = options.gateSerialCi !== false;
+  if (serialCi && opened.pr.isDraft === false) {
+    requireGhAction(
+      markDraft(repoRoot, prNumber),
+      `review gate: could not hold PR #${prNumber} as draft before review. Refusing to merge.`,
+    );
+    gateLog(`PR #${prNumber}: held as draft while the review runs`);
+  }
+  if (!serialCi) {
+    requireGhAction(
+      markReady(repoRoot, prNumber),
+      `review gate: could not promote PR #${prNumber} before review. Refusing to merge.`,
+    );
+    gateLog(`PR #${prNumber}: promoted to ready — CI runs alongside the review`);
+  }
 
   // 2. AI review — FAIL CLOSED. A provider error / timeout / unparseable output
   //    throws here; convert it to a block, never a silent pass.
@@ -228,9 +298,19 @@ function runReviewGate({
   // treated as repaired when its file was touched — see resolveCarriedFindings.
   const blockedPaths = new Set();
   const repairedPaths = new Set();
+  // Set once an auto-fix round pushes: from then on the CI wait may only judge
+  // that commit, never the one it replaced.
+  let pushedHeadSha = '';
   for (let round = 0; round <= maxFixRounds; round += 1) {
     try {
-      review = runPrReview({ target: repoRoot, pr: prNumber, provider, post: true });
+      review = runPrReview({
+        target: repoRoot,
+        pr: prNumber,
+        provider,
+        post: true,
+        model: options.reviewModel,
+        timeoutMs: options.reviewTimeoutMs,
+      });
     } catch (err) {
       throw new Error(
         `review gate: AI review did not complete (${err.message}). Refusing to merge. `
@@ -278,6 +358,7 @@ function runReviewGate({
       gateLog(`push after auto-fix failed: ${pushed.output}`);
       break;
     }
+    pushedHeadSha = headSha(fixCwd);
   }
 
   if (!verdict.clean) {
@@ -310,8 +391,15 @@ function runReviewGate({
     `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`,
   );
 
-  // 3. Promote draft -> ready so required CI checks fire.
-  markReady(repoRoot, prNumber);
+  // 3. Promote draft -> ready so required CI checks fire. Already done in step
+  //    1b unless serial CI held the draft barrier until the review came in clean.
+  if (serialCi) {
+    requireGhAction(
+      markReady(repoRoot, prNumber),
+      `review gate: could not promote PR #${prNumber} after a clean review. Refusing to merge.`,
+    );
+    gateLog(`PR #${prNumber}: promoted to ready after a clean review`);
+  }
 
   // 4. Wait for CI to settle green + GitHub to report mergeable. waitForGreenCi
   //    is fully fail-closed (failed/cancelled checks, blocked mergeStateStatus,
@@ -333,6 +421,7 @@ function runReviewGate({
     pollSeconds: options.gatePollSeconds,
     requireChecks,
     baselineFailures,
+    expectHeadSha: pushedHeadSha,
   });
   if (ci.status === 'checks-failed') {
     const novel = Array.isArray(ci.newFailures) && ci.newFailures.length > 0
@@ -354,6 +443,14 @@ function runReviewGate({
     throw new Error(
       `review gate: PR #${prNumber} has no CI checks configured. Refusing to merge an `
       + 'unverified PR. Pass --allow-no-checks to override.',
+    );
+  }
+  if (ci.status === 'stale-head') {
+    const seen = (ci.pr && ci.pr.headSha) || 'unknown';
+    throw new Error(
+      `review gate: PR #${prNumber} still reports head ${seen}, not the auto-fix commit `
+      + `${pushedHeadSha}. Refusing to merge — the checks GitHub is reporting describe a `
+      + 'commit that push replaced, so their green says nothing about the code being merged.',
     );
   }
   if (ci.status === 'timeout') {

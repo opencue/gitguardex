@@ -1181,6 +1181,13 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     // through on null/undefined.
     gateReview: defaults.gateReview ?? autoShip,
     reviewProvider: defaults.reviewProvider || 'codex',
+    // Empty = the provider's own default model.
+    reviewModel: defaults.reviewModel || '',
+    reviewTimeoutMs: defaults.reviewTimeoutMs,
+    // Hold CI until the review comes in clean, keeping the draft PR as the
+    // GitHub-side hard barrier while the provider runs. Slower by a full CI
+    // round-trip; `--no-gate-serial-ci` opts into overlapping CI with review.
+    gateSerialCi: defaults.gateSerialCi ?? true,
     allowNoChecks: false,
     // Gate on "no NEW failing checks vs the base branch" instead of absolute
     // green, so a repo whose base is already red can still ship unattended.
@@ -1363,6 +1370,33 @@ function parseFinishArgs(rawArgs, defaults = {}) {
       }
       options.reviewProvider = next;
       index += 1;
+      continue;
+    }
+    if (arg === '--review-model') {
+      const next = String(rawArgs[index + 1] ?? '').trim();
+      if (!next || next.startsWith('-')) {
+        throw new Error('--review-model requires a model name (e.g. sonnet)');
+      }
+      options.reviewModel = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--review-timeout-ms') {
+      const raw = rawArgs[index + 1];
+      const timeoutMs = Number.parseInt(String(raw ?? ''), 10);
+      if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+        throw new Error('--review-timeout-ms requires a positive integer');
+      }
+      options.reviewTimeoutMs = timeoutMs;
+      index += 1;
+      continue;
+    }
+    if (arg === '--gate-serial-ci') {
+      options.gateSerialCi = true;
+      continue;
+    }
+    if (arg === '--no-gate-serial-ci') {
+      options.gateSerialCi = false;
       continue;
     }
     throw new Error(`Unknown option: ${arg}`);

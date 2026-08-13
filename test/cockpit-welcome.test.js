@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { renderWelcomePage } = require('../src/cockpit/welcome');
+const { stripAnsi } = require('../src/cockpit/theme');
 
 test('renderWelcomePage snapshots the empty cockpit welcome strings', () => {
   const output = renderWelcomePage({
@@ -54,7 +55,8 @@ test('renderWelcomePage stays width bounded and plain terminal safe', () => {
   }, { width });
 
   for (const line of output.trimEnd().split('\n')) {
-    assert.equal(line.length <= width, true, `line exceeded ${width}: ${line}`);
+    const plainLine = stripAnsi(line);
+    assert.equal(plainLine.length <= width, true, `line exceeded ${width}: ${line}`);
   }
 
   assert.match(output, /guarded multi-agent cockpit/);

@@ -25,12 +25,30 @@ function splitGateReviewFlags(args) {
   let gateAutofix = false;
   let gateAutofixRounds = 1;
   let gateBaseline = false;
+  let gateSerialCi = true;
+  let reviewModel;
+  let reviewTimeoutMs;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--gate-review') {
       gateReview = true;
     } else if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
       gateReview = false;
+    } else if (arg === '--gate-serial-ci') {
+      gateSerialCi = true;
+    } else if (arg === '--no-gate-serial-ci') {
+      gateSerialCi = false;
+    } else if (arg === '--review-model') {
+      // Consume the value for the same reason as --review-provider: a bare
+      // model name left behind becomes a positional the shell script rejects.
+      reviewModel = args[index + 1] ?? '';
+      index += 1;
+    } else if (arg.startsWith('--review-model=')) {
+      reviewModel = arg.slice('--review-model='.length);
+    } else if (arg === '--review-timeout-ms' || arg.startsWith('--review-timeout-ms=')) {
+      // The shell script does not know this gx-level gate flag either.
+      reviewTimeoutMs = arg.includes('=') ? arg.slice('--review-timeout-ms='.length) : (args[index + 1] ?? '');
+      if (!arg.includes('=')) index += 1;
     } else if (arg === '--gate-baseline') {
       gateBaseline = true;
     } else if (arg === '--no-gate-baseline') {
@@ -78,8 +96,32 @@ function splitGateReviewFlags(args) {
     }
   }
 
+  if (reviewModel !== undefined) {
+    reviewModel = String(reviewModel).trim();
+    // Same fail-closed reasoning as --review-provider: a caller who named a
+    // model must not silently get the provider's default one instead.
+    if (!reviewModel || reviewModel.startsWith('-')) {
+      throw new Error('--review-model requires a model name (e.g. sonnet)');
+    }
+  }
+
+  if (reviewTimeoutMs !== undefined) {
+    reviewTimeoutMs = Number.parseInt(String(reviewTimeoutMs ?? ''), 10);
+    if (!Number.isInteger(reviewTimeoutMs) || reviewTimeoutMs <= 0) {
+      throw new Error('--review-timeout-ms requires a positive integer');
+    }
+  }
+
   return {
-    gateReview, reviewProvider, gateAutofix, gateAutofixRounds, gateBaseline, scriptArgs,
+    gateReview,
+    reviewProvider,
+    reviewModel,
+    reviewTimeoutMs,
+    gateAutofix,
+    gateAutofixRounds,
+    gateBaseline,
+    gateSerialCi,
+    scriptArgs,
   };
 }
 
@@ -103,7 +145,15 @@ function branch(rawArgs) {
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
     const {
-      gateReview, reviewProvider, gateAutofix, gateAutofixRounds, gateBaseline, scriptArgs,
+      gateReview,
+      reviewProvider,
+      reviewModel,
+      reviewTimeoutMs,
+      gateAutofix,
+      gateAutofixRounds,
+      gateBaseline,
+      gateSerialCi,
+      scriptArgs,
     } = splitGateReviewFlags(passthrough);
     // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
     // GitHub will not merge. Throwing here means the script never runs, so
@@ -120,7 +170,13 @@ function branch(rawArgs) {
         // review-gate.js falls back to its own default when this is undefined,
         // which keeps a bare --gate-review behaving exactly as before.
         options: {
-          reviewProvider, gateAutofix, gateAutofixRounds, gateBaseline,
+          reviewProvider,
+          reviewModel,
+          reviewTimeoutMs,
+          gateAutofix,
+          gateAutofixRounds,
+          gateBaseline,
+          gateSerialCi,
         },
       });
     }

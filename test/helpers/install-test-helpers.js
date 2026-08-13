@@ -16,8 +16,13 @@ function createGuardexHomeDir(prefix = 'guardex-home-') {
 }
 
 function withGuardexHome(extraEnv = {}, options = {}) {
+  const stripAgentSessionEnvByDefault =
+    options.stripAgentSessionEnv == null ? true : options.stripAgentSessionEnv;
+  const baseEnv = stripAgentSessionEnvByDefault
+    ? stripAgentSessionEnv(process.env)
+    : { ...process.env };
   return {
-    ...process.env,
+    ...baseEnv,
     GUARDEX_HOME_DIR:
       extraEnv.GUARDEX_HOME_DIR || options.guardexHomeDir || createGuardexHomeDir(),
     ...extraEnv,

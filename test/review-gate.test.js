@@ -66,7 +66,12 @@ test('waitForGreenCi waits through pending then returns green', () => {
     ...c,
     pollSeconds: 5,
     getStatus: seqStatus([
-      { checks: { failed: 0, pending: 2, total: 2 }, isDraft: false, mergeable: 'UNKNOWN' },
+      {
+        checks: { failed: 0, pending: 2, total: 2 },
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'BLOCKED',
+      },
       GREEN,
     ]),
   });
@@ -167,6 +172,47 @@ test('waitForGreenCi times out when CI never settles', () => {
   assert.equal(r.status, 'timeout');
 });
 
+test('waitForGreenCi refuses to call green on a head that is not the pushed commit', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    pollSeconds: 30,
+    timeoutSeconds: 120,
+    expectHeadSha: 'new-sha',
+    getStatus: constStatus({ ...GREEN, headSha: 'old-sha' }),
+  });
+  assert.equal(r.status, 'stale-head', 'green on the replaced commit is not green on ours');
+});
+
+test('waitForGreenCi fails closed when the snapshot carries no head sha at all', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c, pollSeconds: 30, timeoutSeconds: 120, expectHeadSha: 'new-sha', getStatus: constStatus(GREEN),
+  });
+  assert.equal(r.status, 'stale-head', 'unprovable freshness blocks, same as proven staleness');
+});
+
+test('waitForGreenCi goes green once the PR head catches up to the pushed commit', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    pollSeconds: 30,
+    timeoutSeconds: 300,
+    expectHeadSha: 'new-sha',
+    getStatus: seqStatus([
+      { ...GREEN, headSha: 'old-sha' },
+      { ...GREEN, headSha: 'new-sha' },
+    ]),
+  });
+  assert.equal(r.status, 'green');
+});
+
+test('waitForGreenCi ignores head pinning when no commit was pushed mid-run', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', { ...c, getStatus: constStatus({ ...GREEN, headSha: 'any' }) });
+  assert.equal(r.status, 'green');
+});
+
 // ---- runReviewGate orchestration (injected deps) ------------------------
 
 function gateDeps(over = {}) {
@@ -233,6 +279,27 @@ test('parseFinishArgs: --review-provider validates and --allow-no-checks parses'
   assert.throws(() => parseFinishArgs(['--review-provider', 'bogus']), /codex\|claude/);
 });
 
+test('parseFinishArgs: --review-model names the model, and demands a value', () => {
+  assert.equal(parseFinishArgs([]).reviewModel, '', 'empty means the provider default');
+  assert.equal(parseFinishArgs(['--gate-review', '--review-model', 'sonnet']).reviewModel, 'sonnet');
+  assert.throws(() => parseFinishArgs(['--review-model']), /requires a model name/);
+  assert.throws(() => parseFinishArgs(['--review-model', '--cleanup']), /requires a model name/);
+});
+
+test('parseFinishArgs: --review-timeout-ms sets the provider timeout, and demands a positive integer', () => {
+  assert.equal(parseFinishArgs([]).reviewTimeoutMs, undefined);
+  assert.equal(parseFinishArgs(['--gate-review', '--review-timeout-ms', '60000']).reviewTimeoutMs, 60_000);
+  assert.throws(() => parseFinishArgs(['--review-timeout-ms']), /positive integer/);
+  assert.throws(() => parseFinishArgs(['--review-timeout-ms', '0']), /positive integer/);
+});
+
+test('parseFinishArgs: CI waits for the review unless --no-gate-serial-ci opts into overlap', () => {
+  assert.equal(parseFinishArgs(['--gate-review']).gateSerialCi, true);
+  assert.equal(parseFinishArgs(['--gate-review'], { gateSerialCi: false }).gateSerialCi, false);
+  assert.equal(parseFinishArgs(['--gate-review', '--gate-serial-ci']).gateSerialCi, true);
+  assert.equal(parseFinishArgs(['--gate-serial-ci', '--no-gate-serial-ci']).gateSerialCi, false);
+});
+
 test('runReviewGate refuses to merge when the review was not posted', () => {
   // A verdict that never reached the PR leaves no evidence the diff was read,
   // and an empty-findings result from a provider that silently returned
@@ -258,11 +325,159 @@ test('runReviewGate names the auth cause and the artifact when nothing was poste
 });
 
 test('runReviewGate does not merge on an unposted review even with zero findings', () => {
-  let merged = false;
+  let waited = false;
   const deps = gateDeps({
     runPrReview: () => ({ findings: [], posted: undefined }),
-    markPullRequestReady: () => { merged = true; },
+    waitForGreenCi: () => { waited = true; return { status: 'green', pr: {} }; },
   });
   assert.throws(() => runReviewGate(gateArgs, deps));
-  assert.equal(merged, false, 'the PR must not even be promoted to ready');
+  // What must hold is that an unposted review never reaches the merge: the run
+  // throws before the CI wait, and runReviewGate returning is the only thing
+  // that lets a merge run.
+  assert.equal(waited, false, 'an unposted review must not reach the CI wait');
+});
+
+test('runReviewGate in serial mode does not promote a PR whose review was never posted', () => {
+  let promoted = false;
+  const deps = gateDeps({
+    runPrReview: () => ({ findings: [], posted: undefined }),
+    markPullRequestReady: () => { promoted = true; },
+  });
+  assert.throws(() => runReviewGate({ ...gateArgs, options: { gateSerialCi: true } }, deps));
+  assert.equal(promoted, false, '--gate-serial-ci spends no CI on a review that never landed');
+});
+
+// ---- CI/review overlap --------------------------------------------------
+
+/** A runPrReview that returns each review in turn, then repeats the last. */
+function seqReviews(reviews) {
+  let i = 0;
+  return () => reviews[Math.min(i++, reviews.length - 1)];
+}
+
+/** Deps that record the order of the calls the overlap changes. */
+function orderedDeps(over = {}) {
+  const calls = [];
+  const deps = gateDeps({
+    markPullRequestDraft: () => { calls.push('draft'); return { ok: true }; },
+    markPullRequestReady: () => { calls.push('ready'); },
+    runPrReview: () => { calls.push('review'); return { findings: [], posted: true }; },
+    waitForGreenCi: () => { calls.push('wait'); return { status: 'green', pr: {} }; },
+    ...over,
+  });
+  return { calls, deps };
+}
+
+test('runReviewGate holds CI until the review is clean by default', () => {
+  const { calls, deps } = orderedDeps();
+  runReviewGate(gateArgs, deps);
+  assert.deepEqual(calls, ['review', 'ready', 'wait']);
+});
+
+test('runReviewGate redrafts an existing ready PR while the default serial review runs', () => {
+  const { calls, deps } = orderedDeps();
+  deps.openPullRequest = () => ({ pr: { number: 42, isDraft: false } });
+  runReviewGate(gateArgs, deps);
+  assert.deepEqual(calls, ['draft', 'review', 'ready', 'wait']);
+});
+
+test('runReviewGate fails closed when it cannot redraft before a serial review', () => {
+  let reviewed = false;
+  let waited = false;
+  const deps = gateDeps({
+    openPullRequest: () => ({ pr: { number: 42, isDraft: false } }),
+    markPullRequestDraft: () => ({ ok: false, output: 'draft failed' }),
+    runPrReview: () => {
+      reviewed = true;
+      return { findings: [], posted: true };
+    },
+    waitForGreenCi: () => {
+      waited = true;
+      return { status: 'green', pr: {} };
+    },
+  });
+
+  assert.throws(
+    () => runReviewGate(gateArgs, deps),
+    /could not hold PR #42 as draft before review[\s\S]*draft failed/,
+  );
+  assert.equal(reviewed, false);
+  assert.equal(waited, false);
+});
+
+test('runReviewGate with --no-gate-serial-ci promotes before the review', () => {
+  const { calls, deps } = orderedDeps();
+  runReviewGate({ ...gateArgs, options: { gateSerialCi: false } }, deps);
+  assert.deepEqual(calls, ['ready', 'review', 'wait']);
+});
+
+test('runReviewGate fails closed when it cannot promote before an overlapping review', () => {
+  let reviewed = false;
+  let waited = false;
+  const deps = gateDeps({
+    markPullRequestReady: () => ({ ok: false, output: 'ready failed' }),
+    runPrReview: () => {
+      reviewed = true;
+      return { findings: [], posted: true };
+    },
+    waitForGreenCi: () => {
+      waited = true;
+      return { status: 'green', pr: {} };
+    },
+  });
+
+  assert.throws(
+    () => runReviewGate({ ...gateArgs, options: { gateSerialCi: false } }, deps),
+    /could not promote PR #42 before review[\s\S]*ready failed/,
+  );
+  assert.equal(reviewed, false);
+  assert.equal(waited, false);
+});
+
+test('runReviewGate still blocks a dirty review after promoting early', () => {
+  const { calls, deps } = orderedDeps({
+    runPrReview: () => {
+      calls.push('review');
+      return { findings: [{ severity: 'high', path: 'a.js', line: 5, message: 'bug' }], posted: true };
+    },
+  });
+  assert.throws(() => runReviewGate({ ...gateArgs, options: { gateSerialCi: false } }, deps), /blocking finding/);
+  assert.deepEqual(calls, ['ready', 'review'], 'promoted, reviewed, then blocked before the CI wait');
+});
+
+test('runReviewGate pins the CI wait to the commit an auto-fix pushed', () => {
+  let seenExpect = null;
+  const deps = gateDeps({
+    runPrReview: seqReviews([
+      { findings: [{ severity: 'high', path: 'a.js', line: 1, message: 'bug' }], posted: true },
+      { findings: [], posted: true },
+    ]),
+    runReviewFix: () => ({ status: 'fixed', changedFiles: ['a.js'] }),
+    pushBranch: () => ({ ok: true }),
+    readHeadSha: () => 'sha-after-fix',
+    waitForGreenCi: (_r, _b, opts) => { seenExpect = opts.expectHeadSha; return { status: 'green', pr: {} }; },
+  });
+  runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps);
+  assert.equal(seenExpect, 'sha-after-fix');
+});
+
+test('runReviewGate passes review model and timeout through to the provider runner', () => {
+  let seen = null;
+  const deps = gateDeps({
+    runPrReview: (args) => {
+      seen = args;
+      return { findings: [], posted: true };
+    },
+  });
+  runReviewGate({
+    ...gateArgs,
+    options: { reviewModel: 'sonnet', reviewTimeoutMs: 60_000 },
+  }, deps);
+  assert.equal(seen.model, 'sonnet');
+  assert.equal(seen.timeoutMs, 60_000);
+});
+
+test('runReviewGate blocks when the PR head never catches up to the auto-fix commit', () => {
+  const deps = gateDeps({ waitForGreenCi: () => ({ status: 'stale-head', pr: { headSha: 'old-sha' } }) });
+  assert.throws(() => runReviewGate(gateArgs, deps), /still reports head old-sha/);
 });
