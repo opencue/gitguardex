@@ -431,6 +431,16 @@ function markPullRequestReady(repoRoot, prNumber) {
   };
 }
 
+function markPullRequestDraft(repoRoot, prNumber) {
+  const result = run(GH_BIN, ['pr', 'ready', '--undo', String(prNumber)], {
+    cwd: repoRoot, allowFailure: true,
+  });
+  return {
+    ok: result.status === 0,
+    output: ((result.stdout || '') + (result.stderr || '')).trim(),
+  };
+}
+
 /**
  * Watch a PR's CI + merge state until it merges, fails, or times out.
  *
@@ -513,6 +523,7 @@ module.exports = {
   baselineFailures,
   enableAutoMerge,
   markPullRequestReady,
+  markPullRequestDraft,
   watchPullRequest,
   resolveRepoAndBranch,
   defaultPrTitleFromCommit,

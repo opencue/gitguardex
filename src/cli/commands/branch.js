@@ -25,7 +25,7 @@ function splitGateReviewFlags(args) {
   let gateAutofix = false;
   let gateAutofixRounds = 1;
   let gateBaseline = false;
-  let gateSerialCi = false;
+  let gateSerialCi = true;
   let reviewModel;
   let reviewTimeoutMs;
   for (let index = 0; index < args.length; index += 1) {

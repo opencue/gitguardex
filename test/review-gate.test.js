@@ -288,8 +288,8 @@ test('parseFinishArgs: --review-timeout-ms sets the provider timeout, and demand
   assert.throws(() => parseFinishArgs(['--review-timeout-ms', '0']), /positive integer/);
 });
 
-test('parseFinishArgs: CI overlaps the review unless --gate-serial-ci says otherwise', () => {
-  assert.equal(parseFinishArgs(['--gate-review']).gateSerialCi, false);
+test('parseFinishArgs: CI waits for the review unless --no-gate-serial-ci opts into overlap', () => {
+  assert.equal(parseFinishArgs(['--gate-review']).gateSerialCi, true);
   assert.equal(parseFinishArgs(['--gate-review', '--gate-serial-ci']).gateSerialCi, true);
   assert.equal(parseFinishArgs(['--gate-serial-ci', '--no-gate-serial-ci']).gateSerialCi, false);
 });
@@ -325,10 +325,9 @@ test('runReviewGate does not merge on an unposted review even with zero findings
     waitForGreenCi: () => { waited = true; return { status: 'green', pr: {} }; },
   });
   assert.throws(() => runReviewGate(gateArgs, deps));
-  // The gate promotes the PR early so CI overlaps the review, so "was it
-  // promoted" no longer says whether the review was accepted. What must hold is
-  // that an unposted review never reaches the merge: the run throws before the
-  // CI wait, and runReviewGate returning is the only thing that lets a merge run.
+  // What must hold is that an unposted review never reaches the merge: the run
+  // throws before the CI wait, and runReviewGate returning is the only thing
+  // that lets a merge run.
   assert.equal(waited, false, 'an unposted review must not reach the CI wait');
 });
 
@@ -354,6 +353,7 @@ function seqReviews(reviews) {
 function orderedDeps(over = {}) {
   const calls = [];
   const deps = gateDeps({
+    markPullRequestDraft: () => { calls.push('draft'); return { ok: true }; },
     markPullRequestReady: () => { calls.push('ready'); },
     runPrReview: () => { calls.push('review'); return { findings: [], posted: true }; },
     waitForGreenCi: () => { calls.push('wait'); return { status: 'green', pr: {} }; },
@@ -362,16 +362,23 @@ function orderedDeps(over = {}) {
   return { calls, deps };
 }
 
-test('runReviewGate promotes before the review by default, so CI and the review overlap', () => {
+test('runReviewGate holds CI until the review is clean by default', () => {
   const { calls, deps } = orderedDeps();
   runReviewGate(gateArgs, deps);
-  assert.deepEqual(calls, ['ready', 'review', 'wait']);
+  assert.deepEqual(calls, ['review', 'ready', 'wait']);
 });
 
-test('runReviewGate with gateSerialCi holds CI until the review is clean', () => {
+test('runReviewGate redrafts an existing ready PR while the default serial review runs', () => {
   const { calls, deps } = orderedDeps();
-  runReviewGate({ ...gateArgs, options: { gateSerialCi: true } }, deps);
-  assert.deepEqual(calls, ['review', 'ready', 'wait']);
+  deps.openPullRequest = () => ({ pr: { number: 42, isDraft: false } });
+  runReviewGate(gateArgs, deps);
+  assert.deepEqual(calls, ['draft', 'review', 'ready', 'wait']);
+});
+
+test('runReviewGate with --no-gate-serial-ci promotes before the review', () => {
+  const { calls, deps } = orderedDeps();
+  runReviewGate({ ...gateArgs, options: { gateSerialCi: false } }, deps);
+  assert.deepEqual(calls, ['ready', 'review', 'wait']);
 });
 
 test('runReviewGate still blocks a dirty review after promoting early', () => {
@@ -381,7 +388,7 @@ test('runReviewGate still blocks a dirty review after promoting early', () => {
       return { findings: [{ severity: 'high', path: 'a.js', line: 5, message: 'bug' }], posted: true };
     },
   });
-  assert.throws(() => runReviewGate(gateArgs, deps), /blocking finding/);
+  assert.throws(() => runReviewGate({ ...gateArgs, options: { gateSerialCi: false } }, deps), /blocking finding/);
   assert.deepEqual(calls, ['ready', 'review'], 'promoted, reviewed, then blocked before the CI wait');
 });
 

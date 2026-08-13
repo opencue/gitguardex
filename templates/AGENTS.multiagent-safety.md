@@ -111,11 +111,11 @@ What each flag buys, and why they are not optional in an unattended run:
 
 Two knobs for how long the gate takes, neither of which changes what it enforces:
 
-- CI runs **alongside** the review by default: the PR is promoted to ready before
-  the review starts, so the gate costs `max(review, CI)` rather than
-  `review + CI`. Both must still pass before the merge. `--gate-serial-ci` goes
-  back to promoting only after a clean review — slower, but it spends no CI
-  minutes on a PR the review is going to block.
+- CI waits for the review by default: the PR remains draft while the provider
+  runs, preserving GitHub's hard "draft PRs cannot merge" barrier until the
+  verdict is clean. `--no-gate-serial-ci` opts into promoting before review so
+  CI overlaps the review — faster, but it leaves a ready PR while the review is
+  still pending.
 - `--review-model <name>` (or `GUARDEX_REVIEW_MODEL`) picks the review model, and
   `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` name the binary to run
   — useful when the provider's name on PATH resolves to a launcher whose startup

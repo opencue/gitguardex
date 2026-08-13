@@ -226,12 +226,21 @@ test('branch finish forwards --gate-serial-ci and strips it from the shell argv'
   assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
-test('branch finish overlaps CI with the review when --gate-serial-ci is absent', () => {
+test('branch finish keeps serial CI as the safe default when --gate-serial-ci is absent', () => {
   const { branch, calls } = loadBranchWithStubs();
 
   branch(['finish', '--via-pr', '--gate-review']);
 
+  assert.equal(calls.gate[0].options.gateSerialCi, true);
+});
+
+test('branch finish forwards --no-gate-serial-ci as explicit overlap opt-in', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--via-pr', '--gate-review', '--no-gate-serial-ci']);
+
   assert.equal(calls.gate[0].options.gateSerialCi, false);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
 // Fail closed on a typo rather than silently falling back to codex: a caller who

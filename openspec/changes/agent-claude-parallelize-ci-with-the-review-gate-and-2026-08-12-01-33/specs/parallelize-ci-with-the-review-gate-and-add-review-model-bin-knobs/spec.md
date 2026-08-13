@@ -1,21 +1,29 @@
 ## ADDED Requirements
 
-### Requirement: CI runs alongside the review gate
-The merge gate SHALL promote the pull request to ready before running the AI
-review, so CI and the review proceed concurrently. The gate SHALL still require
-both a clean review and green CI before it returns, and SHALL throw on either
-failure so no merge runs.
+### Requirement: The review gate preserves the draft barrier by default
+The merge gate SHALL keep the pull request in draft while the AI review runs by
+default, preserving GitHub's draft-PR merge block until the review verdict is
+known. The gate SHALL still require both a clean review and green CI before it
+returns, and SHALL throw on either failure so no merge runs.
 
-#### Scenario: Default gate overlaps CI with the review
-- **WHEN** `gx branch finish --gate-review` runs without `--gate-serial-ci`
+#### Scenario: Default gate holds CI until the review is clean
+- **WHEN** `gx branch finish --gate-review` runs without `--no-gate-serial-ci`
+- **THEN** the pull request is promoted to ready only after the review provider
+  posts a clean review
+- **AND** a review that was never posted leaves the pull request unpromoted
+
+#### Scenario: Existing ready PRs are redrafted before review
+- **WHEN** `gx branch finish --gate-review` finds an existing pull request that
+  is no longer draft
+- **THEN** the gate attempts to return it to draft before invoking the review
+  provider
+- **AND** a failed redraft attempt blocks the merge
+
+#### Scenario: Explicit parallel mode overlaps CI with the review
+- **WHEN** `--no-gate-serial-ci` is passed
 - **THEN** the pull request is promoted to ready before the review provider runs
 - **AND** the CI wait begins only after the review returns a clean verdict
 - **AND** a blocking finding still throws before the CI wait is reached
-
-#### Scenario: Serial mode holds CI back
-- **WHEN** `--gate-serial-ci` is passed
-- **THEN** the pull request is promoted only after the review comes in clean
-- **AND** a review that was never posted leaves the pull request unpromoted
 
 ### Requirement: The CI verdict SHALL describe the commit being merged
 When the gate itself pushes a commit during the run, the CI wait SHALL be

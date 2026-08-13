@@ -28,6 +28,14 @@ function gateLog(message) {
   console.log(`[${TOOL_NAME}] [gate] ${message}`);
 }
 
+function requireGhAction(result, failureMessage) {
+  if (result && result.ok === false) {
+    throw new Error(
+      `${failureMessage}${result.output ? `\n${result.output}` : ''}`,
+    );
+  }
+}
+
 /**
  * A review that never reached the PR does not count as a review.
  *
@@ -214,6 +222,7 @@ function runReviewGate({
   const openPullRequest = deps.openPullRequest || pr.openPullRequest;
   const runPrReview = deps.runPrReview || prReview.runPrReview;
   const markReady = deps.markPullRequestReady || pr.markPullRequestReady;
+  const markDraft = deps.markPullRequestDraft || pr.markPullRequestDraft;
   const evaluate = deps.evaluateReviewGate || prReview.evaluateReviewGate;
   const waitGreen = deps.waitForGreenCi || waitForGreenCi;
   const readBaseline = deps.baselineFailures || pr.baselineFailures;
@@ -236,15 +245,24 @@ function runReviewGate({
   const prNumber = opened.pr.number;
   gateLog(`PR #${prNumber}: enforcing review + CI gate before merge`);
 
-  // 1b. Start CI now, so it runs ALONGSIDE the review instead of after it. Both
-  //     still have to pass before the merge — this changes when CI starts, never
-  //     whether it must be green — but the gate now costs max(review, CI)
-  //     instead of review + CI. The cost is CI minutes spent on a PR the review
-  //     may still block; --gate-serial-ci buys those back by promoting only
-  //     after a clean review.
-  const serialCi = Boolean(options.gateSerialCi);
+  // 1b. Keep the PR draft while the review is pending by default. Draft state is
+  //     the only GitHub-side hard barrier this gate controls before its verdict:
+  //     even if CI is green, a draft PR cannot be merged manually or by an
+  //     already-armed automation. `--no-gate-serial-ci` opts into the faster but
+  //     less isolated path that promotes first so CI overlaps the review.
+  const serialCi = options.gateSerialCi !== false;
+  if (serialCi && opened.pr.isDraft === false) {
+    requireGhAction(
+      markDraft(repoRoot, prNumber),
+      `review gate: could not hold PR #${prNumber} as draft before review. Refusing to merge.`,
+    );
+    gateLog(`PR #${prNumber}: held as draft while the review runs`);
+  }
   if (!serialCi) {
-    markReady(repoRoot, prNumber);
+    requireGhAction(
+      markReady(repoRoot, prNumber),
+      `review gate: could not promote PR #${prNumber} before review. Refusing to merge.`,
+    );
     gateLog(`PR #${prNumber}: promoted to ready — CI runs alongside the review`);
   }
 
@@ -355,8 +373,14 @@ function runReviewGate({
   );
 
   // 3. Promote draft -> ready so required CI checks fire. Already done in step
-  //    1b unless --gate-serial-ci held CI back until the review came in clean.
-  if (serialCi) markReady(repoRoot, prNumber);
+  //    1b unless serial CI held the draft barrier until the review came in clean.
+  if (serialCi) {
+    requireGhAction(
+      markReady(repoRoot, prNumber),
+      `review gate: could not promote PR #${prNumber} after a clean review. Refusing to merge.`,
+    );
+    gateLog(`PR #${prNumber}: promoted to ready after a clean review`);
+  }
 
   // 4. Wait for CI to settle green + GitHub to report mergeable. waitForGreenCi
   //    is fully fail-closed (failed/cancelled checks, blocked mergeStateStatus,
