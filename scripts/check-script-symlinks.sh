@@ -73,26 +73,30 @@ while IFS= read -r path; do
   [[ -n "$path" ]] && hook_symlinks+=("$path")
 done < <(git ls-files -- '.codex/hooks/*.py')
 
+# The loop is guarded rather than run on a possibly-empty array: bash < 4.4
+# (macOS system bash 3.2) treats "${arr[@]}" on an empty array as an unbound
+# variable under `set -u`, which would crash here instead of reporting the
+# problem below.
 if [[ ${#hook_symlinks[@]} -eq 0 ]]; then
   problems+=("no tracked hooks found under .codex/hooks/ (expected the .claude/hooks/ mirror)")
+else
+  for path in "${hook_symlinks[@]}"; do
+    if [[ ! -L "$path" ]]; then
+      problems+=("not a symlink: $path")
+      continue
+    fi
+    expected_target="../../.claude/hooks/$(basename "$path")"
+    target="$(readlink "$path")"
+    if [[ "$target" != "$expected_target" ]]; then
+      problems+=("wrong symlink target: $path -> $target (expected $expected_target)")
+      continue
+    fi
+    if [[ ! -f "$path" ]]; then
+      problems+=("symlink dangling (target file missing): $path -> $target")
+      continue
+    fi
+  done
 fi
-
-for path in "${hook_symlinks[@]}"; do
-  if [[ ! -L "$path" ]]; then
-    problems+=("not a symlink: $path")
-    continue
-  fi
-  expected_target="../../.claude/hooks/$(basename "$path")"
-  target="$(readlink "$path")"
-  if [[ "$target" != "$expected_target" ]]; then
-    problems+=("wrong symlink target: $path -> $target (expected $expected_target)")
-    continue
-  fi
-  if [[ ! -f "$path" ]]; then
-    problems+=("symlink dangling (target file missing): $path -> $target")
-    continue
-  fi
-done
 
 if [[ ${#problems[@]} -gt 0 ]]; then
   echo "[check-script-symlinks] FAIL: ${#problems[@]} problem(s) detected." >&2
