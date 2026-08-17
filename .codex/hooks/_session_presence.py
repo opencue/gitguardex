@@ -1,0 +1,1 @@
+../../.claude/hooks/_session_presence.py
