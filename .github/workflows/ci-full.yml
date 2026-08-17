@@ -53,7 +53,7 @@ jobs:
       - name: Static check CLI entrypoint
         run: node --check bin/multiagent-safety.js
 
-      - name: Check scripts/ ↔ templates/scripts/ symlink parity
+      - name: Check mirrored-tree symlink parity (scripts/, .codex/hooks/)
         run: bash scripts/check-script-symlinks.sh
 
       - name: Package dry run
