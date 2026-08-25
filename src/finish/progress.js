@@ -15,6 +15,7 @@ const SYMBOLS = {
   complete: '✅',
   skipped: '⏭',
   failed: '❌',
+  finished: '🏁',
 };
 
 /**
@@ -56,6 +57,7 @@ function createFinishProgress({ branch, baseBranch, write } = {}) {
     complete: (id, detail) => update(id, 'complete', detail),
     skip: (id, detail) => update(id, 'skipped', detail),
     fail: (id, detail) => update(id, 'failed', detail),
+    finish: (id, detail) => update(id, 'finished', detail),
   };
 }
 

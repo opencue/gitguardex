@@ -97,6 +97,7 @@ finish_progress() {
     complete) symbol="✅" ;;
     skipped) symbol="⏭" ;;
     failed) symbol="❌" ;;
+    finished) symbol="🏁" ;;
   esac
   if [[ "$stage" == "cleanup" && "$state" != "running" ]]; then
     connector="╰─"
@@ -1712,7 +1713,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
   else
     echo "[agent-branch-finish] Merged '${SOURCE_BRANCH}' into '${BASE_BRANCH}' via ${merge_status} flow and ${kept_branch_summary:-cleaned source branch/worktree}."
   fi
-  finish_progress complete cleanup "finished"
+  finish_progress finished cleanup "best-effort cleanup finished; inspect warnings above"
 else
   pivot_to_repo_root_before_prune
   if ! run_guardex_prune --base "$BASE_BRANCH"; then
