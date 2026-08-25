@@ -21,11 +21,13 @@ function stableDetailsUrl(value) {
   try {
     const url = new URL(String(value || ''));
     const volatileSegment = /^(?:\d+|[0-9a-f]{7,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i;
-    const pathname = url.pathname
-      .split('/')
-      .map((segment) => (volatileSegment.test(segment) ? ':id' : segment))
-      .join('/');
-    return `${url.origin}${pathname}`;
+    const segments = url.pathname.split('/');
+    let lastSegment = segments.length - 1;
+    while (lastSegment >= 0 && !segments[lastSegment]) lastSegment -= 1;
+    if (lastSegment >= 0 && volatileSegment.test(segments[lastSegment])) {
+      segments[lastSegment] = ':id';
+    }
+    return `${url.origin}${segments.join('/')}`;
   } catch (_error) {
     return '';
   }
