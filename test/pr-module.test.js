@@ -12,9 +12,17 @@ const path = require('node:path');
 
 const prModule = require('../src/pr');
 
+function runGit(cwd, ...args) {
+  return cp.spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH: '1' },
+  });
+}
+
 function makeRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-'));
-  const run = (...args) => cp.spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  const run = (...args) => runGit(dir, ...args);
   assert.equal(run('init', '-q', '-b', 'main').status, 0);
   assert.equal(run('config', 'user.email', 'test@example.com').status, 0);
   assert.equal(run('config', 'user.name', 'Test').status, 0);
@@ -35,10 +43,10 @@ function makeRepo() {
 test('defaultPrTitleFromCommit returns latest commit subject', () => {
   const repoRoot = makeRepo();
   try {
-    cp.spawnSync('git', ['checkout', '-b', 'agent/test/lane'], { cwd: repoRoot });
+    runGit(repoRoot, 'checkout', '-b', 'agent/test/lane');
     fs.writeFileSync(path.join(repoRoot, 'b.txt'), 'b\n');
-    cp.spawnSync('git', ['add', '.'], { cwd: repoRoot });
-    cp.spawnSync('git', ['commit', '-m', 'feat: add b feature'], { cwd: repoRoot });
+    runGit(repoRoot, 'add', '.');
+    runGit(repoRoot, 'commit', '-m', 'feat: add b feature');
     const title = prModule.defaultPrTitleFromCommit(repoRoot, 'agent/test/lane');
     assert.equal(title, 'feat: add b feature');
   } finally {
@@ -49,13 +57,13 @@ test('defaultPrTitleFromCommit returns latest commit subject', () => {
 test('defaultPrBodyFromCommits lists commits between base and head', () => {
   const repoRoot = makeRepo();
   try {
-    cp.spawnSync('git', ['checkout', '-b', 'agent/test/lane'], { cwd: repoRoot });
+    runGit(repoRoot, 'checkout', '-b', 'agent/test/lane');
     fs.writeFileSync(path.join(repoRoot, 'a.txt'), 'a\n');
-    cp.spawnSync('git', ['add', '.'], { cwd: repoRoot });
-    cp.spawnSync('git', ['commit', '-m', 'feat: add a'], { cwd: repoRoot });
+    runGit(repoRoot, 'add', '.');
+    runGit(repoRoot, 'commit', '-m', 'feat: add a');
     fs.writeFileSync(path.join(repoRoot, 'b.txt'), 'b\n');
-    cp.spawnSync('git', ['add', '.'], { cwd: repoRoot });
-    cp.spawnSync('git', ['commit', '-m', 'feat: add b'], { cwd: repoRoot });
+    runGit(repoRoot, 'add', '.');
+    runGit(repoRoot, 'commit', '-m', 'feat: add b');
     const body = prModule.defaultPrBodyFromCommits(repoRoot, 'agent/test/lane', 'main');
     assert.match(body, /## Summary/);
     assert.match(body, /- feat: add b/);
@@ -69,7 +77,7 @@ test('defaultPrBodyFromCommits lists commits between base and head', () => {
 test('resolveRepoAndBranch returns the repo root and current branch', () => {
   const repoRoot = makeRepo();
   try {
-    cp.spawnSync('git', ['checkout', '-b', 'agent/test/lane'], { cwd: repoRoot });
+    runGit(repoRoot, 'checkout', '-b', 'agent/test/lane');
     const { repoRoot: detected, branch } = prModule.resolveRepoAndBranch(repoRoot);
     assert.equal(detected, repoRoot);
     assert.equal(branch, 'agent/test/lane');
@@ -106,4 +114,68 @@ test('ghAuthStatus returns an object even when gh is missing', () => {
   const status = prModule.ghAuthStatus();
   assert.equal(typeof status.authenticated, 'boolean');
   assert.equal(typeof status.output, 'string');
+});
+
+test('getPullRequestStatus ignores cancelled workflow runs superseded by a newer success', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-rollup-'));
+  const fakeGh = path.join(fixtureRoot, 'gh');
+  const response = [{
+    number: 710,
+    url: 'https://example.test/pr/710',
+    state: 'OPEN',
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
+    reviewDecision: '',
+    title: 'test',
+    headRefName: 'agent/test/lane',
+    headRefOid: 'abc123',
+    baseRefName: 'main',
+    statusCheckRollup: [
+      {
+        __typename: 'CheckRun',
+        name: 'test (node 20)',
+        workflowName: 'CI',
+        status: 'COMPLETED',
+        conclusion: 'CANCELLED',
+        startedAt: '2026-08-25T07:42:00Z',
+      },
+      {
+        __typename: 'CheckRun',
+        name: 'test (node 20)',
+        workflowName: 'CI',
+        status: 'COMPLETED',
+        conclusion: 'SUCCESS',
+        startedAt: '2026-08-25T07:42:52Z',
+      },
+    ],
+  }];
+  fs.writeFileSync(fakeGh, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(response)}'\n`);
+  fs.chmodSync(fakeGh, 0o755);
+
+  try {
+    const script = [
+      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+      "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
+    ].join('\n');
+    const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
+      encoding: 'utf8',
+      env: { ...process.env, GUARDEX_GH_BIN: fakeGh },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const status = JSON.parse(result.stdout);
+    assert.deepEqual(status.checks, {
+      success: 1,
+      failed: 0,
+      pending: 0,
+      cancelled: 0,
+      other: 0,
+      total: 1,
+    });
+    assert.deepEqual(status.failedNames, []);
+    assert.equal(status.supersededChecks, 1);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });
