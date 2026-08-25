@@ -109,14 +109,14 @@ the PR as a readable severity, location, and finding table.
 
 <p align="center">
   <a href="https://github.com/projects-kssk/Wireless_KFB_Project/pull/165">
-    <img alt="GitGuardex code-assist blocking a PR with review findings" src="./docs/images/code-assist-review-gate.png" width="920">
+    <img alt="GitGuardex code-assist blocking a PR with review findings" src="https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png" width="920">
   </a>
 </p>
 
 <p align="center">
   <sub>
     Real example: <a href="https://github.com/projects-kssk/Wireless_KFB_Project/pull/165">Wireless_KFB_Project PR #165</a>
-    · <a href="./docs/images/code-assist-review-gate.png">open the full-size screenshot</a>
+    · <a href="https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png">open the full-size screenshot</a>
   </sub>
 </p>
 
