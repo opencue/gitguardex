@@ -58,6 +58,11 @@ test('the provider spawn is bounded — an agent review cannot hang the gate for
     const provider = providerCall(calls);
     assert.ok(provider, 'the provider must actually be invoked');
     assert.equal(provider.options.timeout, 900_000);
+    assert.deepEqual(
+      provider.options.stdio,
+      ['ignore', 'pipe', 'inherit'],
+      'provider progress streams live on stderr while stdout stays parseable',
+    );
   });
 });
 
