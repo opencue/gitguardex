@@ -111,13 +111,13 @@ What each flag buys, and why they are not optional in an unattended run:
   It gates on "this change adds no NEW failing check" instead of absolute green,
   comparing against the base branch and the last merged PR.
 
-Two knobs for how long the gate takes, neither of which changes what it enforces:
+Two knobs for how long the gate takes:
 
-- CI waits for the review by default: the PR remains draft while the provider
-  runs, preserving GitHub's hard "draft PRs cannot merge" barrier until the
-  verdict is clean. `--no-gate-serial-ci` opts into promoting before review so
-  CI overlaps the review — faster, but it leaves a ready PR while the review is
-  still pending.
+- CI overlaps the AI review by default, and a normal green gate reuses that CI
+  verdict instead of repeating the repository-wide local preflight afterwards.
+  `--gate-serial-ci` restores the stricter, slower sequence: the PR remains draft
+  while the provider runs, preserving GitHub's hard "draft PRs cannot merge"
+  barrier until the verdict is clean, and the local preflight is retained.
 - `--review-model <name>` (or `GUARDEX_REVIEW_MODEL`) picks the review model, and
   `GUARDEX_REVIEW_CLAUDE_BIN` / `GUARDEX_REVIEW_CODEX_BIN` name the binary to run
   — useful when the provider's name on PATH resolves to a launcher whose startup

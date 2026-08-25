@@ -55,6 +55,21 @@ const { runReviewGate } = require('./review-gate');
  */
 
 /**
+ * Whether the legacy branch-finish script can skip its full local preflight.
+ * The main finish path has already run its targeted workspace preflight. A
+ * successful fast review gate additionally proves required CI green, so
+ * repeating the repository-wide local preflight after that verdict checks no
+ * new commit. Strict serial/baseline/check-less modes retain the extra gate.
+ */
+function shouldSkipBranchPreflight(options = {}, reviewGatePassed = false) {
+  if (options.skipPreflight) return true;
+  return reviewGatePassed
+    && options.gateSerialCi === false
+    && options.allowNoChecks !== true
+    && options.gateBaseline !== true;
+}
+
+/**
  * Outcome of an auto-commit attempt for a single branch.
  *
  * @typedef {Object} AutoCommitResult
@@ -499,10 +514,19 @@ function finish(rawArgs, defaults = {}) {
       // Opt-in merge gate (--gate-review / gx ship): enforce a clean AI review +
       // green CI + GitHub-mergeable verdict BEFORE the shell merge runs. Throws on
       // failure, which the catch below turns into a finish failure (no merge).
+      let reviewGatePassed = false;
       if (options.mergeMode === 'pr' && options.gateReview) {
         runReviewGate({
           repoRoot, worktreePath, branch, baseBranch, options,
         });
+        reviewGatePassed = true;
+      }
+
+      if (shouldSkipBranchPreflight(options, reviewGatePassed)) {
+        finishArgs.push('--no-preflight');
+        if (!options.skipPreflight) {
+          console.log(`[${TOOL_NAME}] [preflight] required CI is green; skipping duplicate post-gate local preflight`);
+        }
       }
 
       // Streamed, not piped: the script can sit for minutes waiting on the PR
@@ -752,4 +776,5 @@ module.exports = {
   sync,
   autoCommitWorktreeForFinish,
   shouldSweepOrphans,
+  shouldSkipBranchPreflight,
 };

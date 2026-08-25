@@ -264,11 +264,11 @@ function runReviewGate({
   const prNumber = opened.pr.number;
   gateLog(`PR #${prNumber}: enforcing review + CI gate before merge`);
 
-  // 1b. Keep the PR draft while the review is pending by default. Draft state is
-  //     the only GitHub-side hard barrier this gate controls before its verdict:
-  //     even if CI is green, a draft PR cannot be merged manually or by an
-  //     already-armed automation. `--no-gate-serial-ci` opts into the faster but
-  //     less isolated path that promotes first so CI overlaps the review.
+  // 1b. The CLI's fast default promotes first so CI overlaps the review. The
+  //     strict `--gate-serial-ci` mode keeps the PR draft while review is pending:
+  //     draft state is the only GitHub-side hard barrier this gate controls before
+  //     its verdict, so even green CI cannot be merged manually or by automation.
+  //     Undefined stays serial as a fail-safe for direct/internal callers.
   const serialCi = options.gateSerialCi !== false;
   if (serialCi && opened.pr.isDraft === false) {
     requireGhAction(
