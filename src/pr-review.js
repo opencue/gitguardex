@@ -84,11 +84,11 @@ function commandForProvider(provider, prompt, settings = {}) {
     args.push('-p', prompt);
     return { cmd, args };
   }
-  const automationArgs = settings.inheritConfig === true ? [] : CODEX_AUTOMATION_ARGS;
+  const automationArgs = CODEX_AUTOMATION_ARGS;
   const requestedEffort = settings.effort || process.env.GUARDEX_REVIEW_CODEX_EFFORT;
-  const effortArgs = settings.inheritConfig === true && !requestedEffort
-    ? []
-    : ['-c', `model_reasoning_effort="${codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: requestedEffort })}"`];
+  const effortArgs = [
+    '-c', `model_reasoning_effort="${codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: requestedEffort })}"`,
+  ];
   const args = ['exec', ...automationArgs, ...CODEX_NO_TOOL_ARGS, ...effortArgs];
   if (model) args.push('-m', model);
   args.push(prompt);

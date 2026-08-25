@@ -53,20 +53,17 @@ test('commandForProvider passes the model with each provider own flag', () => {
   );
 });
 
-test('commandForProvider can explicitly inherit Codex config for compatibility', () => {
-  const effortArgs = process.env.GUARDEX_REVIEW_CODEX_EFFORT
-    ? ['-c', `model_reasoning_effort="${codexReviewEffort()}"`]
-    : [];
+test('commandForProvider cannot re-enable user config across the untrusted review boundary', () => {
   assert.deepEqual(
     prReview.commandForProvider('codex', 'P', { inheritConfig: true }),
     {
       cmd: 'codex',
       args: [
-        'exec', '--skip-git-repo-check',
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
         '--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'code_mode_host',
         '--disable', 'view_image', '--disable', 'browser_use', '--disable', 'computer_use',
         '--disable', 'apps', '--disable', 'image_generation', '--disable', 'multi_agent',
-        ...effortArgs, 'P',
+        '-c', `model_reasoning_effort="${codexReviewEffort()}"`, 'P',
       ],
     },
   );
