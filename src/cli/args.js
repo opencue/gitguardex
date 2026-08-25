@@ -1184,9 +1184,8 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     // Empty = the provider's own default model.
     reviewModel: defaults.reviewModel || '',
     reviewTimeoutMs: defaults.reviewTimeoutMs,
-    // Hold CI until the review comes in clean, keeping the draft PR as the
-    // GitHub-side hard barrier while the provider runs. Slower by a full CI
-    // round-trip; `--no-gate-serial-ci` opts into overlapping CI with review.
+    // Keep the PR draft until the review passes so GitHub cannot merge it while
+    // the verdict is pending. `--no-gate-serial-ci` explicitly opts into overlap.
     gateSerialCi: defaults.gateSerialCi ?? true,
     allowNoChecks: false,
     // Gate on "no NEW failing checks vs the base branch" instead of absolute

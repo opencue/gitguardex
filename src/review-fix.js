@@ -14,7 +14,7 @@
 
 const { run } = require('./core/runtime');
 const { gitRun, currentBranchName, readProtectedBranches } = require('./git');
-const { resolveProviderBin } = require('./provider-binary');
+const { codexReviewEffort, resolveProviderBin } = require('./provider-binary');
 
 const DEFAULT_FIX_TIMEOUT_MS = 15 * 60 * 1000;
 const TOOL_PREFIX = '[gitguardex]';
@@ -47,11 +47,17 @@ function commandForFix(provider, prompt, settings = {}) {
   // `codex exec` sandboxes to read-only by default; workspace-write allows edits
   // inside the worktree and nowhere else.
   const automationArgs = settings.inheritConfig === true ? [] : CODEX_AUTOMATION_ARGS;
+  const requestedEffort = settings.effort || process.env.GUARDEX_REVIEW_CODEX_EFFORT;
+  const effortArgs = settings.inheritConfig === true && !requestedEffort
+    ? []
+    : ['-c', `model_reasoning_effort="${codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: requestedEffort })}"`];
   return {
     cmd,
-    args: model
-      ? ['exec', ...automationArgs, '-m', model, '--sandbox', 'workspace-write', prompt]
-      : ['exec', ...automationArgs, '--sandbox', 'workspace-write', prompt],
+    args: [
+      'exec', ...automationArgs, ...effortArgs,
+      ...(model ? ['-m', model] : []),
+      '--sandbox', 'workspace-write', prompt,
+    ],
   };
 }
 
@@ -76,6 +82,8 @@ function fixPrompt(findings) {
     '- If a finding is a false positive or cannot be fixed safely, leave that code untouched and say so in your final message.',
     '- Do not run git commit, git push, or any git history command. Leave the changes in the working tree.',
     '- Keep the project building: update call sites, imports, and tests that your edit breaks.',
+    '- Run only the smallest focused test needed for the edited surface. Never run the full test suite, a broad linter, or a build.',
+    '- Finish promptly: the finish flow runs the repository preflight and CI after this fix.',
     '',
     'Findings:',
     ...findings.map(describeFinding),

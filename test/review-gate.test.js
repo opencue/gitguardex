@@ -293,7 +293,7 @@ test('parseFinishArgs: --review-timeout-ms sets the provider timeout, and demand
   assert.throws(() => parseFinishArgs(['--review-timeout-ms', '0']), /positive integer/);
 });
 
-test('parseFinishArgs: CI waits for the review unless --no-gate-serial-ci opts into overlap', () => {
+test('parseFinishArgs: CI waits for review by default; --no-gate-serial-ci opts into overlap', () => {
   assert.equal(parseFinishArgs(['--gate-review']).gateSerialCi, true);
   assert.equal(parseFinishArgs(['--gate-review'], { gateSerialCi: false }).gateSerialCi, false);
   assert.equal(parseFinishArgs(['--gate-review', '--gate-serial-ci']).gateSerialCi, true);
