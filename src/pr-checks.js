@@ -21,11 +21,15 @@ function stableDetailsUrl(value) {
   try {
     const url = new URL(String(value || ''));
     const volatileSegment = /^(?:\d+|[0-9a-f]{7,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i;
+    const volatileCollections = new Set([
+      'run', 'runs', 'job', 'jobs', 'build', 'builds',
+      'execution', 'executions', 'attempt', 'attempts',
+    ]);
     const segments = url.pathname.split('/');
-    let lastSegment = segments.length - 1;
-    while (lastSegment >= 0 && !segments[lastSegment]) lastSegment -= 1;
-    if (lastSegment >= 0 && volatileSegment.test(segments[lastSegment])) {
-      segments[lastSegment] = ':id';
+    for (let index = 1; index < segments.length; index += 1) {
+      if (volatileCollections.has(segments[index - 1].toLowerCase()) && volatileSegment.test(segments[index])) {
+        segments[index] = ':id';
+      }
     }
     return `${url.origin}${segments.join('/')}${url.search}`;
   } catch (_error) {

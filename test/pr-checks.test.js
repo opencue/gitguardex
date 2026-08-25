@@ -132,6 +132,38 @@ test('latestStatusChecks keeps distinct same-named workflow-less checks from one
   assert.deepEqual(result.superseded, []);
 });
 
+test('latestStatusChecks preserves stable numeric project identifiers', () => {
+  const first = {
+    ...check({ workflowName: '', conclusion: 'FAILURE' }),
+    detailsUrl: 'https://ci.example/projects/123/runs/1',
+  };
+  const second = {
+    ...check({ workflowName: '', conclusion: 'SUCCESS' }),
+    detailsUrl: 'https://ci.example/projects/456/runs/1',
+  };
+
+  const result = latestStatusChecks([first, second]);
+
+  assert.deepEqual(result.checks, [first, second]);
+  assert.deepEqual(result.superseded, []);
+});
+
+test('latestStatusChecks collapses changing run and job identifiers for one check', () => {
+  const old = {
+    ...check({ workflowName: '', conclusion: 'FAILURE', startedAt: '2026-08-25T07:42:00Z' }),
+    detailsUrl: 'https://ci.example/actions/runs/123/job/456',
+  };
+  const current = {
+    ...check({ workflowName: '', conclusion: 'SUCCESS', startedAt: '2026-08-25T07:42:52Z' }),
+    detailsUrl: 'https://ci.example/actions/runs/124/job/457',
+  };
+
+  const result = latestStatusChecks([old, current]);
+
+  assert.deepEqual(result.checks, [current]);
+  assert.deepEqual(result.superseded, [old]);
+});
+
 test('latestStatusChecks keeps workflow-less checks distinguished by query parameters', () => {
   const security = {
     ...check({ workflowName: '', conclusion: 'FAILURE' }),
