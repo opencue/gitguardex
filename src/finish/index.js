@@ -31,6 +31,7 @@ const {
 const submoduleModule = require('../submodule');
 const { runPreflight, summarizePreflight } = require('./preflight');
 const { runReviewGate } = require('./review-gate');
+const { createFinishProgress } = require('./progress');
 
 /**
  * Options recognized by {@link autoCommitWorktreeForFinish} and the public
@@ -389,6 +390,7 @@ function finish(rawArgs, defaults = {}) {
 
   for (const candidate of candidates) {
     const { branch, baseBranch, worktreePath } = candidate;
+    const progress = createFinishProgress({ branch, baseBranch });
     // In terse mode, defer the "Finishing X -> Y" line until we know whether
     // we also need to announce an auto-commit, then emit a single combined
     // line per branch. Keep branch + base + worktree path so agents still see
@@ -400,6 +402,7 @@ function finish(rawArgs, defaults = {}) {
     }
 
     try {
+      progress.start('prepare', worktreePath ? 'checking worktree and pending changes' : 'checking branch');
       let commitState = { changed: false, committed: false };
       if (worktreePath) {
         commitState = autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options);
@@ -421,6 +424,12 @@ function finish(rawArgs, defaults = {}) {
       } else if (commitState.changed && commitState.dryRun) {
         console.log(`[${TOOL_NAME}] [dry-run] Would auto-commit pending changes on '${branch}'.`);
       }
+      progress.complete(
+        'prepare',
+        commitState.committed
+          ? 'pending changes auto-committed'
+          : (commitState.changed && commitState.dryRun ? 'would auto-commit pending changes' : 'branch ready'),
+      );
 
       if (options.advanceSubmodules && worktreePath) {
         const gitmodulesPath = path.join(worktreePath, '.gitmodules');
@@ -469,6 +478,13 @@ function finish(rawArgs, defaults = {}) {
       finishArgs.push(options.parentGitlinkCommit ? '--parent-gitlink-commit' : '--no-parent-gitlink-commit');
 
       if (options.dryRun) {
+        progress.skip('preflight', 'dry run');
+        progress.skip('pr', 'dry run');
+        progress.skip('review', 'dry run');
+        progress.skip('autofix', 'dry run');
+        progress.skip('ci', 'dry run');
+        progress.skip('merge', 'dry run');
+        progress.skip('cleanup', 'dry run');
         console.log(`[${TOOL_NAME}] [dry-run] Would run: gx branch finish ${finishArgs.join(' ')}`);
         succeeded += 1;
         continue;
@@ -477,11 +493,13 @@ function finish(rawArgs, defaults = {}) {
       // Preflight: typecheck + lint touched workspace packages before opening
       // a PR. Only enforced for PR-mode finishes; bypass with --skip-preflight.
       if (options.mergeMode === 'pr' && !options.skipPreflight) {
+        progress.start('preflight', 'running targeted local verification');
         const preflight = runPreflight(repoRoot, worktreePath, branch, baseBranch, {
           verbose: !terse,
         });
         console.log(`[${TOOL_NAME}] ${summarizePreflight(preflight)}`);
         if (preflight.status === 'failed') {
+          progress.fail('preflight', `${preflight.failures.length} script(s) failed`);
           for (const f of preflight.failures) {
             console.error(`[${TOOL_NAME}] preflight failure: ${f.label} (exit ${f.status})`);
             if (f.stderr && f.stderr.trim()) {
@@ -494,6 +512,12 @@ function finish(rawArgs, defaults = {}) {
             `preflight failed for ${preflight.failures.length} script(s). Fix the failures or rerun with --skip-preflight to bypass.`,
           );
         }
+        progress.complete('preflight', preflight.status);
+      } else {
+        progress.skip(
+          'preflight',
+          options.skipPreflight ? 'disabled by flag' : 'not a PR finish',
+        );
       }
 
       // Opt-in merge gate (--gate-review / gx ship): enforce a clean AI review +
@@ -501,8 +525,12 @@ function finish(rawArgs, defaults = {}) {
       // failure, which the catch below turns into a finish failure (no merge).
       if (options.mergeMode === 'pr' && options.gateReview) {
         runReviewGate({
-          repoRoot, worktreePath, branch, baseBranch, options,
+          repoRoot, worktreePath, branch, baseBranch, options, progress,
         });
+      } else {
+        progress.skip('review', 'review gate disabled');
+        progress.skip('autofix', 'review gate disabled');
+        progress.skip('ci', 'review gate disabled; repository policy controls merge readiness');
       }
 
       // Streamed, not piped: the script can sit for minutes waiting on the PR
@@ -519,7 +547,11 @@ function finish(rawArgs, defaults = {}) {
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
         cwd: repoRoot,
         stdio: assetStdio('branchFinish'),
-        env: { GUARDEX_FINISH_ACTIVE_CWD: activeCwd },
+        env: {
+          GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
+          GUARDEX_FINISH_CHECKLIST: '1',
+          GUARDEX_FINISH_GATE_DONE: options.gateReview ? '1' : '0',
+        },
       });
       // Null under 'inherit'; kept so an explicit pipe still prints.
       if (finishResult.stdout) {

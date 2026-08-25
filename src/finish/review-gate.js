@@ -28,6 +28,12 @@ function gateLog(message) {
   console.log(`[${TOOL_NAME}] [gate] ${message}`);
 }
 
+function reportProgress(progress, method, stage, detail) {
+  if (progress && typeof progress[method] === 'function') {
+    progress[method](stage, detail);
+  }
+}
+
 function requireGhAction(result, failureMessage) {
   if (result && result.ok === false) {
     throw new Error(
@@ -236,7 +242,7 @@ function resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings) {
  * `{ prNumber }` on pass; the caller then proceeds to the real merge.
  */
 function runReviewGate({
-  repoRoot, worktreePath, branch, baseBranch, options = {},
+  repoRoot, worktreePath, branch, baseBranch, options = {}, progress,
 }, deps = {}) {
   const openPullRequest = deps.openPullRequest || pr.openPullRequest;
   const runPrReview = deps.runPrReview || prReview.runPrReview;
@@ -260,8 +266,16 @@ function runReviewGate({
 
   // 1. Ensure a PR exists (push + open as draft, so promoting to ready is what
   //    starts CI and we control when that happens).
-  const opened = openPullRequest({ repoRoot, branch, base: baseBranch, push: true });
+  reportProgress(progress, 'start', 'pr', 'pushing branch and opening or reusing a PR');
+  let opened;
+  try {
+    opened = openPullRequest({ repoRoot, branch, base: baseBranch, push: true });
+  } catch (error) {
+    reportProgress(progress, 'fail', 'pr', error.message);
+    throw error;
+  }
   const prNumber = opened.pr.number;
+  reportProgress(progress, 'complete', 'pr', `PR #${prNumber}`);
   gateLog(`PR #${prNumber}: enforcing review + CI gate before merge`);
 
   // 1b. Keep the PR draft while the review is pending by default. Draft state is
@@ -298,10 +312,17 @@ function runReviewGate({
   // treated as repaired when its file was touched — see resolveCarriedFindings.
   const blockedPaths = new Set();
   const repairedPaths = new Set();
+  let autofixAttempted = false;
   // Set once an auto-fix round pushes: from then on the CI wait may only judge
   // that commit, never the one it replaced.
   let pushedHeadSha = '';
   for (let round = 0; round <= maxFixRounds; round += 1) {
+    reportProgress(
+      progress,
+      'start',
+      'review',
+      `round ${round + 1}/${maxFixRounds + 1} via ${provider}`,
+    );
     try {
       review = runPrReview({
         target: repoRoot,
@@ -312,6 +333,7 @@ function runReviewGate({
         timeoutMs: options.reviewTimeoutMs,
       });
     } catch (err) {
+      reportProgress(progress, 'fail', 'review', err.message);
       throw new Error(
         `review gate: AI review did not complete (${err.message}). Refusing to merge. `
         + 'Fix the provider/auth issue or rerun with --skip-review-gate.',
@@ -329,7 +351,12 @@ function runReviewGate({
     // before refusing. It also keeps the error honest when the review is both
     // unposted and dirty, where the blocking-findings message would otherwise
     // send the operator to a PR that has no review on it.
-    requirePostedReview(review, prNumber);
+    try {
+      requirePostedReview(review, prNumber);
+    } catch (error) {
+      reportProgress(progress, 'fail', 'review', error.message);
+      throw error;
+    }
 
     verdict = evaluate(review.findings);
     for (const finding of verdict.blocking) {
@@ -338,16 +365,25 @@ function runReviewGate({
     if (verdict.clean || round === maxFixRounds) break;
 
     gateLog(`PR #${prNumber}: ${verdict.blocking.length} blocking finding(s) — auto-fix round ${round + 1}/${maxFixRounds}`);
+    autofixAttempted = true;
+    reportProgress(
+      progress,
+      'start',
+      'autofix',
+      `round ${round + 1}/${maxFixRounds}: ${verdict.blocking.length} blocking finding(s)`,
+    );
     let fix;
     try {
       fix = runFix({
         repoRoot: fixCwd, provider, findings: verdict.blocking, expectBranch: branch,
       });
     } catch (err) {
+      reportProgress(progress, 'fail', 'autofix', err.message);
       gateLog(`auto-fix failed: ${err.message}`);
       break;
     }
     if (fix.status !== 'fixed') {
+      reportProgress(progress, 'fail', 'autofix', fix.reason || fix.status);
       gateLog(`auto-fix changed nothing (${fix.reason || fix.status})`);
       break;
     }
@@ -355,13 +391,19 @@ function runReviewGate({
     gateLog(`auto-fix committed ${fix.changedFiles.length} file(s): ${fix.changedFiles.slice(0, 5).join(', ')}`);
     const pushed = pushBranch(fixCwd, branch);
     if (!pushed.ok) {
+      reportProgress(progress, 'fail', 'autofix', 'push failed');
       gateLog(`push after auto-fix failed: ${pushed.output}`);
       break;
     }
     pushedHeadSha = headSha(fixCwd);
+    reportProgress(progress, 'complete', 'autofix', `${fix.changedFiles.length} file(s) fixed and pushed`);
   }
 
   if (!verdict.clean) {
+    reportProgress(progress, 'fail', 'review', `${verdict.blocking.length} blocking finding(s) remain`);
+    if (!autofixAttempted) {
+      reportProgress(progress, 'skip', 'autofix', maxFixRounds > 0 ? 'no repair round completed' : 'disabled');
+    }
     const detail = verdict.blocking
       .map((f) => `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`)
       .join('\n');
@@ -380,12 +422,17 @@ function runReviewGate({
   // edited by a fix.
   const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, review.findings);
   if (unexplained.length > 0) {
+    reportProgress(progress, 'fail', 'review', `${unexplained.length} finding(s) disappeared without a matching edit`);
     throw new Error(
       `review gate: ${unexplained.length} earlier blocking finding(s) disappeared without their file being changed. `
       + `Refusing to merge — a finding that is merely absent from a later review is not a fixed finding.\n`
       + unexplained.map((p) => `  - ${p} (blocked earlier, never edited, no current finding)`).join('\n')
       + '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.',
     );
+  }
+  reportProgress(progress, 'complete', 'review', 'clean review posted');
+  if (!autofixAttempted) {
+    reportProgress(progress, 'skip', 'autofix', 'not needed');
   }
   gateLog(
     `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`,
@@ -416,14 +463,22 @@ function runReviewGate({
       : `baseline from ${baseline.source}: no known failures — every failing check counts as new`);
   }
 
-  const ci = waitGreen(repoRoot, branch, {
-    timeoutSeconds: options.gateTimeoutSeconds,
-    pollSeconds: options.gatePollSeconds,
-    requireChecks,
-    baselineFailures,
-    expectHeadSha: pushedHeadSha,
-  });
+  reportProgress(progress, 'start', 'ci', 'waiting for required GitHub checks');
+  let ci;
+  try {
+    ci = waitGreen(repoRoot, branch, {
+      timeoutSeconds: options.gateTimeoutSeconds,
+      pollSeconds: options.gatePollSeconds,
+      requireChecks,
+      baselineFailures,
+      expectHeadSha: pushedHeadSha,
+    });
+  } catch (error) {
+    reportProgress(progress, 'fail', 'ci', error.message);
+    throw error;
+  }
   if (ci.status === 'checks-failed') {
+    reportProgress(progress, 'fail', 'ci', 'checks failed or were cancelled');
     const novel = Array.isArray(ci.newFailures) && ci.newFailures.length > 0
       ? ` New failure(s) vs '${baseBranch}': ${ci.newFailures.join(', ')}.`
       : '';
@@ -434,12 +489,14 @@ function runReviewGate({
   }
   if (ci.status === 'merge-blocked') {
     const mss = (ci.pr && ci.pr.mergeStateStatus) || 'BLOCKED';
+    reportProgress(progress, 'fail', 'ci', `mergeStateStatus=${mss}`);
     throw new Error(
       `review gate: GitHub reports mergeStateStatus=${mss} for PR #${prNumber} `
       + '(not mergeable under branch protection). Refusing to merge.',
     );
   }
   if (ci.status === 'no-checks') {
+    reportProgress(progress, 'fail', 'ci', 'no CI checks configured');
     throw new Error(
       `review gate: PR #${prNumber} has no CI checks configured. Refusing to merge an `
       + 'unverified PR. Pass --allow-no-checks to override.',
@@ -447,6 +504,7 @@ function runReviewGate({
   }
   if (ci.status === 'stale-head') {
     const seen = (ci.pr && ci.pr.headSha) || 'unknown';
+    reportProgress(progress, 'fail', 'ci', `stale PR head ${seen}`);
     throw new Error(
       `review gate: PR #${prNumber} still reports head ${seen}, not the auto-fix commit `
       + `${pushedHeadSha}. Refusing to merge — the checks GitHub is reporting describe a `
@@ -454,13 +512,16 @@ function runReviewGate({
     );
   }
   if (ci.status === 'timeout') {
+    reportProgress(progress, 'fail', 'ci', 'timed out');
     throw new Error(`review gate: timed out waiting for CI to go green on PR #${prNumber}.`);
   }
   if (ci.status !== 'green') {
+    reportProgress(progress, 'fail', 'ci', ci.status);
     throw new Error(`review gate: PR #${prNumber} not in a mergeable state (${ci.status}).`);
   }
 
   const mss = ci.pr && ci.pr.mergeStateStatus;
+  reportProgress(progress, 'complete', 'ci', `green${mss ? `, mergeStateStatus=${mss}` : ''}`);
   gateLog(`PR #${prNumber}: review clean + CI green${mss ? ` + mergeStateStatus=${mss}` : ''} — proceeding to merge`);
   return { prNumber };
 }

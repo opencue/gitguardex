@@ -22,6 +22,8 @@ AUTO_RESOLVE_SAFE_GLOBS_RAW="${GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS-$AUTO_RESO
 PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
+FINISH_CHECKLIST_RAW="${GUARDEX_FINISH_CHECKLIST:-false}"
+FINISH_GATE_DONE_RAW="${GUARDEX_FINISH_GATE_DONE:-false}"
 # Only an explicit --auto-promote FLAG lifts a persisted merge hold; the env
 # default (or GUARDEX_FINISH_AUTO_PROMOTE=1) must not, or any unflagged
 # re-run would silently lift holds placed by earlier runs.
@@ -74,6 +76,30 @@ normalize_int() {
   printf '%s' "$value"
 }
 
+finish_progress() {
+  local state="${1:-running}"
+  local stage="${2:-}"
+  local detail="${3:-}"
+  local number=""
+  local label=""
+  local symbol="▶"
+  [[ "${FINISH_CHECKLIST:-0}" -eq 1 ]] || return 0
+
+  case "$stage" in
+    preflight) number="2"; label="Local preflight" ;;
+    pr) number="3"; label="Push and open PR" ;;
+    merge) number="7"; label="Merge" ;;
+    cleanup) number="8"; label="Cleanup" ;;
+    *) return 0 ;;
+  esac
+  case "$state" in
+    complete) symbol="✓" ;;
+    skipped) symbol="↷" ;;
+    failed) symbol="✗" ;;
+  esac
+  echo "[gx:finish]   ${symbol} ${number}/8 ${label}${detail:+ — ${detail}}" >&2
+}
+
 # Resolve the pre-flight script path against the source worktree. The
 # caller passes either the configured path (which may be relative) or
 # an empty string; we return the absolute path if it exists and is
@@ -103,19 +129,24 @@ resolve_preflight_script() {
 run_preflight() {
   local worktree="$1"
   if [[ "$PREFLIGHT_ENABLED" -ne 1 ]]; then
+    finish_progress skipped preflight "disabled by flag"
     return 0
   fi
   local script_path
   script_path="$(resolve_preflight_script "$worktree" "$PREFLIGHT_SCRIPT_RAW")"
   if [[ -z "$script_path" ]]; then
+    finish_progress skipped preflight "no executable pre-flight script"
     echo "[agent-branch-finish] No executable pre-flight script at ${PREFLIGHT_SCRIPT_RAW} (in ${worktree}); skipping pre-flight." >&2
     return 0
   fi
+  finish_progress running preflight "final verification before publish"
   echo "[agent-branch-finish] Running pre-flight: ${script_path}" >&2
   if ( cd "$worktree" && "$script_path" ); then
+    finish_progress complete preflight "passed"
     echo "[agent-branch-finish] Pre-flight passed." >&2
     return 0
   fi
+  finish_progress failed preflight "failed"
   echo "[agent-branch-finish] Pre-flight FAILED; refusing push. Override with --no-preflight if you really mean it." >&2
   return 1
 }
@@ -206,6 +237,8 @@ WAIT_FOR_MERGE="$(normalize_bool "$WAIT_FOR_MERGE_RAW" "1")"
 WAIT_TIMEOUT_SECONDS="$(normalize_int "$WAIT_TIMEOUT_SECONDS_RAW" "1800" "30")"
 WAIT_POLL_SECONDS="$(normalize_int "$WAIT_POLL_SECONDS_RAW" "10" "0")"
 PARENT_GITLINK_AUTO_COMMIT="$(normalize_bool "$PARENT_GITLINK_AUTO_COMMIT_RAW" "1")"
+FINISH_CHECKLIST="$(normalize_bool "$FINISH_CHECKLIST_RAW" "0")"
+FINISH_GATE_DONE="$(normalize_bool "$FINISH_GATE_DONE_RAW" "0")"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1314,12 +1347,15 @@ run_pr_flow() {
   local source_head_sha=""
 
   if ! command -v "$GH_BIN" >/dev/null 2>&1; then
+    [[ "$FINISH_GATE_DONE" -eq 1 ]] || finish_progress failed pr "GitHub CLI unavailable"
     echo "[agent-branch-finish] PR fallback requested but GitHub CLI not found: ${GH_BIN}" >&2
     return 1
   fi
 
+  [[ "$FINISH_GATE_DONE" -eq 1 ]] || finish_progress running pr "pushing branch and opening or reusing a PR"
   source_head_sha="$(git -C "$repo_root" rev-parse "$SOURCE_BRANCH" 2>/dev/null || true)"
   if read_merged_pr_for_head "$source_head_sha"; then
+    [[ "$FINISH_GATE_DONE" -eq 1 ]] || finish_progress complete pr "existing merged PR"
     echo "[agent-branch-finish] Source branch head already landed in a merged PR; skipping new PR creation and continuing cleanup." >&2
     if [[ -n "$pr_url" ]]; then
       echo "[agent-branch-finish] Merged PR: ${pr_url}" >&2
@@ -1378,6 +1414,7 @@ run_pr_flow() {
   pr_url="$("$GH_BIN" pr view "$SOURCE_BRANCH" --json url --jq '.url' 2>/dev/null || true)"
 
   if [[ -z "$pr_url" ]]; then
+    [[ "$FINISH_GATE_DONE" -eq 1 ]] || finish_progress failed pr "PR unavailable after push"
     echo "[agent-branch-finish] No PR found for '${SOURCE_BRANCH}' after gh pr create; cannot proceed with PR merge." >&2
     if [[ -n "$pr_create_output" ]]; then
       echo "[agent-branch-finish] Last gh pr create output:" >&2
@@ -1385,6 +1422,7 @@ run_pr_flow() {
     fi
     return 1
   fi
+  [[ "$FINISH_GATE_DONE" -eq 1 ]] || finish_progress complete pr "$pr_url"
   echo "[agent-branch-finish] PR URL: ${pr_url}" >&2
 
   # Honor a persisted hold BEFORE any promotion or merge. Only an explicit
@@ -1435,10 +1473,12 @@ run_pr_flow() {
     "$GH_BIN" pr merge "$pr_url" --disable-auto >/dev/null 2>&1 || true
     "$GH_BIN" pr ready --undo "$pr_url" >/dev/null 2>&1 || true
     place_hold_marker "$pr_url"
+    finish_progress skipped merge "merge hold active"
     echo "[agent-branch-finish] Merge held (--no-auto-promote): PR left unmerged for review/e2e." >&2
     return 2
   fi
 
+  finish_progress running merge "waiting for GitHub merge readiness"
   merge_output=""
   if merge_output="$("$GH_BIN" pr merge "$SOURCE_BRANCH" --squash --delete-branch 2>&1)"; then
     return 0
@@ -1469,11 +1509,18 @@ run_pr_flow() {
   return 2
 }
 
+if [[ "$PUSH_ENABLED" -ne 1 ]]; then
+  finish_progress skipped pr "push disabled"
+  finish_progress running merge "local merge only"
+fi
+
 if [[ "$PUSH_ENABLED" -eq 1 ]]; then
   if ! run_preflight "$source_worktree"; then
     exit 1
   fi
   if [[ "$MERGE_MODE" != "pr" ]]; then
+    finish_progress skipped pr "direct flow"
+    finish_progress running merge "pushing verified integration result"
     # A persisted merge hold must also stop the direct-push shortcut, or a
     # rerun in auto/direct mode would land the held work without ever
     # consulting the marker. State 2 (no PR / body unreadable) proceeds:
@@ -1523,9 +1570,11 @@ if [[ "$PUSH_ENABLED" -eq 1 ]]; then
           exit 0
         fi
         if [[ "$WAIT_FOR_MERGE" -eq 1 ]]; then
+          finish_progress failed merge "wait window expired"
           echo "[agent-branch-finish] Merge did not complete within wait window; keeping branch open." >&2
           exit 1
         fi
+        finish_progress skipped merge "PR left pending"
         echo "[agent-branch-finish] PR pending review/check policy. Worktree retained for now; the autofinish watcher (or 'gx worktree prune --include-pr-merged --delete-branches') will prune it after merge. Verify with 'git worktree list' before claiming the worktree is still on disk." >&2
         exit 0
       fi
@@ -1544,9 +1593,16 @@ fi
 # otherwise a warning from worktree/branch teardown reads as the headline and
 # the merge scrolls away. Everything below this line is cleanup: it can warn,
 # it must not fail the run, because the work is already in the base branch.
+finish_progress complete merge "landed in ${BASE_BRANCH}"
 echo "[agent-branch-finish] ✅ MERGED  ${SOURCE_BRANCH} -> ${BASE_BRANCH} (${merge_status} flow)"
 if [[ -n "$pr_url" ]]; then
   echo "[agent-branch-finish] ✅ PR: ${pr_url}"
+fi
+
+if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
+  finish_progress running cleanup "releasing locks and pruning branch/worktree"
+else
+  finish_progress skipped cleanup "disabled by flag"
 fi
 
 run_guardex_cli locks release --branch "$SOURCE_BRANCH" >/dev/null 2>&1 || true
@@ -1652,6 +1708,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
   else
     echo "[agent-branch-finish] Merged '${SOURCE_BRANCH}' into '${BASE_BRANCH}' via ${merge_status} flow and ${kept_branch_summary:-cleaned source branch/worktree}."
   fi
+  finish_progress complete cleanup "finished"
 else
   pivot_to_repo_root_before_prune
   if ! run_guardex_prune --base "$BASE_BRANCH"; then

@@ -171,6 +171,14 @@ exit 1
   assert.match(result.stdout, new RegExp(`Finishing '${escapeRegexLiteral(agentBranch)}' -> 'main'`));
   assert.match(result.stdout, /auto-committed/i);
   assert.match(result.stdout, /Finish summary: total=1, success=1, failed=0, autoCommitted=1/);
+  assert.match(result.stderr, new RegExp(`Finish checklist — ${escapeRegexLiteral(agentBranch)} -> main`));
+  assert.match(result.stderr, /✓ 1\/8 Prepare branch — pending changes auto-committed/);
+  assert.match(result.stderr, /✓ 2\/8 Local preflight — passed/);
+  assert.match(result.stderr, /✓ 3\/8 Push and open PR — https:\/\/example\.test\/pr\/finish-all/);
+  assert.match(result.stderr, /↷ 4\/8 AI review — review gate disabled/);
+  assert.match(result.stderr, /↷ 6\/8 CI checks — review gate disabled/);
+  assert.match(result.stderr, /✓ 7\/8 Merge — landed in main/);
+  assert.match(result.stderr, /↷ 8\/8 Cleanup — disabled by flag/);
   assert.equal(fs.existsSync(agentWorktree), true, 'finish --no-cleanup should keep the agent worktree');
   let branchResult = runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${agentBranch}`], repoDir);
   assert.equal(branchResult.status, 0, 'finish --no-cleanup should keep the local agent branch');

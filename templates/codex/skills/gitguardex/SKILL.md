@@ -10,6 +10,21 @@ Use when repo safety may be broken.
 Bootstrap: `gx setup`
 Ops: `gx branch start "<task>" "<agent>"`, `gx locks claim --branch "<agent-branch>" <file...>`, `gx branch finish --branch "<agent-branch>" --base <base> --via-pr --wait-for-merge --cleanup`, `gx finish --all`, `gx cleanup`
 
+## Finish checklist in Codex
+
+Before starting a long `gx finish`, `gx ship`, or `gx branch finish`, show this compact Markdown checklist in commentary and update it from the CLI's `[gx:finish]` transition lines:
+
+- [ ] Prepare branch
+- [ ] Local preflight
+- [ ] Push and open PR
+- [ ] AI review
+- [ ] Review autofix
+- [ ] CI checks
+- [ ] Merge
+- [ ] Cleanup
+
+Start the command with a short initial yield, then poll the background process every 15-30 seconds. Between polls, post an updated checklist when the active stage changes; during a quiet long stage, name the active stage and elapsed time at most every 30 seconds. Never leave the user with only Codex's generic **Working** or **Waiting for background terminal** label. Do not launch a duplicate finish while the first process is still alive, and do not mark a checkbox complete until a matching `✓` line or equivalent terminal evidence arrives.
+
 When inspecting or verifying, prefer `rtk` compact wrappers if available (`rtk git status`, `rtk grep`, `rtk test <cmd>`, and noisy gx reads like `rtk gx status` / `rtk gx doctor`). Do not wrap commands whose stdout is parsed by scripts (`--json`, `--porcelain`, exact stdout contracts) or shell-ready output (`gx prompt --exec`).
 
 To shrink gx's own large narrative output (e.g. `gx prompt`, `gx prompt --snippet`) before it lands in your context, set `GUARDEX_COMPRESS_CMD="<stdin->stdout filter>"`; gx routes that output through the filter (terse/non-TTY mode, fail-open, JSON skipped). Unset = byte-for-byte unchanged. Confirm it is wired with `gx status` or `gx doctor` — both print a `Token compression` line and flag a configured-but-missing binary (doctor's warning is advisory and never changes its safe/unsafe exit code).

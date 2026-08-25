@@ -110,6 +110,14 @@ test('README advertises the repo skills installer path and root skills stay in s
       `${rootSkillPath} diverged from ${templatePath}; keep the repo-root skills catalog aligned with shipped templates`,
     );
   }
+
+  const gitguardexSkill = fs.readFileSync(
+    path.join(repoRoot, 'skills/gitguardex/SKILL.md'),
+    'utf8',
+  );
+  assert.match(gitguardexSkill, /Finish checklist/);
+  assert.match(gitguardexSkill, /poll the background process every 15-30 seconds/);
+  assert.match(gitguardexSkill, /Never leave the user with only.*Working.*Waiting/s);
 });
 
 test('package description stays aligned with about_description.txt', () => {
