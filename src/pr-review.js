@@ -88,6 +88,13 @@ function commandForProvider(provider, prompt, settings = {}) {
   return { cmd, args };
 }
 
+/** Resolve explicit relative provider paths before switching to the isolated cwd. */
+function resolveProviderCommand(command, repoRoot) {
+  const value = String(command || '').trim();
+  if (!value || path.isAbsolute(value) || !/[\\/]/.test(value)) return value;
+  return path.resolve(repoRoot, value);
+}
+
 /**
  * Cap the diff fed to the provider. Returns the text plus whether it was cut,
  * so the review output can flag itself as partial rather than pass a truncated
@@ -520,6 +527,7 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, se
     bin: resolveProviderBin(provider),
     inheritConfig: inheritCodexConfig(),
   });
+  const providerCommand = resolveProviderCommand(command.cmd, repoRoot);
   const limitMs = resolveReviewTimeoutMs(timeoutMs);
   let parseError;
   const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitguardex-review-'));
@@ -530,7 +538,7 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, se
         `${TOOL_PREFIX} code-assist ${provider} review attempt ${attempt + 1}/2 started`
         + `${model ? ` with model ${model}` : ''}; provider progress follows`,
       );
-      const result = runner(command.cmd, command.args, {
+      const result = runner(providerCommand, command.args, {
         cwd: sandboxRoot,
         timeout: limitMs,
         // Provider CLIs reserve stdout for their final machine-readable answer
@@ -675,6 +683,7 @@ module.exports = {
   renderMarkdownReview,
   renderReviewSummary,
   inheritCodexConfig,
+  resolveProviderCommand,
   resolveProviderBin,
   resolveReviewModel,
   splitMessage,

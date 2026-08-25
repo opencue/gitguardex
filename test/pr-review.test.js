@@ -86,6 +86,12 @@ test('commandForProvider runs an explicit binary, so a slow PATH shim can be ski
   assert.deepEqual(command.args, ['--safe-mode', '--tools', '', '-p', 'P']);
 });
 
+test('resolveProviderCommand preserves isolated cwd while supporting repo-relative overrides', () => {
+  assert.equal(prReview.resolveProviderCommand('./bin/codex', '/repo'), '/repo/bin/codex');
+  assert.equal(prReview.resolveProviderCommand('/opt/codex', '/repo'), '/opt/codex');
+  assert.equal(prReview.resolveProviderCommand('codex', '/repo'), 'codex');
+});
+
 test('resolveReviewModel: explicit option beats env, env beats the provider default', () => {
   assert.equal(prReview.resolveReviewModel('opus', { GUARDEX_REVIEW_MODEL: 'sonnet' }), 'opus');
   assert.equal(prReview.resolveReviewModel('', { GUARDEX_REVIEW_MODEL: 'sonnet' }), 'sonnet');
