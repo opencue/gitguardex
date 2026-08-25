@@ -1,5 +1,7 @@
 const { test, assert } = require('./helpers/install-test-helpers');
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const {
   formatElapsed,
@@ -25,22 +27,36 @@ test('finish heartbeat renders a rotating review progress line', () => {
       elapsedMs: 69_000,
       frame: 1,
     }),
-    '[gx:finish] ├─ ◓ 4/8  AI review · round 2/2 via codex · ⏱ 01:09 elapsed',
+    '[gx:finish] ├─ ◓ 4/8  AI review · round 2/2 via codex · ⏱ 01:09',
   );
 });
 
-test('finish heartbeat stays visible while the parent event loop is blocked', () => {
+test('finish heartbeat stays visible and persists structured events while the parent blocks', (t) => {
   const modulePath = path.resolve(__dirname, '../src/finish/heartbeat.js');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-heartbeat-events-'));
+  const eventFile = path.join(directory, 'events.jsonl');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const script = `
+    const fs = require('node:fs');
     const { spawnSync } = require('node:child_process');
     const { startHeartbeat } = require(${JSON.stringify(modulePath)});
+    const eventDescriptor = fs.openSync(${JSON.stringify(eventFile)}, 'a', 0o600);
     const stop = startHeartbeat({
+      stage: 'review',
       index: 4,
       total: 8,
       label: 'AI review',
       detail: 'round 1/2 via codex',
       intervalMs: 25,
+      eventDescriptor,
+      event: {
+        schemaVersion: 1,
+        runId: 'finish-test',
+        branch: 'agent/test/heartbeat',
+        baseBranch: 'main',
+      },
     });
+    fs.closeSync(eventDescriptor);
     spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 250)']);
     stop();
   `;
@@ -55,7 +71,24 @@ test('finish heartbeat stays visible while the parent event loop is blocked', ()
     .split('\n')
     .filter((line) => line.includes('[gx:finish]'));
   assert.ok(heartbeatLines.length >= 2, result.stderr);
-  assert.match(heartbeatLines[0], /4\/8  AI review .* ⏱ 00:00 elapsed/);
+  assert.match(heartbeatLines[0], /4\/8  AI review .* ⏱ 00:00$/);
+
+  const events = fs.readFileSync(eventFile, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.ok(events.length >= 2);
+  assert.deepEqual(
+    Object.keys(events[0]).sort(),
+    [
+      'baseBranch', 'branch', 'detail', 'elapsedMs', 'index', 'kind', 'label',
+      'runId', 'schemaVersion', 'stage', 'state', 'timestamp', 'total',
+    ].sort(),
+  );
+  assert.equal(events[0].kind, 'heartbeat');
+  assert.equal(events[0].stage, 'review');
+  assert.equal(events[0].state, 'running');
+  assert.ok(events[0].elapsedMs >= 25);
 });
 
 test('finish heartbeat stop is idempotent', () => {
@@ -103,6 +136,7 @@ test('finish progress times review rounds and stops their heartbeat on completio
 
   progress.start('review', 'round 2/2 via codex');
   assert.deepEqual(starts, [{
+    stage: 'review',
     index: 4,
     total: 8,
     label: 'AI review',
@@ -117,7 +151,7 @@ test('finish progress times review rounds and stops their heartbeat on completio
   assert.equal(stops, 1);
   assert.match(
     lines.at(-1),
-    /✅ 4\/8  AI review · clean review posted · ⏱ 01:09 elapsed$/,
+    /✅ 4\/8  AI review · clean review posted · ⏱ 01:09$/,
   );
 });
 
@@ -155,4 +189,46 @@ test('heartbeat cleanup failures never block finish progress', () => {
 
   progress.start('review', 'round 1/1');
   assert.doesNotThrow(() => progress.complete('review', 'clean'));
+});
+
+test('finish progress gives the heartbeat its private structured event stream', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-progress-heartbeat-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  let heartbeatOptions;
+  const progress = createFinishProgress({
+    repoRoot,
+    branch: 'agent/test/structured-heartbeat',
+    baseBranch: 'main',
+    write: () => {},
+    heartbeat: (options) => {
+      heartbeatOptions = options;
+      fs.writeSync(options.eventDescriptor, `${JSON.stringify({
+        ...options.event,
+        timestamp: new Date().toISOString(),
+        kind: 'heartbeat',
+        stage: options.stage,
+        state: 'running',
+        index: options.index,
+        total: options.total,
+        label: options.label,
+        detail: options.detail,
+        elapsedMs: 15_000,
+      })}\n`);
+      return () => {};
+    },
+  });
+
+  progress.start('review', 'round 1/1 via codex');
+  progress.complete('review', 'clean');
+
+  assert.ok(Number.isInteger(heartbeatOptions.eventDescriptor));
+  assert.equal(heartbeatOptions.event.runId, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  assert.equal(heartbeatOptions.event.branch, 'agent/test/structured-heartbeat');
+  const events = fs.readFileSync(progress.eventEnv.GUARDEX_FINISH_EVENT_FILE, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const heartbeatEvent = events.find((event) => event.kind === 'heartbeat');
+  assert.equal(heartbeatEvent.stage, 'review');
+  assert.equal(heartbeatEvent.elapsedMs, 15_000);
 });
