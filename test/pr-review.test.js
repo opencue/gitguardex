@@ -11,12 +11,13 @@ const {
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
 const prReview = require('../src/pr-review');
+const { codexReviewEffort } = require('../src/provider-binary');
 
 defineSpawnSuite('pr-review suite', () => {
 
 test('commandForProvider defaults to the provider binary and its own model', () => {
   assert.deepEqual(prReview.commandForProvider('claude', 'P'), { cmd: 'claude', args: ['--safe-mode', '-p', 'P'] });
-  assert.deepEqual(prReview.commandForProvider('codex', 'P'), {
+  assert.deepEqual(prReview.commandForProvider('codex', 'P', { effort: 'high' }), {
     cmd: 'codex',
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
@@ -31,7 +32,7 @@ test('commandForProvider passes the model with each provider own flag', () => {
     { cmd: 'claude', args: ['--safe-mode', '--model', 'sonnet', '-p', 'P'] },
   );
   assert.deepEqual(
-    prReview.commandForProvider('codex', 'P', { model: 'gpt-5' }),
+    prReview.commandForProvider('codex', 'P', { model: 'gpt-5', effort: 'high' }),
     {
       cmd: 'codex',
       args: [
@@ -43,9 +44,12 @@ test('commandForProvider passes the model with each provider own flag', () => {
 });
 
 test('commandForProvider can explicitly inherit Codex config for compatibility', () => {
+  const effortArgs = process.env.GUARDEX_REVIEW_CODEX_EFFORT
+    ? ['-c', `model_reasoning_effort="${codexReviewEffort()}"`]
+    : [];
   assert.deepEqual(
     prReview.commandForProvider('codex', 'P', { inheritConfig: true }),
-    { cmd: 'codex', args: ['exec', 'P'] },
+    { cmd: 'codex', args: ['exec', ...effortArgs, 'P'] },
   );
 });
 

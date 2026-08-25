@@ -9,6 +9,7 @@ const {
 const cp = require('node:child_process');
 const { runReviewFix, commandForFix, fixPrompt } = require('../src/review-fix');
 const { runReviewGate } = require('../src/finish/review-gate');
+const { codexReviewEffort } = require('../src/provider-binary');
 
 const FINDING = {
   path: 'src/a.js', startLine: 0, line: 3, severity: 'high', category: '', message: 'unsafe', suggestion: 'const safe = true',
@@ -30,7 +31,7 @@ function onAgentBranch() {
 }
 
 test('commandForFix gives each provider a write-enabled invocation', () => {
-  assert.deepEqual(commandForFix('codex', 'p'), {
+  assert.deepEqual(commandForFix('codex', 'p', { effort: 'high' }), {
     cmd: 'codex',
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
@@ -41,7 +42,7 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
   assert.deepEqual(commandForFix('claude', 'p'), { cmd: 'claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
   assert.deepEqual(commandForFix('claude', 'p', { bin: '/opt/claude' }), { cmd: '/opt/claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
   assert.deepEqual(
-    commandForFix('codex', 'p', { model: 'fast-model' }),
+    commandForFix('codex', 'p', { model: 'fast-model', effort: 'high' }),
     {
       cmd: 'codex',
       args: [
@@ -51,9 +52,12 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
       ],
     },
   );
+  const inheritedEffortArgs = process.env.GUARDEX_REVIEW_CODEX_EFFORT
+    ? ['-c', `model_reasoning_effort="${codexReviewEffort()}"`]
+    : [];
   assert.deepEqual(
     commandForFix('codex', 'p', { inheritConfig: true }),
-    { cmd: 'codex', args: ['exec', '--sandbox', 'workspace-write', 'p'] },
+    { cmd: 'codex', args: ['exec', ...inheritedEffortArgs, '--sandbox', 'workspace-write', 'p'] },
   );
 });
 
@@ -165,7 +169,7 @@ test('runReviewFix streams provider output and applies the review model override
     assert.equal(result.status, 'fixed');
     assert.deepEqual(providerCall.args.slice(0, 9), [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
-      '-c', 'model_reasoning_effort="high"', '-m', 'fast-model', '--sandbox',
+      '-c', `model_reasoning_effort="${codexReviewEffort()}"`, '-m', 'fast-model', '--sandbox',
     ], 'the same review model knob controls the isolated auto-fix provider');
     assert.deepEqual(
       providerCall.options.stdio,
