@@ -41,6 +41,8 @@ Start the command with a short initial yield, then poll the background process e
 
 Treat `🏁 Cleanup` as finished-but-best-effort, not as unconditional success: surface any cleanup warnings beside it instead of converting it to `✅`.
 
+Structured phase events are persisted privately under `.omx/state/finish-runs/*.jsonl` (`0700` directory, `0600` files). Prefer that JSONL stream over parsing narrative logs when exact state is needed; the visual output prints the active event-file path.
+
 When inspecting or verifying, prefer `rtk` compact wrappers if available (`rtk git status`, `rtk grep`, `rtk test <cmd>`, and noisy gx reads like `rtk gx status` / `rtk gx doctor`). Do not wrap commands whose stdout is parsed by scripts (`--json`, `--porcelain`, exact stdout contracts) or shell-ready output (`gx prompt --exec`).
 
 To shrink gx's own large narrative output (e.g. `gx prompt`, `gx prompt --snippet`) before it lands in your context, set `GUARDEX_COMPRESS_CMD="<stdin->stdout filter>"`; gx routes that output through the filter (terse/non-TTY mode, fail-open, JSON skipped). Unset = byte-for-byte unchanged. Confirm it is wired with `gx status` or `gx doctor` — both print a `Token compression` line and flag a configured-but-missing binary (doctor's warning is advisory and never changes its safe/unsafe exit code).

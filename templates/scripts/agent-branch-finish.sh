@@ -24,6 +24,10 @@ PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
 FINISH_CHECKLIST_RAW="${GUARDEX_FINISH_CHECKLIST:-false}"
 FINISH_GATE_DONE_RAW="${GUARDEX_FINISH_GATE_DONE:-false}"
+FINISH_EVENT_FILE="${GUARDEX_FINISH_EVENT_FILE:-}"
+FINISH_RUN_ID="${GUARDEX_FINISH_RUN_ID:-}"
+FINISH_EVENT_BRANCH="${GUARDEX_FINISH_EVENT_BRANCH:-}"
+FINISH_EVENT_BASE="${GUARDEX_FINISH_EVENT_BASE:-}"
 # Only an explicit --auto-promote FLAG lifts a persisted merge hold; the env
 # default (or GUARDEX_FINISH_AUTO_PROMOTE=1) must not, or any unflagged
 # re-run would silently lift holds placed by earlier runs.
@@ -76,6 +80,38 @@ normalize_int() {
   printf '%s' "$value"
 }
 
+finish_json_escape() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+finish_event() {
+  local stage="${1:-}"
+  local state="${2:-}"
+  local number="${3:-0}"
+  local label="${4:-}"
+  local detail="${5:-}"
+  local timestamp=""
+  [[ -n "$FINISH_EVENT_FILE" && -n "$FINISH_RUN_ID" ]] || return 0
+  timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf '{"schemaVersion":1,"runId":"%s","timestamp":"%s","branch":"%s","baseBranch":"%s","stage":"%s","state":"%s","index":%s,"total":8,"label":"%s","detail":"%s"}\n' \
+    "$(finish_json_escape "$FINISH_RUN_ID")" \
+    "$timestamp" \
+    "$(finish_json_escape "$FINISH_EVENT_BRANCH")" \
+    "$(finish_json_escape "$FINISH_EVENT_BASE")" \
+    "$(finish_json_escape "$stage")" \
+    "$(finish_json_escape "$state")" \
+    "$number" \
+    "$(finish_json_escape "$label")" \
+    "$(finish_json_escape "$detail")" \
+    >> "$FINISH_EVENT_FILE" 2>/dev/null || true
+}
+
 finish_progress() {
   local state="${1:-running}"
   local stage="${2:-}"
@@ -103,6 +139,7 @@ finish_progress() {
     connector="╰─"
   fi
   echo "[gx:finish] ${connector} ${symbol} ${number}/8  ${label}${detail:+ · ${detail}}" >&2
+  finish_event "$stage" "$state" "$number" "$label" "$detail"
 }
 
 # Resolve the pre-flight script path against the source worktree. The

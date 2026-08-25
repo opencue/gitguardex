@@ -179,6 +179,28 @@ exit 1
   assert.match(result.stderr, /⏭ 6\/8  CI checks · review gate disabled/);
   assert.match(result.stderr, /✅ 7\/8  Merge · landed in main/);
   assert.match(result.stderr, /⏭ 8\/8  Cleanup · disabled by flag/);
+  const finishEventDir = path.join(repoDir, '.omx', 'state', 'finish-runs');
+  const finishEventFiles = fs.readdirSync(finishEventDir).filter((name) => name.endsWith('.jsonl'));
+  assert.equal(finishEventFiles.length, 1, 'one structured event stream is created for the finish run');
+  const finishEvents = fs.readFileSync(path.join(finishEventDir, finishEventFiles[0]), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(
+    finishEvents.some((event) => event.stage === 'pr' && event.state === 'complete'),
+    true,
+    'the shell PR transition reaches the shared event stream',
+  );
+  assert.equal(
+    finishEvents.some((event) => event.stage === 'merge' && event.state === 'complete'),
+    true,
+    'the shell merge transition reaches the shared event stream',
+  );
+  assert.equal(
+    finishEvents.some((event) => event.stage === 'cleanup' && event.state === 'skipped'),
+    true,
+    'the shell cleanup transition reaches the shared event stream',
+  );
   assert.equal(fs.existsSync(agentWorktree), true, 'finish --no-cleanup should keep the agent worktree');
   let branchResult = runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${agentBranch}`], repoDir);
   assert.equal(branchResult.status, 0, 'finish --no-cleanup should keep the local agent branch');

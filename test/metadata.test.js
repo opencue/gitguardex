@@ -118,6 +118,7 @@ test('README advertises the repo skills installer path and root skills stay in s
   assert.match(gitguardexSkill, /Finish checklist/);
   assert.match(gitguardexSkill, /### 🚀 GX Finish/);
   assert.match(gitguardexSkill, /poll the background process every 15-30 seconds/);
+  assert.match(gitguardexSkill, /\.omx\/state\/finish-runs\/\*\.jsonl/);
   assert.match(gitguardexSkill, /Never leave the user with only.*Working.*Waiting/s);
 });
 

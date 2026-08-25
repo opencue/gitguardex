@@ -158,7 +158,7 @@ function branch(rawArgs) {
     } = splitGateReviewFlags(passthrough);
     const finishBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
     const finishBase = resolveFinishBaseBranch(repoRoot, finishBranch, readFlagValue(scriptArgs, '--base'));
-    const progress = createFinishProgress({ branch: finishBranch, baseBranch: finishBase });
+    const progress = createFinishProgress({ repoRoot, branch: finishBranch, baseBranch: finishBase });
     progress.start('prepare', 'resolving branch and finish policy');
     progress.complete('prepare', 'branch and base resolved');
     // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
@@ -196,6 +196,7 @@ function branch(rawArgs) {
         GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
         GUARDEX_FINISH_CHECKLIST: '1',
         GUARDEX_FINISH_GATE_DONE: gateReview ? '1' : '0',
+        ...progress.eventEnv,
       },
     });
     return;

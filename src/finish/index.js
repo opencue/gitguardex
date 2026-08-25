@@ -390,7 +390,12 @@ function finish(rawArgs, defaults = {}) {
 
   for (const candidate of candidates) {
     const { branch, baseBranch, worktreePath } = candidate;
-    const progress = createFinishProgress({ branch, baseBranch });
+    const progress = createFinishProgress({
+      repoRoot,
+      branch,
+      baseBranch,
+      persistEvents: !options.dryRun,
+    });
     // In terse mode, defer the "Finishing X -> Y" line until we know whether
     // we also need to announce an auto-commit, then emit a single combined
     // line per branch. Keep branch + base + worktree path so agents still see
@@ -551,6 +556,7 @@ function finish(rawArgs, defaults = {}) {
           GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
           GUARDEX_FINISH_CHECKLIST: '1',
           GUARDEX_FINISH_GATE_DONE: options.gateReview ? '1' : '0',
+          ...progress.eventEnv,
         },
       });
       // Null under 'inherit'; kept so an explicit pipe still prints.

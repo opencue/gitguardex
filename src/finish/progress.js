@@ -18,13 +18,57 @@ const SYMBOLS = {
   finished: '🏁',
 };
 
+function createRunId(branch) {
+  const digest = crypto.createHash('sha256').update(String(branch || '')).digest('hex').slice(0, 8);
+  return `finish-${Date.now().toString(36)}-${process.pid}-${digest}`;
+}
+
+function createEventStream(repoRoot, branch, baseBranch) {
+  if (!repoRoot) return null;
+  try {
+    const directory = path.join(repoRoot, '.omx', 'state', 'finish-runs');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(directory, 0o700);
+    const runId = createRunId(branch);
+    const filePath = path.join(directory, `${runId}.jsonl`);
+    const descriptor = fs.openSync(filePath, 'a', 0o600);
+    fs.closeSync(descriptor);
+    fs.chmodSync(filePath, 0o600);
+    return {
+      runId,
+      filePath,
+      relativePath: path.relative(repoRoot, filePath),
+      write(event) {
+        try {
+          fs.appendFileSync(filePath, `${JSON.stringify({
+            schemaVersion: 1,
+            runId,
+            timestamp: new Date().toISOString(),
+            branch,
+            baseBranch,
+            ...event,
+          })}\n`, { encoding: 'utf8', mode: 0o600 });
+        } catch (_error) {
+          // Observability remains fail-open after initialization too (disk
+          // full, state directory removed mid-run, or transient I/O failure).
+        }
+      },
+    };
+  } catch (_error) {
+    // Progress persistence is observability only. It must never block a merge
+    // gate or turn a successful cleanup into a failed finish.
+    return null;
+  }
+}
+
 /**
  * Append-only finish progress for terminals and agent transcripts. Rewriting a
  * single ANSI dashboard looks good in a TTY but disappears from Codex's
  * captured tool output, so every transition is a durable line instead.
  */
-function createFinishProgress({ branch, baseBranch, write } = {}) {
+function createFinishProgress({ repoRoot, branch, baseBranch, write, persistEvents = true } = {}) {
   const output = write || ((line) => process.stderr.write(`${line}\n`));
+  const eventStream = persistEvents ? createEventStream(repoRoot, branch, baseBranch) : null;
   const stageMap = new Map(STAGES.map(([id, label], index) => [id, {
     index: index + 1,
     label,
@@ -33,10 +77,26 @@ function createFinishProgress({ branch, baseBranch, write } = {}) {
   }]));
 
   output(`[gx:finish] ╭─ 🚀 GX FINISH · ${branch || 'current branch'} → ${baseBranch || 'configured base'}`);
+  if (eventStream) {
+    eventStream.write({ stage: 'finish', state: 'started', index: 0, total: STAGES.length, label: 'GX Finish', detail: '' });
+  }
   for (const [, stage] of stageMap) {
     output(`[gx:finish] │ ${SYMBOLS.pending} ${stage.index}/${STAGES.length}  ${stage.label}`);
+    if (eventStream) {
+      eventStream.write({
+        stage: STAGES[stage.index - 1][0],
+        state: 'pending',
+        index: stage.index,
+        total: STAGES.length,
+        label: stage.label,
+        detail: '',
+      });
+    }
   }
   output(`[gx:finish] ╰─ 0/${STAGES.length} ready`);
+  if (eventStream) {
+    output(`[gx:finish]    📡 events · ${eventStream.relativePath}`);
+  }
 
   function update(id, state, detail = '') {
     const stage = stageMap.get(id);
@@ -50,6 +110,16 @@ function createFinishProgress({ branch, baseBranch, write } = {}) {
       `[gx:finish] ${connector} ${SYMBOLS[state]} ${stage.index}/${STAGES.length}  ${stage.label}`
       + `${normalizedDetail ? ` · ${normalizedDetail}` : ''}`,
     );
+    if (eventStream) {
+      eventStream.write({
+        stage: id,
+        state,
+        index: stage.index,
+        total: STAGES.length,
+        label: stage.label,
+        detail: normalizedDetail,
+      });
+    }
   }
 
   return {
@@ -58,10 +128,20 @@ function createFinishProgress({ branch, baseBranch, write } = {}) {
     skip: (id, detail) => update(id, 'skipped', detail),
     fail: (id, detail) => update(id, 'failed', detail),
     finish: (id, detail) => update(id, 'finished', detail),
+    eventEnv: eventStream ? {
+      GUARDEX_FINISH_EVENT_FILE: eventStream.filePath,
+      GUARDEX_FINISH_RUN_ID: eventStream.runId,
+      GUARDEX_FINISH_EVENT_BRANCH: String(branch || ''),
+      GUARDEX_FINISH_EVENT_BASE: String(baseBranch || ''),
+    } : {},
   };
 }
 
 module.exports = {
   STAGES,
+  createEventStream,
   createFinishProgress,
 };
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
