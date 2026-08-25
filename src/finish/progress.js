@@ -10,11 +10,11 @@ const STAGES = [
 ];
 
 const SYMBOLS = {
-  pending: '○',
-  running: '▶',
-  complete: '✓',
-  skipped: '↷',
-  failed: '✗',
+  pending: '⬜',
+  running: '🔄',
+  complete: '✅',
+  skipped: '⏭',
+  failed: '❌',
 };
 
 /**
@@ -31,10 +31,11 @@ function createFinishProgress({ branch, baseBranch, write } = {}) {
     detail: '',
   }]));
 
-  output(`[gx:finish] Finish checklist — ${branch || 'current branch'} -> ${baseBranch || 'configured base'}`);
+  output(`[gx:finish] ╭─ 🚀 GX FINISH · ${branch || 'current branch'} → ${baseBranch || 'configured base'}`);
   for (const [, stage] of stageMap) {
-    output(`[gx:finish]   ${SYMBOLS.pending} ${stage.index}/${STAGES.length} ${stage.label}`);
+    output(`[gx:finish] │ ${SYMBOLS.pending} ${stage.index}/${STAGES.length}  ${stage.label}`);
   }
+  output(`[gx:finish] ╰─ 0/${STAGES.length} ready`);
 
   function update(id, state, detail = '') {
     const stage = stageMap.get(id);
@@ -43,9 +44,10 @@ function createFinishProgress({ branch, baseBranch, write } = {}) {
     if (stage.state === state && stage.detail === normalizedDetail) return;
     stage.state = state;
     stage.detail = normalizedDetail;
+    const connector = id === 'cleanup' && state !== 'running' ? '╰─' : '├─';
     output(
-      `[gx:finish]   ${SYMBOLS[state]} ${stage.index}/${STAGES.length} ${stage.label}`
-      + `${normalizedDetail ? ` — ${normalizedDetail}` : ''}`,
+      `[gx:finish] ${connector} ${SYMBOLS[state]} ${stage.index}/${STAGES.length}  ${stage.label}`
+      + `${normalizedDetail ? ` · ${normalizedDetail}` : ''}`,
     );
   }
 

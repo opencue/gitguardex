@@ -82,7 +82,8 @@ finish_progress() {
   local detail="${3:-}"
   local number=""
   local label=""
-  local symbol="▶"
+  local symbol="🔄"
+  local connector="├─"
   [[ "${FINISH_CHECKLIST:-0}" -eq 1 ]] || return 0
 
   case "$stage" in
@@ -93,11 +94,14 @@ finish_progress() {
     *) return 0 ;;
   esac
   case "$state" in
-    complete) symbol="✓" ;;
-    skipped) symbol="↷" ;;
-    failed) symbol="✗" ;;
+    complete) symbol="✅" ;;
+    skipped) symbol="⏭" ;;
+    failed) symbol="❌" ;;
   esac
-  echo "[gx:finish]   ${symbol} ${number}/8 ${label}${detail:+ — ${detail}}" >&2
+  if [[ "$stage" == "cleanup" && "$state" != "running" ]]; then
+    connector="╰─"
+  fi
+  echo "[gx:finish] ${connector} ${symbol} ${number}/8  ${label}${detail:+ · ${detail}}" >&2
 }
 
 # Resolve the pre-flight script path against the source worktree. The

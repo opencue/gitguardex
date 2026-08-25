@@ -23,11 +23,12 @@ test('finish progress is an append-only visual checklist suitable for Codex tran
   progress.complete('review', 'clean');
   progress.skip('autofix', 'not needed');
 
-  assert.equal(lines[0], '[gx:finish] Finish checklist — agent/test/checklist -> main');
-  assert.match(lines.join('\n'), /○ 1\/8 Prepare branch/);
-  assert.match(lines.join('\n'), /▶ 4\/8 AI review — round 1\/2/);
-  assert.match(lines.join('\n'), /✓ 4\/8 AI review — clean/);
-  assert.match(lines.join('\n'), /↷ 5\/8 Review autofix — not needed/);
+  assert.equal(lines[0], '[gx:finish] ╭─ 🚀 GX FINISH · agent/test/checklist → main');
+  assert.match(lines.join('\n'), /│ ⬜ 1\/8  Prepare branch/);
+  assert.match(lines.join('\n'), /├─ 🔄 4\/8  AI review · round 1\/2/);
+  assert.match(lines.join('\n'), /├─ ✅ 4\/8  AI review · clean/);
+  assert.match(lines.join('\n'), /├─ ⏭ 5\/8  Review autofix · not needed/);
+  assert.match(lines.join('\n'), /╰─ 0\/8 ready/);
 });
 
 test('review gate reports PR, review, autofix, and CI checklist transitions', () => {
