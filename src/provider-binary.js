@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const AGENTS = new Set(['claude', 'codex']);
 const CODEX_REVIEW_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
-const DEFAULT_CODEX_REVIEW_EFFORT = 'high';
+const DEFAULT_CODEX_REVIEW_EFFORT = 'medium';
 
 /** Keep bounded code-assist runs independent of a user's interactive effort. */
 function codexReviewEffort(env = process.env) {

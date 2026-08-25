@@ -118,7 +118,7 @@ Three knobs for how long the gate takes without removing a gate:
   verdict is clean. `--no-gate-serial-ci` opts into promoting before review so
   CI overlaps the review — faster, but it leaves a ready PR while the review is
   still pending.
-- Codex review and fix agents default to bounded `high` reasoning effort instead
+- Codex review and fix agents default to bounded `medium` reasoning effort instead
   of inheriting an interactive session's potentially slow `xhigh`; set
   `GUARDEX_REVIEW_CODEX_EFFORT=low|medium|high|xhigh` to override it.
 - `--review-model <name>` (or `GUARDEX_REVIEW_MODEL`) picks the review model, and

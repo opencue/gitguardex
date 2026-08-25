@@ -74,8 +74,8 @@ test('resolveProviderBin honors explicit per-provider overrides before PATH prob
 });
 
 test('codexReviewEffort bounds code-assist work independently of the user default', () => {
-  assert.equal(codexReviewEffort({}), 'high');
+  assert.equal(codexReviewEffort({}), 'medium');
   assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: 'medium' }), 'medium');
   assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: ' XHIGH ' }), 'xhigh');
-  assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: 'unbounded' }), 'high');
+  assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: 'unbounded' }), 'medium');
 });
