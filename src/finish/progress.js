@@ -18,6 +18,8 @@ const SYMBOLS = {
   finished: '🏁',
 };
 
+const TIMED_STAGES = new Set(['review', 'autofix']);
+
 function createRunId(branch) {
   const digest = crypto.createHash('sha256').update(String(branch || '')).digest('hex').slice(0, 8);
   return `finish-${Date.now().toString(36)}-${process.pid}-${digest}`;
@@ -98,8 +100,21 @@ function createEventStream(repoRoot, branch, baseBranch) {
  * single ANSI dashboard looks good in a TTY but disappears from Codex's
  * captured tool output, so every transition is a durable line instead.
  */
-function createFinishProgress({ repoRoot, branch, baseBranch, write, persistEvents = true } = {}) {
+function createFinishProgress({
+  repoRoot,
+  branch,
+  baseBranch,
+  write,
+  persistEvents = true,
+  now = Date.now,
+  heartbeat,
+  heartbeatIntervalMs = 15_000,
+} = {}) {
   const output = write || ((line) => process.stderr.write(`${line}\n`));
+  const heartbeatFactory = heartbeat === undefined
+    ? (write ? null : startStageHeartbeat)
+    : heartbeat;
+  const clock = typeof now === 'function' ? now : Date.now;
   const eventStream = persistEvents ? createEventStream(repoRoot, branch, baseBranch) : null;
   const stageMap = new Map(STAGES.map(([id, label], index) => [id, {
     index: index + 1,
@@ -107,6 +122,9 @@ function createFinishProgress({ repoRoot, branch, baseBranch, write, persistEven
     state: 'pending',
     detail: '',
   }]));
+  const stageStartedAt = new Map();
+  let activeTimedStage = '';
+  let stopActiveHeartbeat = null;
 
   output(`[gx:finish] ╭─ 🚀 GX FINISH · ${branch || 'current branch'} → ${baseBranch || 'configured base'}`);
   if (eventStream) {
@@ -130,17 +148,28 @@ function createFinishProgress({ repoRoot, branch, baseBranch, write, persistEven
     output(`[gx:finish]    📡 events · ${eventStream.relativePath}`);
   }
 
-  function update(id, state, detail = '') {
+  function stopTimedStage() {
+    try {
+      if (stopActiveHeartbeat) stopActiveHeartbeat();
+    } catch (_error) {
+      // Progress is observability only; teardown errors remain fail-open.
+    }
+    stopActiveHeartbeat = null;
+    if (activeTimedStage) stageStartedAt.delete(activeTimedStage);
+    activeTimedStage = '';
+  }
+
+  function update(id, state, detail = '', displaySuffix = '') {
     const stage = stageMap.get(id);
-    if (!stage) return;
+    if (!stage) return false;
     const normalizedDetail = String(detail || '').trim();
-    if (stage.state === state && stage.detail === normalizedDetail) return;
+    if (stage.state === state && stage.detail === normalizedDetail) return false;
     stage.state = state;
     stage.detail = normalizedDetail;
     const connector = id === 'cleanup' && state !== 'running' ? '╰─' : '├─';
     output(
       `[gx:finish] ${connector} ${SYMBOLS[state]} ${stage.index}/${STAGES.length}  ${stage.label}`
-      + `${normalizedDetail ? ` · ${normalizedDetail}` : ''}`,
+      + `${normalizedDetail ? ` · ${normalizedDetail}` : ''}${displaySuffix}`,
     );
     if (eventStream) {
       eventStream.write({
@@ -152,14 +181,52 @@ function createFinishProgress({ repoRoot, branch, baseBranch, write, persistEven
         detail: normalizedDetail,
       });
     }
+    return true;
+  }
+
+  function start(id, detail) {
+    const stage = stageMap.get(id);
+    if (!stage) return;
+    const normalizedDetail = String(detail || '').trim();
+    if (stage.state === 'running' && stage.detail === normalizedDetail) return;
+
+    stopTimedStage();
+    const startAt = clock();
+    if (!update(id, 'running', normalizedDetail) || !TIMED_STAGES.has(id)) return;
+
+    activeTimedStage = id;
+    stageStartedAt.set(id, startAt);
+    if (!heartbeatFactory) return;
+    try {
+      stopActiveHeartbeat = heartbeatFactory({
+        index: stage.index,
+        total: STAGES.length,
+        label: stage.label,
+        detail: normalizedDetail,
+        intervalMs: heartbeatIntervalMs,
+        startAt,
+      });
+    } catch (_error) {
+      // Progress is observability only; a heartbeat failure cannot block finish.
+      stopActiveHeartbeat = null;
+    }
+  }
+
+  function settle(id, state, detail) {
+    let displaySuffix = '';
+    if (TIMED_STAGES.has(id) && stageStartedAt.has(id)) {
+      displaySuffix = ` · ⏱ ${formatElapsed(clock() - stageStartedAt.get(id))} elapsed`;
+    }
+    if (activeTimedStage === id) stopTimedStage();
+    update(id, state, detail, displaySuffix);
   }
 
   return {
-    start: (id, detail) => update(id, 'running', detail),
-    complete: (id, detail) => update(id, 'complete', detail),
-    skip: (id, detail) => update(id, 'skipped', detail),
-    fail: (id, detail) => update(id, 'failed', detail),
-    finish: (id, detail) => update(id, 'finished', detail),
+    start,
+    complete: (id, detail) => settle(id, 'complete', detail),
+    skip: (id, detail) => settle(id, 'skipped', detail),
+    fail: (id, detail) => settle(id, 'failed', detail),
+    finish: (id, detail) => settle(id, 'finished', detail),
     eventEnv: eventStream ? {
       GUARDEX_FINISH_EVENT_FILE: eventStream.filePath,
       GUARDEX_FINISH_RUN_ID: eventStream.runId,
@@ -177,3 +244,4 @@ module.exports = {
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { formatElapsed, startHeartbeat: startStageHeartbeat } = require('./heartbeat');
