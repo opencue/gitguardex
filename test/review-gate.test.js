@@ -220,6 +220,7 @@ function gateDeps(over = {}) {
     openPullRequest: () => ({ pr: { number: 42 } }),
     runPrReview: () => ({ findings: [], posted: true }),
     markPullRequestReady: () => {},
+    resolveOutdatedReviewThreads: () => ({ ok: true, resolved: 0 }),
     evaluateReviewGate, // real
     waitForGreenCi: () => ({ status: 'green', pr: { mergeStateStatus: 'CLEAN' } }),
     ...over,
@@ -229,6 +230,21 @@ const gateArgs = { repoRoot: '/r', branch: 'agent/x/y', baseBranch: 'main', opti
 
 test('runReviewGate passes when review clean + CI green', () => {
   assert.deepEqual(runReviewGate(gateArgs, gateDeps()), { prNumber: 42 });
+});
+
+test('runReviewGate resolves outdated GitGuardex threads after a clean review', () => {
+  const calls = [];
+  const advisory = { severity: 'medium', path: 'a.js', line: 4, message: 'advisory' };
+  const deps = gateDeps({
+    runPrReview: () => ({ findings: [advisory], posted: true }),
+    resolveOutdatedReviewThreads: (prNumber, _repoRoot, findings) => {
+      calls.push({ prNumber, findings });
+      return { ok: true, resolved: 2 };
+    },
+  });
+
+  assert.deepEqual(runReviewGate(gateArgs, deps), { prNumber: 42 });
+  assert.deepEqual(calls, [{ prNumber: 42, findings: [advisory] }]);
 });
 
 test('runReviewGate fails CLOSED when the AI review provider throws', () => {

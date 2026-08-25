@@ -6,7 +6,7 @@ const {
   GH_BIN,
 } = require('./context');
 const { run } = require('./core/runtime');
-const { repoApiPath } = require('./github-api');
+const { repoApiPath, repoNameWithOwner } = require('./github-api');
 const { codexReviewEffort, resolveProviderBin } = require('./provider-binary');
 const { partitionByAnchor } = require('./review-diff');
 
@@ -428,6 +428,104 @@ function fetchPostedFingerprints(pr, repoRoot, runner = run) {
   return posted;
 }
 
+/**
+ * Resolve stale inline findings and current advisory findings that this tool
+ * owns after a fresh clean review. Human comments and unrecognized current
+ * GitGuardex findings are deliberately untouched.
+ */
+function resolveOutdatedReviewThreads(pr, repoRoot, findings = [], runner = run) {
+  // Preserve the original internal call shape `(pr, repoRoot, runner)`.
+  const execute = typeof findings === 'function' ? findings : runner;
+  const currentFindings = typeof findings === 'function' ? [] : findings;
+  const slug = repoNameWithOwner(repoRoot, execute);
+  if (!slug) {
+    return { ok: false, resolved: 0, candidates: 0, output: 'repository slug unavailable' };
+  }
+  const [owner, name] = slug.split('/');
+  const query = [
+    'query($owner:String!,$name:String!,$pr:Int!){',
+    'viewer{login}',
+    'repository(owner:$owner,name:$name){pullRequest(number:$pr){',
+    'reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:1){nodes{body author{login}}}}',
+    'pageInfo{hasNextPage}}}}}',
+  ].join('');
+  const lookup = execute(GH_BIN, [
+    'api', 'graphql',
+    '-f', `query=${query}`,
+    '-f', `owner=${owner}`,
+    '-f', `name=${name}`,
+    '-F', `pr=${pr}`,
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
+  const failure = (output, resolved = 0, candidates = 0) => ({
+    ok: false, resolved, candidates, output: String(output || '').trim(),
+  });
+  if (lookup.status !== 0) return failure(lookup.stderr || lookup.stdout);
+
+  let threads;
+  let trustedAuthor;
+  try {
+    const payload = JSON.parse(String(lookup.stdout || '{}'));
+    if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+      return failure(payload.errors.map((error) => error.message).filter(Boolean).join('; '));
+    }
+    trustedAuthor = String(payload?.data?.viewer?.login || '').toLowerCase();
+    if (!trustedAuthor) return failure('authenticated GitHub identity unavailable');
+    threads = payload?.data?.repository?.pullRequest?.reviewThreads;
+  } catch (error) {
+    return failure(`review thread JSON parse failed: ${error.message}`);
+  }
+  if (!threads || !Array.isArray(threads.nodes)) return failure('review thread data unavailable');
+  if (threads.pageInfo?.hasNextPage) return failure('more than 100 review threads; refusing partial resolution');
+
+  const advisoryFingerprints = new Set(
+    (Array.isArray(currentFindings) ? currentFindings : []).map(findingFingerprint),
+  );
+  const candidates = threads.nodes.filter((thread) => {
+    if (!thread || thread.isResolved || !Array.isArray(thread.comments?.nodes)) return false;
+    const bodies = thread.comments.nodes.map((comment) => String(comment?.body || ''));
+    const originatingComment = thread.comments.nodes[0];
+    if (!String(originatingComment?.body || '').includes(MARKER)) return false;
+    if (String(originatingComment?.author?.login || '').toLowerCase() !== trustedAuthor) return false;
+    const currentAdvisory = [...advisoryFingerprints].some((fingerprint) => (
+      bodies.some((body) => body.includes(`${FINDING_MARKER_PREFIX}${fingerprint} -->`))
+    ));
+    return thread.isOutdated || currentAdvisory;
+  });
+  let resolved = 0;
+  const mutation = 'mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{isResolved}}}';
+  for (const thread of candidates) {
+    const result = execute(GH_BIN, [
+      'api', 'graphql',
+      '-f', `query=${mutation}`,
+      '-f', `thread=${thread.id}`,
+    ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
+    if (result.status !== 0) {
+      return failure(result.stderr || result.stdout, resolved, candidates.length);
+    }
+    try {
+      const payload = JSON.parse(String(result.stdout || '{}'));
+      if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+        return failure(
+          payload.errors.map((error) => error.message).filter(Boolean).join('; '),
+          resolved,
+          candidates.length,
+        );
+      }
+      if (payload?.data?.resolveReviewThread?.thread?.isResolved !== true) {
+        return failure('review thread was not resolved', resolved, candidates.length);
+      }
+    } catch (error) {
+      return failure(
+        `review thread mutation JSON parse failed: ${error.message}`,
+        resolved,
+        candidates.length,
+      );
+    }
+    resolved += 1;
+  }
+  return { ok: true, resolved, candidates: candidates.length, output: '' };
+}
+
 function commentPayload(finding) {
   const comment = {
     path: finding.path,
@@ -689,6 +787,7 @@ module.exports = {
   splitMessage,
   runProviderReview,
   runPrReview,
+  resolveOutdatedReviewThreads,
   evaluateReviewGate,
   printPrReviewResult,
 };

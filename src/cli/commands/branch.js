@@ -9,6 +9,7 @@ const {
   invokePackageAsset,
 } = require('../../core/runtime');
 const { runReviewGate } = require('../../finish/review-gate');
+const { createFinishProgress } = require('../../finish/progress');
 const { finish, merge } = require('./finish');
 
 const REVIEW_PROVIDERS = ['codex', 'claude'];
@@ -155,18 +156,22 @@ function branch(rawArgs) {
       gateSerialCi,
       scriptArgs,
     } = splitGateReviewFlags(passthrough);
+    const finishBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
+    const finishBase = resolveFinishBaseBranch(repoRoot, finishBranch, readFlagValue(scriptArgs, '--base'));
+    const progress = createFinishProgress({ repoRoot, branch: finishBranch, baseBranch: finishBase });
+    progress.start('prepare', 'resolving branch and finish policy');
+    progress.complete('prepare', 'branch and base resolved');
     // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
     // GitHub will not merge. Throwing here means the script never runs, so
     // the merge never happens.
     if (gateReview) {
-      const gatedBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
       runReviewGate({
         repoRoot,
-        branch: gatedBranch,
+        branch: finishBranch,
         // Must match how the shell resolves --base when it is omitted, which
         // honors branch.<name>.guardexBase. Resolving differently would gate one
         // base and merge into another.
-        baseBranch: resolveFinishBaseBranch(repoRoot, gatedBranch, readFlagValue(scriptArgs, '--base')),
+        baseBranch: finishBase,
         // review-gate.js falls back to its own default when this is undefined,
         // which keeps a bare --gate-review behaving exactly as before.
         options: {
@@ -178,11 +183,21 @@ function branch(rawArgs) {
           gateBaseline,
           gateSerialCi,
         },
+        progress,
       });
+    } else {
+      progress.skip('review', 'review gate disabled');
+      progress.skip('autofix', 'review gate disabled');
+      progress.skip('ci', 'review gate disabled; repository policy controls merge readiness');
     }
     invokePackageAsset('branchFinish', scriptArgs, {
       cwd: repoRoot,
-      env: { GUARDEX_FINISH_ACTIVE_CWD: activeCwd },
+      env: {
+        GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
+        GUARDEX_FINISH_CHECKLIST: '1',
+        GUARDEX_FINISH_GATE_DONE: gateReview ? '1' : '0',
+        ...progress.eventEnv,
+      },
     });
     return;
   }

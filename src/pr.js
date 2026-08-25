@@ -16,22 +16,10 @@ const {
   detectDefaultBaseBranch,
 } = require('./git');
 const { repoApiPath } = require('./github-api');
+const { FAILING_CONCLUSIONS, summarizeStatusCheckRollup } = require('./pr-checks');
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
-
-// Conclusions that mean "this check did not pass". Kept in one place so the PR
-// rollup and the base-branch baseline classify identically — a name that counts
-// as failing on the PR must count as failing on the base, or the comparison
-// would report a phantom new failure.
-const FAILING_CONCLUSIONS = new Set([
-  'FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE',
-]);
-
-/** Display name of a check, spanning check-runs (`name`) and legacy statuses (`context`). */
-function checkName(check) {
-  return String(check?.name || check?.context || '').trim();
-}
 
 class PrError extends Error {
   constructor(message, { code = 'pr-error', cause = null } = {}) {
@@ -261,24 +249,7 @@ function getPullRequestStatus(repoRoot, branch) {
   const pr = findOpenPrForBranch(repoRoot, branch);
   if (!pr) return null;
 
-  const checks = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
-  const failedNames = [];
-  const summary = checks.reduce(
-    (acc, check) => {
-      const state = String(check?.conclusion || check?.status || '').toUpperCase();
-      if (state === 'SUCCESS') acc.success += 1;
-      else if (state === 'FAILURE' || state === 'ERROR' || state === 'TIMED_OUT') acc.failed += 1;
-      else if (state === 'PENDING' || state === 'IN_PROGRESS' || state === 'QUEUED') acc.pending += 1;
-      else if (state === 'CANCELLED') acc.cancelled += 1;
-      else acc.other += 1;
-      if (state !== 'SUCCESS' && FAILING_CONCLUSIONS.has(state)) {
-        const name = checkName(check);
-        if (name) failedNames.push(name);
-      }
-      return acc;
-    },
-    { success: 0, failed: 0, pending: 0, cancelled: 0, other: 0, total: checks.length },
-  );
+  const rollup = summarizeStatusCheckRollup(pr.statusCheckRollup);
 
   return {
     number: pr.number,
@@ -295,8 +266,9 @@ function getPullRequestStatus(repoRoot, branch) {
     // my push replaced".
     headSha: pr.headRefOid || '',
     base: pr.baseRefName,
-    checks: summary,
-    failedNames,
+    checks: rollup.summary,
+    failedNames: rollup.failedNames,
+    supersededChecks: rollup.supersededCount,
   };
 }
 

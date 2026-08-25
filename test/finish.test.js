@@ -60,6 +60,24 @@ const {
   sanitizeSlug,
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
+const { createEventStream } = require('../src/finish/progress');
+
+test('finish progress rejects symbolic links in its state directory path', () => {
+  for (const linkedComponent of ['.omx', 'state', 'finish-runs']) {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-progress-repo-'));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-progress-outside-'));
+    fs.chmodSync(outsideDir, 0o755);
+    const parent = linkedComponent === '.omx'
+      ? repoDir
+      : path.join(repoDir, '.omx', ...(linkedComponent === 'finish-runs' ? ['state'] : []));
+    fs.mkdirSync(parent, { recursive: true });
+    fs.symlinkSync(outsideDir, path.join(parent, linkedComponent), 'dir');
+
+    assert.equal(createEventStream(repoDir, 'agent/test', 'main'), null);
+    assert.deepEqual(fs.readdirSync(outsideDir), []);
+    assert.equal(fs.statSync(outsideDir).mode & 0o777, 0o755);
+  }
+});
 
 defineSpawnSuite('finish and cleanup integration suite', () => {
 
@@ -171,6 +189,36 @@ exit 1
   assert.match(result.stdout, new RegExp(`Finishing '${escapeRegexLiteral(agentBranch)}' -> 'main'`));
   assert.match(result.stdout, /auto-committed/i);
   assert.match(result.stdout, /Finish summary: total=1, success=1, failed=0, autoCommitted=1/);
+  assert.match(result.stderr, new RegExp(`🚀 GX FINISH · ${escapeRegexLiteral(agentBranch)} → main`));
+  assert.match(result.stderr, /✅ 1\/8  Prepare branch · pending changes auto-committed/);
+  assert.match(result.stderr, /✅ 2\/8  Local preflight · passed/);
+  assert.match(result.stderr, /✅ 3\/8  Push and open PR · https:\/\/example\.test\/pr\/finish-all/);
+  assert.match(result.stderr, /⏭ 4\/8  AI review · review gate disabled/);
+  assert.match(result.stderr, /⏭ 6\/8  CI checks · review gate disabled/);
+  assert.match(result.stderr, /✅ 7\/8  Merge · landed in main/);
+  assert.match(result.stderr, /⏭ 8\/8  Cleanup · disabled by flag/);
+  const finishEventDir = path.join(repoDir, '.omx', 'state', 'finish-runs');
+  const finishEventFiles = fs.readdirSync(finishEventDir).filter((name) => name.endsWith('.jsonl'));
+  assert.equal(finishEventFiles.length, 1, 'one structured event stream is created for the finish run');
+  const finishEvents = fs.readFileSync(path.join(finishEventDir, finishEventFiles[0]), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(
+    finishEvents.some((event) => event.stage === 'pr' && event.state === 'complete'),
+    true,
+    'the shell PR transition reaches the shared event stream',
+  );
+  assert.equal(
+    finishEvents.some((event) => event.stage === 'merge' && event.state === 'complete'),
+    true,
+    'the shell merge transition reaches the shared event stream',
+  );
+  assert.equal(
+    finishEvents.some((event) => event.stage === 'cleanup' && event.state === 'skipped'),
+    true,
+    'the shell cleanup transition reaches the shared event stream',
+  );
   assert.equal(fs.existsSync(agentWorktree), true, 'finish --no-cleanup should keep the agent worktree');
   let branchResult = runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${agentBranch}`], repoDir);
   assert.equal(branchResult.status, 0, 'finish --no-cleanup should keep the local agent branch');
