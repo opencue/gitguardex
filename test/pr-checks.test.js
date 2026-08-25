@@ -132,6 +132,22 @@ test('latestStatusChecks keeps distinct same-named workflow-less checks from one
   assert.deepEqual(result.superseded, []);
 });
 
+test('latestStatusChecks keeps workflow-less checks distinguished by query parameters', () => {
+  const security = {
+    ...check({ workflowName: '', conclusion: 'FAILURE' }),
+    detailsUrl: 'https://ci.example/checks/latest?job=security',
+  };
+  const quality = {
+    ...check({ workflowName: '', conclusion: 'SUCCESS' }),
+    detailsUrl: 'https://ci.example/checks/latest?job=quality',
+  };
+
+  const result = latestStatusChecks([security, quality]);
+
+  assert.deepEqual(result.checks, [security, quality]);
+  assert.deepEqual(result.superseded, []);
+});
+
 test('latestStatusChecks uses the later array entry when timestamps are unavailable', () => {
   const old = {
     __typename: 'StatusContext',

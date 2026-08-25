@@ -27,7 +27,7 @@ function stableDetailsUrl(value) {
     if (lastSegment >= 0 && volatileSegment.test(segments[lastSegment])) {
       segments[lastSegment] = ':id';
     }
-    return `${url.origin}${segments.join('/')}`;
+    return `${url.origin}${segments.join('/')}${url.search}`;
   } catch (_error) {
     return '';
   }
