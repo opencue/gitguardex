@@ -429,11 +429,15 @@ function fetchPostedFingerprints(pr, repoRoot, runner = run) {
 }
 
 /**
- * Resolve stale inline findings that this tool owns after a fresh clean review.
- * Human comments and current GitGuardex findings are deliberately untouched.
+ * Resolve stale inline findings and current advisory findings that this tool
+ * owns after a fresh clean review. Human comments and unrecognized current
+ * GitGuardex findings are deliberately untouched.
  */
-function resolveOutdatedReviewThreads(pr, repoRoot, runner = run) {
-  const slug = repoNameWithOwner(repoRoot, runner);
+function resolveOutdatedReviewThreads(pr, repoRoot, findings = [], runner = run) {
+  // Preserve the original internal call shape `(pr, repoRoot, runner)`.
+  const execute = typeof findings === 'function' ? findings : runner;
+  const currentFindings = typeof findings === 'function' ? [] : findings;
+  const slug = repoNameWithOwner(repoRoot, execute);
   if (!slug) {
     return { ok: false, resolved: 0, candidates: 0, output: 'repository slug unavailable' };
   }
@@ -444,7 +448,7 @@ function resolveOutdatedReviewThreads(pr, repoRoot, runner = run) {
     'reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:100){nodes{body}}}',
     'pageInfo{hasNextPage}}}}}',
   ].join('');
-  const lookup = runner(GH_BIN, [
+  const lookup = execute(GH_BIN, [
     'api', 'graphql',
     '-f', `query=${query}`,
     '-f', `owner=${owner}`,
@@ -469,23 +473,47 @@ function resolveOutdatedReviewThreads(pr, repoRoot, runner = run) {
   if (!threads || !Array.isArray(threads.nodes)) return failure('review thread data unavailable');
   if (threads.pageInfo?.hasNextPage) return failure('more than 100 review threads; refusing partial resolution');
 
-  const candidates = threads.nodes.filter((thread) => (
-    thread
-    && !thread.isResolved
-    && thread.isOutdated
-    && Array.isArray(thread.comments?.nodes)
-    && thread.comments.nodes.some((comment) => String(comment?.body || '').includes(MARKER))
-  ));
+  const advisoryFingerprints = new Set(
+    (Array.isArray(currentFindings) ? currentFindings : []).map(findingFingerprint),
+  );
+  const candidates = threads.nodes.filter((thread) => {
+    if (!thread || thread.isResolved || !Array.isArray(thread.comments?.nodes)) return false;
+    const bodies = thread.comments.nodes.map((comment) => String(comment?.body || ''));
+    if (!bodies.some((body) => body.includes(MARKER))) return false;
+    const currentAdvisory = [...advisoryFingerprints].some((fingerprint) => (
+      bodies.some((body) => body.includes(`${FINDING_MARKER_PREFIX}${fingerprint} -->`))
+    ));
+    return thread.isOutdated || currentAdvisory;
+  });
   let resolved = 0;
   const mutation = 'mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{isResolved}}}';
   for (const thread of candidates) {
-    const result = runner(GH_BIN, [
+    const result = execute(GH_BIN, [
       'api', 'graphql',
       '-f', `query=${mutation}`,
       '-f', `thread=${thread.id}`,
     ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
     if (result.status !== 0) {
       return failure(result.stderr || result.stdout, resolved, candidates.length);
+    }
+    try {
+      const payload = JSON.parse(String(result.stdout || '{}'));
+      if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+        return failure(
+          payload.errors.map((error) => error.message).filter(Boolean).join('; '),
+          resolved,
+          candidates.length,
+        );
+      }
+      if (payload?.data?.resolveReviewThread?.thread?.isResolved !== true) {
+        return failure('review thread was not resolved', resolved, candidates.length);
+      }
+    } catch (error) {
+      return failure(
+        `review thread mutation JSON parse failed: ${error.message}`,
+        resolved,
+        candidates.length,
+      );
     }
     resolved += 1;
   }

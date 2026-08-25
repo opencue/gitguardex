@@ -234,15 +234,17 @@ test('runReviewGate passes when review clean + CI green', () => {
 
 test('runReviewGate resolves outdated GitGuardex threads after a clean review', () => {
   const calls = [];
+  const advisory = { severity: 'medium', path: 'a.js', line: 4, message: 'advisory' };
   const deps = gateDeps({
-    resolveOutdatedReviewThreads: (prNumber, _repoRoot) => {
-      calls.push(prNumber);
+    runPrReview: () => ({ findings: [advisory], posted: true }),
+    resolveOutdatedReviewThreads: (prNumber, _repoRoot, findings) => {
+      calls.push({ prNumber, findings });
       return { ok: true, resolved: 2 };
     },
   });
 
   assert.deepEqual(runReviewGate(gateArgs, deps), { prNumber: 42 });
-  assert.deepEqual(calls, [42]);
+  assert.deepEqual(calls, [{ prNumber: 42, findings: [advisory] }]);
 });
 
 test('runReviewGate fails CLOSED when the AI review provider throws', () => {

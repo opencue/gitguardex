@@ -431,7 +431,7 @@ function runReviewGate({
       + '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.',
     );
   }
-  const threadResolution = resolveThreads(prNumber, repoRoot);
+  const threadResolution = resolveThreads(prNumber, repoRoot, review.findings);
   if (threadResolution.ok === false) {
     gateLog(
       `PR #${prNumber}: could not inspect outdated GitGuardex review threads`
