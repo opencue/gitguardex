@@ -17,6 +17,8 @@ const { mapWorktreePathsByBranch } = require('../git');
 const DEFAULT_GATE_TIMEOUT_SECONDS = 1800; // 30 min — CI can be slow.
 const DEFAULT_GATE_POLL_SECONDS = 15;
 const DEFAULT_NO_CHECKS_GRACE_SECONDS = 60; // let CI register check runs after promote.
+const DEFAULT_PR_HEAD_TIMEOUT_SECONDS = 60;
+const DEFAULT_PR_HEAD_POLL_SECONDS = 2;
 // GitHub mergeStateStatus values that mean "mergeable under current protection".
 const MERGEABLE_STATES = new Set(['CLEAN', 'HAS_HOOKS']);
 // mergeStateStatus values that mean "GitHub will not allow this merge as-is".
@@ -77,6 +79,30 @@ function resolveWorktreeForBranch(repoRoot, branch) {
     return mapWorktreePathsByBranch(repoRoot).get(branch) || repoRoot;
   } catch (_error) {
     return repoRoot;
+  }
+}
+
+/** Wait until GitHub exposes the pushed commit before fetching the PR diff. */
+function waitForPullRequestHead(repoRoot, branch, expectedHeadSha, options = {}) {
+  const expected = String(expectedHeadSha || '').trim();
+  if (!expected) return { status: 'missing-head' };
+
+  const timeoutSeconds = options.timeoutSeconds || DEFAULT_PR_HEAD_TIMEOUT_SECONDS;
+  const pollSeconds = options.pollSeconds || DEFAULT_PR_HEAD_POLL_SECONDS;
+  const sleep = options.sleep || ((seconds) => run('sleep', [String(seconds)], { cwd: repoRoot }));
+  const now = options.now || (() => Date.now());
+  const getStatus = options.getStatus || ((r, b) => pr.getPullRequestStatus(r, b));
+  const deadline = now() + timeoutSeconds * 1000;
+  let snapshot;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    snapshot = getStatus(repoRoot, branch);
+    if (snapshot?.headSha === expected) return { status: 'current', pr: snapshot };
+    if (now() >= deadline) {
+      return snapshot ? { status: 'stale-head', pr: snapshot } : { status: 'no-pr' };
+    }
+    sleep(pollSeconds);
   }
 }
 
@@ -255,6 +281,7 @@ function runReviewGate({
   const runFix = deps.runReviewFix || reviewFix.runReviewFix;
   const pushBranch = deps.pushBranch || pr.pushBranch;
   const headSha = deps.readHeadSha || readHeadSha;
+  const waitHead = deps.waitForPullRequestHead || waitForPullRequestHead;
 
   const provider = options.reviewProvider || 'codex';
   const requireChecks = !options.allowNoChecks;
@@ -276,6 +303,19 @@ function runReviewGate({
     throw error;
   }
   const prNumber = opened.pr.number;
+  const initialHeadSha = headSha(fixCwd);
+  const initialHeadSync = waitHead(repoRoot, branch, initialHeadSha, {
+    timeoutSeconds: options.gateHeadTimeoutSeconds,
+    pollSeconds: options.gateHeadPollSeconds,
+  });
+  if (initialHeadSync.status !== 'current') {
+    const seen = initialHeadSync.pr?.headSha || 'unknown';
+    reportProgress(progress, 'fail', 'pr', `PR head is still ${seen}`);
+    throw new Error(
+      `review gate: PR #${prNumber} still reports head ${seen}, not the pushed commit `
+      + `${initialHeadSha || 'unknown'}. Refusing to review a stale PR diff.`,
+    );
+  }
   reportProgress(progress, 'complete', 'pr', `PR #${prNumber}`);
   gateLog(`PR #${prNumber}: enforcing review + CI gate before merge`);
 
@@ -397,6 +437,18 @@ function runReviewGate({
       break;
     }
     pushedHeadSha = headSha(fixCwd);
+    const headSync = waitHead(repoRoot, branch, pushedHeadSha, {
+      timeoutSeconds: options.gateHeadTimeoutSeconds,
+      pollSeconds: options.gateHeadPollSeconds,
+    });
+    if (headSync.status !== 'current') {
+      const seen = headSync.pr?.headSha || 'unknown';
+      reportProgress(progress, 'fail', 'autofix', `PR head is still ${seen}`);
+      throw new Error(
+        `review gate: PR #${prNumber} still reports head ${seen}, not the auto-fix commit `
+        + `${pushedHeadSha || 'unknown'}. Refusing to re-review a stale PR diff.`,
+      );
+    }
     reportProgress(progress, 'complete', 'autofix', `${fix.changedFiles.length} file(s) fixed and pushed`);
   }
 
@@ -545,6 +597,7 @@ module.exports = {
   runReviewGate,
   resolveCarriedFindings,
   waitForGreenCi,
+  waitForPullRequestHead,
   DEFAULT_GATE_TIMEOUT_SECONDS,
   MERGEABLE_STATES,
 };

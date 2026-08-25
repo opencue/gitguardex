@@ -2,7 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { evaluateReviewGate } = require('../src/pr-review');
-const { waitForGreenCi, runReviewGate } = require('../src/finish/review-gate');
+const {
+  waitForGreenCi,
+  waitForPullRequestHead,
+  runReviewGate,
+} = require('../src/finish/review-gate');
 const { parseFinishArgs } = require('../src/cli/args');
 
 // ---- evaluateReviewGate (pure) ------------------------------------------
@@ -213,11 +217,43 @@ test('waitForGreenCi ignores head pinning when no commit was pushed mid-run', ()
   assert.equal(r.status, 'green');
 });
 
+test('waitForPullRequestHead waits until GitHub exposes the pushed commit', () => {
+  const c = makeClock();
+  const r = waitForPullRequestHead('repo', 'br', 'new-sha', {
+    ...c,
+    pollSeconds: 2,
+    getStatus: seqStatus([
+      { headSha: 'old-sha' },
+      { headSha: 'new-sha' },
+    ]),
+  });
+
+  assert.equal(r.status, 'current');
+  assert.equal(r.pr.headSha, 'new-sha');
+});
+
+test('waitForPullRequestHead fails closed instead of reviewing a stale PR diff', () => {
+  const c = makeClock();
+  const r = waitForPullRequestHead('repo', 'br', 'new-sha', {
+    ...c,
+    pollSeconds: 2,
+    timeoutSeconds: 4,
+    getStatus: constStatus({ headSha: 'old-sha' }),
+  });
+
+  assert.equal(r.status, 'stale-head');
+  assert.equal(r.pr.headSha, 'old-sha');
+});
+
 // ---- runReviewGate orchestration (injected deps) ------------------------
 
 function gateDeps(over = {}) {
   return {
     openPullRequest: () => ({ pr: { number: 42 } }),
+    readHeadSha: () => 'initial-sha',
+    waitForPullRequestHead: (_repoRoot, _branch, expectedHeadSha) => ({
+      status: 'current', pr: { headSha: expectedHeadSha },
+    }),
     runPrReview: () => ({ findings: [], posted: true }),
     markPullRequestReady: () => {},
     resolveOutdatedReviewThreads: () => ({ ok: true, resolved: 0 }),
@@ -230,6 +266,42 @@ const gateArgs = { repoRoot: '/r', branch: 'agent/x/y', baseBranch: 'main', opti
 
 test('runReviewGate passes when review clean + CI green', () => {
   assert.deepEqual(runReviewGate(gateArgs, gateDeps()), { prNumber: 42 });
+});
+
+test('runReviewGate waits for the pushed PR head before its first review', () => {
+  const calls = [];
+  const deps = gateDeps({
+    readHeadSha: () => 'pushed-sha',
+    waitForPullRequestHead: (_repoRoot, _branch, expectedHeadSha) => {
+      calls.push(`head:${expectedHeadSha}`);
+      return { status: 'current', pr: { headSha: expectedHeadSha } };
+    },
+    runPrReview: () => {
+      calls.push('review');
+      return { findings: [], posted: true };
+    },
+  });
+
+  runReviewGate(gateArgs, deps);
+  assert.deepEqual(calls.slice(0, 2), ['head:pushed-sha', 'review']);
+});
+
+test('runReviewGate blocks before first review when GitHub still exposes the previous head', () => {
+  let reviewed = false;
+  const deps = gateDeps({
+    readHeadSha: () => 'pushed-sha',
+    waitForPullRequestHead: () => ({ status: 'stale-head', pr: { headSha: 'previous-sha' } }),
+    runPrReview: () => {
+      reviewed = true;
+      return { findings: [], posted: true };
+    },
+  });
+
+  assert.throws(
+    () => runReviewGate(gateArgs, deps),
+    /still reports head previous-sha.*pushed-sha/s,
+  );
+  assert.equal(reviewed, false, 'a stale GitHub diff must never reach the first review');
 });
 
 test('runReviewGate resolves outdated GitGuardex threads after a clean review', () => {
@@ -463,18 +535,53 @@ test('runReviewGate still blocks a dirty review after promoting early', () => {
 
 test('runReviewGate pins the CI wait to the commit an auto-fix pushed', () => {
   let seenExpect = null;
+  let reviewCalls = 0;
+  let syncedBeforeSecondReview = false;
+  let headReads = 0;
   const deps = gateDeps({
-    runPrReview: seqReviews([
-      { findings: [{ severity: 'high', path: 'a.js', line: 1, message: 'bug' }], posted: true },
-      { findings: [], posted: true },
-    ]),
+    runPrReview: () => {
+      reviewCalls += 1;
+      if (reviewCalls === 2) assert.equal(syncedBeforeSecondReview, true);
+      return reviewCalls === 1
+        ? { findings: [{ severity: 'high', path: 'a.js', line: 1, message: 'bug' }], posted: true }
+        : { findings: [], posted: true };
+    },
     runReviewFix: () => ({ status: 'fixed', changedFiles: ['a.js'] }),
     pushBranch: () => ({ ok: true }),
-    readHeadSha: () => 'sha-after-fix',
+    readHeadSha: () => (headReads++ === 0 ? 'initial-sha' : 'sha-after-fix'),
+    waitForPullRequestHead: (_r, _b, expectedHeadSha) => {
+      if (expectedHeadSha === 'sha-after-fix') syncedBeforeSecondReview = true;
+      return { status: 'current', pr: { headSha: expectedHeadSha } };
+    },
     waitForGreenCi: (_r, _b, opts) => { seenExpect = opts.expectHeadSha; return { status: 'green', pr: {} }; },
   });
   runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps);
   assert.equal(seenExpect, 'sha-after-fix');
+});
+
+test('runReviewGate blocks before re-review when GitHub still exposes the pre-fix head', () => {
+  let reviewCalls = 0;
+  let headReads = 0;
+  const deps = gateDeps({
+    runPrReview: () => {
+      reviewCalls += 1;
+      return { findings: [{ severity: 'high', path: 'a.js', line: 1, message: 'bug' }], posted: true };
+    },
+    runReviewFix: () => ({ status: 'fixed', changedFiles: ['a.js'] }),
+    pushBranch: () => ({ ok: true }),
+    readHeadSha: () => (headReads++ === 0 ? 'initial-sha' : 'sha-after-fix'),
+    waitForPullRequestHead: (_r, _b, expectedHeadSha) => (
+      expectedHeadSha === 'initial-sha'
+        ? { status: 'current', pr: { headSha: expectedHeadSha } }
+        : { status: 'stale-head', pr: { headSha: 'sha-before-fix' } }
+    ),
+  });
+
+  assert.throws(
+    () => runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps),
+    /still reports head sha-before-fix.*sha-after-fix/s,
+  );
+  assert.equal(reviewCalls, 1, 'a stale GitHub diff must never reach the second review');
 });
 
 test('runReviewGate passes review model and timeout through to the provider runner', () => {

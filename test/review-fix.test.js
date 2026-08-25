@@ -195,6 +195,8 @@ test('runReviewFix reports a no-op when the provider edits nothing', () => {
 function gateDeps(overrides = {}) {
   return {
     openPullRequest: () => ({ pr: { number: 7 } }),
+    readHeadSha: () => 'head-sha',
+    waitForPullRequestHead: () => ({ status: 'current', pr: { headSha: 'head-sha' } }),
     markPullRequestReady: () => {},
     waitForGreenCi: () => ({ status: 'green', pr: { mergeStateStatus: 'CLEAN' } }),
     pushBranch: () => ({ ok: true, output: '' }),

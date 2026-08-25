@@ -8,6 +8,7 @@ function check({
   workflowName = 'CI',
   status = 'COMPLETED',
   conclusion,
+  createdAt,
   startedAt,
   completedAt,
 } = {}) {
@@ -17,6 +18,7 @@ function check({
     workflowName,
     status,
     conclusion,
+    createdAt,
     startedAt,
     completedAt,
   };
@@ -26,7 +28,7 @@ test('latestStatusChecks replaces an old cancelled run with the newer in-progres
   const old = check({
     conclusion: 'CANCELLED',
     startedAt: '2026-08-25T07:42:00Z',
-    completedAt: '2026-08-25T07:42:48Z',
+    completedAt: '2026-08-25T07:43:10Z',
   });
   const current = check({
     status: 'IN_PROGRESS',
@@ -59,6 +61,27 @@ test('latestStatusChecks replaces an old cancelled run with the newer successful
   assert.deepEqual(result.superseded, [old]);
 });
 
+test('latestStatusChecks keeps a newer queued rerun that has not started yet', () => {
+  const old = check({
+    conclusion: 'SUCCESS',
+    createdAt: '2026-08-25T07:42:00Z',
+    startedAt: '2026-08-25T07:42:05Z',
+    completedAt: '2026-08-25T07:42:48Z',
+  });
+  const current = check({
+    status: 'QUEUED',
+    conclusion: '',
+    createdAt: '2026-08-25T07:42:52Z',
+    startedAt: null,
+    completedAt: null,
+  });
+
+  const result = latestStatusChecks([old, current]);
+
+  assert.deepEqual(result.checks, [current]);
+  assert.deepEqual(result.superseded, [old]);
+});
+
 test('latestStatusChecks keeps identically named checks from different workflows', () => {
   const ci = check({
     workflowName: 'CI',
@@ -77,19 +100,83 @@ test('latestStatusChecks keeps identically named checks from different workflows
   assert.deepEqual(result.superseded, []);
 });
 
-test('latestStatusChecks keeps identically named workflow-less checks from different providers', () => {
+test('latestStatusChecks replaces an old workflow-less check with its newer rerun', () => {
+  const old = {
+    ...check({ workflowName: '', conclusion: 'FAILURE', startedAt: '2026-08-25T07:42:00Z' }),
+    detailsUrl: 'https://ci.example/check/runs/1',
+  };
+  const current = {
+    ...check({ workflowName: '', conclusion: 'SUCCESS', startedAt: '2026-08-25T07:42:52Z' }),
+    detailsUrl: 'https://ci.example/check/runs/2',
+  };
+
+  const result = latestStatusChecks([old, current]);
+
+  assert.deepEqual(result.checks, [current]);
+  assert.deepEqual(result.superseded, [old]);
+});
+
+test('latestStatusChecks keeps distinct same-named workflow-less checks from one provider', () => {
   const first = {
     ...check({ workflowName: '', conclusion: 'FAILURE' }),
-    detailsUrl: 'https://ci-one.example/runs/1',
+    detailsUrl: 'https://ci.example/checks/security/runs/1',
   };
   const second = {
     ...check({ workflowName: '', conclusion: 'SUCCESS' }),
-    detailsUrl: 'https://ci-two.example/runs/2',
+    detailsUrl: 'https://ci.example/checks/quality/runs/2',
   };
 
   const result = latestStatusChecks([first, second]);
 
   assert.deepEqual(result.checks, [first, second]);
+  assert.deepEqual(result.superseded, []);
+});
+
+test('latestStatusChecks preserves stable numeric project identifiers', () => {
+  const first = {
+    ...check({ workflowName: '', conclusion: 'FAILURE' }),
+    detailsUrl: 'https://ci.example/projects/123/runs/1',
+  };
+  const second = {
+    ...check({ workflowName: '', conclusion: 'SUCCESS' }),
+    detailsUrl: 'https://ci.example/projects/456/runs/1',
+  };
+
+  const result = latestStatusChecks([first, second]);
+
+  assert.deepEqual(result.checks, [first, second]);
+  assert.deepEqual(result.superseded, []);
+});
+
+test('latestStatusChecks collapses changing run and job identifiers for one check', () => {
+  const old = {
+    ...check({ workflowName: '', conclusion: 'FAILURE', startedAt: '2026-08-25T07:42:00Z' }),
+    detailsUrl: 'https://ci.example/actions/runs/123/job/456',
+  };
+  const current = {
+    ...check({ workflowName: '', conclusion: 'SUCCESS', startedAt: '2026-08-25T07:42:52Z' }),
+    detailsUrl: 'https://ci.example/actions/runs/124/job/457',
+  };
+
+  const result = latestStatusChecks([old, current]);
+
+  assert.deepEqual(result.checks, [current]);
+  assert.deepEqual(result.superseded, [old]);
+});
+
+test('latestStatusChecks keeps workflow-less checks distinguished by query parameters', () => {
+  const security = {
+    ...check({ workflowName: '', conclusion: 'FAILURE' }),
+    detailsUrl: 'https://ci.example/checks/latest?job=security',
+  };
+  const quality = {
+    ...check({ workflowName: '', conclusion: 'SUCCESS' }),
+    detailsUrl: 'https://ci.example/checks/latest?job=quality',
+  };
+
+  const result = latestStatusChecks([security, quality]);
+
+  assert.deepEqual(result.checks, [security, quality]);
   assert.deepEqual(result.superseded, []);
 });
 

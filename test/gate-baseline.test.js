@@ -208,6 +208,8 @@ test('baselineFailures reports unavailable when nothing anywhere has checks', ()
 function gateDeps(overrides = {}) {
   return {
     openPullRequest: () => ({ pr: { number: 7 } }),
+    readHeadSha: () => 'head-sha',
+    waitForPullRequestHead: () => ({ status: 'current', pr: { headSha: 'head-sha' } }),
     runPrReview: () => ({ findings: [], posted: true }),
     markPullRequestReady: () => {},
     ...overrides,

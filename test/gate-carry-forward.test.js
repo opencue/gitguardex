@@ -34,6 +34,8 @@ test('resolveCarriedFindings tolerates missing/garbage findings', () => {
 function gateDeps(overrides = {}) {
   return {
     openPullRequest: () => ({ pr: { number: 440 } }),
+    readHeadSha: () => 'head-sha',
+    waitForPullRequestHead: () => ({ status: 'current', pr: { headSha: 'head-sha' } }),
     markPullRequestReady: () => {},
     waitForGreenCi: () => ({ status: 'green', pr: { mergeStateStatus: 'CLEAN' } }),
     pushBranch: () => ({ ok: true, output: '' }),
