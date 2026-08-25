@@ -30,6 +30,7 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
     resolveRepoRoot: () => '/fake/repo',
     resolveFinishBaseBranch: (_root, branch, base) => base || perBranchBase[branch] || 'main',
     currentBranchName: () => 'agent/claude/from-head',
+    listAgentWorktrees: () => [],
   });
   stub('src/core/runtime.js', {
     run: () => {},

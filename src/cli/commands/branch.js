@@ -1,7 +1,17 @@
 // `gx branch`, `gx pivot`, `gx ship`, `gx locks`, `gx worktree` — branch
 // workflow surface. Pure code-motion from src/cli/main.js.
-const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
-const { resolveRepoRoot, resolveFinishBaseBranch, currentBranchName } = require('../../git');
+const {
+  TOOL_NAME,
+  SHORT_TOOL_NAME,
+  path,
+  fs,
+} = require('../../context');
+const {
+  resolveRepoRoot,
+  resolveFinishBaseBranch,
+  currentBranchName,
+  listAgentWorktrees,
+} = require('../../git');
 const {
   run,
   extractTargetedArgs,
@@ -10,11 +20,12 @@ const {
 } = require('../../core/runtime');
 const { runReviewGate } = require('../../finish/review-gate');
 const { createFinishProgress } = require('../../finish/progress');
+const { autoCommitWorktreeForFinish } = require('../../finish');
 const { finish, merge } = require('./finish');
 
 const REVIEW_PROVIDERS = ['codex', 'claude'];
 
-// `--gate-review`, its opt-outs, and `--review-provider` are gx-level flags.
+// Review-gate and auto-commit options are gx-level flags.
 // agent-branch-finish.sh does not parse them (it exits 1 on the unknown
 // argument), and its --via-pr path merges the moment the PR opens, so the shell
 // cannot enforce the gate itself. Pull the flags out of the script's argv and
@@ -29,9 +40,19 @@ function splitGateReviewFlags(args) {
   let gateSerialCi = true;
   let reviewModel;
   let reviewTimeoutMs;
+  let noAutoCommit = false;
+  let commitMessage = '';
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--gate-review') {
+    if (arg === '--no-auto-commit') {
+      noAutoCommit = true;
+    } else if (arg === '--commit-message') {
+      commitMessage = String(args[index + 1] ?? '').trim();
+      if (!commitMessage || commitMessage.startsWith('-')) {
+        throw new Error('--commit-message requires a value');
+      }
+      index += 1;
+    } else if (arg === '--gate-review') {
       gateReview = true;
     } else if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
       gateReview = false;
@@ -122,6 +143,8 @@ function splitGateReviewFlags(args) {
     gateAutofixRounds,
     gateBaseline,
     gateSerialCi,
+    noAutoCommit,
+    commitMessage,
     scriptArgs,
   };
 }
@@ -132,6 +155,14 @@ function readFlagValue(args, flag) {
   if (index >= 0 && index + 1 < args.length) return args[index + 1];
   const inline = args.find((arg) => arg.startsWith(`${flag}=`));
   return inline ? inline.slice(flag.length + 1) : undefined;
+}
+
+function isLinkedAgentWorktree(worktreePath) {
+  try {
+    return fs.statSync(path.join(worktreePath, '.git')).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function branch(rawArgs) {
@@ -154,13 +185,36 @@ function branch(rawArgs) {
       gateAutofixRounds,
       gateBaseline,
       gateSerialCi,
+      noAutoCommit,
+      commitMessage,
       scriptArgs,
     } = splitGateReviewFlags(passthrough);
     const finishBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
     const finishBase = resolveFinishBaseBranch(repoRoot, finishBranch, readFlagValue(scriptArgs, '--base'));
+    const finishWorktree = listAgentWorktrees(repoRoot)
+      .find((entry) => entry.branch === finishBranch)?.worktreePath || '';
+    // Keep the legacy behavior for agent branches checked out directly in the
+    // primary repository. Guardex-managed lanes are linked worktrees; limiting
+    // auto-commit to those avoids scooping primary-checkout runtime artifacts
+    // into an otherwise already-committed branch.
+    const autoCommitWorktree = finishWorktree && isLinkedAgentWorktree(finishWorktree)
+      ? finishWorktree
+      : '';
     const progress = createFinishProgress({ repoRoot, branch: finishBranch, baseBranch: finishBase });
-    progress.start('prepare', 'resolving branch and finish policy');
-    progress.complete('prepare', 'branch and base resolved');
+    progress.start(
+      'prepare',
+      autoCommitWorktree ? 'checking worktree and pending changes' : 'resolving branch and finish policy',
+    );
+    const commitState = autoCommitWorktree
+      ? autoCommitWorktreeForFinish(repoRoot, autoCommitWorktree, finishBranch, { noAutoCommit, commitMessage })
+      : { changed: false, committed: false };
+    if (commitState.committed) {
+      console.log(`[${TOOL_NAME}] Auto-committed '${finishBranch}' before finish.`);
+    }
+    progress.complete(
+      'prepare',
+      commitState.committed ? 'pending changes auto-committed' : 'branch and base resolved',
+    );
     // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
     // GitHub will not merge. Throwing here means the script never runs, so
     // the merge never happens.

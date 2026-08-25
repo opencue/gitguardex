@@ -233,6 +233,74 @@ exit 1
 });
 
 
+test('branch finish auto-commits dirty agent worktree before opening a PR', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  attachOriginRemoteForBranch(repoDir, 'main');
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['add', '.'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['commit', '-m', 'apply gx setup'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['push', 'origin', 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runBranchStart(['branch-finish-dirty', 'bot'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const agentBranch = extractCreatedBranch(result.stdout);
+  const agentWorktree = extractCreatedWorktree(result.stdout);
+  fs.writeFileSync(path.join(agentWorktree, 'branch-finish-note.txt'), 'pending branch finish\n', 'utf8');
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "create" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json url "* ]]; then
+    echo "https://example.test/pr/branch-finish-dirty"
+    exit 0
+  fi
+  if [[ " $* " == *" --json body "* ]]; then
+    echo "Automated by gx branch finish (PR flow)."
+    exit 0
+  fi
+  if [[ " $* " == *" --json state,mergedAt,url "* ]]; then
+    echo -e "MERGED\\x1f2026-08-25T00:00:00Z\\x1fhttps://example.test/pr/branch-finish-dirty"
+    exit 0
+  fi
+  exit 1
+fi
+if [[ "$1" == "pr" && "$2" == "ready" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then
+  exit 0
+fi
+exit 1
+`);
+
+  result = runBranchFinish(
+    ['--branch', agentBranch, '--base', 'main', '--via-pr', '--no-wait-for-merge', '--no-cleanup'],
+    repoDir,
+    { GUARDEX_GH_BIN: fakeGhPath },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /auto-committed/i);
+
+  const worktreeStatus = runCmd('git', ['status', '--short'], agentWorktree);
+  assert.equal(worktreeStatus.status, 0, worktreeStatus.stderr || worktreeStatus.stdout);
+  assert.equal(worktreeStatus.stdout.trim(), '', 'branch finish should commit the pending worktree diff');
+
+  const latestSubject = runCmd('git', ['log', '-1', '--pretty=%s'], agentWorktree);
+  assert.equal(latestSubject.status, 0, latestSubject.stderr || latestSubject.stdout);
+  assert.equal(latestSubject.stdout.trim(), `Auto-finish: ${agentBranch}`);
+});
+
+
 test('agent-branch-finish auto-commits parent gitlink after nested repo finish', () => {
   const parentDir = initRepoOnBranch('main');
   seedCommit(parentDir);
