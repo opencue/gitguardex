@@ -141,8 +141,8 @@ test('README shows a real GitGuardex code-assist review', () => {
   const codeAssistSection = readme.match(/## Code-assist review gate[\s\S]*?(?=\n---|$)/)?.[0] ?? '';
 
   assert.equal(fs.existsSync(screenshotPath), true);
-  assert.match(readme, /\.\/docs\/images\/code-assist-review-gate\.png/);
-  assert.match(readme, /https:\/\/github\.com\/projects-kssk\/Wireless_KFB_Project\/pull\/165/);
+  assert.match(codeAssistSection, /\.\/docs\/images\/code-assist-review-gate\.png/);
+  assert.match(codeAssistSection, /https:\/\/github\.com\/projects-kssk\/Wireless_KFB_Project\/pull\/165/);
   assert.match(codeAssistSection, /gx branch finish[\s\S]*--gate-review[\s\S]*--gate-autofix/);
 });
 
