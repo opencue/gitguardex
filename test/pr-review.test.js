@@ -224,6 +224,79 @@ test('capDiff flags truncation so a partial review never reads as a full one', (
   assert.match(capped.diff, /\[diff truncated at 10 characters\]/);
 });
 
+test('resolveOutdatedReviewThreads resolves only outdated GitGuardex-owned threads', () => {
+  const resolved = [];
+  const runner = (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex\n', stderr: '' };
+    const operation = args.find((arg) => String(arg).startsWith('query=')) || '';
+    if (operation.includes('reviewThreads')) {
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: 'thread-fixed',
+                      isResolved: false,
+                      isOutdated: true,
+                      comments: { nodes: [{ body: `fixed\n${prReview.MARKER}` }] },
+                    },
+                    {
+                      id: 'thread-current',
+                      isResolved: false,
+                      isOutdated: false,
+                      comments: { nodes: [{ body: `current\n${prReview.MARKER}` }] },
+                    },
+                    {
+                      id: 'thread-human',
+                      isResolved: false,
+                      isOutdated: true,
+                      comments: { nodes: [{ body: 'human comment' }] },
+                    },
+                    {
+                      id: 'thread-already-resolved',
+                      isResolved: true,
+                      isOutdated: true,
+                      comments: { nodes: [{ body: `old\n${prReview.MARKER}` }] },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+        stderr: '',
+      };
+    }
+    if (operation.includes('resolveReviewThread')) {
+      const thread = args.find((arg) => String(arg).startsWith('thread='));
+      resolved.push(thread.slice('thread='.length));
+      return { status: 0, stdout: '{"data":{}}', stderr: '' };
+    }
+    throw new Error(`unexpected gh call: ${args.join(' ')}`);
+  };
+
+  const result = prReview.resolveOutdatedReviewThreads(710, '/repo', runner);
+
+  assert.deepEqual(result, { ok: true, resolved: 1, candidates: 1, output: '' });
+  assert.deepEqual(resolved, ['thread-fixed']);
+});
+
+test('resolveOutdatedReviewThreads reports GraphQL lookup failure without resolving anything', () => {
+  const runner = (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex\n', stderr: '' };
+    return { status: 1, stdout: '', stderr: 'graphql unavailable' };
+  };
+
+  assert.deepEqual(
+    prReview.resolveOutdatedReviewThreads(710, '/repo', runner),
+    { ok: false, resolved: 0, candidates: 0, output: 'graphql unavailable' },
+  );
+});
+
 
 test('gx pr-review posts one GitHub review when auth is available', () => {
   const repoDir = initRepo();

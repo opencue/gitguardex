@@ -249,6 +249,7 @@ function runReviewGate({
   const markReady = deps.markPullRequestReady || pr.markPullRequestReady;
   const markDraft = deps.markPullRequestDraft || pr.markPullRequestDraft;
   const evaluate = deps.evaluateReviewGate || prReview.evaluateReviewGate;
+  const resolveThreads = deps.resolveOutdatedReviewThreads || prReview.resolveOutdatedReviewThreads;
   const waitGreen = deps.waitForGreenCi || waitForGreenCi;
   const readBaseline = deps.baselineFailures || pr.baselineFailures;
   const runFix = deps.runReviewFix || reviewFix.runReviewFix;
@@ -430,7 +431,21 @@ function runReviewGate({
       + '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.',
     );
   }
-  reportProgress(progress, 'complete', 'review', 'clean review posted');
+  const threadResolution = resolveThreads(prNumber, repoRoot);
+  if (threadResolution.ok === false) {
+    gateLog(
+      `PR #${prNumber}: could not inspect outdated GitGuardex review threads`
+      + `${threadResolution.output ? ` (${threadResolution.output})` : ''}; merge-state gate remains authoritative`,
+    );
+  } else if (threadResolution.resolved > 0) {
+    gateLog(`PR #${prNumber}: resolved ${threadResolution.resolved} outdated GitGuardex review thread(s)`);
+  }
+  reportProgress(
+    progress,
+    'complete',
+    'review',
+    `clean review posted${threadResolution.resolved > 0 ? `; ${threadResolution.resolved} stale thread(s) resolved` : ''}`,
+  );
   if (!autofixAttempted) {
     reportProgress(progress, 'skip', 'autofix', 'not needed');
   }
