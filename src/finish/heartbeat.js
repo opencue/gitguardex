@@ -1,4 +1,5 @@
 const { spawn: spawnProcess } = require('node:child_process');
+const fs = require('node:fs');
 
 const FRAMES = ['◐', '◓', '◑', '◒'];
 const DEFAULT_INTERVAL_MS = 15_000;
@@ -23,7 +24,7 @@ function renderHeartbeat({ index, total, label, detail, elapsedMs, frame = 0 }) 
   const normalizedDetail = String(detail || '').trim();
   return `[gx:finish] ├─ ${symbol} ${index}/${total}  ${label}`
     + `${normalizedDetail ? ` · ${normalizedDetail}` : ''}`
-    + ` · ⏱ ${formatElapsed(elapsedMs)} elapsed`;
+    + ` · ⏱ ${formatElapsed(elapsedMs)}`;
 }
 
 function processIsAlive(pid) {
@@ -68,6 +69,24 @@ function runWorker(rawConfig) {
     if (slot <= lastSlot) return;
     lastSlot = slot;
     process.stderr.write(`${renderHeartbeat({ ...config, elapsedMs, frame: slot - 1 })}\n`);
+    if (config.eventFd === 3 && config.event) {
+      try {
+        fs.writeSync(config.eventFd, `${JSON.stringify({
+          ...config.event,
+          timestamp: new Date().toISOString(),
+          kind: 'heartbeat',
+          stage: config.stage,
+          state: 'running',
+          index: config.index,
+          total: config.total,
+          label: config.label,
+          detail: config.detail,
+          elapsedMs,
+        })}\n`);
+      } catch (_error) {
+        // Structured progress is best-effort, just like terminal progress.
+      }
+    }
   }, Math.min(intervalMs, 1_000));
 
   const stop = () => {
@@ -80,16 +99,20 @@ function runWorker(rawConfig) {
 }
 
 function startHeartbeat({
+  stage,
   index,
   total,
   label,
   detail = '',
   intervalMs = DEFAULT_INTERVAL_MS,
   startAt = Date.now(),
+  eventDescriptor,
+  event,
   spawn = spawnProcess,
 } = {}) {
   const config = {
     parentPid: process.pid,
+    stage: String(stage || ''),
     index: normalizePositiveInteger(index, 0),
     total: normalizePositiveInteger(total, 0),
     label: String(label || ''),
@@ -97,11 +120,22 @@ function startHeartbeat({
     intervalMs: normalizePositiveInteger(intervalMs, DEFAULT_INTERVAL_MS),
     startAt: Number.isFinite(Number(startAt)) ? Number(startAt) : Date.now(),
   };
+  const stdio = ['ignore', 'ignore', 'inherit'];
+  if (Number.isInteger(eventDescriptor) && eventDescriptor >= 0 && event) {
+    config.eventFd = 3;
+    config.event = {
+      schemaVersion: Number(event.schemaVersion) || 1,
+      runId: String(event.runId || ''),
+      branch: String(event.branch || ''),
+      baseBranch: String(event.baseBranch || ''),
+    };
+    stdio.push(eventDescriptor);
+  }
 
   let child;
   try {
     child = spawn(process.execPath, [__filename, '--worker', JSON.stringify(config)], {
-      stdio: ['ignore', 'ignore', 'inherit'],
+      stdio,
     });
     child.on('error', () => {});
     child.unref();

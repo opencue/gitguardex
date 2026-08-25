@@ -65,23 +65,33 @@ function createEventStream(repoRoot, branch, baseBranch) {
     );
     try {
       fs.fchmodSync(descriptor, 0o600);
-    } finally {
+    } catch (error) {
       fs.closeSync(descriptor);
+      throw error;
     }
+    // Keep one race-free append target for this one-shot CLI process. Heartbeat
+    // children inherit this descriptor; the OS closes it when the command exits.
     return {
       runId,
       filePath,
       relativePath: path.relative(repoRoot, filePath),
+      descriptor,
+      event: {
+        schemaVersion: 1,
+        runId,
+        branch,
+        baseBranch,
+      },
       write(event) {
         try {
-          fs.appendFileSync(filePath, `${JSON.stringify({
+          fs.writeSync(descriptor, `${JSON.stringify({
             schemaVersion: 1,
             runId,
             timestamp: new Date().toISOString(),
             branch,
             baseBranch,
             ...event,
-          })}\n`, { encoding: 'utf8', mode: 0o600 });
+          })}\n`);
         } catch (_error) {
           // Observability remains fail-open after initialization too (disk
           // full, state directory removed mid-run, or transient I/O failure).
@@ -199,12 +209,17 @@ function createFinishProgress({
     if (!heartbeatFactory) return;
     try {
       stopActiveHeartbeat = heartbeatFactory({
+        stage: id,
         index: stage.index,
         total: STAGES.length,
         label: stage.label,
         detail: normalizedDetail,
         intervalMs: heartbeatIntervalMs,
         startAt,
+        ...(eventStream ? {
+          eventDescriptor: eventStream.descriptor,
+          event: eventStream.event,
+        } : {}),
       });
     } catch (_error) {
       // Progress is observability only; a heartbeat failure cannot block finish.
@@ -215,7 +230,7 @@ function createFinishProgress({
   function settle(id, state, detail) {
     let displaySuffix = '';
     if (TIMED_STAGES.has(id) && stageStartedAt.has(id)) {
-      displaySuffix = ` · ⏱ ${formatElapsed(clock() - stageStartedAt.get(id))} elapsed`;
+      displaySuffix = ` · ⏱ ${formatElapsed(clock() - stageStartedAt.get(id))}`;
     }
     if (activeTimedStage === id) stopTimedStage();
     update(id, state, detail, displaySuffix);
