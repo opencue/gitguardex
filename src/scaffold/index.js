@@ -502,19 +502,9 @@ function removeLegacyManagedRepoFile(repoRoot, relativePath, options = {}) {
   return { status: dryRun ? 'would-remove' : 'removed', file: relativePath };
 }
 
-// A managed block longer than this many non-blank lines is treated as the full
-// contract. The minimal block is ~8 lines and the full contract is ~171, so any
-// threshold between the two is safe; 40 leaves a wide margin on both sides.
-const FULL_BLOCK_LINE_THRESHOLD = 40;
-
-function countNonBlankLines(text) {
-  return text.split('\n').filter((line) => line.trim().length > 0).length;
-}
-
-// Default install ships the minimal block; the full 171-line contract is opt-in
-// via `options.contract` (--contract / --full). Once a repo has the full block,
-// it is never silently downgraded: an existing managed block over the line
-// threshold keeps refreshing from the full template even without the flag.
+// The full contract is deliberately non-sticky: normal setup refreshes return
+// to the token-light minimal block. Repositories that need the expanded policy
+// must opt in explicitly with --contract on that refresh.
 function ensureAgentsSnippet(repoRoot, dryRun, options = {}) {
   const agentsPath = path.join(repoRoot, 'AGENTS.md');
   const managedRegex = new RegExp(
@@ -524,9 +514,7 @@ function ensureAgentsSnippet(repoRoot, dryRun, options = {}) {
 
   const existing = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, 'utf8') : null;
   const existingBlock = existing ? existing.match(managedRegex) : null;
-  const existingIsFull = Boolean(existingBlock)
-    && countNonBlankLines(existingBlock[0]) > FULL_BLOCK_LINE_THRESHOLD;
-  const wantFull = Boolean(options.contract) || existingIsFull;
+  const wantFull = Boolean(options.contract);
 
   const templateFile = wantFull
     ? 'AGENTS.multiagent-safety.md'

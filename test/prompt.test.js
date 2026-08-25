@@ -191,6 +191,8 @@ test('prompt --snippet prints the managed AGENTS template with token budget rule
   assert.match(result.stdout, /Keep raw terminal interaction out of long-lived context/);
   assert.match(result.stdout, /### Optional companion tooling/);
   assert.match(result.stdout, /rtk git status/);
+  assert.match(result.stdout, /OpenSpec is opt-in/);
+  assert.doesNotMatch(result.stdout, /keep `openspec\/changes\/<slug>\/tasks\.md` current during work/);
   assert.match(result.stdout, /### Verification gates/);
   assert.match(result.stdout, /<!-- multiagent-safety:END -->/);
 });

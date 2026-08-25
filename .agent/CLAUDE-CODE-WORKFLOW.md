@@ -1,17 +1,17 @@
 # Claude Code Workflow
 
-When Guardex is enabled, Claude Code sessions use the same agent-worktree + OpenSpec flow as Codex; there is no separate `claude-agent.sh` wrapper — Claude calls the generic scripts directly.
+When Guardex is enabled, Claude Code sessions use the same agent-worktree flow as Codex; there is no separate `claude-agent.sh` wrapper — Claude calls the generic scripts directly. OpenSpec is opt-in.
 
 ## Tiering (token-aware scaffolding)
 
-`gx branch start` and `gx branch finish` accept `--tier {T0|T1|T2|T3}` to size the OpenSpec scaffolding to the change's blast radius. Default is `T1` (notes.md only — most tasks are small, and a full T3 plan workspace costs thousands of tokens an agent never reads). Escalate explicitly with `--tier T2` for a behavior change or `--tier T3` for plan-driven work. The tier is recorded in the bootstrap manifest so `finish` picks it up automatically.
+`gx branch start` and `gx branch finish` accept `--tier {T0|T1|T2|T3}`. Default T1 executes directly with no OpenSpec artifacts. Select T2/T3 only when the user wants a structured OpenSpec change or plan. The tier is recorded in the bootstrap manifest so `finish` picks it up automatically.
 
 | Tier | Use for | Scaffolding on `start` | Gates on `finish` |
 |------|---------|------------------------|--------------------|
 | `T0` | typos, dep bumps, format-only, comment-only | none (no `openspec/changes/` or `openspec/plan/` files) | tasks gate skipped |
-| `T1` | ≤5 files, 1 capability, no API/schema change | `openspec/changes/<slug>/notes.md` + `.openspec.yaml` only | tasks gate skipped |
-| `T2` | behavior change, API/schema, multi-module | full change workspace (`proposal.md`, `tasks.md`, `specs/.../spec.md`); no plan workspace | full gates |
-| `T3` | cross-cutting, multi-agent, plan-driven | full change workspace + plan workspace with role `tasks.md` files | full gates |
+| `T1` | routine implementation (default) | none | tasks gate skipped |
+| `T2` | explicit structured change | full change workspace (`proposal.md`, `tasks.md`, `specs/.../spec.md`); no plan workspace | full gates |
+| `T3` | explicit plan-driven change | full change workspace + plan workspace with role `tasks.md` files | full gates |
 
 Examples:
 
@@ -19,7 +19,7 @@ Examples:
 # T0 (typo / trivial): fastest path, no OpenSpec artifacts
 gx branch start --tier T0 "fix-typo-in-readme" "claude-name"
 
-# T1 (small fix): notes-only scaffold, commit message is the spec of record
+# T1 (default): direct implementation, no OpenSpec artifacts
 gx branch start --tier T1 "tighten-retry-backoff" "claude-name"
 
 # T2 (explicit; real behavior changes): full change spec, no plan workspace
@@ -39,7 +39,7 @@ gx branch start --tier T3 "refactor-payment-pipeline" "claude-name"
    gx branch start [--tier T0|T1|T2|T3] "<task>" "claude-<name>"
    ```
 
-   Creates `agent/claude-<name>/<slug>` under `.omc/agent-worktrees/`, scaffolds the OpenSpec change + plan workspaces (sized by tier), and records the bootstrap manifest. Codex sessions keep using `.omx/agent-worktrees/`. Missing `codex-auth` silently falls back to an empty snapshot slug (expected for Claude sessions).
+   Creates `agent/claude-<name>/<slug>` under `.omc/agent-worktrees/` and records the bootstrap manifest. Explicit T2/T3 additionally scaffold OpenSpec workspaces. Codex sessions keep using `.omx/agent-worktrees/`. Missing `codex-auth` silently falls back to an empty snapshot slug (expected for Claude sessions).
 
 2. Work inside the sandbox only:
 
@@ -59,7 +59,7 @@ gx branch start --tier T3 "refactor-payment-pipeline" "claude-name"
      --base main --via-pr --wait-for-merge --cleanup
    ```
 
-   Runs the OpenSpec tasks gate, merge-quality gate, and worktree prune — identical to the Codex path.
+   Runs the merge-quality gate and worktree prune. The OpenSpec tasks gate runs only when an explicit structured workspace exists.
 
 ## Default Claude finish (non-negotiable)
 

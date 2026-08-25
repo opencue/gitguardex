@@ -14,9 +14,9 @@ OPENSPEC_PLAN_SLUG_OVERRIDE="${GUARDEX_OPENSPEC_PLAN_SLUG:-}"
 OPENSPEC_CHANGE_SLUG_OVERRIDE="${GUARDEX_OPENSPEC_CHANGE_SLUG:-}"
 OPENSPEC_CAPABILITY_SLUG_OVERRIDE="${GUARDEX_OPENSPEC_CAPABILITY_SLUG:-}"
 OPENSPEC_MASTERPLAN_LABEL_RAW="${GUARDEX_OPENSPEC_MASTERPLAN_LABEL-masterplan}"
-# Default tier is T1 (notes.md only, minimal scaffold): most tasks are small,
-# and a full T3 plan workspace costs thousands of tokens an agent never reads.
-# Escalate explicitly with --tier T2 (behavior change) or T3 (plan-driven).
+# Default tier is T1 (direct execution, no OpenSpec scaffold). T2/T3 remain
+# explicit structured-workflow choices.
+# Select --tier T2 for an explicit structured change or T3 for plan-driven work.
 OPENSPEC_TIER_RAW="${GUARDEX_OPENSPEC_TIER:-T1}"
 REUSE_EXISTING_RAW="${GUARDEX_BRANCH_START_REUSE_EXISTING:-true}"
 AUTO_TRANSFER_ENABLED_RAW="${GUARDEX_AUTO_TRANSFER:-true}"
@@ -341,8 +341,8 @@ case "$OPENSPEC_TIER" in
     OPENSPEC_SKIP_PLAN=1
     ;;
   T1)
+    OPENSPEC_SKIP_CHANGE=1
     OPENSPEC_SKIP_PLAN=1
-    OPENSPEC_MINIMAL=1
     ;;
   T2)
     OPENSPEC_SKIP_PLAN=1
@@ -1035,9 +1035,6 @@ fi
 echo "[agent-branch-start] Created branch: ${branch_name}"
 echo "[agent-branch-start] Worktree: ${worktree_path}"
 echo "[agent-branch-start] OpenSpec tier: ${OPENSPEC_TIER}"
-if [[ "$OPENSPEC_TIER" == "T1" ]]; then
-  echo "[agent-branch-start] T1 minimal scaffold (notes.md). Escalate: --tier T2 for a behavior change, T3 for plan-driven work."
-fi
 if [[ "$OPENSPEC_AUTO_INIT" -ne 1 ]]; then
   echo "[agent-branch-start] OpenSpec change: skipped (GUARDEX_OPENSPEC_AUTO_INIT disabled)"
 elif [[ "$OPENSPEC_SKIP_CHANGE" -eq 1 ]]; then

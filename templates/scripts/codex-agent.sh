@@ -58,7 +58,7 @@ normalize_bool() {
 
 normalize_tier() {
   local raw="${1:-}"
-  local fallback="${2:-T2}"
+  local fallback="${2:-T1}"
   local upper
   upper="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
   case "$upper" in
@@ -139,8 +139,8 @@ apply_openspec_tier() {
       OPENSPEC_SKIP_PLAN=1
       ;;
     T1)
+      OPENSPEC_SKIP_CHANGE=1
       OPENSPEC_SKIP_PLAN=1
-      OPENSPEC_MINIMAL=1
       ;;
     T2)
       OPENSPEC_SKIP_PLAN=1
@@ -153,7 +153,7 @@ decide_task_routing() {
   task_lower="$(printf '%s' "$TASK_NAME" | tr '[:upper:]' '[:lower:]')"
 
   if [[ -n "$OPENSPEC_TIER_RAW" ]]; then
-    if ! OPENSPEC_TIER="$(normalize_tier "$OPENSPEC_TIER_RAW" "T2")"; then
+    if ! OPENSPEC_TIER="$(normalize_tier "$OPENSPEC_TIER_RAW" "T1")"; then
       echo "[codex-agent] Unsupported OpenSpec tier: ${OPENSPEC_TIER_RAW}" >&2
       return 1
     fi
@@ -168,8 +168,7 @@ decide_task_routing() {
     fi
   elif string_contains_any "$task_lower" \
     "ralph" "autopilot" "ultrawork" "ultraqa" "ralplan" "deep interview" "ouroboros" \
-    "migration" "refactor" "architecture" "re-architect" "cross-cutting" "multi-agent" \
-    "multiagent" "parallel" "orchestr" "release" "zero-copy" "install surface" "workflow"
+    "multi-agent" "multiagent" "parallel" "orchestr"
   then
     OPENSPEC_TIER="T3"
     TASK_ROUTING_REASON="plan-heavy or orchestration-heavy task wording"
@@ -181,8 +180,8 @@ decide_task_routing() {
     OPENSPEC_TIER="T1"
     TASK_ROUTING_REASON="small bounded maintenance wording"
   else
-    OPENSPEC_TIER="T2"
-    TASK_ROUTING_REASON="default behavior-change route"
+    OPENSPEC_TIER="T1"
+    TASK_ROUTING_REASON="default direct-execution route"
   fi
 
   if ! TASK_MODE="$(derive_task_mode_from_tier "$OPENSPEC_TIER")"; then
@@ -195,7 +194,7 @@ decide_task_routing() {
 describe_task_routing() {
   case "$OPENSPEC_TIER" in
     T0) printf 'caveman / T0 (no OpenSpec scaffold)' ;;
-    T1) printf 'caveman / T1 (notes-only OpenSpec)' ;;
+    T1) printf 'caveman / T1 (no OpenSpec scaffold)' ;;
     T2) printf 'omx / T2 (change workspace only)' ;;
     T3) printf 'omx / T3 (change plus plan workspace)' ;;
     *) printf 'unknown / %s' "${OPENSPEC_TIER:-unset}" ;;
@@ -681,7 +680,7 @@ print_takeover_prompt() {
     change_artifact="openspec/changes/${change_slug}/notes.md"
   fi
   if [[ ! -f "${wt}/${change_artifact}" ]]; then
-    change_artifact="openspec/changes/${change_slug}/"
+    change_artifact=""
   fi
 
   finish_cmd="gx branch finish --branch \"${branch}\" --base ${base_branch} --via-pr --wait-for-merge --cleanup"
@@ -690,7 +689,9 @@ print_takeover_prompt() {
   echo "  change:   ${change_slug}"
   echo "  branch:   ${branch}"
   echo "  worktree: ${wt}"
-  echo "  spec:     ${change_artifact}"
+  if [[ -n "$change_artifact" ]]; then
+    echo "  spec:     ${change_artifact}"
+  fi
   echo "  routing:  $(describe_task_routing) (${TASK_ROUTING_REASON})"
   echo "  rule:     continue current state; do not create a new sandbox"
   echo "  finish:   ${finish_cmd}"

@@ -185,7 +185,7 @@ Trailing project notes after managed block.
 });
 
 
-test('setup --contract opts into the full contract; default stays minimal and is never downgraded', () => {
+test('setup --contract opts into the full contract; a later default refresh restores minimal', () => {
   const repoDir = initRepo();
 
   // Default install ships the minimal block, not the 171-line contract.
@@ -202,12 +202,12 @@ test('setup --contract opts into the full contract; default stays minimal and is
   assert.match(agents, /## Multi-Agent Execution Contract/);
   assert.doesNotMatch(agents, /## Multi-Agent Safety \(minimal\)/);
 
-  // No downgrade: a later default run keeps the full contract in place.
+  // The full contract is not sticky: a later default run restores the token-light block.
   result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   agents = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
-  assert.match(agents, /## Multi-Agent Execution Contract/);
-  assert.doesNotMatch(agents, /## Multi-Agent Safety \(minimal\)/);
+  assert.match(agents, /## Multi-Agent Safety \(minimal\)/);
+  assert.doesNotMatch(agents, /## Multi-Agent Execution Contract/);
 });
 
 

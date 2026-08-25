@@ -20,7 +20,9 @@ For typos, single-file tweaks, one-liners, version bumps, comment-only changes, 
 
 Lightweight escape prefixes: `quick:`, `simple:`, `tiny:`, `minor:`, `small:`, `just:`, `only:`.
 
-Promote to full Guardex / OMX orchestration only when scope grows into multi-file behavior change, API/schema work, refactor, migration, architecture, cross-cutting scope, long prompt, or multi-agent execution.
+Promote to full Guardex / OMX orchestration only when scope grows into multi-file behavior change, API/schema work, refactor, migration, architecture, cross-cutting scope, long prompt, or multi-agent execution. Orchestration alone does not require OpenSpec.
+
+OpenSpec is opt-in. Do not create or update OpenSpec artifacts unless the user asks for them, the task continues an existing OpenSpec change, or an explicit T2/T3 workflow is selected.
 
 ### Isolation (the load-bearing rule)
 
@@ -74,7 +76,7 @@ When posting handoff or working-state notes (`.omx/notepad.md`, PR description, 
 branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<path|command|PR|spec>
 ```
 
-No long proof dumps, no stale narrative, no full logs. Bulky proof goes in OpenSpec artifacts, PRs, or command output.
+No long proof dumps, no stale narrative, no full logs. Bulky proof goes in PRs or command output; do not create OpenSpec artifacts only to hold routine progress.
 
 ### Completion
 
@@ -134,7 +136,7 @@ Posting a review is NOT merging. `gx pr-review` / `gx review` post findings and
 exit; only `gx branch finish` (or `gx ship`) merges. A PR sitting open with a
 clean review means the finish flow was never run.
 
-Task scaffolds and manual task edits must include a final completion/cleanup section that ends with PR merge + sandbox cleanup and records PR URL + final `MERGED` evidence.
+When an explicit task scaffold exists, its final section must end with PR merge + sandbox cleanup and record PR URL + final `MERGED` evidence. Routine work does not need a scaffold.
 
 Task is complete only when **all six** are true:
 
@@ -159,7 +161,7 @@ Assume other agents edit nearby. Never revert unrelated changes. Never simplify 
 
 ### Reporting
 
-Every completion handoff includes: branch, task, files changed, behavior touched, verification commands + results, PR URL, merge state, sandbox cleanup state, risks/follow-ups.
+Keep the completion handoff to at most five short lines: outcome, files/behavior, verification, PR/merge/cleanup, and only material risk.
 
 Blocked? Use:
 
@@ -178,14 +180,14 @@ Before claiming completion, run the narrowest meaningful verification (`pnpm tes
 
 ### Open questions
 
-Persist unresolved questions or blockers into `openspec/plan/<plan-slug>/open-questions.md` as unchecked items. Resolve in-place rather than burying in chat.
+Report unresolved blockers concisely. Persist them in `openspec/plan/<plan-slug>/open-questions.md` only when that explicit plan workspace already exists.
 
 ### Optional companion tooling (use if installed)
 
 - **fff MCP** (file search): prefer for all file search; fall back to `rtk grep`/`rtk find` or `rg`.
 - **rtk** (shell compression): wrap noisy discovery (`rtk ls`/`grep`/`find`/`read`), git/gh (`rtk git status`/`gh pr list`), verification (`rtk tsc`/`lint`/`test`), and noisy gx reads (`rtk gx status`/`rtk gx doctor`). Do **not** wrap machine-readable commands (`--porcelain`, `--json`, exact stdout contracts) or shell-ready output (`gx prompt --exec`).
 - **headroom** (context compression): when available, run large `gx` output, long logs, and big file/diff dumps through `headroom_compress` before reasoning over them (reversible — `headroom_retrieve` restores). Or set `GUARDEX_COMPRESS_CMD="<filter>"` so gx routes its own large narrative output — `gx prompt`, `gx prompt --snippet` — through your compressor (terse/non-TTY only, fail-open, JSON skipped; `--exec` stays raw). Keep PR URLs, branch names, and file paths visible; never compress `--json`/`--porcelain` or values you act on verbatim.
-- **OpenSpec**: keep `openspec/changes/<slug>/tasks.md` current during work, not batched. Validate with `openspec validate --specs` before archive.
+- **OpenSpec (opt-in)**: use it only for a user-requested or explicit T2/T3 workflow. When active, update checkpoints at meaningful milestones rather than after every tool call, then validate before archive.
 
 ### Token / context budget
 
@@ -210,7 +212,7 @@ Fan-out saves tokens only when each agent has a narrow job and returns a compact
 
 ### Version bumps
 
-If a change bumps a published version, the same PR records release notes in the appropriate OpenSpec artifact or release-note mechanism for the repo. Do not edit `CHANGELOG.md` directly unless the repo explicitly requires manual changelog edits.
+If a change bumps a published version, the same PR records release notes in the repository's release-note mechanism. Do not create OpenSpec solely for a version bump, and do not edit `CHANGELOG.md` directly unless the repo explicitly requires it.
 
 ### What not to put in this file
 
