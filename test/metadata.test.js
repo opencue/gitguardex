@@ -135,6 +135,18 @@ test('README keeps the problem-solution visuals aligned', () => {
   );
 });
 
+test('README shows a real GitGuardex code-assist review', () => {
+  const readme = fs.readFileSync(readmePath, 'utf8');
+  const screenshotPath = path.join(repoRoot, 'docs', 'images', 'code-assist-review-gate.png');
+  const screenshotUrl = 'https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png';
+  const codeAssistSection = readme.match(/## Code-assist review gate[\s\S]*?(?=\n---|$)/)?.[0] ?? '';
+
+  assert.equal(fs.existsSync(screenshotPath), true);
+  assert.equal(codeAssistSection.split(screenshotUrl).length - 1, 2);
+  assert.match(codeAssistSection, /https:\/\/github\.com\/projects-kssk\/Wireless_KFB_Project\/pull\/165/);
+  assert.match(codeAssistSection, /gx branch finish[\s\S]*--gate-review[\s\S]*--gate-autofix/);
+});
+
 test('security workflows are present and use pinned GitHub Actions SHAs', () => {
   const workflowDir = path.join(repoRoot, '.github', 'workflows');
   const expected = ['ci.yml', 'release.yml', 'scorecard.yml', 'codeql.yml'];
