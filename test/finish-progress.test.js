@@ -8,6 +8,8 @@ const { createFinishProgress } = require('../src/finish/progress');
 function cleanGateDeps() {
   return {
     openPullRequest: () => ({ pr: { number: 7, isDraft: true } }),
+    readHeadSha: () => 'head-sha',
+    waitForPullRequestHead: () => ({ status: 'current', pr: { headSha: 'head-sha' } }),
     runPrReview: () => ({ findings: [], posted: true }),
     markPullRequestReady: () => ({ ok: true }),
     waitForGreenCi: () => ({ status: 'green', pr: { mergeStateStatus: 'CLEAN' } }),

@@ -17,9 +17,15 @@ function checkName(check) {
   return String(check?.name || check?.context || '').trim();
 }
 
-function providerOrigin(value) {
+function stableDetailsUrl(value) {
   try {
-    return new URL(String(value || '')).origin;
+    const url = new URL(String(value || ''));
+    const volatileSegment = /^(?:\d+|[0-9a-f]{7,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i;
+    const pathname = url.pathname
+      .split('/')
+      .map((segment) => (volatileSegment.test(segment) ? ':id' : segment))
+      .join('/');
+    return `${url.origin}${pathname}`;
   } catch (_error) {
     return '';
   }
@@ -34,8 +40,8 @@ function checkIdentity(check, index) {
   if (type === 'StatusContext') return `${type}\u0000${name}`;
   if (workflow) return `${type}\u0000${workflow}\u0000${name}`;
 
-  const provider = providerOrigin(check?.detailsUrl);
-  return provider ? `${type}\u0000${provider}\u0000${name}` : `anonymous:${index}`;
+  const details = stableDetailsUrl(check?.detailsUrl);
+  return details ? `${type}\u0000${details}\u0000${name}` : `anonymous:${index}`;
 }
 
 function timestamp(value) {
@@ -45,9 +51,9 @@ function timestamp(value) {
 
 function recency(check, index) {
   return [
+    timestamp(check?.createdAt),
     timestamp(check?.startedAt),
     timestamp(check?.completedAt),
-    timestamp(check?.createdAt),
     index,
   ];
 }
