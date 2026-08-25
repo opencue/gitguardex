@@ -1,8 +1,8 @@
 # Pre-flight gate for `gx branch finish`
 
-`gx branch finish` runs a **pre-flight verification script** in the
-agent's worktree **before** any push happens. If the script fails, the
-push is refused and the PR is never created — the broken commit never
+An ordinary `gx branch finish` runs a **pre-flight verification script**
+in the agent's worktree **before** any push happens. If the script fails,
+the push is refused and the PR is never created — the broken commit never
 reaches CI, the merge funnel, or the review surface.
 
 This is the cheapest gate in the agent workflow:
@@ -16,6 +16,12 @@ This is the cheapest gate in the agent workflow:
 
 Pre-flight is enabled by default. Disable per-call with `--no-preflight`,
 or globally with `GUARDEX_FINISH_PREFLIGHT=0`.
+
+Review-gated finishes keep this repository-defined pre-flight enabled even
+after required CI passes because the script can contain checks that required CI
+does not. By default the PR remains draft until the AI review passes. The
+explicit `--no-gate-serial-ci` fast mode overlaps CI with the review, but it does
+not disable pre-flight. Only an explicit pre-flight opt-out bypasses this gate.
 
 ## Convention
 

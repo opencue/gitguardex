@@ -3,6 +3,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const AGENTS = new Set(['claude', 'codex']);
+const CODEX_REVIEW_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
+const DEFAULT_CODEX_REVIEW_EFFORT = 'medium';
+
+/** Keep bounded code-assist runs independent of a user's interactive effort. */
+function codexReviewEffort(env = process.env) {
+  const requested = String(env.GUARDEX_REVIEW_CODEX_EFFORT || '').trim().toLowerCase();
+  return CODEX_REVIEW_EFFORTS.has(requested) ? requested : DEFAULT_CODEX_REVIEW_EFFORT;
+}
 
 function cueShimDir(env = process.env) {
   const configHome = env.XDG_CONFIG_HOME && String(env.XDG_CONFIG_HOME).trim()
@@ -85,6 +93,7 @@ function resolveProviderBin(provider, env = process.env) {
 }
 
 module.exports = {
+  codexReviewEffort,
   cueShimDir,
   findRealProviderBin,
   isCueAgentShim,

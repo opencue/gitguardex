@@ -55,6 +55,14 @@ const { runReviewGate } = require('./review-gate');
  */
 
 /**
+ * Whether the caller explicitly requested that the legacy branch-finish script
+ * skip its full repository-defined preflight.
+ */
+function shouldSkipBranchPreflight(options = {}) {
+  return options.skipPreflight === true;
+}
+
+/**
  * Outcome of an auto-commit attempt for a single branch.
  *
  * @typedef {Object} AutoCommitResult
@@ -505,6 +513,10 @@ function finish(rawArgs, defaults = {}) {
         });
       }
 
+      if (shouldSkipBranchPreflight(options)) {
+        finishArgs.push('--no-preflight');
+      }
+
       // Streamed, not piped: the script can sit for minutes waiting on the PR
       // merge, and buffering means the operator sees nothing until it exits —
       // and sees NOTHING AT ALL if the process is killed while waiting, since
@@ -752,4 +764,5 @@ module.exports = {
   sync,
   autoCommitWorktreeForFinish,
   shouldSweepOrphans,
+  shouldSkipBranchPreflight,
 };
