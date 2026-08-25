@@ -15,15 +15,8 @@ const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 const CODEX_AUTOMATION_ARGS = ['--ephemeral', '--ignore-user-config', '--ignore-rules'];
 const CODEX_NO_TOOL_ARGS = [
   '--skip-git-repo-check',
+  '--sandbox', 'read-only',
   '--disable', 'shell_tool',
-  '--disable', 'unified_exec',
-  '--disable', 'code_mode_host',
-  '--disable', 'view_image',
-  '--disable', 'browser_use',
-  '--disable', 'computer_use',
-  '--disable', 'apps',
-  '--disable', 'image_generation',
-  '--disable', 'multi_agent',
 ];
 
 // Identifies bodies this tool wrote, so a re-run can recognize its own prior

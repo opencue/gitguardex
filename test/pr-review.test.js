@@ -12,6 +12,9 @@ const {
 } = require('./helpers/install-test-helpers');
 const prReview = require('../src/pr-review');
 const { codexReviewEffort } = require('../src/provider-binary');
+const CODEX_REVIEW_GUARD_ARGS = [
+  '--skip-git-repo-check', '--sandbox', 'read-only', '--disable', 'shell_tool',
+];
 
 defineSpawnSuite('pr-review suite', () => {
 
@@ -23,10 +26,7 @@ test('commandForProvider defaults to a tool-free provider invocation', () => {
     cmd: 'codex',
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
-      '--skip-git-repo-check',
-      '--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'code_mode_host',
-      '--disable', 'view_image', '--disable', 'browser_use', '--disable', 'computer_use',
-      '--disable', 'apps', '--disable', 'image_generation', '--disable', 'multi_agent',
+      ...CODEX_REVIEW_GUARD_ARGS,
       '-c', 'model_reasoning_effort="high"', 'P',
     ],
   });
@@ -43,10 +43,7 @@ test('commandForProvider passes the model with each provider own flag', () => {
       cmd: 'codex',
       args: [
         'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
-        '--skip-git-repo-check',
-        '--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'code_mode_host',
-        '--disable', 'view_image', '--disable', 'browser_use', '--disable', 'computer_use',
-        '--disable', 'apps', '--disable', 'image_generation', '--disable', 'multi_agent',
+        ...CODEX_REVIEW_GUARD_ARGS,
         '-c', 'model_reasoning_effort="high"', '-m', 'gpt-5', 'P',
       ],
     },
@@ -59,10 +56,7 @@ test('commandForProvider cannot re-enable user config across the untrusted revie
     {
       cmd: 'codex',
       args: [
-        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
-        '--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'code_mode_host',
-        '--disable', 'view_image', '--disable', 'browser_use', '--disable', 'computer_use',
-        '--disable', 'apps', '--disable', 'image_generation', '--disable', 'multi_agent',
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', ...CODEX_REVIEW_GUARD_ARGS,
         '-c', `model_reasoning_effort="${codexReviewEffort()}"`, 'P',
       ],
     },
@@ -74,10 +68,7 @@ test('commandForProvider accepts an explicit bounded Codex effort', () => {
     cmd: 'codex',
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
-      '--skip-git-repo-check',
-      '--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'code_mode_host',
-      '--disable', 'view_image', '--disable', 'browser_use', '--disable', 'computer_use',
-      '--disable', 'apps', '--disable', 'image_generation', '--disable', 'multi_agent',
+      ...CODEX_REVIEW_GUARD_ARGS,
       '-c', 'model_reasoning_effort="medium"', 'P',
     ],
   });
