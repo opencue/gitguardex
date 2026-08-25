@@ -135,6 +135,16 @@ test('README keeps the problem-solution visuals aligned', () => {
   );
 });
 
+test('README shows a real GitGuardex code-assist review', () => {
+  const readme = fs.readFileSync(readmePath, 'utf8');
+  const screenshotPath = path.join(repoRoot, 'docs', 'images', 'code-assist-review-gate.png');
+
+  assert.equal(fs.existsSync(screenshotPath), true);
+  assert.match(readme, /\.\/docs\/images\/code-assist-review-gate\.png/);
+  assert.match(readme, /https:\/\/github\.com\/projects-kssk\/Wireless_KFB_Project\/pull\/165/);
+  assert.match(readme, /gx branch finish[\s\S]*--gate-review[\s\S]*--gate-autofix/);
+});
+
 test('security workflows are present and use pinned GitHub Actions SHAs', () => {
   const workflowDir = path.join(repoRoot, '.github', 'workflows');
   const expected = ['ci.yml', 'release.yml', 'scorecard.yml', 'codeql.yml'];
