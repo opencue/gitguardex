@@ -243,6 +243,7 @@ test('resolveOutdatedReviewThreads resolves only outdated GitGuardex-owned threa
         status: 0,
         stdout: JSON.stringify({
           data: {
+            viewer: { login: 'gitguardex-bot' },
             repository: {
               pullRequest: {
                 reviewThreads: {
@@ -251,31 +252,40 @@ test('resolveOutdatedReviewThreads resolves only outdated GitGuardex-owned threa
                       id: 'thread-fixed',
                       isResolved: false,
                       isOutdated: true,
-                      comments: { nodes: [{ body: `fixed\n${prReview.MARKER}` }] },
+                      comments: { nodes: [{ body: `fixed\n${prReview.MARKER}`, author: { login: 'gitguardex-bot' } }] },
                     },
                     {
                       id: 'thread-current',
                       isResolved: false,
                       isOutdated: false,
-                      comments: { nodes: [{ body: `current\n${prReview.MARKER}` }] },
+                      comments: { nodes: [{ body: `current\n${prReview.MARKER}`, author: { login: 'gitguardex-bot' } }] },
                     },
                     {
                       id: 'thread-current-advisory',
                       isResolved: false,
                       isOutdated: false,
-                      comments: { nodes: [{ body: prReview.findingBody(advisory) }] },
+                      comments: { nodes: [{ body: prReview.findingBody(advisory), author: { login: 'gitguardex-bot' } }] },
                     },
                     {
                       id: 'thread-human',
                       isResolved: false,
                       isOutdated: true,
-                      comments: { nodes: [{ body: 'human comment' }] },
+                      comments: { nodes: [{ body: `spoofed\n${prReview.MARKER}`, author: { login: 'contributor' } }] },
+                    },
+                    {
+                      id: 'thread-human-origin',
+                      isResolved: false,
+                      isOutdated: true,
+                      comments: { nodes: [
+                        { body: 'human comment', author: { login: 'contributor' } },
+                        { body: `bot reply\n${prReview.MARKER}`, author: { login: 'gitguardex-bot' } },
+                      ] },
                     },
                     {
                       id: 'thread-already-resolved',
                       isResolved: true,
                       isOutdated: true,
-                      comments: { nodes: [{ body: `old\n${prReview.MARKER}` }] },
+                      comments: { nodes: [{ body: `old\n${prReview.MARKER}`, author: { login: 'gitguardex-bot' } }] },
                     },
                   ],
                 },
@@ -325,6 +335,7 @@ test('resolveOutdatedReviewThreads rejects a GraphQL mutation error returned wit
         status: 0,
         stdout: JSON.stringify({
           data: {
+            viewer: { login: 'gitguardex-bot' },
             repository: {
               pullRequest: {
                 reviewThreads: {
@@ -332,7 +343,7 @@ test('resolveOutdatedReviewThreads rejects a GraphQL mutation error returned wit
                     id: 'thread-fixed',
                     isResolved: false,
                     isOutdated: true,
-                    comments: { nodes: [{ body: prReview.MARKER }] },
+                    comments: { nodes: [{ body: prReview.MARKER, author: { login: 'gitguardex-bot' } }] },
                   }],
                 },
               },

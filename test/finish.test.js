@@ -60,6 +60,24 @@ const {
   sanitizeSlug,
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
+const { createEventStream } = require('../src/finish/progress');
+
+test('finish progress rejects symbolic links in its state directory path', () => {
+  for (const linkedComponent of ['.omx', 'state', 'finish-runs']) {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-progress-repo-'));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-progress-outside-'));
+    fs.chmodSync(outsideDir, 0o755);
+    const parent = linkedComponent === '.omx'
+      ? repoDir
+      : path.join(repoDir, '.omx', ...(linkedComponent === 'finish-runs' ? ['state'] : []));
+    fs.mkdirSync(parent, { recursive: true });
+    fs.symlinkSync(outsideDir, path.join(parent, linkedComponent), 'dir');
+
+    assert.equal(createEventStream(repoDir, 'agent/test', 'main'), null);
+    assert.deepEqual(fs.readdirSync(outsideDir), []);
+    assert.equal(fs.statSync(outsideDir).mode & 0o777, 0o755);
+  }
+});
 
 defineSpawnSuite('finish and cleanup integration suite', () => {
 

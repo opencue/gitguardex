@@ -23,17 +23,49 @@ function createRunId(branch) {
   return `finish-${Date.now().toString(36)}-${process.pid}-${digest}`;
 }
 
+function createPrivateDirectory(repoRoot, components) {
+  let current = repoRoot;
+  for (const component of components) {
+    current = path.join(current, component);
+    try {
+      fs.mkdirSync(current, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`unsafe finish progress directory: ${current}`);
+    }
+  }
+  return current;
+}
+
 function createEventStream(repoRoot, branch, baseBranch) {
   if (!repoRoot) return null;
   try {
-    const directory = path.join(repoRoot, '.omx', 'state', 'finish-runs');
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    fs.chmodSync(directory, 0o700);
+    const directory = createPrivateDirectory(repoRoot, ['.omx', 'state', 'finish-runs']);
+    const directoryDescriptor = fs.openSync(
+      directory,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+    );
+    try {
+      fs.fchmodSync(directoryDescriptor, 0o700);
+    } finally {
+      fs.closeSync(directoryDescriptor);
+    }
     const runId = createRunId(branch);
     const filePath = path.join(directory, `${runId}.jsonl`);
-    const descriptor = fs.openSync(filePath, 'a', 0o600);
-    fs.closeSync(descriptor);
-    fs.chmodSync(filePath, 0o600);
+    const descriptor = fs.openSync(
+      filePath,
+      fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_EXCL
+        | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      fs.fchmodSync(descriptor, 0o600);
+    } finally {
+      fs.closeSync(descriptor);
+    }
     return {
       runId,
       filePath,

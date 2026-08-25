@@ -444,8 +444,9 @@ function resolveOutdatedReviewThreads(pr, repoRoot, findings = [], runner = run)
   const [owner, name] = slug.split('/');
   const query = [
     'query($owner:String!,$name:String!,$pr:Int!){',
+    'viewer{login}',
     'repository(owner:$owner,name:$name){pullRequest(number:$pr){',
-    'reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:100){nodes{body}}}',
+    'reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:1){nodes{body author{login}}}}',
     'pageInfo{hasNextPage}}}}}',
   ].join('');
   const lookup = execute(GH_BIN, [
@@ -461,11 +462,14 @@ function resolveOutdatedReviewThreads(pr, repoRoot, findings = [], runner = run)
   if (lookup.status !== 0) return failure(lookup.stderr || lookup.stdout);
 
   let threads;
+  let trustedAuthor;
   try {
     const payload = JSON.parse(String(lookup.stdout || '{}'));
     if (Array.isArray(payload.errors) && payload.errors.length > 0) {
       return failure(payload.errors.map((error) => error.message).filter(Boolean).join('; '));
     }
+    trustedAuthor = String(payload?.data?.viewer?.login || '').toLowerCase();
+    if (!trustedAuthor) return failure('authenticated GitHub identity unavailable');
     threads = payload?.data?.repository?.pullRequest?.reviewThreads;
   } catch (error) {
     return failure(`review thread JSON parse failed: ${error.message}`);
@@ -479,7 +483,9 @@ function resolveOutdatedReviewThreads(pr, repoRoot, findings = [], runner = run)
   const candidates = threads.nodes.filter((thread) => {
     if (!thread || thread.isResolved || !Array.isArray(thread.comments?.nodes)) return false;
     const bodies = thread.comments.nodes.map((comment) => String(comment?.body || ''));
-    if (!bodies.some((body) => body.includes(MARKER))) return false;
+    const originatingComment = thread.comments.nodes[0];
+    if (!String(originatingComment?.body || '').includes(MARKER)) return false;
+    if (String(originatingComment?.author?.login || '').toLowerCase() !== trustedAuthor) return false;
     const currentAdvisory = [...advisoryFingerprints].some((fingerprint) => (
       bodies.some((body) => body.includes(`${FINDING_MARKER_PREFIX}${fingerprint} -->`))
     ));
