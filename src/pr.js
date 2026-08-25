@@ -33,34 +33,6 @@ function checkName(check) {
   return String(check?.name || check?.context || '').trim();
 }
 
-/**
- * Keep only the newest run of a logical check when GitHub's rollup contains
- * reruns for the same commit. This commonly happens when ready-for-review
- * cancels a draft-triggered workflow and starts its replacement: treating both
- * records as current makes the superseded cancellation block forever.
- *
- * Entries without a stable name or start time remain untouched so incomplete
- * GitHub data cannot hide a failure.
- */
-function latestCheckRuns(checks) {
-  const selected = new Map();
-  for (const [index, check] of (Array.isArray(checks) ? checks : []).entries()) {
-    const name = checkName(check);
-    const startedAt = Date.parse(String(check?.startedAt || ''));
-    const canDeduplicate = name && Number.isFinite(startedAt);
-    const key = canDeduplicate
-      ? `${String(check?.__typename || '')}\0${String(check?.workflowName || '')}\0${name}`
-      : `unkeyed\0${index}`;
-    const current = selected.get(key);
-    if (!current || startedAt >= current.startedAt) {
-      selected.set(key, { check, index, startedAt });
-    }
-  }
-  return [...selected.values()]
-    .sort((left, right) => left.index - right.index)
-    .map(({ check }) => check);
-}
-
 class PrError extends Error {
   constructor(message, { code = 'pr-error', cause = null } = {}) {
     super(message);
@@ -289,7 +261,7 @@ function getPullRequestStatus(repoRoot, branch) {
   const pr = findOpenPrForBranch(repoRoot, branch);
   if (!pr) return null;
 
-  const checks = latestCheckRuns(pr.statusCheckRollup);
+  const checks = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
   const failedNames = [];
   const summary = checks.reduce(
     (acc, check) => {
@@ -546,7 +518,6 @@ module.exports = {
   listOpenPrsForRepo,
   pushBranch,
   openPullRequest,
-  latestCheckRuns,
   getPullRequestStatus,
   checkOutcomes,
   baselineFailures,

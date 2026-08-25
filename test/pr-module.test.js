@@ -85,44 +85,6 @@ test('PrError exposes message and code', () => {
   assert.equal(error.name, 'PrError');
 });
 
-test('latestCheckRuns ignores a superseded cancelled run of the same workflow check', () => {
-  const latest = prModule.latestCheckRuns([
-    {
-      __typename: 'CheckRun', workflowName: 'CI', name: 'test (node 20)',
-      startedAt: '2026-08-25T07:25:53Z', conclusion: 'CANCELLED',
-    },
-    {
-      __typename: 'CheckRun', workflowName: 'CI', name: 'test (node 20)',
-      startedAt: '2026-08-25T07:27:40Z', conclusion: 'SUCCESS',
-    },
-    {
-      __typename: 'CheckRun', workflowName: 'CI (full matrix)', name: 'test (node 20)',
-      startedAt: '2026-08-25T07:25:33Z', conclusion: 'SKIPPED',
-    },
-  ]);
-
-  assert.deepEqual(
-    latest.map((check) => [check.workflowName, check.conclusion]),
-    [['CI', 'SUCCESS'], ['CI (full matrix)', 'SKIPPED']],
-  );
-});
-
-test('latestCheckRuns keeps a newer pending run instead of an older success', () => {
-  const latest = prModule.latestCheckRuns([
-    {
-      __typename: 'CheckRun', workflowName: 'CI', name: 'test',
-      startedAt: '2026-08-25T07:25:53Z', conclusion: 'SUCCESS',
-    },
-    {
-      __typename: 'CheckRun', workflowName: 'CI', name: 'test',
-      startedAt: '2026-08-25T07:27:40Z', status: 'IN_PROGRESS',
-    },
-  ]);
-
-  assert.equal(latest.length, 1);
-  assert.equal(latest[0].status, 'IN_PROGRESS');
-});
-
 test('openPullRequest throws PrError when branch missing', () => {
   const repoRoot = makeRepo();
   try {
