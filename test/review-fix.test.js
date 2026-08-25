@@ -30,12 +30,28 @@ function onAgentBranch() {
 }
 
 test('commandForFix gives each provider a write-enabled invocation', () => {
-  assert.deepEqual(commandForFix('codex', 'p'), { cmd: 'codex', args: ['exec', '--sandbox', 'workspace-write', 'p'] });
+  assert.deepEqual(commandForFix('codex', 'p'), {
+    cmd: 'codex',
+    args: [
+      'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+      '--sandbox', 'workspace-write', 'p',
+    ],
+  });
   assert.deepEqual(commandForFix('claude', 'p'), { cmd: 'claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
   assert.deepEqual(commandForFix('claude', 'p', { bin: '/opt/claude' }), { cmd: '/opt/claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
   assert.deepEqual(
     commandForFix('codex', 'p', { model: 'fast-model' }),
-    { cmd: 'codex', args: ['exec', '-m', 'fast-model', '--sandbox', 'workspace-write', 'p'] },
+    {
+      cmd: 'codex',
+      args: [
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '-m', 'fast-model',
+        '--sandbox', 'workspace-write', 'p',
+      ],
+    },
+  );
+  assert.deepEqual(
+    commandForFix('codex', 'p', { inheritConfig: true }),
+    { cmd: 'codex', args: ['exec', '--sandbox', 'workspace-write', 'p'] },
   );
 });
 
@@ -143,11 +159,9 @@ test('runReviewFix streams provider output and applies the review model override
     });
 
     assert.equal(result.status, 'fixed');
-    assert.deepEqual(
-      providerCall.args.slice(0, 4),
-      ['exec', '-m', 'fast-model', '--sandbox'],
-      'the same review model knob controls the auto-fix provider',
-    );
+    assert.deepEqual(providerCall.args.slice(0, 7), [
+      'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '-m', 'fast-model', '--sandbox',
+    ], 'the same review model knob controls the isolated auto-fix provider');
     assert.deepEqual(
       providerCall.options.stdio,
       ['ignore', 'inherit', 'inherit'],
