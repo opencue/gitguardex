@@ -17,16 +17,34 @@ const { gitRun, currentBranchName, readProtectedBranches } = require('./git');
 const { resolveProviderBin } = require('./provider-binary');
 
 const DEFAULT_FIX_TIMEOUT_MS = 15 * 60 * 1000;
+const TOOL_PREFIX = '[gitguardex]';
+
+function resolveFixModel(model, env = process.env) {
+  const explicit = String(model || '').trim();
+  if (explicit) return explicit;
+  return String(env.GUARDEX_REVIEW_MODEL || '').trim();
+}
 
 function commandForFix(provider, prompt, settings = {}) {
   const cmd = String(settings.bin || '').trim() || provider;
+  const model = String(settings.model || '').trim();
   if (provider === 'claude') {
     // Print mode defaults to asking for permission; acceptEdits lets it write.
-    return { cmd, args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', prompt] };
+    return {
+      cmd,
+      args: model
+        ? ['--safe-mode', '--model', model, '-p', '--permission-mode', 'acceptEdits', prompt]
+        : ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', prompt],
+    };
   }
   // `codex exec` sandboxes to read-only by default; workspace-write allows edits
   // inside the worktree and nowhere else.
-  return { cmd, args: ['exec', '--sandbox', 'workspace-write', prompt] };
+  return {
+    cmd,
+    args: model
+      ? ['exec', '-m', model, '--sandbox', 'workspace-write', prompt]
+      : ['exec', '--sandbox', 'workspace-write', prompt],
+  };
 }
 
 function describeFinding(finding, index) {
@@ -105,6 +123,7 @@ function runReviewFix({
   findings = [],
   timeoutMs = DEFAULT_FIX_TIMEOUT_MS,
   expectBranch = '',
+  model = '',
 }, deps = {}) {
   const runner = deps.run || run;
   if (findings.length === 0) {
@@ -142,11 +161,29 @@ function runReviewFix({
   }
   const preExistingUntracked = new Set(before.untracked);
 
-  const command = commandForFix(provider, fixPrompt(findings), { bin: resolveProviderBin(provider) });
-  const result = runner(command.cmd, command.args, { cwd: repoRoot, timeout: timeoutMs });
+  const selectedModel = resolveFixModel(model);
+  const command = commandForFix(provider, fixPrompt(findings), {
+    bin: resolveProviderBin(provider),
+    model: selectedModel,
+  });
+  const startedAt = Date.now();
+  console.log(
+    `${TOOL_PREFIX} code-assist ${provider} auto-fix started for ${findings.length} finding(s)`
+    + `${selectedModel ? ` with model ${selectedModel}` : ''}; provider progress follows`,
+  );
+  const result = runner(command.cmd, command.args, {
+    cwd: repoRoot,
+    timeout: timeoutMs,
+    // No provider output is parsed in fix mode. Inherit both streams so edits,
+    // tool calls, and progress remain visible to the parent Codex session.
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
   if (result.status !== 0) {
     throw new Error(`${provider} fix run failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`);
   }
+  console.log(
+    `${TOOL_PREFIX} code-assist ${provider} auto-fix completed in ${Math.round((Date.now() - startedAt) / 1000)}s`,
+  );
 
   const after = treeState(repoRoot);
   const changedFiles = [
@@ -169,5 +206,6 @@ module.exports = {
   DEFAULT_FIX_TIMEOUT_MS,
   commandForFix,
   fixPrompt,
+  resolveFixModel,
   runReviewFix,
 };

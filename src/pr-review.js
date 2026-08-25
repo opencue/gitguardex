@@ -491,14 +491,28 @@ function resolveReviewTimeoutMs(timeoutMs, env = process.env) {
 
 function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, settings = {}) {
   const prompt = compactReviewPrompt(diff);
+  const model = resolveReviewModel(settings.model);
   const command = commandForProvider(provider, prompt, {
-    model: resolveReviewModel(settings.model),
+    model,
     bin: resolveProviderBin(provider),
   });
   const limitMs = resolveReviewTimeoutMs(timeoutMs);
   let parseError;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = runner(command.cmd, command.args, { cwd: repoRoot, timeout: limitMs });
+    const startedAt = Date.now();
+    console.log(
+      `${TOOL_PREFIX} code-assist ${provider} review attempt ${attempt + 1}/2 started`
+      + `${model ? ` with model ${model}` : ''}; provider progress follows`,
+    );
+    const result = runner(command.cmd, command.args, {
+      cwd: repoRoot,
+      timeout: limitMs,
+      // Provider CLIs reserve stdout for their final machine-readable answer
+      // and write live agent progress to stderr. Keep stdout piped for JSON
+      // parsing, but let stderr flow straight through gx so a 10-minute review
+      // no longer looks like a hung background terminal.
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
     // spawnSync reports a timeout as error.code ETIMEDOUT with a null status, so
     // name it: "review failed" with empty stderr sends the operator hunting for a
     // provider bug that is really just a run that never came back.
@@ -518,13 +532,19 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, se
       throw new Error(`${provider} review returned no output (review did not run)`);
     }
     try {
-      return normalizeFindings(result.stdout || '');
+      const findings = normalizeFindings(result.stdout || '');
+      console.log(
+        `${TOOL_PREFIX} code-assist ${provider} review completed in ${Math.round((Date.now() - startedAt) / 1000)}s: `
+        + `${findings.length} finding(s)`,
+      );
+      return findings;
     } catch (error) {
       parseError = error;
       if (attempt === 0 && /parseable JSON findings|JSON must contain a findings array/.test(error.message)) {
         // Providers occasionally emit prose despite the JSON-only prompt. Retry
         // once with the same bounded invocation; a second malformed answer still
         // fails closed below.
+        console.log(`${TOOL_PREFIX} code-assist ${provider} returned malformed JSON; retrying once`);
         continue;
       }
       throw error;

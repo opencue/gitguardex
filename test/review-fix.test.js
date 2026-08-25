@@ -33,6 +33,10 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
   assert.deepEqual(commandForFix('codex', 'p'), { cmd: 'codex', args: ['exec', '--sandbox', 'workspace-write', 'p'] });
   assert.deepEqual(commandForFix('claude', 'p'), { cmd: 'claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
   assert.deepEqual(commandForFix('claude', 'p', { bin: '/opt/claude' }), { cmd: '/opt/claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
+  assert.deepEqual(
+    commandForFix('codex', 'p', { model: 'fast-model' }),
+    { cmd: 'codex', args: ['exec', '-m', 'fast-model', '--sandbox', 'workspace-write', 'p'] },
+  );
 });
 
 test('fixPrompt carries the location, the severity, and the proposed replacement', () => {
@@ -121,6 +125,37 @@ test('runReviewFix resolves the provider binary before invoking the auto-fix age
   } finally {
     if (previous === undefined) delete process.env.GUARDEX_REVIEW_CLAUDE_BIN;
     else process.env.GUARDEX_REVIEW_CLAUDE_BIN = previous;
+  }
+});
+
+test('runReviewFix streams provider output and applies the review model override', () => {
+  const previous = process.env.GUARDEX_REVIEW_MODEL;
+  process.env.GUARDEX_REVIEW_MODEL = 'fast-model';
+  try {
+    const repoDir = onAgentBranch();
+    let providerCall;
+    const result = runReviewFix({ repoRoot: repoDir, findings: [FINDING] }, {
+      run: (cmd, args, options) => {
+        providerCall = { cmd, args, options };
+        fs.writeFileSync(path.join(repoDir, 'fixed.js'), 'const safe = true\n', 'utf8');
+        return { status: 0, stdout: 'done', stderr: '' };
+      },
+    });
+
+    assert.equal(result.status, 'fixed');
+    assert.deepEqual(
+      providerCall.args.slice(0, 4),
+      ['exec', '-m', 'fast-model', '--sandbox'],
+      'the same review model knob controls the auto-fix provider',
+    );
+    assert.deepEqual(
+      providerCall.options.stdio,
+      ['ignore', 'inherit', 'inherit'],
+      'auto-fix progress is visible instead of buffered until exit',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.GUARDEX_REVIEW_MODEL;
+    else process.env.GUARDEX_REVIEW_MODEL = previous;
   }
 });
 
