@@ -264,8 +264,8 @@ function runReviewGate({
   const prNumber = opened.pr.number;
   gateLog(`PR #${prNumber}: enforcing review + CI gate before merge`);
 
-  // 1b. The CLI's fast default promotes first so CI overlaps the review. The
-  //     strict `--gate-serial-ci` mode keeps the PR draft while review is pending:
+  // 1b. The default keeps the PR draft while review is pending. The explicit
+  //     `--no-gate-serial-ci` fast mode promotes first so CI overlaps the review:
   //     draft state is the only GitHub-side hard barrier this gate controls before
   //     its verdict, so even green CI cannot be merged manually or by automation.
   //     Undefined stays serial as a fail-safe for direct/internal callers.

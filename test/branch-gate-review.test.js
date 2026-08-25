@@ -61,7 +61,7 @@ test('branch finish --gate-review runs the gate and keeps the flag out of the sh
   const argv = calls.script[0].args;
   assert.ok(!argv.includes('--gate-review'), 'agent-branch-finish.sh cannot parse --gate-review');
   assert.ok(argv.includes('--auto-resolve=safe'), 'unrelated flags must still reach the script');
-  assert.deepEqual(argv, ['--branch', 'agent/claude/x', '--base', 'dev', '--via-pr', '--auto-resolve=safe', '--no-preflight']);
+  assert.deepEqual(argv, ['--branch', 'agent/claude/x', '--base', 'dev', '--via-pr', '--auto-resolve=safe']);
 });
 
 test('branch finish --gate-review fails closed: a throwing gate blocks the merge', () => {
@@ -149,7 +149,7 @@ test('branch finish --gate-review forwards the review provider to the gate', () 
   const argv = calls.script[0].args;
   assert.ok(!argv.includes('--review-provider'), 'agent-branch-finish.sh exits 1 on the unknown flag');
   assert.ok(!argv.includes('claude'), 'the provider value must not leak into the script argv either');
-  assert.deepEqual(argv, ['--branch', 'agent/claude/p', '--via-pr', '--no-preflight']);
+  assert.deepEqual(argv, ['--branch', 'agent/claude/p', '--via-pr']);
 });
 
 test('branch finish --gate-review reads the inline --review-provider= form', () => {
@@ -158,7 +158,7 @@ test('branch finish --gate-review reads the inline --review-provider= form', () 
   branch(['finish', '--via-pr', '--gate-review', '--review-provider=claude']);
 
   assert.equal(calls.gate[0].options.reviewProvider, 'claude');
-  assert.deepEqual(calls.script[0].args, ['--via-pr', '--no-preflight']);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
 test('branch finish --gate-review forwards the review model and keeps it out of the shell argv', () => {
@@ -167,7 +167,7 @@ test('branch finish --gate-review forwards the review model and keeps it out of 
   branch(['finish', '--branch', 'agent/claude/p', '--via-pr', '--gate-review', '--review-model', 'sonnet']);
 
   assert.equal(calls.gate[0].options.reviewModel, 'sonnet');
-  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr', '--no-preflight']);
+  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr']);
 });
 
 test('branch finish --gate-review forwards the review timeout and keeps it out of the shell argv', () => {
@@ -176,7 +176,7 @@ test('branch finish --gate-review forwards the review timeout and keeps it out o
   branch(['finish', '--branch', 'agent/claude/p', '--via-pr', '--gate-review', '--review-timeout-ms', '60000']);
 
   assert.equal(calls.gate[0].options.reviewTimeoutMs, 60_000);
-  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr', '--no-preflight']);
+  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/p', '--via-pr']);
 });
 
 test('branch finish --gate-review reads the inline --review-timeout-ms= form', () => {
@@ -185,7 +185,7 @@ test('branch finish --gate-review reads the inline --review-timeout-ms= form', (
   branch(['finish', '--via-pr', '--gate-review', '--review-timeout-ms=60000']);
 
   assert.equal(calls.gate[0].options.reviewTimeoutMs, 60_000);
-  assert.deepEqual(calls.script[0].args, ['--via-pr', '--no-preflight']);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
 test('branch finish rejects --review-timeout-ms with no value', () => {
@@ -204,7 +204,7 @@ test('branch finish --gate-review reads the inline --review-model= form', () => 
   branch(['finish', '--via-pr', '--gate-review', '--review-model=sonnet']);
 
   assert.equal(calls.gate[0].options.reviewModel, 'sonnet');
-  assert.deepEqual(calls.script[0].args, ['--via-pr', '--no-preflight']);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
 test('branch finish rejects --review-model with no value', () => {
@@ -226,13 +226,13 @@ test('branch finish forwards --gate-serial-ci and strips it from the shell argv'
   assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
-test('branch finish overlaps CI by default and skips the duplicate post-CI preflight', () => {
+test('branch finish waits for review by default and retains the repository preflight', () => {
   const { branch, calls } = loadBranchWithStubs();
 
   branch(['finish', '--via-pr', '--gate-review']);
 
-  assert.equal(calls.gate[0].options.gateSerialCi, false);
-  assert.deepEqual(calls.script[0].args, ['--via-pr', '--no-preflight']);
+  assert.equal(calls.gate[0].options.gateSerialCi, true);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
 test('branch finish keeps --no-gate-serial-ci as an explicit fast-mode alias', () => {
@@ -241,7 +241,7 @@ test('branch finish keeps --no-gate-serial-ci as an explicit fast-mode alias', (
   branch(['finish', '--via-pr', '--gate-review', '--no-gate-serial-ci']);
 
   assert.equal(calls.gate[0].options.gateSerialCi, false);
-  assert.deepEqual(calls.script[0].args, ['--via-pr', '--no-preflight']);
+  assert.deepEqual(calls.script[0].args, ['--via-pr']);
 });
 
 test('branch finish preserves an explicit post-gate --preflight request', () => {
@@ -249,7 +249,7 @@ test('branch finish preserves an explicit post-gate --preflight request', () => 
 
   branch(['finish', '--via-pr', '--gate-review', '--preflight']);
 
-  assert.equal(calls.gate[0].options.gateSerialCi, false);
+  assert.equal(calls.gate[0].options.gateSerialCi, true);
   assert.deepEqual(calls.script[0].args, ['--via-pr', '--preflight']);
 });
 

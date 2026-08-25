@@ -25,7 +25,7 @@ function splitGateReviewFlags(args) {
   let gateAutofix = false;
   let gateAutofixRounds = 1;
   let gateBaseline = false;
-  let gateSerialCi = false;
+  let gateSerialCi = true;
   let reviewModel;
   let reviewTimeoutMs;
   for (let index = 0; index < args.length; index += 1) {
@@ -179,20 +179,6 @@ function branch(rawArgs) {
           gateSerialCi,
         },
       });
-
-      // The fast gate already required green CI for this branch. Do not run the
-      // repository's full local preflight again after that remote verdict; it
-      // adds a third serial wait without checking a new commit. Strict serial
-      // mode and baseline mode retain the extra local gate, and an explicit
-      // --preflight always wins.
-      if (
-        !gateSerialCi
-        && !gateBaseline
-        && !scriptArgs.includes('--preflight')
-        && !scriptArgs.includes('--no-preflight')
-      ) {
-        scriptArgs.push('--no-preflight');
-      }
     }
     invokePackageAsset('branchFinish', scriptArgs, {
       cwd: repoRoot,

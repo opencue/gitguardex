@@ -17,11 +17,11 @@ This is the cheapest gate in the agent workflow:
 Pre-flight is enabled by default. Disable per-call with `--no-preflight`,
 or globally with `GUARDEX_FINISH_PREFLIGHT=0`.
 
-The gated fast path is the exception: `--gate-review` starts required CI
-alongside the AI review and reuses the green CI verdict instead of repeating
-this full local pre-flight afterwards. Use `--gate-serial-ci` for the stricter,
-slower draft-first sequence that also retains the post-gate local pre-flight.
-Baseline and check-less gate modes never reuse CI this way.
+Review-gated finishes keep this repository-defined pre-flight enabled even
+after required CI passes because the script can contain checks that required CI
+does not. By default the PR remains draft until the AI review passes. The
+explicit `--no-gate-serial-ci` fast mode overlaps CI with the review, but it does
+not disable pre-flight. Only an explicit pre-flight opt-out bypasses this gate.
 
 ## Convention
 
