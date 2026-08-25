@@ -225,12 +225,8 @@ function setup(rawArgs) {
     }
     console.log(`[${TOOL_NAME}] Copy AI setup prompt with: ${SHORT_TOOL_NAME} prompt`);
     console.log(
-      `[${TOOL_NAME}] OpenSpec core workflow: /opsx:propose -> /opsx:apply -> /opsx:archive`,
+      `[${TOOL_NAME}] Optional OpenSpec: /opsx:propose -> /opsx:apply -> /opsx:archive; guide: docs/openspec-getting-started.md`,
     );
-    console.log(
-      `[${TOOL_NAME}] Optional expanded OpenSpec profile: openspec config profile <profile-name> && openspec update`,
-    );
-    console.log(`[${TOOL_NAME}] OpenSpec guide: docs/openspec-getting-started.md`);
   }
 
   if (lastScanResult) {

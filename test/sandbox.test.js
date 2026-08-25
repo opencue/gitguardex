@@ -142,7 +142,7 @@ test('codex-agent launches codex inside a fresh sandbox worktree and keeps branc
 });
 
 
-test('codex-agent routes lightweight tasks to caveman T1 with notes-only OpenSpec', () => {
+test('codex-agent routes ordinary tasks to direct T1 with no OpenSpec scaffold', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
 
@@ -174,7 +174,7 @@ test('codex-agent routes lightweight tasks to caveman T1 with notes-only OpenSpe
   const modeMarker = path.join(repoDir, '.codex-agent-mode-lightweight');
   const tierMarker = path.join(repoDir, '.codex-agent-tier-lightweight');
   const reasonMarker = path.join(repoDir, '.codex-agent-reason-lightweight');
-  const launch = runCodexAgent(['simple: tighten copy', 'planner', 'dev', '--model', 'gpt-5.4-mini'], repoDir, {
+  const launch = runCodexAgent(['refactor retry routing', 'planner', 'dev', '--model', 'gpt-5.4-mini'], repoDir, {
     PATH: `${fakeBin}:${process.env.PATH}`,
     GUARDEX_TEST_CODEX_CWD: cwdMarker,
     GUARDEX_TEST_CODEX_ARGS: argsMarker,
@@ -183,29 +183,18 @@ test('codex-agent routes lightweight tasks to caveman T1 with notes-only OpenSpe
     GUARDEX_TEST_TASK_REASON: reasonMarker,
   });
   assert.equal(launch.status, 0, launch.stderr || launch.stdout);
-  assert.match(launch.stdout, /\[codex-agent\] Task routing: caveman \/ T1 \(notes-only OpenSpec\) \(explicit lightweight prefix\)/);
+  assert.match(launch.stdout, /\[codex-agent\] Task routing: caveman \/ T1 \(no OpenSpec scaffold\) \(default direct-execution route\)/);
   assert.doesNotMatch(launch.stdout, /\[codex-agent\] OpenSpec plan workspace:/);
 
   const launchedCwd = fs.readFileSync(cwdMarker, 'utf8').trim();
-  const launchedBranch = extractCreatedBranch(launch.stdout);
-  const changeSlug = sanitizeSlug(launchedBranch, 'simple-tighten-copy');
-  const changeDir = path.join(launchedCwd, 'openspec', 'changes', changeSlug);
   const launchedArgs = fs.readFileSync(argsMarker, 'utf8').trim();
 
   assert.doesNotMatch(launchedCwd, /masterplan/);
   assert.match(launchedArgs, /--model gpt-5\.4-mini/);
   assert.equal(fs.readFileSync(modeMarker, 'utf8'), 'caveman');
   assert.equal(fs.readFileSync(tierMarker, 'utf8'), 'T1');
-  assert.match(fs.readFileSync(reasonMarker, 'utf8'), /explicit lightweight prefix/);
-  assert.equal(fs.existsSync(path.join(changeDir, '.openspec.yaml')), true, '.openspec.yaml missing');
-  assert.equal(fs.existsSync(path.join(changeDir, 'notes.md')), true, 'notes.md missing');
-  assert.equal(fs.existsSync(path.join(changeDir, 'proposal.md')), false, 'proposal.md should be absent for T1');
-  assert.equal(fs.existsSync(path.join(changeDir, 'tasks.md')), false, 'tasks.md should be absent for T1');
-  assert.equal(
-    fs.existsSync(path.join(launchedCwd, 'openspec', 'plan', changeSlug)),
-    false,
-    'T1 codex-agent launch should not create a plan workspace',
-  );
+  assert.match(fs.readFileSync(reasonMarker, 'utf8'), /default direct-execution route/);
+  assert.equal(fs.existsSync(path.join(launchedCwd, 'openspec')), false, 'T1 should not create OpenSpec artifacts');
 });
 
 
@@ -591,10 +580,8 @@ test('codex-agent prints a takeover prompt when the sandbox is kept after an inc
   );
   assert.match(combinedOutput, new RegExp(`  branch:   ${escapeRegexLiteral(launchedBranch)}`));
   assert.match(combinedOutput, /rule:     continue current state; do not create a new sandbox/);
-  assert.match(
-    combinedOutput,
-    new RegExp(`openspec/changes/${escapeRegexLiteral(changeSlug)}/tasks\\.md`),
-  );
+  assert.doesNotMatch(combinedOutput, /  spec:/);
+  assert.doesNotMatch(combinedOutput, /openspec\/changes\//);
   assert.match(
     combinedOutput,
     new RegExp(`gx branch finish --branch "${escapeRegexLiteral(launchedBranch)}" --base dev --via-pr --wait-for-merge --cleanup`),

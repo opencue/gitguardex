@@ -483,7 +483,7 @@ test('agent-branch-start links dependency directories into new worktrees when pr
 });
 
 
-test('agent-branch-start honors T1 notes-only OpenSpec scaffolding', () => {
+test('agent-branch-start keeps T1 direct with no OpenSpec scaffold', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
 
@@ -502,6 +502,7 @@ test('agent-branch-start honors T1 notes-only OpenSpec scaffolding', () => {
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /\[agent-branch-start\] OpenSpec tier: T1/);
+  assert.match(result.stdout, /\[agent-branch-start\] OpenSpec change: skipped by tier T1/);
   assert.match(result.stdout, /\[agent-branch-start\] OpenSpec plan: skipped by tier T1/);
   assert.match(result.stdout, /\[agent-branch-start\] Ready:/);
   assert.match(result.stdout, /  branch:   agent\/codex\/simple-tighten-copy-/);
@@ -512,23 +513,17 @@ test('agent-branch-start honors T1 notes-only OpenSpec scaffolding', () => {
   );
 
   const createdWorktree = extractCreatedWorktree(result.stdout);
-  const changeSlug = extractOpenSpecChangeSlug(result.stdout);
-  const changeDir = path.join(createdWorktree, 'openspec', 'changes', changeSlug);
 
   assert.doesNotMatch(createdWorktree, /masterplan/);
-  assert.equal(fs.existsSync(path.join(changeDir, '.openspec.yaml')), true, '.openspec.yaml missing');
-  assert.equal(fs.existsSync(path.join(changeDir, 'notes.md')), true, 'notes.md missing');
-  assert.equal(fs.existsSync(path.join(changeDir, 'proposal.md')), false, 'proposal.md should be absent for T1');
-  assert.equal(fs.existsSync(path.join(changeDir, 'tasks.md')), false, 'tasks.md should be absent for T1');
   assert.equal(
-    fs.existsSync(path.join(createdWorktree, 'openspec', 'plan', changeSlug)),
+    fs.existsSync(path.join(createdWorktree, 'openspec')),
     false,
-    'T1 branch start should not create a plan workspace',
+    'T1 branch start should not create OpenSpec artifacts',
   );
 });
 
 
-test('agent-branch-start DEFAULTS to T1 scaffolding when --tier is omitted', () => {
+test('agent-branch-start defaults to direct T1 with no OpenSpec scaffold', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
 
@@ -542,23 +537,20 @@ test('agent-branch-start DEFAULTS to T1 scaffolding when --tier is omitted', () 
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
-  // No --tier: must resolve to T1, not the old T3 default.
+  // No --tier: resolve to direct T1 without documentation churn.
   result = runBranchStart(['tighten copy', 'bot'], repoDir, {
     GUARDEX_OPENSPEC_AUTO_INIT: 'true',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /\[agent-branch-start\] OpenSpec tier: T1/);
-  assert.match(result.stdout, /T1 minimal scaffold/, 'prints the escalation hint');
+  assert.match(result.stdout, /\[agent-branch-start\] OpenSpec change: skipped by tier T1/);
+  assert.doesNotMatch(result.stdout, /T1 minimal scaffold/);
 
   const createdWorktree = extractCreatedWorktree(result.stdout);
-  const changeSlug = extractOpenSpecChangeSlug(result.stdout);
-  const changeDir = path.join(createdWorktree, 'openspec', 'changes', changeSlug);
-  assert.equal(fs.existsSync(path.join(changeDir, 'notes.md')), true, 'notes.md present for default T1');
-  assert.equal(fs.existsSync(path.join(changeDir, 'proposal.md')), false, 'no proposal.md for default T1');
   assert.equal(
-    fs.existsSync(path.join(createdWorktree, 'openspec', 'plan', changeSlug)),
+    fs.existsSync(path.join(createdWorktree, 'openspec')),
     false,
-    'default T1 must not create a plan workspace',
+    'default T1 must not create OpenSpec artifacts',
   );
 });
 

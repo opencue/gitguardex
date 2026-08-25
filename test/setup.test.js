@@ -69,8 +69,11 @@ test('setup provisions workflow files and repo config', () => {
 
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /OpenSpec core workflow: \/opsx:propose -> \/opsx:apply -> \/opsx:archive/);
-  assert.match(result.stdout, /OpenSpec guide: docs\/openspec-getting-started\.md/);
+  assert.match(
+    result.stdout,
+    /Optional OpenSpec: \/opsx:propose -> \/opsx:apply -> \/opsx:archive; guide: docs\/openspec-getting-started\.md/,
+  );
+  assert.doesNotMatch(result.stdout, /Optional expanded OpenSpec profile/);
 
   const requiredFiles = [
     '.omx',
@@ -383,6 +386,28 @@ test('setup refreshes existing managed AGENTS block by default', () => {
   assert.doesNotMatch(currentAgents, /## Multi-Agent Execution Contract/);
   assert.doesNotMatch(currentAgents, /legacy managed clause/);
   assert.match(result.stdout, /refreshed gitguardex-managed block/);
+});
+
+
+test('setup downgrades an existing full AGENTS contract unless --contract is explicit', () => {
+  const repoDir = initRepo();
+  const fullContract = fs.readFileSync(
+    path.join(__dirname, '..', 'templates', 'AGENTS.multiagent-safety.md'),
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(repoDir, 'AGENTS.md'),
+    `# AGENTS\n\n${fullContract}\n## Repo-specific notes\n- preserve me\n`,
+    'utf8',
+  );
+
+  const result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const currentAgents = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf8');
+  assert.match(currentAgents, /## Multi-Agent Safety \(minimal\)/);
+  assert.match(currentAgents, /## Repo-specific notes\n- preserve me/);
+  assert.doesNotMatch(currentAgents, /## Multi-Agent Execution Contract/);
 });
 
 

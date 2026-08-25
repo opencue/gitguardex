@@ -1,12 +1,14 @@
-# Workflow (OpenSpec-first)
+# Workflow (OpenSpec opt-in)
 
-When Guardex is enabled, this repo uses **OpenSpec as the primary workflow and SSOT** for change-driven development.
+Guardex defaults to direct implementation in code and tests. OpenSpec becomes
+the change SSOT only when the user requests it, an existing OpenSpec change is
+being continued, or T2/T3 is explicitly selected.
 
 ## Versioning Rule
 
 - If a change publishes or bumps a package version, the same change must also update the release notes / changelog entries. See [Documentation & Release Notes](#documentation--release-notes) for where to record change notes.
 
-## OpenSpec philosophy (enforced)
+## OpenSpec philosophy (when active)
 
 - fluid, not rigid
 - iterative, not waterfall
@@ -14,19 +16,15 @@ When Guardex is enabled, this repo uses **OpenSpec as the primary workflow and S
 - built for brownfield and greenfield work
 - scalable from solo projects to large teams
 
-## How to work (default)
+## How to work (opt-in)
 
-1. Use the default artifact-guided flow first: `/opsx:propose <idea>` -> `/opsx:apply` -> `/opsx:archive`.
-2. For **every** repo change (feature, fix, refactor, chore, test, config, docs), create/update an OpenSpec change in `openspec/changes/**` before editing code.
-   Exception: helper agent branches that target another `agent/*` base branch are execution-only assists and must not create standalone OpenSpec change/spec/tasks docs; keep documentation on the owner change branch.
-3. Keep artifacts editable throughout implementation (proposal/spec/design/tasks are living docs, not rigid phase gates).
-4. Implement from `tasks.md`; keep code and specs in sync (update `spec.md` as behavior changes).
-5. Keep `tasks.md` checkpoint status updated continuously during execution; mark items as soon as they complete (do not batch-update at the end).
-6. Default `tasks.md` scaffolds and manual task edits must include a final completion/cleanup section that ends with PR merge + sandbox cleanup (`gx branch finish ... --cleanup` or `gx finish --all`) and captures PR URL + final `MERGED` handoff evidence.
-7. Validate specs locally: `openspec validate --specs`.
-8. Verify before archiving (`/opsx:verify <change>` when applicable); never archive unverified changes.
+1. For routine work, edit code/tests directly and use the commit plus concise final handoff as the record. Do not create an OpenSpec workspace.
+2. Activate the artifact-guided flow only when requested: `/opsx:propose <idea>` -> `/opsx:apply` -> `/opsx:archive`, or select T2/T3 explicitly.
+3. Once active, keep proposal/spec/design/tasks aligned with meaningful behavior changes; update checkpoints at milestones, not after every tool call.
+4. Explicit task scaffolds include a final PR merge + sandbox cleanup item and capture the PR URL plus `MERGED` evidence.
+5. Validate active specs locally with `openspec validate --specs` and verify before archiving.
 
-## OpenSpec tooling freshness (required)
+## OpenSpec tooling freshness (only when using OpenSpec)
 
 - Keep the global CLI current:
   - `npm install -g @fission-ai/openspec@latest`
@@ -60,7 +58,7 @@ Prompting cue (use when writing docs):
 
 ## Commands (recommended)
 
-- Default flow (recommended): `/opsx:propose <idea>` -> `/opsx:apply` -> `/opsx:archive`
+- Opt-in flow: `/opsx:propose <idea>` -> `/opsx:apply` -> `/opsx:archive`
 - Expanded flow start: `/opsx:new <kebab-case>`
 - Continue artifacts: `/opsx:continue <change>`
 - Fast-forward artifacts: `/opsx:ff <change>`
