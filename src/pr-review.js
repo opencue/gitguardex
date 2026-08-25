@@ -12,6 +12,7 @@ const { partitionByAnchor } = require('./review-diff');
 
 const TOOL_PREFIX = '[gitguardex]';
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
+const CODEX_AUTOMATION_ARGS = ['--ephemeral', '--ignore-user-config', '--ignore-rules'];
 
 // Identifies bodies this tool wrote, so a re-run can recognize its own prior
 // output instead of stacking a duplicate copy of every comment.
@@ -59,13 +60,25 @@ function resolveReviewModel(model, env = process.env) {
   return String(env.GUARDEX_REVIEW_MODEL || '').trim();
 }
 
+function inheritCodexConfig(env = process.env) {
+  return ['1', 'true', 'yes', 'on'].includes(
+    String(env.GUARDEX_REVIEW_INHERIT_CODEX_CONFIG || '').trim().toLowerCase(),
+  );
+}
+
 function commandForProvider(provider, prompt, settings = {}) {
   const cmd = String(settings.bin || '').trim() || provider;
   const model = String(settings.model || '').trim();
   if (provider === 'claude') {
     return { cmd, args: model ? ['--safe-mode', '--model', model, '-p', prompt] : ['--safe-mode', '-p', prompt] };
   }
-  return { cmd, args: model ? ['exec', '-m', model, prompt] : ['exec', prompt] };
+  const automationArgs = settings.inheritConfig === true ? [] : CODEX_AUTOMATION_ARGS;
+  return {
+    cmd,
+    args: model
+      ? ['exec', ...automationArgs, '-m', model, prompt]
+      : ['exec', ...automationArgs, prompt],
+  };
 }
 
 /**
@@ -495,6 +508,7 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, se
   const command = commandForProvider(provider, prompt, {
     model,
     bin: resolveProviderBin(provider),
+    inheritConfig: inheritCodexConfig(),
   });
   const limitMs = resolveReviewTimeoutMs(timeoutMs);
   let parseError;
@@ -645,6 +659,7 @@ module.exports = {
   normalizeFindings,
   renderMarkdownReview,
   renderReviewSummary,
+  inheritCodexConfig,
   resolveProviderBin,
   resolveReviewModel,
   splitMessage,

@@ -18,11 +18,18 @@ const { resolveProviderBin } = require('./provider-binary');
 
 const DEFAULT_FIX_TIMEOUT_MS = 15 * 60 * 1000;
 const TOOL_PREFIX = '[gitguardex]';
+const CODEX_AUTOMATION_ARGS = ['--ephemeral', '--ignore-user-config', '--ignore-rules'];
 
 function resolveFixModel(model, env = process.env) {
   const explicit = String(model || '').trim();
   if (explicit) return explicit;
   return String(env.GUARDEX_REVIEW_MODEL || '').trim();
+}
+
+function inheritCodexConfig(env = process.env) {
+  return ['1', 'true', 'yes', 'on'].includes(
+    String(env.GUARDEX_REVIEW_INHERIT_CODEX_CONFIG || '').trim().toLowerCase(),
+  );
 }
 
 function commandForFix(provider, prompt, settings = {}) {
@@ -39,11 +46,12 @@ function commandForFix(provider, prompt, settings = {}) {
   }
   // `codex exec` sandboxes to read-only by default; workspace-write allows edits
   // inside the worktree and nowhere else.
+  const automationArgs = settings.inheritConfig === true ? [] : CODEX_AUTOMATION_ARGS;
   return {
     cmd,
     args: model
-      ? ['exec', '-m', model, '--sandbox', 'workspace-write', prompt]
-      : ['exec', '--sandbox', 'workspace-write', prompt],
+      ? ['exec', ...automationArgs, '-m', model, '--sandbox', 'workspace-write', prompt]
+      : ['exec', ...automationArgs, '--sandbox', 'workspace-write', prompt],
   };
 }
 
@@ -165,6 +173,7 @@ function runReviewFix({
   const command = commandForFix(provider, fixPrompt(findings), {
     bin: resolveProviderBin(provider),
     model: selectedModel,
+    inheritConfig: inheritCodexConfig(),
   });
   const startedAt = Date.now();
   console.log(
@@ -206,6 +215,7 @@ module.exports = {
   DEFAULT_FIX_TIMEOUT_MS,
   commandForFix,
   fixPrompt,
+  inheritCodexConfig,
   resolveFixModel,
   runReviewFix,
 };

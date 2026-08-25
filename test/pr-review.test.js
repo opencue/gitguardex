@@ -16,7 +16,10 @@ defineSpawnSuite('pr-review suite', () => {
 
 test('commandForProvider defaults to the provider binary and its own model', () => {
   assert.deepEqual(prReview.commandForProvider('claude', 'P'), { cmd: 'claude', args: ['--safe-mode', '-p', 'P'] });
-  assert.deepEqual(prReview.commandForProvider('codex', 'P'), { cmd: 'codex', args: ['exec', 'P'] });
+  assert.deepEqual(prReview.commandForProvider('codex', 'P'), {
+    cmd: 'codex',
+    args: ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', 'P'],
+  });
 });
 
 test('commandForProvider passes the model with each provider own flag', () => {
@@ -26,7 +29,17 @@ test('commandForProvider passes the model with each provider own flag', () => {
   );
   assert.deepEqual(
     prReview.commandForProvider('codex', 'P', { model: 'gpt-5' }),
-    { cmd: 'codex', args: ['exec', '-m', 'gpt-5', 'P'] },
+    {
+      cmd: 'codex',
+      args: ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '-m', 'gpt-5', 'P'],
+    },
+  );
+});
+
+test('commandForProvider can explicitly inherit Codex config for compatibility', () => {
+  assert.deepEqual(
+    prReview.commandForProvider('codex', 'P', { inheritConfig: true }),
+    { cmd: 'codex', args: ['exec', 'P'] },
   );
 });
 
