@@ -18,7 +18,10 @@ test('commandForProvider defaults to the provider binary and its own model', () 
   assert.deepEqual(prReview.commandForProvider('claude', 'P'), { cmd: 'claude', args: ['--safe-mode', '-p', 'P'] });
   assert.deepEqual(prReview.commandForProvider('codex', 'P'), {
     cmd: 'codex',
-    args: ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', 'P'],
+    args: [
+      'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+      '-c', 'model_reasoning_effort="high"', 'P',
+    ],
   });
 });
 
@@ -31,7 +34,10 @@ test('commandForProvider passes the model with each provider own flag', () => {
     prReview.commandForProvider('codex', 'P', { model: 'gpt-5' }),
     {
       cmd: 'codex',
-      args: ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '-m', 'gpt-5', 'P'],
+      args: [
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+        '-c', 'model_reasoning_effort="high"', '-m', 'gpt-5', 'P',
+      ],
     },
   );
 });
@@ -41,6 +47,22 @@ test('commandForProvider can explicitly inherit Codex config for compatibility',
     prReview.commandForProvider('codex', 'P', { inheritConfig: true }),
     { cmd: 'codex', args: ['exec', 'P'] },
   );
+});
+
+test('commandForProvider accepts an explicit bounded Codex effort', () => {
+  assert.deepEqual(prReview.commandForProvider('codex', 'P', { effort: 'medium' }), {
+    cmd: 'codex',
+    args: [
+      'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+      '-c', 'model_reasoning_effort="medium"', 'P',
+    ],
+  });
+});
+
+test('compactReviewPrompt confines the provider to the supplied diff', () => {
+  const prompt = prReview.compactReviewPrompt('diff --git a/a.js b/a.js');
+  assert.match(prompt, /Do not run commands, use tools, or inspect files outside the supplied diff/);
+  assert.match(prompt, /Verification runs separately/);
 });
 
 test('commandForProvider runs an explicit binary, so a slow PATH shim can be skipped', () => {

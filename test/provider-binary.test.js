@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const {
   cueShimDir,
+  codexReviewEffort,
   isCueAgentShim,
   resolveProviderBin,
 } = require('../src/provider-binary');
@@ -70,4 +71,11 @@ test('resolveProviderBin skips codex-guard and picks the actual codex binary beh
 test('resolveProviderBin honors explicit per-provider overrides before PATH probing', () => {
   assert.equal(resolveProviderBin('claude', { GUARDEX_REVIEW_CLAUDE_BIN: '/opt/claude' }), '/opt/claude');
   assert.equal(resolveProviderBin('codex', { GUARDEX_REVIEW_CODEX_BIN: '/opt/codex' }), '/opt/codex');
+});
+
+test('codexReviewEffort bounds code-assist work independently of the user default', () => {
+  assert.equal(codexReviewEffort({}), 'high');
+  assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: 'medium' }), 'medium');
+  assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: ' XHIGH ' }), 'xhigh');
+  assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: 'unbounded' }), 'high');
 });

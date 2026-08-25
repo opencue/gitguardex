@@ -7,7 +7,7 @@ const {
 } = require('./context');
 const { run } = require('./core/runtime');
 const { repoApiPath } = require('./github-api');
-const { resolveProviderBin } = require('./provider-binary');
+const { codexReviewEffort, resolveProviderBin } = require('./provider-binary');
 const { partitionByAnchor } = require('./review-diff');
 
 const TOOL_PREFIX = '[gitguardex]';
@@ -22,13 +22,10 @@ const FINDING_MARKER_PREFIX = '<!-- gitguardex:f:';
 // Providers truncate or time out on very large prompts, and a truncated review
 // silently looks like a clean one. Cap the diff and say so in the output.
 const MAX_DIFF_CHARS = 220_000;
-// Hard ceiling on the provider run. Both providers are AGENTS, not one-shot
-// completions: given tools they will go read the repo, run the type checker and
-// keep going, so a review can outlive any operator's patience. Without this the
-// spawn inherits `timeout: undefined` — every other subprocess here is capped,
-// and the one that was not is the one that hung `gx branch finish` for over 25
-// minutes with no output. The gate documents provider timeouts as a BLOCK, so
-// exceeding this must fail closed, never pass as clean.
+// Hard ceiling on the provider run. The prompt bounds review to the supplied
+// diff, but a provider can still ignore the instruction or hang. The gate
+// documents provider timeouts as a BLOCK, so exceeding this must fail closed,
+// never pass as clean.
 const DEFAULT_REVIEW_TIMEOUT_MS = 900_000;
 // Longer findings get their tail folded into a <details> block so the inline
 // comment leads with the defect instead of the derivation.
@@ -73,12 +70,14 @@ function commandForProvider(provider, prompt, settings = {}) {
     return { cmd, args: model ? ['--safe-mode', '--model', model, '-p', prompt] : ['--safe-mode', '-p', prompt] };
   }
   const automationArgs = settings.inheritConfig === true ? [] : CODEX_AUTOMATION_ARGS;
-  return {
-    cmd,
-    args: model
-      ? ['exec', ...automationArgs, '-m', model, prompt]
-      : ['exec', ...automationArgs, prompt],
-  };
+  const requestedEffort = settings.effort || process.env.GUARDEX_REVIEW_CODEX_EFFORT;
+  const effortArgs = settings.inheritConfig === true && !requestedEffort
+    ? []
+    : ['-c', `model_reasoning_effort="${codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: requestedEffort })}"`];
+  const args = ['exec', ...automationArgs, ...effortArgs];
+  if (model) args.push('-m', model);
+  args.push(prompt);
+  return { cmd, args };
 }
 
 /**
@@ -111,6 +110,8 @@ function compactReviewPrompt(diff) {
       + ' changes elsewhere in the file or in another file.',
     '- Lead the message with one sentence naming the defect, then the supporting reasoning.',
     '- Use an empty findings array when nothing is worth commenting.',
+    '- Do not run commands, use tools, or inspect files outside the supplied diff. Review this diff in one bounded pass.',
+    '- Verification runs separately in the finish preflight and CI; do not repeat it here.',
     '',
     'PR diff:',
     diff,

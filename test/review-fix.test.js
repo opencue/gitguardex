@@ -34,6 +34,7 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
     cmd: 'codex',
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+      '-c', 'model_reasoning_effort="high"',
       '--sandbox', 'workspace-write', 'p',
     ],
   });
@@ -44,7 +45,8 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
     {
       cmd: 'codex',
       args: [
-        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '-m', 'fast-model',
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+        '-c', 'model_reasoning_effort="high"', '-m', 'fast-model',
         '--sandbox', 'workspace-write', 'p',
       ],
     },
@@ -60,6 +62,8 @@ test('fixPrompt carries the location, the severity, and the proposed replacement
   assert.match(prompt, /\[HIGH\] src\/a\.js:3 — unsafe/);
   assert.match(prompt, /const safe = true/);
   assert.match(prompt, /Do not run git commit/);
+  assert.match(prompt, /Never run the full test suite, a broad linter, or a build/);
+  assert.match(prompt, /finish flow runs the repository preflight and CI/);
 });
 
 test('runReviewFix refuses to write on a protected branch', () => {
@@ -159,8 +163,9 @@ test('runReviewFix streams provider output and applies the review model override
     });
 
     assert.equal(result.status, 'fixed');
-    assert.deepEqual(providerCall.args.slice(0, 7), [
-      'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '-m', 'fast-model', '--sandbox',
+    assert.deepEqual(providerCall.args.slice(0, 9), [
+      'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+      '-c', 'model_reasoning_effort="high"', '-m', 'fast-model', '--sandbox',
     ], 'the same review model knob controls the isolated auto-fix provider');
     assert.deepEqual(
       providerCall.options.stdio,
