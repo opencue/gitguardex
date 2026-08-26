@@ -28,6 +28,7 @@ function run(cmd, args, options = {}) {
     stdio: options.stdio || 'pipe',
     cwd: options.cwd,
     env: options.env ? { ...process.env, ...options.env } : process.env,
+    input: options.input,
     timeout: options.timeout,
     // Node caps a piped spawnSync at 1 MiB and then SIGTERMs the child with
     // ENOBUFS. That is survivable for a probe, but the long-running assets
