@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
     versioning-strategy: lockfile-only
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
   - package-ecosystem: github-actions
     directory: /
     schedule:

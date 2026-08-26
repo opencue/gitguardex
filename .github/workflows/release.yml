@@ -38,10 +38,10 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Verify
-        run: |
-          npm test
-          node --check bin/multiagent-safety.js
-          npm pack --dry-run
+        run: npm run verify
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
 
       - name: Resolve package metadata
         id: pkg

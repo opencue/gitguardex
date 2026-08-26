@@ -1146,6 +1146,13 @@ function executeDoctorSandboxLifecycle(options, blocked, metadata, integrations)
 
   execution.omxScaffoldSync = summarizeDoctorOmxScaffoldSync(blocked.repoRoot, dryRun);
 
+  // `gx doctor` is the explicit recovery path for an invalid lock registry.
+  // Publish the repaired sandbox copy before claiming changed files so the
+  // fail-closed lock tool never has to ignore corrupt sibling state.
+  const lockSyncState = syncDoctorLockRegistryBeforeMerge(blocked.repoRoot, metadata);
+  execution.lockSync = lockSyncState.result;
+  execution.sandboxLockContent = lockSyncState.sandboxLockContent;
+
   if (!dryRun) {
     execution.autoCommit = autoCommitDoctorSandboxChanges(metadata);
     if (execution.autoCommit.status === 'committed') {
@@ -1159,10 +1166,6 @@ function executeDoctorSandboxLifecycle(options, blocked, metadata, integrations)
     execution.autoCommit = createDoctorSkippedOperation('dry-run skips doctor sandbox auto-commit');
     execution.finish = createDoctorSkippedOperation('dry-run skips doctor sandbox finish flow');
   }
-
-  const lockSyncState = syncDoctorLockRegistryBeforeMerge(blocked.repoRoot, metadata);
-  execution.lockSync = lockSyncState.result;
-  execution.sandboxLockContent = lockSyncState.sandboxLockContent;
 
   execution.protectedBaseRepairSync = mergeDoctorSandboxRepairsBackToProtectedBase(
     options,

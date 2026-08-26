@@ -10,6 +10,9 @@ const cliVersion = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8'),
 ).version;
 const CONTROL_OPTION_KEYS = new Set(['env', 'guardexHomeDir', 'stripAgentSessionEnv']);
+const TEST_GIT_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-test-git-config-'));
+const TEST_GIT_CONFIG_GLOBAL = path.join(TEST_GIT_CONFIG_DIR, 'global.gitconfig');
+fs.writeFileSync(TEST_GIT_CONFIG_GLOBAL, '', 'utf8');
 
 function createGuardexHomeDir(prefix = 'guardex-home-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -23,6 +26,8 @@ function withGuardexHome(extraEnv = {}, options = {}) {
     : { ...process.env };
   return {
     ...baseEnv,
+    GIT_CONFIG_GLOBAL: TEST_GIT_CONFIG_GLOBAL,
+    GIT_CONFIG_NOSYSTEM: '1',
     GUARDEX_HOME_DIR:
       extraEnv.GUARDEX_HOME_DIR || options.guardexHomeDir || createGuardexHomeDir(),
     ...extraEnv,
@@ -88,6 +93,16 @@ function stripAgentSessionEnv(env = process.env) {
   delete sanitizedEnv.CODEX_CI;
   delete sanitizedEnv.CLAUDECODE;
   delete sanitizedEnv.CLAUDE_CODE_SESSION_ID;
+  delete sanitizedEnv.ALLOW_BASH_ON_NON_AGENT_BRANCH;
+  delete sanitizedEnv.ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH;
+  delete sanitizedEnv.ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE;
+  delete sanitizedEnv.ALLOW_COMMIT_ON_PROTECTED_BRANCH;
+  delete sanitizedEnv.ALLOW_PUSH_ON_PROTECTED_BRANCH;
+  delete sanitizedEnv.GUARDEX_CLI_ENTRY;
+  delete sanitizedEnv.GUARDEX_NODE_BIN;
+  delete sanitizedEnv.GIT_CONFIG_GLOBAL;
+  delete sanitizedEnv.GIT_CONFIG_SYSTEM;
+  delete sanitizedEnv.GIT_CONFIG_NOSYSTEM;
   return sanitizedEnv;
 }
 
@@ -123,6 +138,8 @@ function runCmd(cmd, args, cwd, options = {}) {
     encoding: 'utf8',
     env: {
       ...baseEnv,
+      GIT_CONFIG_GLOBAL: TEST_GIT_CONFIG_GLOBAL,
+      GIT_CONFIG_NOSYSTEM: '1',
       GUARDEX_CLI_ENTRY: cliPath,
       GUARDEX_NODE_BIN: process.execPath,
       ...pushBypassEnv,

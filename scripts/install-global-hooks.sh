@@ -4,8 +4,9 @@
 #
 # What this does:
 #   1. Ensures ~/.config/git/hooks/ exists.
-#   2. Symlinks the four guardex hooks (pre-commit, pre-push, post-checkout,
-#      post-merge) from this repo's .githooks/ into the global hooks dir.
+#   2. Atomically installs standalone copies of the four guardex hooks
+#      (pre-commit, pre-push, post-checkout, post-merge) into the global hooks
+#      dir. The installed hooks keep working if this source checkout moves.
 #   3. Points `git config --global core.hooksPath` at it.
 #
 # Safety:
@@ -32,14 +33,16 @@ fi
 
 mkdir -p "$HOOKS_DST"
 
-linked=0
+installed=0
 for h in pre-commit pre-push post-checkout post-merge; do
   if [[ -f "$HOOKS_SRC/$h" ]]; then
-    ln -sfn "$HOOKS_SRC/$h" "$HOOKS_DST/$h"
-    linked=$((linked + 1))
+    temporary="$HOOKS_DST/.${h}.tmp.$$"
+    install -m 0755 "$HOOKS_SRC/$h" "$temporary"
+    mv -f "$temporary" "$HOOKS_DST/$h"
+    installed=$((installed + 1))
   fi
 done
-echo "[guardex] symlinked $linked hooks → $HOOKS_DST"
+echo "[guardex] installed $installed standalone hooks → $HOOKS_DST"
 
 current="$(git config --global --get core.hooksPath 2>/dev/null || true)"
 if [[ -n "$current" && "$current" != "$HOOKS_DST" ]]; then
