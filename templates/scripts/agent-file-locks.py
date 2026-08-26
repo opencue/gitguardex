@@ -285,13 +285,14 @@ def list_worktree_roots(repo_root: Path) -> list[Path]:
     report their gitdir (<parent>/.git/worktrees/<wt>/modules/<sub>) as the
     worktree path, not the actual working tree — repo_root (resolved via
     --show-toplevel) is where claims are written, so it must be in the list
-    or claim/validate/status never see this checkout's own lock file. Falls
-    back to [repo_root] when git cannot enumerate."""
+    or claim/validate/status never see this checkout's own lock file. Lock
+    enforcement fails closed when Git cannot enumerate every sibling."""
     try:
         out = run_git(['worktree', 'list', '--porcelain'], cwd=repo_root)
-    except LockError:
-        print('[agent-file-locks] Warning: `git worktree list` failed; enforcing locks for THIS worktree only.', file=sys.stderr)
-        return [repo_root]
+    except LockError as exc:
+        raise LockError(
+            'cannot safely enumerate sibling worktrees; lock operation blocked'
+        ) from exc
     roots: list[Path] = []
     for line in out.splitlines():
         if line.startswith('worktree '):
@@ -310,9 +311,11 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
     for root in list_worktree_roots(repo_root):
         try:
             state = load_state(root)
-        except LockError:
-            print(f'[agent-file-locks] Warning: could not read the lock file in {root}; its claims are not enforced this run.', file=sys.stderr)
-            continue
+        except LockError as exc:
+            raise LockError(
+                f'cannot safely inspect sibling lock registry in {root}; '
+                'lock operation blocked'
+            ) from exc
         for file_path, entry in state['locks'].items():
             merged.setdefault(file_path, []).append(entry)
     return merged
@@ -333,29 +336,27 @@ def cross_worktree_lock(repo_root: Path):
     common git dir), so concurrent claim/release/validate runs — in the same or
     different worktrees — are serialized. Without it, two claims race on the
     read-modify-write of separate lock files and can both win the same path or
-    drop each other's writes. Best-effort: a no-op where fcntl is unavailable or
-    the lock file can't be created, so locking never hard-fails a command."""
+    drop each other's writes. Mutual exclusion is a safety boundary: unavailable
+    OS locking or an inaccessible common lock file blocks the command."""
     if fcntl is None:
-        yield
-        return
+        raise LockError('OS file locking is unavailable; lock operation blocked')
     try:
         lock_path = common_git_dir(repo_root) / 'agent-file-locks.lock'
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         handle = open(lock_path, 'w')
-    except (OSError, LockError):
-        yield
-        return
-    locked = False
+    except (OSError, LockError) as exc:
+        raise LockError('cannot open the shared worktree lock; operation blocked') from exc
+    acquired = False
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            locked = True
-        except OSError:
-            pass  # e.g. NFS / fd limits: run unserialized rather than crash the command
+            acquired = True
+        except OSError as exc:
+            raise LockError('cannot acquire the shared worktree lock; operation blocked') from exc
         yield
     finally:
         try:
-            if locked:
+            if acquired:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
@@ -490,8 +491,11 @@ def cmd_reap(args: argparse.Namespace, repo_root: Path) -> int:
     for root in roots:
         try:
             state = load_state(root)
-        except LockError:
-            continue
+        except LockError as exc:
+            raise LockError(
+                f'cannot safely inspect sibling lock registry in {root}; '
+                'reap operation blocked'
+            ) from exc
         locks = state['locks']
         if not locks:
             continue
@@ -529,8 +533,11 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
     for root in roots:
         try:
             locks = load_state(root)['locks']
-        except LockError:
-            continue
+        except LockError as exc:
+            raise LockError(
+                f'cannot safely inspect sibling lock registry in {root}; '
+                'status is unavailable'
+            ) from exc
         for file_path, entry in locks.items():
             branch = str(entry.get('branch', ''))
             if args.branch and branch != args.branch:

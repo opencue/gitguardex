@@ -60,9 +60,10 @@ test('the provider spawn is bounded — an agent review cannot hang the gate for
     assert.equal(provider.options.timeout, 900_000);
     assert.deepEqual(
       provider.options.stdio,
-      ['ignore', 'pipe', 'inherit'],
-      'provider progress streams live on stderr while stdout stays parseable',
+      ['pipe', 'pipe', 'inherit'],
+      'prompt uses stdin, progress streams live on stderr, and stdout stays parseable',
     );
+    assert.match(provider.options.input, /PR diff:/);
   });
 });
 

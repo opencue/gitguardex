@@ -213,6 +213,35 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     const v = locksAt(repoDir, ['validate', '--branch', 'agent/one/lane', '--staged']);
     assert.equal(v.status, 0, `committing one's own claim must pass: ${v.stderr}`);
   });
+
+  test('a corrupt sibling lock registry fails closed instead of ignoring claims', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'shared.txt');
+    const wt2 = path.join(repoDir, '..', 'wt-corrupt-locks');
+    assert.equal(
+      runHumanCmd('git', ['worktree', 'add', '-q', '-b', 'agent/corrupt/lane', wt2], repoDir).status,
+      0,
+    );
+
+    const siblingRegistry = path.join(wt2, '.omx', 'state', 'agent-file-locks.json');
+    fs.mkdirSync(path.dirname(siblingRegistry), { recursive: true });
+    fs.writeFileSync(siblingRegistry, '{not valid json\n', 'utf8');
+
+    const result = locksAt(repoDir, [
+      'claim',
+      '--branch',
+      'agent/one/lane',
+      'shared.txt',
+    ]);
+
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /cannot safely inspect sibling lock registry/i);
+    assert.equal(
+      fs.existsSync(path.join(repoDir, '.omx', 'state', 'agent-file-locks.json')),
+      false,
+      'a degraded claim must not write a local ownership record',
+    );
+  });
 });
 
 function claimAsync(cwd, branch, file, agent) {

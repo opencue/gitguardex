@@ -74,8 +74,8 @@ function commandForProvider(provider, prompt, settings = {}) {
   if (provider === 'claude') {
     const args = ['--safe-mode', '--tools', ''];
     if (model) args.push('--model', model);
-    args.push('-p', prompt);
-    return { cmd, args };
+    args.push('-p');
+    return { cmd, args, input: prompt };
   }
   const automationArgs = CODEX_AUTOMATION_ARGS;
   const requestedEffort = settings.effort || process.env.GUARDEX_REVIEW_CODEX_EFFORT;
@@ -84,8 +84,8 @@ function commandForProvider(provider, prompt, settings = {}) {
   ];
   const args = ['exec', ...automationArgs, ...CODEX_NO_TOOL_ARGS, ...effortArgs];
   if (model) args.push('-m', model);
-  args.push(prompt);
-  return { cmd, args };
+  args.push('-');
+  return { cmd, args, input: prompt };
 }
 
 /** Resolve explicit relative provider paths before switching to the isolated cwd. */
@@ -639,11 +639,12 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, se
       const result = runner(providerCommand, command.args, {
         cwd: sandboxRoot,
         timeout: limitMs,
+        input: command.input,
         // Provider CLIs reserve stdout for their final machine-readable answer
         // and write live agent progress to stderr. Keep stdout piped for JSON
         // parsing, but let stderr flow straight through gx so a 10-minute review
         // no longer looks like a hung background terminal.
-        stdio: ['ignore', 'pipe', 'inherit'],
+        stdio: ['pipe', 'pipe', 'inherit'],
       });
       // spawnSync reports a timeout as error.code ETIMEDOUT with a null status, so
       // name it: "review failed" with empty stderr sends the operator hunting for a

@@ -20,22 +20,25 @@ defineSpawnSuite('pr-review suite', () => {
 
 test('commandForProvider defaults to a tool-free provider invocation', () => {
   assert.deepEqual(prReview.commandForProvider('claude', 'P'), {
-    cmd: 'claude', args: ['--safe-mode', '--tools', '', '-p', 'P'],
+    cmd: 'claude', args: ['--safe-mode', '--tools', '', '-p'], input: 'P',
   });
   assert.deepEqual(prReview.commandForProvider('codex', 'P', { effort: 'high' }), {
     cmd: 'codex',
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
       ...CODEX_REVIEW_GUARD_ARGS,
-      '-c', 'model_reasoning_effort="high"', 'P',
+      '-c', 'model_reasoning_effort="high"', '-',
     ],
+    input: 'P',
   });
 });
 
 test('commandForProvider passes the model with each provider own flag', () => {
   assert.deepEqual(
     prReview.commandForProvider('claude', 'P', { model: 'sonnet' }),
-    { cmd: 'claude', args: ['--safe-mode', '--tools', '', '--model', 'sonnet', '-p', 'P'] },
+    {
+      cmd: 'claude', args: ['--safe-mode', '--tools', '', '--model', 'sonnet', '-p'], input: 'P',
+    },
   );
   assert.deepEqual(
     prReview.commandForProvider('codex', 'P', { model: 'gpt-5', effort: 'high' }),
@@ -44,8 +47,9 @@ test('commandForProvider passes the model with each provider own flag', () => {
       args: [
         'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
         ...CODEX_REVIEW_GUARD_ARGS,
-        '-c', 'model_reasoning_effort="high"', '-m', 'gpt-5', 'P',
+        '-c', 'model_reasoning_effort="high"', '-m', 'gpt-5', '-',
       ],
+      input: 'P',
     },
   );
 });
@@ -57,8 +61,9 @@ test('commandForProvider cannot re-enable user config across the untrusted revie
       cmd: 'codex',
       args: [
         'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', ...CODEX_REVIEW_GUARD_ARGS,
-        '-c', `model_reasoning_effort="${codexReviewEffort()}"`, 'P',
+        '-c', `model_reasoning_effort="${codexReviewEffort()}"`, '-',
       ],
+      input: 'P',
     },
   );
 });
@@ -69,8 +74,9 @@ test('commandForProvider accepts an explicit bounded Codex effort', () => {
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
       ...CODEX_REVIEW_GUARD_ARGS,
-      '-c', 'model_reasoning_effort="medium"', 'P',
+      '-c', 'model_reasoning_effort="medium"', '-',
     ],
+    input: 'P',
   });
 });
 
@@ -83,7 +89,17 @@ test('compactReviewPrompt confines the provider to the supplied diff', () => {
 test('commandForProvider runs an explicit binary, so a slow PATH shim can be skipped', () => {
   const command = prReview.commandForProvider('claude', 'P', { bin: '/usr/local/bin/claude' });
   assert.equal(command.cmd, '/usr/local/bin/claude');
-  assert.deepEqual(command.args, ['--safe-mode', '--tools', '', '-p', 'P']);
+  assert.deepEqual(command.args, ['--safe-mode', '--tools', '', '-p']);
+  assert.equal(command.input, 'P');
+});
+
+test('provider prompt travels over stdin instead of the bounded process argument vector', () => {
+  const prompt = 'x'.repeat(220_000);
+  for (const provider of ['claude', 'codex']) {
+    const command = prReview.commandForProvider(provider, prompt);
+    assert.equal(command.args.includes(prompt), false);
+    assert.equal(command.input, prompt);
+  }
 });
 
 test('resolveProviderCommand preserves isolated cwd while supporting repo-relative overrides', () => {
@@ -155,6 +171,7 @@ test('runProviderReview retries once when the provider returns prose instead of 
   const runner = (_cmd, _args, options) => {
     attempts += 1;
     workingDirs.push(options.cwd);
+    assert.match(options.input, /diff --git a\/a\.js b\/a\.js/);
     return attempts === 1
       ? { status: 0, stdout: 'I reviewed the diff and found no issues.', stderr: '' }
       : { status: 0, stdout: '{"findings":[]}', stderr: '' };

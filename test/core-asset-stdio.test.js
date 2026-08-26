@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const test = require('node:test');
 
-const { assetStdio } = require('../src/core/runtime.js');
+const { assetStdio, run } = require('../src/core/runtime.js');
 
 const CAPTURE_ENV = 'GUARDEX_CAPTURE_ASSET_OUTPUT';
 
@@ -47,4 +47,14 @@ test('an explicit stdio from the caller wins over the routing', () => {
   withCaptureFlag('1', () => {
     assert.strictEqual(assetStdio('branchFinish', 'inherit'), 'inherit');
   });
+});
+
+test('runtime forwards stdin input to bounded provider processes', () => {
+  const result = run(
+    process.execPath,
+    ['-e', "process.stdin.setEncoding('utf8'); let data = ''; process.stdin.on('data', chunk => data += chunk); process.stdin.on('end', () => process.stdout.write(data));"],
+    { input: 'large review prompt' },
+  );
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.strictEqual(result.stdout, 'large review prompt');
 });

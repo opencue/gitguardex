@@ -71,3 +71,24 @@ test('a FAILING step still surfaces its output (tail) and fails the preflight', 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('preflight strips Guardex runtime and bypass variables from verification commands', () => {
+  const keys = [
+    'ALLOW_BASH_ON_NON_AGENT_BRANCH',
+    'ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH',
+    'ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE',
+    'ALLOW_COMMIT_ON_PROTECTED_BRANCH',
+    'ALLOW_PUSH_ON_PROTECTED_BRANCH',
+    'GUARDEX_CLI_ENTRY',
+    'GUARDEX_NODE_BIN',
+  ];
+  const assertion = `node -e 'const keys=${JSON.stringify(keys)}; const leaked=keys.filter(key => process.env[key]); if (leaked.length) { console.error(leaked.join(",")); process.exit(1); }'`;
+  const dir = makeNodeRepo(assertion);
+  try {
+    const leakedEnv = Object.fromEntries(keys.map((key) => [key, '1']));
+    const { status, out } = runPreflight(dir, leakedEnv);
+    assert.equal(status, 0, out);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
