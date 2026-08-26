@@ -12,7 +12,7 @@
     "start": "node server.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm run lint && npm run build"
+    "verify": "npm run build && npm run typecheck && npm run lint"
   },
   "dependencies": {
     "express": "4.22.2",
