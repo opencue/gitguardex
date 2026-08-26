@@ -14,6 +14,7 @@ const {
   runHumanCmd,
   createFakeBin,
   defineSpawnSuite,
+  stripAgentSessionEnv,
 } = require('./helpers/install-test-helpers');
 
 const HOOK = path.resolve(__dirname, '..', 'scripts', 'agent-claude-stop-finish.sh');
@@ -49,7 +50,7 @@ function invokeHook(worktree, extraEnv = {}, payload = {}) {
       ...payload,
     }),
     encoding: 'utf8',
-    env: { ...process.env, ...extraEnv },
+    env: { ...stripAgentSessionEnv(process.env), ...extraEnv },
   });
 }
 

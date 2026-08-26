@@ -31,13 +31,25 @@ fail=0
 # failure (where it is actually useful). Stream full output live with
 # GUARDEX_PREFLIGHT_VERBOSE=1.
 GUARDEX_PREFLIGHT_FAIL_TAIL="${GUARDEX_PREFLIGHT_FAIL_TAIL:-40}"
+run_verification_command() {
+  env \
+    -u ALLOW_BASH_ON_NON_AGENT_BRANCH \
+    -u ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH \
+    -u ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE \
+    -u ALLOW_COMMIT_ON_PROTECTED_BRANCH \
+    -u ALLOW_PUSH_ON_PROTECTED_BRANCH \
+    -u GUARDEX_CLI_ENTRY \
+    -u GUARDEX_NODE_BIN \
+    "$@"
+}
+
 run_step() {
   local label="$1"
   shift
   echo "[agent-preflight] -> $label"
   attempted=$((attempted + 1))
   if [[ "${GUARDEX_PREFLIGHT_VERBOSE:-0}" == "1" ]]; then
-    if "$@"; then
+    if run_verification_command "$@"; then
       ran=$((ran + 1))
       echo "[agent-preflight]    ok"
     else
@@ -48,7 +60,7 @@ run_step() {
   fi
   local out rc
   # `if` keeps `set -e` from aborting on a failing step before we capture rc.
-  if out="$("$@" 2>&1)"; then
+  if out="$(run_verification_command "$@" 2>&1)"; then
     rc=0
   else
     rc=$?
