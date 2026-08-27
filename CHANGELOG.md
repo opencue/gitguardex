@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.1.1](https://github.com/opencue/gitguardex/compare/v8.1.0...v8.1.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **release:** use an OIDC-capable npm runtime ([#728](https://github.com/opencue/gitguardex/issues/728)) ([df3aaee](https://github.com/opencue/gitguardex/commit/df3aaee4318db8740a941f9add94f385ef939c80))
+
 ## [8.1.0](https://github.com/opencue/gitguardex/compare/v8.0.0...v8.1.0) (2026-08-27)
 
 
