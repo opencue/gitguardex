@@ -1106,7 +1106,6 @@ function pruneStaleAgentWorktrees(repoRoot, options = {}) {
     '--delete-branches',
     '--delete-remote-branches',
     '--include-pr-merged',
-    '--force-dirty',
   ];
   if (baseBranch && baseBranch !== 'HEAD' && !baseBranch.startsWith('agent/')) {
     args.push('--base', baseBranch);

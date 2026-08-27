@@ -1215,11 +1215,6 @@ test('gx doctor auto-prunes detached-HEAD agent worktrees under .omc/agent-workt
   const delResult = runHumanCmd('git', ['branch', '-D', 'agent/claude/stranded-demo'], repoDir);
   assert.equal(delResult.status, 0, delResult.stderr || delResult.stdout);
 
-  const pastTime = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const stampPath = path.join(strandedWorktree, '.stamp');
-  fs.writeFileSync(stampPath, 'stale\n', 'utf8');
-  fs.utimesSync(stampPath, pastTime, pastTime);
-
   assert.ok(fs.existsSync(strandedWorktree), 'stranded worktree should exist before doctor');
 
   const result = runNode(['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'], repoDir);
@@ -1232,6 +1227,35 @@ test('gx doctor auto-prunes detached-HEAD agent worktrees under .omc/agent-workt
     false,
     'doctor should have pruned the detached-HEAD agent worktree',
   );
+});
+
+
+test('gx doctor preserves dirty detached-HEAD agent worktrees', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  const dirtyWorktree = path.join(worktreeRoot, 'dirty-detached-agent-worktree');
+
+  let result = runHumanCmd('git', ['branch', 'agent/claude/dirty-detached-demo'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['worktree', 'add', dirtyWorktree, 'agent/claude/dirty-detached-demo'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['-C', dirtyWorktree, 'checkout', '--detach', 'HEAD'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['branch', '-D', 'agent/claude/dirty-detached-demo'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const uncommittedPath = path.join(dirtyWorktree, 'uncommitted.txt');
+  fs.writeFileSync(uncommittedPath, 'must survive doctor\n', 'utf8');
+
+  result = runNode(['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert.match(combined, /Skipping dirty worktree \(detached-worktree\)/);
+  assert.equal(fs.existsSync(dirtyWorktree), true, 'doctor must preserve a dirty detached worktree');
+  assert.equal(fs.readFileSync(uncommittedPath, 'utf8'), 'must survive doctor\n');
 });
 
 
