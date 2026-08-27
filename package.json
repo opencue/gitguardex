@@ -78,12 +78,12 @@
   "author": "recodeecom",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/recodeee/gitguardex.git"
+    "url": "git+https://github.com/opencue/gitguardex.git"
   },
   "bugs": {
-    "url": "https://github.com/recodeee/gitguardex/issues"
+    "url": "https://github.com/opencue/gitguardex/issues"
   },
-  "homepage": "https://github.com/recodeee/gitguardex-frontend",
+  "homepage": "https://gitguardex.com/",
   "funding": "https://github.com/sponsors/recodeecom",
   "publishConfig": {
     "access": "public"

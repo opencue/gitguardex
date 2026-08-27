@@ -16,9 +16,9 @@ function escapeRegexLiteral(value) {
 test('package manifest includes repository and support metadata', () => {
   const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
-  assert.equal(pkg.repository?.url, 'git+https://github.com/recodeee/gitguardex.git');
-  assert.equal(pkg.bugs?.url, 'https://github.com/recodeee/gitguardex/issues');
-  assert.equal(pkg.homepage, 'https://github.com/recodeee/gitguardex-frontend');
+  assert.equal(pkg.repository?.url, 'git+https://github.com/opencue/gitguardex.git');
+  assert.equal(pkg.bugs?.url, 'https://github.com/opencue/gitguardex/issues');
+  assert.equal(pkg.homepage, 'https://gitguardex.com/');
   assert.equal(pkg.publishConfig?.access, 'public');
 });
 
