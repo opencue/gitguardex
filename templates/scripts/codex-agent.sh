@@ -91,36 +91,6 @@ build_codex_launch_args() {
   CODEX_LAUNCH_ARGS+=("$@")
 }
 
-string_contains_any() {
-  local haystack="$1"
-  shift
-  local needle
-  for needle in "$@"; do
-    if [[ "$haystack" == *"$needle"* ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-string_has_lightweight_prefix() {
-  local text="$1"
-  local prefix
-  for prefix in "quick:" "simple:" "tiny:" "minor:" "small:" "just:" "only:"; do
-    if [[ "$text" == "$prefix"* ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-task_requires_full_change_workspace() {
-  local text="$1"
-  string_contains_any "$text" \
-    "cleanup evidence" "merged cleanup" "merged state" "pr url" \
-    "cleanup pipeline" "finish pipeline" "sandbox cleanup" "tasks.md"
-}
-
 derive_task_mode_from_tier() {
   case "$1" in
     T0|T1) printf 'caveman' ;;
@@ -149,39 +119,15 @@ apply_openspec_tier() {
 }
 
 decide_task_routing() {
-  local task_lower
-  task_lower="$(printf '%s' "$TASK_NAME" | tr '[:upper:]' '[:lower:]')"
-
   if [[ -n "$OPENSPEC_TIER_RAW" ]]; then
     if ! OPENSPEC_TIER="$(normalize_tier "$OPENSPEC_TIER_RAW" "T1")"; then
       echo "[codex-agent] Unsupported OpenSpec tier: ${OPENSPEC_TIER_RAW}" >&2
       return 1
     fi
     TASK_ROUTING_REASON="explicit tier override"
-  elif string_has_lightweight_prefix "$task_lower"; then
-    if task_requires_full_change_workspace "$task_lower"; then
-      OPENSPEC_TIER="T2"
-      TASK_ROUTING_REASON="cleanup-evidence artifact wording overrides lightweight prefix"
-    else
-      OPENSPEC_TIER="T1"
-      TASK_ROUTING_REASON="explicit lightweight prefix"
-    fi
-  elif string_contains_any "$task_lower" \
-    "ralph" "autopilot" "ultrawork" "ultraqa" "ralplan" "deep interview" "ouroboros" \
-    "multi-agent" "multiagent" "parallel" "orchestr"
-  then
-    OPENSPEC_TIER="T3"
-    TASK_ROUTING_REASON="plan-heavy or orchestration-heavy task wording"
-  elif string_contains_any "$task_lower" \
-    "typo" "spelling" "comment-only" "comment only" "format-only" "format only" \
-    "whitespace" "one-liner" "one liner" "version bump" "bump version" \
-    "single-file" "single file"
-  then
-    OPENSPEC_TIER="T1"
-    TASK_ROUTING_REASON="small bounded maintenance wording"
   else
     OPENSPEC_TIER="T1"
-    TASK_ROUTING_REASON="default direct-execution route"
+    TASK_ROUTING_REASON="default direct-execution route; OpenSpec requires --tier T2 or T3"
   fi
 
   if ! TASK_MODE="$(derive_task_mode_from_tier "$OPENSPEC_TIER")"; then

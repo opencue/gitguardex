@@ -183,7 +183,10 @@ test('codex-agent routes ordinary tasks to direct T1 with no OpenSpec scaffold',
     GUARDEX_TEST_TASK_REASON: reasonMarker,
   });
   assert.equal(launch.status, 0, launch.stderr || launch.stdout);
-  assert.match(launch.stdout, /\[codex-agent\] Task routing: caveman \/ T1 \(no OpenSpec scaffold\) \(default direct-execution route\)/);
+  assert.match(
+    launch.stdout,
+    /\[codex-agent\] Task routing: caveman \/ T1 \(no OpenSpec scaffold\) \(default direct-execution route; OpenSpec requires --tier T2 or T3\)/,
+  );
   assert.doesNotMatch(launch.stdout, /\[codex-agent\] OpenSpec plan workspace:/);
 
   const launchedCwd = fs.readFileSync(cwdMarker, 'utf8').trim();
@@ -193,12 +196,12 @@ test('codex-agent routes ordinary tasks to direct T1 with no OpenSpec scaffold',
   assert.match(launchedArgs, /--model gpt-5\.4-mini/);
   assert.equal(fs.readFileSync(modeMarker, 'utf8'), 'caveman');
   assert.equal(fs.readFileSync(tierMarker, 'utf8'), 'T1');
-  assert.match(fs.readFileSync(reasonMarker, 'utf8'), /default direct-execution route/);
+  assert.match(fs.readFileSync(reasonMarker, 'utf8'), /OpenSpec requires --tier T2 or T3/);
   assert.equal(fs.existsSync(path.join(launchedCwd, 'openspec')), false, 'T1 should not create OpenSpec artifacts');
 });
 
 
-test('codex-agent keeps cleanup-evidence tasks on T2 even with a lightweight prefix', () => {
+test('codex-agent keeps orchestration wording on direct T1 unless OpenSpec is explicit', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
 
@@ -231,7 +234,7 @@ test('codex-agent keeps cleanup-evidence tasks on T2 even with a lightweight pre
   const tierMarker = path.join(repoDir, '.codex-agent-tier-cleanup-evidence');
   const reasonMarker = path.join(repoDir, '.codex-agent-reason-cleanup-evidence');
   const launch = runCodexAgent(
-    ['simple: record merged cleanup evidence for task mode decider', 'planner', 'dev', '--model', 'gpt-5.4-mini'],
+    ['coordinate parallel multi-agent sandbox cleanup evidence', 'planner', 'dev', '--model', 'gpt-5.4-mini'],
     repoDir,
     {
       PATH: `${fakeBin}:${process.env.PATH}`,
@@ -245,34 +248,19 @@ test('codex-agent keeps cleanup-evidence tasks on T2 even with a lightweight pre
   assert.equal(launch.status, 0, launch.stderr || launch.stdout);
   assert.match(
     launch.stdout,
-    /\[codex-agent\] Task routing: omx \/ T2 \(change workspace only\) \(cleanup-evidence artifact wording overrides lightweight prefix\)/,
+    /\[codex-agent\] Task routing: caveman \/ T1 \(no OpenSpec scaffold\) \(default direct-execution route; OpenSpec requires --tier T2 or T3\)/,
   );
   assert.doesNotMatch(launch.stdout, /\[codex-agent\] OpenSpec plan workspace:/);
 
   const launchedCwd = fs.readFileSync(cwdMarker, 'utf8').trim();
-  const launchedBranch = extractCreatedBranch(launch.stdout);
-  const changeSlug = sanitizeSlug(launchedBranch, 'simple-record-merged-cleanup-evidence-for-task-mode-decider');
-  const changeDir = path.join(launchedCwd, 'openspec', 'changes', changeSlug);
   const launchedArgs = fs.readFileSync(argsMarker, 'utf8').trim();
 
   assert.doesNotMatch(launchedCwd, /masterplan/);
   assert.match(launchedArgs, /--model gpt-5\.4-mini/);
-  assert.equal(fs.readFileSync(modeMarker, 'utf8'), 'omx');
-  assert.equal(fs.readFileSync(tierMarker, 'utf8'), 'T2');
-  assert.match(fs.readFileSync(reasonMarker, 'utf8'), /cleanup-evidence artifact wording overrides lightweight prefix/);
-  assert.equal(fs.existsSync(path.join(changeDir, '.openspec.yaml')), true, '.openspec.yaml missing');
-  assert.equal(fs.existsSync(path.join(changeDir, 'proposal.md')), true, 'proposal.md missing');
-  assert.equal(fs.existsSync(path.join(changeDir, 'tasks.md')), true, 'tasks.md missing');
-  assert.equal(
-    fs.existsSync(path.join(changeDir, 'specs', 'simple-record-merged-cleanup-evidence-for-task-mode-decider', 'spec.md')),
-    true,
-    'spec.md missing',
-  );
-  assert.equal(
-    fs.existsSync(path.join(launchedCwd, 'openspec', 'plan', changeSlug)),
-    false,
-    'cleanup-evidence T2 routing should not create a plan workspace',
-  );
+  assert.equal(fs.readFileSync(modeMarker, 'utf8'), 'caveman');
+  assert.equal(fs.readFileSync(tierMarker, 'utf8'), 'T1');
+  assert.match(fs.readFileSync(reasonMarker, 'utf8'), /OpenSpec requires --tier T2 or T3/);
+  assert.equal(fs.existsSync(path.join(launchedCwd, 'openspec')), false, 'implicit T1 should not create OpenSpec artifacts');
 });
 
 

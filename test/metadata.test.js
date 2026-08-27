@@ -120,6 +120,11 @@ test('README advertises the repo skills installer path and root skills stay in s
   assert.match(gitguardexSkill, /poll the background process every 15-30 seconds/);
   assert.match(gitguardexSkill, /\.omx\/state\/finish-runs\/\*\.jsonl/);
   assert.match(gitguardexSkill, /Never leave the user with only.*Working.*Waiting/s);
+  assert.match(gitguardexSkill, /OpenSpec.*explicit.*T2\/T3/is);
+  assert.match(gitguardexSkill, /gx mcp list-agents/);
+  assert.match(gitguardexSkill, /gx mcp who-owns/);
+  assert.match(gitguardexSkill, /One owner per file/);
+  assert.match(gitguardexSkill, /compact handoff/i);
 });
 
 test('package description stays aligned with about_description.txt', () => {
