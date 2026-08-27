@@ -14,7 +14,14 @@ const hookPath = path.join(repoRoot, '.claude', 'hooks', 'skill_guard.py');
  */
 function makeRepoOn(branchName) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-guard-'));
-  const run = (...args) => cp.spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  // Test repositories must not inherit the operator's global GitGuardex hook.
+  // Otherwise their protected-branch seed commit is blocked before the hook
+  // under test even runs, making the suite host-configuration dependent.
+  const run = (...args) => cp.spawnSync(
+    'git',
+    ['-c', 'core.hooksPath=/dev/null', ...args],
+    { cwd: dir, encoding: 'utf8' },
+  );
   assert.equal(run('init', '-q', '-b', branchName).status, 0);
   assert.equal(run('config', 'user.email', 'test@example.com').status, 0);
   assert.equal(run('config', 'user.name', 'Test').status, 0);
@@ -343,7 +350,14 @@ test('.codex/hooks symlinks resolve to .claude/hooks canonical files', () => {
  */
 function makeRepoWithNestedAgentWorktree() {
   const dir = makeRepoOn('main');
-  const run = (...args) => cp.spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  // Test repositories must not inherit the operator's global GitGuardex hook.
+  // Otherwise their protected-branch seed commit is blocked before the hook
+  // under test even runs, making the suite host-configuration dependent.
+  const run = (...args) => cp.spawnSync(
+    'git',
+    ['-c', 'core.hooksPath=/dev/null', ...args],
+    { cwd: dir, encoding: 'utf8' },
+  );
   const wt = path.join(dir, '.omc', 'agent-worktrees', 'lane');
   fs.mkdirSync(path.dirname(wt), { recursive: true });
   assert.equal(
@@ -389,7 +403,11 @@ test('skill_guard ALLOWS editing a nested INDEPENDENT repo on main from an agent
   // session checkout, on its own `main`, must NOT be blocked: the guard judges
   // by the session repo (on an agent branch), not the foreign nested repo.
   const dir = makeRepoOn('agent/sess/x');
-  const gitRun = (cwd, ...args) => cp.spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const gitRun = (cwd, ...args) => cp.spawnSync(
+    'git',
+    ['-c', 'core.hooksPath=/dev/null', ...args],
+    { cwd, encoding: 'utf8' },
+  );
   const nested = path.join(dir, 'vendor', 'sub');
   fs.mkdirSync(nested, { recursive: true });
   assert.equal(gitRun(nested, 'init', '-q', '-b', 'main').status, 0);

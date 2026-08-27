@@ -13,7 +13,7 @@ const path = require('node:path');
 const prModule = require('../src/pr');
 
 function runGit(cwd, ...args) {
-  return cp.spawnSync('git', args, {
+  return cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH: '1' },

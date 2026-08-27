@@ -38,7 +38,22 @@ gx locks claim --branch "<agent-branch>" path/to/file.ts
 - Return a compact handoff: conclusion, `file:line`, changed files, verification result, and blocker or next action. Do not relay full logs.
 - Finish each writing lane through its own PR once. Never run duplicate finish commands for the same branch.
 
-The radar covers repositories visible to the current machine. On another machine with GitGuardex installed, use the same protocol against that machine's visible worktrees; do not assume local radar state is a cross-machine lock service.
+## Optional cross-machine Git lock and radar state
+
+Local worktree locks remain the default. When agents on multiple machines use the same writable Git remote, opt into shared state per repository:
+
+```sh
+gx locks shared-enable --remote origin
+gx locks shared-status
+```
+
+After enablement, ordinary `claim`, `allow-delete`, `validate`, `release`, and `status` commands also use atomic remote refs under `refs/gitguardex/locks/*`. `gx mcp list-agents` combines local worktrees with remote `agent/*` branches and shared lock owners; `gx mcp who-owns` resolves the same shared owner data.
+
+- Shared mode is explicit and fail-closed: if the remote is unreachable, rejects custom refs, or returns invalid metadata, do not keep a local-only claim or approve a commit.
+- The remote must allow authenticated custom-ref creation, compare-and-swap updates, and deletion. GitGuardex stores validated JSON metadata in commits; it never executes remote metadata, and publishes only a hashed machine identifier.
+- Push the agent branch when full remote-lane visibility matters. A lock still makes an unpushed branch visible as a lock-owning remote lane.
+- Release locks before disabling shared state or abandoning a lane. Cross-machine locks are not automatically reaped because one host cannot safely prove that another host's process is dead.
+- `gx locks shared-disable` stops shared reads and writes for this repository; it does not delete remote refs owned by any machine.
 
 ## Finish checklist in Codex
 

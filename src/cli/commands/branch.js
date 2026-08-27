@@ -22,6 +22,7 @@ const { runReviewGate } = require('../../finish/review-gate');
 const { createFinishProgress } = require('../../finish/progress');
 const { autoCommitWorktreeForFinish } = require('../../finish');
 const { finish, merge } = require('./finish');
+const { locks } = require('../shared-locks');
 
 const REVIEW_PROVIDERS = ['codex', 'claude'];
 
@@ -354,14 +355,6 @@ function ship(rawArgs) {
     ensureFlag('--gate-review');
   }
   return finish(args);
-}
-
-function locks(rawArgs) {
-  const { target, passthrough } = extractTargetedArgs(rawArgs);
-  const result = runPackageAsset('lockTool', passthrough, { cwd: resolveRepoRoot(target) });
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  process.exitCode = result.status;
 }
 
 function worktree(rawArgs) {
