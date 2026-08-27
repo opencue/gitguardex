@@ -1,14 +1,44 @@
 ---
 name: gitguardex
-description: "Repo guardrail check and repair."
+description: "Use for GitGuardex branch/worktree safety, agent or subagent collision avoidance, file ownership, and gated PR finishing. Not for code-quality review."
 ---
 
-Use when repo safety may be broken.
+Use when a GitGuardex-managed repository needs safe edits or multi-agent coordination.
 
 `gx status` -> `gx doctor` -> `gx status --strict`
 
 Bootstrap: `gx setup`
 Ops: `gx branch start "<task>" "<agent>"`, `gx locks claim --branch "<agent-branch>" <file...>`, `gx branch finish --branch "<agent-branch>" --base <base> --via-pr --wait-for-merge --cleanup`, `gx finish --all`, `gx cleanup`
+
+## Keep the default workflow lean
+
+- Default to direct T1 work in code and tests. Do not create OpenSpec artifacts from task wording alone.
+- OpenSpec is explicit opt-in: use `--tier T2` for a change workspace or `--tier T3` for change plus plan only when the user requests OpenSpec or the caller explicitly selects T2/T3.
+- Treat the commit, targeted test output, and compact final handoff as the routine task record.
+
+## Agent and subagent collaboration
+
+Before parallel work, inspect the field with the MCP `list_agents` tool or the CLI fallback:
+
+```sh
+gx mcp list-agents --no-prs
+```
+
+For every file a writer may touch, check ownership, create an isolated lane, then claim it:
+
+```sh
+gx mcp who-owns path/to/file.ts
+gx branch start "<bounded task>" "<agent>"
+gx locks claim --branch "<agent-branch>" path/to/file.ts
+```
+
+- **One owner per file.** Split writer subagents by non-overlapping files or modules. Read-only scouts may share a surface; writers may not.
+- Give each subagent one bounded objective and a verification command. Do not ask one subagent to explore, redesign, implement, and review the same slice.
+- Re-check `list_agents` before expanding scope. If another lane owns or is already editing a file, coordinate a handoff or choose a different slice.
+- Return a compact handoff: conclusion, `file:line`, changed files, verification result, and blocker or next action. Do not relay full logs.
+- Finish each writing lane through its own PR once. Never run duplicate finish commands for the same branch.
+
+The radar covers repositories visible to the current machine. On another machine with GitGuardex installed, use the same protocol against that machine's visible worktrees; do not assume local radar state is a cross-machine lock service.
 
 ## Finish checklist in Codex
 
