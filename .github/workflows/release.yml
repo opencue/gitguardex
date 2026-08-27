@@ -81,16 +81,19 @@ jobs:
         run: echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already on npm; skipping publish."
 
       - name: Generate release checksum
+        if: ${{ always() && steps.pack.outputs.package_path != '' }}
         run: |
           sha256sum "${{ steps.pack.outputs.package_path }}" > "${{ steps.pack.outputs.package_path }}.sha256"
 
       - name: Sign release tarball with Sigstore
+        if: ${{ always() && steps.pack.outputs.package_path != '' }}
         run: |
           cosign sign-blob "${{ steps.pack.outputs.package_path }}" \
             --bundle "${{ steps.pack.outputs.package_path }}.sigstore.json" \
             --yes
 
       - name: Upload signed release assets
+        if: ${{ always() && steps.pack.outputs.package_path != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name || format('v{0}', steps.pkg.outputs.version) }}
