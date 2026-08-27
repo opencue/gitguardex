@@ -1,5 +1,18 @@
 # Changelog
 
+## [8.1.0](https://github.com/opencue/gitguardex/compare/v8.0.0...v8.1.0) (2026-08-27)
+
+
+### Features
+
+* **collaboration:** add shared Git lock state ([#724](https://github.com/opencue/gitguardex/issues/724)) ([27bac01](https://github.com/opencue/gitguardex/commit/27bac0156cdb914beb28cdbc59a6ad8fb7b427a4))
+
+
+### Bug Fixes
+
+* **release:** align npm metadata with canonical repo ([#726](https://github.com/opencue/gitguardex/issues/726)) ([4593b54](https://github.com/opencue/gitguardex/commit/4593b541e731500d7b06e23bafc7962eaf48403f))
+* **security:** raise the repository Scorecard baseline ([#725](https://github.com/opencue/gitguardex/issues/725)) ([e062dc5](https://github.com/opencue/gitguardex/commit/e062dc5669e96e61dafd8e653c7ebaaba7650add))
+
 ## [8.0.0](https://github.com/opencue/gitguardex/compare/v7.1.1...v8.0.0) (2026-08-27)
 
 
