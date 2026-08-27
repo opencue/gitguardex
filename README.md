@@ -88,6 +88,18 @@ npm test
 gx branch finish --via-pr --wait-for-merge --cleanup
 ```
 
+For a small change that you already verified locally, use the explicit fast
+profile:
+
+```bash
+gx branch finish --fast
+```
+
+`--fast` still opens a PR and uses squash merge, but skips the local preflight,
+AI review, and review autofix. Repository branch protection and required CI
+checks still control whether GitHub accepts the merge. Do not use fast mode for
+security-sensitive, migration, dependency, or broad refactor changes.
+
 <p align="center">
   <img alt="Guarded VS Code Source Control example" src="https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/workflow-source-control-grouped.png" width="760">
 </p>
@@ -132,6 +144,7 @@ the PR as a readable severity, location, and finding table.
 | `gx branch start "task" "agent"` | Create an isolated task lane. |
 | `gx locks claim --branch <branch> <files...>` | Claim files before editing. |
 | `gx branch finish --via-pr --wait-for-merge --cleanup` | Ship safely through a PR. |
+| `gx branch finish --fast` | Squash-merge a locally verified small change without local preflight or AI review. |
 | `gx agents status` | Show active agent lanes. |
 | `gx cleanup` | Prune merged or stale worktrees. |
 

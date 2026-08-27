@@ -44,6 +44,28 @@ test('explicit --no-gate-review wins over GUARDEX_AUTO_SHIP', () => {
   });
 });
 
+test('--fast selects PR squash flow without local preflight or AI review', () => {
+  withAutoShip('1', () => {
+    const options = parseFinishArgs(['--fast']);
+    assert.equal(options.fastMode, true);
+    assert.equal(options.mergeMode, 'pr', 'fast mode still ships through a PR');
+    assert.equal(options.skipPreflight, true, 'fast mode skips both local preflight layers');
+    assert.equal(options.gateReview, false, 'fast mode overrides auto-ship review defaults');
+    assert.equal(options.gateAutofix, false, 'fast mode cannot start review autofix');
+  });
+});
+
+test('--fast rejects flags that would make the selected finish profile ambiguous', () => {
+  for (const args of [
+    ['--fast', '--gate-review'],
+    ['--fast', '--gate-autofix'],
+    ['--fast', '--direct-only'],
+    ['--fast', '--mode', 'auto'],
+  ]) {
+    assert.throws(() => parseFinishArgs(args), /--fast cannot be combined with/);
+  }
+});
+
 test('without GUARDEX_AUTO_SHIP the finish defaults are unchanged', () => {
   withAutoShip(null, () => {
     const options = parseFinishArgs([]);

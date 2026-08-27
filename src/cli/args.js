@@ -1159,6 +1159,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
   // is flipping the gate-review default on. Explicit flags (e.g. --no-gate-review)
   // still override below.
   const autoShip = envFlagIsTruthy(process.env.GUARDEX_AUTO_SHIP);
+  const fastMode = rawArgs.includes('--fast');
   const options = {
     target: process.cwd(),
     base: '',
@@ -1173,13 +1174,14 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     advanceSubmodules: false,
     failFast: false,
     commitMessage: '',
-    mergeMode: defaults.mergeMode || 'pr',
-    skipPreflight: false,
+    mergeMode: fastMode ? 'pr' : (defaults.mergeMode || 'pr'),
+    fastMode,
+    skipPreflight: fastMode,
     // Precedence: explicit flag (set in the loop below) > defaults (caller) >
     // GUARDEX_AUTO_SHIP env > hardcoded off. Note `defaults.gateReview === false`
     // (not undefined) also wins over the env toggle, since `??` only falls
     // through on null/undefined.
-    gateReview: defaults.gateReview ?? autoShip,
+    gateReview: fastMode ? false : (defaults.gateReview ?? autoShip),
     reviewProvider: defaults.reviewProvider || 'codex',
     // Empty = the provider's own default model.
     reviewModel: defaults.reviewModel || '',
@@ -1253,6 +1255,9 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     }
     if (arg === '--dry-run') {
       options.dryRun = true;
+      continue;
+    }
+    if (arg === '--fast') {
       continue;
     }
     if (arg === '--wait-for-merge') {
@@ -1399,6 +1404,33 @@ function parseFinishArgs(rawArgs, defaults = {}) {
       continue;
     }
     throw new Error(`Unknown option: ${arg}`);
+  }
+
+  if (fastMode) {
+    const incompatibleFlag = rawArgs.find((arg) => [
+      '--gate-review',
+      '--gate-autofix',
+      '--gate-autofix-rounds',
+      '--preflight',
+      '--direct-only',
+    ].includes(arg));
+    const modeIndex = rawArgs.indexOf('--mode');
+    const modeValue = modeIndex >= 0 ? rawArgs[modeIndex + 1] : '';
+    const incompatibleMode = modeIndex >= 0 && modeValue !== 'pr'
+      ? `--mode ${modeValue || '<missing>'}`
+      : '';
+    const conflict = incompatibleFlag || incompatibleMode;
+    if (conflict) {
+      throw new Error(`--fast cannot be combined with ${conflict}`);
+    }
+
+    // Fast mode is an explicit per-run profile: PR/squash path, no local
+    // preflight, and no AI review/autofix. GitHub branch protection and its
+    // required checks remain authoritative at merge time.
+    options.mergeMode = 'pr';
+    options.skipPreflight = true;
+    options.gateReview = false;
+    options.gateAutofix = false;
   }
 
   if (options.branch && !options.branch.startsWith('agent/')) {

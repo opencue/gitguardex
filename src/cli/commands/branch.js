@@ -32,6 +32,7 @@ const REVIEW_PROVIDERS = ['codex', 'claude'];
 // honor them here.
 function splitGateReviewFlags(args) {
   const scriptArgs = [];
+  let fastMode = false;
   let gateReview = false;
   let reviewProvider;
   let gateAutofix = false;
@@ -44,7 +45,9 @@ function splitGateReviewFlags(args) {
   let commitMessage = '';
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--no-auto-commit') {
+    if (arg === '--fast') {
+      fastMode = true;
+    } else if (arg === '--no-auto-commit') {
       noAutoCommit = true;
     } else if (arg === '--commit-message') {
       commitMessage = String(args[index + 1] ?? '').trim();
@@ -107,6 +110,30 @@ function splitGateReviewFlags(args) {
     } else {
       scriptArgs.push(arg);
     }
+  }
+
+  if (fastMode) {
+    const incompatibleFlag = args.find((arg) => [
+      '--gate-review',
+      '--gate-autofix',
+      '--gate-autofix-rounds',
+      '--preflight',
+      '--direct-only',
+    ].includes(arg));
+    const modeIndex = args.indexOf('--mode');
+    const modeValue = modeIndex >= 0 ? args[modeIndex + 1] : '';
+    const incompatibleMode = modeIndex >= 0 && modeValue !== 'pr'
+      ? `--mode ${modeValue || '<missing>'}`
+      : '';
+    const conflict = incompatibleFlag || incompatibleMode;
+    if (conflict) {
+      throw new Error(`--fast cannot be combined with ${conflict}`);
+    }
+
+    gateReview = false;
+    gateAutofix = false;
+    if (!scriptArgs.includes('--via-pr')) scriptArgs.push('--via-pr');
+    if (!scriptArgs.includes('--no-preflight')) scriptArgs.push('--no-preflight');
   }
 
   if (reviewProvider !== undefined) {
@@ -319,7 +346,11 @@ function ship(rawArgs) {
   ensureFlag('--cleanup');
   // `gx ship` enforces the merge gate (clean review + green CI) by default;
   // an explicit --no-gate-review / --skip-review-gate opts back out.
-  if (!args.includes('--no-gate-review') && !args.includes('--skip-review-gate')) {
+  if (
+    !args.includes('--fast')
+    && !args.includes('--no-gate-review')
+    && !args.includes('--skip-review-gate')
+  ) {
     ensureFlag('--gate-review');
   }
   return finish(args);

@@ -17,6 +17,13 @@ This is the cheapest gate in the agent workflow:
 Pre-flight is enabled by default. Disable per-call with `--no-preflight`,
 or globally with `GUARDEX_FINISH_PREFLIGHT=0`.
 
+For a simple change that has already passed targeted local verification,
+`gx branch finish --fast` is the explicit speed-over-local-gates profile. It
+forces the PR path (which uses squash merge) and disables both pre-flight and
+the AI review/autofix gate. GitHub branch protection and required CI checks are
+not bypassed. Conflicting flags such as `--gate-review`, `--preflight`, or
+`--direct-only` are rejected instead of producing a mixed policy.
+
 Review-gated finishes keep this repository-defined pre-flight enabled even
 after required CI passes because the script can contain checks that required CI
 does not. By default the PR remains draft until the AI review passes. The
@@ -127,17 +134,19 @@ base branch has no blocking checks — there is no window to stop it.
 
 | CLI flag | Env var | Default | Effect |
 | --- | --- | --- | --- |
+| `--fast` | — | `false` | Force PR/squash mode and skip local pre-flight plus AI review/autofix; GitHub merge policy still applies. |
 | `--preflight` / `--no-preflight` | `GUARDEX_FINISH_PREFLIGHT` | `true` | Run/skip the pre-flight gate. |
 | `--preflight-script <path>` | `GUARDEX_FINISH_PREFLIGHT_SCRIPT` | `scripts/agent-preflight.sh` | Override the script path (relative to worktree, or absolute). |
 | `--auto-promote` / `--no-auto-promote` | `GUARDEX_FINISH_AUTO_PROMOTE` | `true` | On: promote a draft PR to ready-for-review after pre-flight passes. Off: merge hold — open the PR as draft and leave it unmerged (see above). |
 
 ## When to bypass
 
-Only `--no-preflight` if:
+Only use `--no-preflight` or `--fast` if:
 
 - the pre-flight script itself is broken and you need to ship the fix,
 - you are landing an emergency rollback and CI/branch protection will
-  catch any remaining issue, or
+  catch any remaining issue,
+- the change is small and already passed the targeted checks that cover it, or
 - your repo has no `scripts/agent-preflight.sh` and you've decided not
   to write one.
 
