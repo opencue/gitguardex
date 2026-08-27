@@ -190,6 +190,11 @@ finds the last published GitHub release, and writes one grouped GitHub release b
 <details>
 <summary><strong>v8.x</strong></summary>
 
+### v8.1.0
+- Added shared Git lock state so independent clones coordinate file ownership.
+- Aligned npm repository metadata with `opencue/gitguardex` for trusted OIDC
+  publishing.
+
 ### v8.0.0
 - Added `gx branch finish --fast` for small tasks that should use the PR +
   squash-merge path without repeating local preflight or opt-in AI review.
