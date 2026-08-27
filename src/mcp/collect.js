@@ -16,6 +16,7 @@ const path = require('node:path');
 
 const { findProjects } = require('../cockpit/projects-finder');
 const { findOpenPrForBranch, listOpenPrsForRepo } = require('../pr');
+const sharedGitState = require('../shared-git-state');
 
 const PROTECTED_BRANCHES = new Set(['main', 'master', 'dev']);
 const LOCK_FILE_RELATIVE = path.join('.omx', 'state', 'agent-file-locks.json');
@@ -254,16 +255,59 @@ function isAgentLane(wt) {
 function collectRepoAgents(repoPath, { includePrs = true } = {}) {
   const mainRoot = mainRepoRoot(repoPath) || repoPath;
   const lanes = listWorktrees(mainRoot).filter(isAgentLane);
-  if (lanes.length === 0) return []; // no lanes -> no gh call for this repo
+  const shared = sharedGitState.settings(mainRoot);
+  const sharedLocks = shared.enabled ? sharedGitState.listLocks(mainRoot) : [];
+  const remoteBranches = shared.enabled ? sharedGitState.listRemoteAgentBranches(mainRoot) : [];
+  const sharedLocksByBranch = {};
+  for (const entry of sharedLocks) {
+    (sharedLocksByBranch[entry.branch] = sharedLocksByBranch[entry.branch] || []).push(entry);
+  }
+  const remoteByBranch = new Map(remoteBranches.map((entry) => [entry.branch, entry]));
+  const remoteLaneBranches = new Set([
+    ...remoteBranches.map((entry) => entry.branch),
+    ...Object.keys(sharedLocksByBranch)
+  ]);
+  if (lanes.length === 0 && remoteLaneBranches.size === 0) return []; // no lanes -> no gh call for this repo
   // ONE gh call for the whole repo, only when there is at least one lane.
   const prInfo = includePrs ? prMapForRepo(mainRoot) : null;
   const nowMs = Date.now();
-  return lanes.map((wt) => {
+  const localBranches = new Set(lanes.map((wt) => wt.branch));
+  const records = lanes.map((wt) => {
     // Each worktree owns its OWN lock file; a lane's locks are the entries in
     // its own worktree keyed to its branch.
-    const locks = locksByBranch(wt.path)[wt.branch] || [];
+    const localLocks = locksByBranch(wt.path)[wt.branch] || [];
+    const remoteLocks = (sharedLocksByBranch[wt.branch] || []).map((entry) => entry.file);
+    const locks = [...new Set([...localLocks, ...remoteLocks])].sort();
     return buildAgentRecord(mainRoot, wt, locks, prInfo, nowMs);
   });
+  for (const branch of remoteLaneBranches) {
+    if (localBranches.has(branch)) continue;
+    const remoteBranch = remoteByBranch.get(branch);
+    const locks = sharedLocksByBranch[branch] || [];
+    const commit = remoteBranch ? lastCommit(mainRoot, remoteBranch.oid) : null;
+    records.push({
+      repo: repoName(mainRoot),
+      repoPath: mainRoot,
+      branch,
+      agent: parseAgentName(branch),
+      task: humanizeSlug(branch),
+      worktree: null,
+      onPrimaryCheckout: false,
+      pushed: Boolean(remoteBranch),
+      dirty: [],
+      locks: locks.map((entry) => entry.file).sort(),
+      lastCommit: commit,
+      pr: prInfo ? prInfo.map[branch] || null : null,
+      prLookupError: prInfo ? prInfo.error : null,
+      ageDays: commit ? daysSince(commit.date, nowMs) : null,
+      // A remote machine's dirty state is unknowable, so never call it stale.
+      stale: false,
+      remote: true,
+      shared: true,
+      machines: [...new Set(locks.map((entry) => entry.machine).filter(Boolean))]
+    });
+  }
+  return records;
 }
 
 function collectAllAgents({ roots, includePrs = true, limit } = {}) {
@@ -311,22 +355,42 @@ function whoOwns(file, { cwd = process.cwd(), repoPath } = {}) {
   if (!mainRoot) return { file, owner: null, error: 'not a git repo' };
   const rel = path.isAbsolute(file) ? path.relative(mainRoot, file) : file;
   const owners = [];
-  const seenBranch = new Set();
+  const seenOwner = new Set();
   for (const wt of listWorktrees(mainRoot)) {
     const map = readLockMap(wt.path);
     const entry = map[rel] || map[file];
-    if (entry && entry.branch && !seenBranch.has(entry.branch)) {
-      seenBranch.add(entry.branch);
+    const key = entry && `${entry.branch}\0${entry.agent || ''}`;
+    if (entry && entry.branch && !seenOwner.has(key)) {
+      seenOwner.add(key);
       owners.push({
         branch: entry.branch,
-        agent: parseAgentName(entry.branch),
+        agent: entry.agent || parseAgentName(entry.branch),
         claimed_at: entry.claimed_at || null,
-        worktree: wt.path,
+        worktree: wt.path
+      });
+    }
+  }
+  if (sharedGitState.settings(mainRoot).enabled) {
+    const entry = sharedGitState.getLock(mainRoot, rel);
+    const key = entry && `${entry.branch}\0${entry.agent || ''}`;
+    if (entry && !seenOwner.has(key)) {
+      owners.push({
+        branch: entry.branch,
+        agent: entry.agent || parseAgentName(entry.branch),
+        claimed_at: entry.claimedAt,
+        worktree: null,
+        remote: true,
+        machine: entry.machine
       });
     }
   }
   if (owners.length === 0) return { file: rel, owner: null };
-  return { file: rel, owner: owners.length === 1 ? owners[0] : null, owners, conflict: owners.length > 1 };
+  return {
+    file: rel,
+    owner: owners.length === 1 ? owners[0] : null,
+    owners,
+    conflict: owners.length > 1
+  };
 }
 
 // Slim "radar" projection of a lane for list_agents — who-is-on-what at a
@@ -348,6 +412,7 @@ function radarRecord(a) {
     if (a.ageDays != null) r.ageDays = a.ageDays; // age is the actionable bit for a prune candidate
   }
   if (a.warning) r.onPrimary = true; // lane editing the primary checkout (unsafe)
+  if (a.remote) r.remote = true;
   if (a.pushed === false) r.unpushed = true;
   return r;
 }
@@ -359,6 +424,15 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
   const branch = git(here, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const self = listWorktrees(mainRoot).find((w) => path.resolve(w.path) === path.resolve(here));
   const lc = branch ? lastCommit(mainRoot, branch) : null;
+  const localLocks = branch ? locksByBranch(here)[branch] || [] : [];
+  const shared = sharedGitState.settings(mainRoot);
+  const remoteLocks =
+    shared.enabled && branch
+      ? sharedGitState
+          .listLocks(mainRoot)
+          .filter((entry) => entry.branch === branch)
+          .map((entry) => entry.file)
+      : [];
   return {
     repo: repoName(mainRoot),
     repoPath: mainRoot,
@@ -368,10 +442,11 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
     onPrimaryCheckout: self ? Boolean(self.isPrimary) : null,
     protected: isProtectedBranch(branch),
     dirty: dirtyFiles(here),
-    locks: branch ? locksByBranch(here)[branch] || [] : [], // this lane's own claims
+    locks: [...new Set([...localLocks, ...remoteLocks])].sort(),
+    sharedGitState: shared.enabled ? { enabled: true, remote: shared.remote } : { enabled: false },
     pr: includePr && branch ? safePr(mainRoot, branch) : null,
     lastCommit: lc,
-    ageDays: lc ? daysSince(lc.date, Date.now()) : null,
+    ageDays: lc ? daysSince(lc.date, Date.now()) : null
   };
 }
 

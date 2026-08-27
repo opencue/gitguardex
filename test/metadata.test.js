@@ -125,6 +125,10 @@ test('README advertises the repo skills installer path and root skills stay in s
   assert.match(gitguardexSkill, /gx mcp who-owns/);
   assert.match(gitguardexSkill, /One owner per file/);
   assert.match(gitguardexSkill, /compact handoff/i);
+  assert.match(gitguardexSkill, /gx locks shared-enable --remote origin/);
+  assert.match(gitguardexSkill, /refs\/gitguardex\/locks\/\*/);
+  assert.match(gitguardexSkill, /Shared mode is explicit and fail-closed/);
+  assert.match(gitguardexSkill, /not automatically reaped/);
 });
 
 test('package description stays aligned with about_description.txt', () => {
