@@ -59,8 +59,39 @@ test('release workflow uploads signed GitHub release assets for the package tarb
   assert.match(workflow, /cosign sign-blob "\$\{\{\s*steps\.pack\.outputs\.package_path\s*\}\}"/);
   assert.match(workflow, /--bundle "\$\{\{\s*steps\.pack\.outputs\.package_path\s*\}\}\.sigstore\.json"/);
   assert.match(workflow, /name:\s+Upload signed release assets/);
+  const resilientReleaseSteps = workflow.match(
+    /- name:\s+Generate release checksum[\s\S]*?- name:\s+Upload signed release assets[\s\S]*?--clobber/,
+  )?.[0] ?? '';
+  assert.equal(
+    resilientReleaseSteps.match(/if:\s+\$\{\{\s*always\(\)\s*&&\s*steps\.pack\.outputs\.package_path != ''\s*\}\}/g)?.length,
+    3,
+    'checksum, signing, and upload must still run when npm publishing fails after packing',
+  );
   assert.match(workflow, /GH_TOKEN:\s+\$\{\{\s*github\.token\s*\}\}/);
   assert.match(workflow, /gh release upload "\$RELEASE_TAG"/);
+});
+
+test('release-please grants write permissions only to its release job', () => {
+  const workflowPath = path.join(repoRoot, '.github', 'workflows', 'release-please.yml');
+  const workflow = fs.readFileSync(workflowPath, 'utf8');
+
+  assert.match(workflow, /^permissions:\s+read-all$/m);
+  assert.match(
+    workflow,
+    /release-please:[\s\S]*?permissions:\s*\n\s+contents:\s+write\s*\n\s+pull-requests:\s+write/,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /^permissions:\s*\n\s+contents:\s+write\s*\n\s+pull-requests:\s+write/m,
+  );
+});
+
+test('workflow dependency installs use lockfile-enforcing npm ci', () => {
+  const workflowDir = path.join(repoRoot, '.github', 'workflows');
+  for (const file of fs.readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name))) {
+    const workflow = fs.readFileSync(path.join(workflowDir, file), 'utf8');
+    assert.doesNotMatch(workflow, /run:\s+npm install(?:\s|$)/, `${file} bypasses its npm lockfile`);
+  }
 });
 
 test('release workflow only publishes from published releases or manual dispatch', () => {
