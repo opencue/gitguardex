@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   release-please:
-    if: github.repository == 'recodeee/gitguardex'
+    if: github.repository == 'opencue/gitguardex'
     runs-on: ubuntu-latest
 
     steps:
