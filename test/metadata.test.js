@@ -31,6 +31,12 @@ test('release workflow publishes with provenance in CI', () => {
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'release.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   assert.match(workflow, /name:\s+Checkout\s+uses:\s+actions\/checkout@[0-9a-f]{40}[^\n]*\n\s+with:\s*\n\s+fetch-depth:\s+0/s);
+  assert.match(workflow, /node-version:\s+24/);
+  assert.match(workflow, /package-manager-cache:\s+false/);
+  assert.doesNotMatch(workflow, /^\s+cache:\s+npm$/m);
+  assert.match(workflow, /name:\s+Verify npm trusted-publishing support/);
+  assert.match(workflow, /npm_version="\$\(npm --version\)"/);
+  assert.match(workflow, /requires npm >=11\.5\.1/);
   assert.match(workflow, /npm publish --provenance --access public/);
   // Cosign installer must be pinned to a 40-char SHA on the v4.1.x line.
   // The patch version floats so a renovate/dependabot bump
