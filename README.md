@@ -188,6 +188,17 @@ finds the last published GitHub release, and writes one grouped GitHub release b
 ## Release notes
 
 <details>
+<summary><strong>v8.x</strong></summary>
+
+### v8.0.0
+- Added `gx branch finish --fast` for small tasks that should use the PR +
+  squash-merge path without repeating local preflight or opt-in AI review.
+- Removed the legacy `cr.yml` AI-review workflow; repository policy and explicit
+  Guardex review gates now control merge readiness.
+
+</details>
+
+<details>
 <summary><strong>v7.x</strong></summary>
 
 ### v7.1.1
