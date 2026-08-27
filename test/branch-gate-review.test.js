@@ -16,7 +16,7 @@ const path = require('node:path');
 const repoRoot = path.resolve(__dirname, '..');
 
 function loadBranchWithStubs({ gateThrows = false } = {}) {
-  const calls = { gate: [], script: [] };
+  const calls = { finish: [], gate: [], script: [] };
 
   const stub = (relPath, exports) => {
     const resolved = require.resolve(path.join(repoRoot, relPath));
@@ -44,10 +44,14 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
       if (gateThrows) throw new Error('AI review found a CRITICAL finding');
     },
   });
+  stub('src/cli/commands/finish.js', {
+    finish: (args) => calls.finish.push(args),
+    merge: () => {},
+  });
 
   delete require.cache[require.resolve(path.join(repoRoot, 'src/cli/commands/branch.js'))];
-  const { branch } = require(path.join(repoRoot, 'src/cli/commands/branch.js'));
-  return { branch, calls };
+  const { branch, ship } = require(path.join(repoRoot, 'src/cli/commands/branch.js'));
+  return { branch, ship, calls };
 }
 
 test('branch finish --gate-review runs the gate and keeps the flag out of the shell argv', () => {
@@ -91,6 +95,43 @@ test('branch finish --skip-review-gate is honored as an opt-out alias', () => {
 
   assert.equal(calls.gate.length, 0);
   assert.deepEqual(calls.script[0].args, ['--via-pr']);
+});
+
+test('branch finish --fast skips local preflight and AI review but keeps PR merge mode', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--fast']);
+
+  assert.equal(calls.gate.length, 0, 'fast mode must not start an AI review');
+  assert.deepEqual(calls.script[0].args, ['--via-pr', '--no-preflight']);
+});
+
+test('branch finish --fast rejects incompatible review and direct-merge flags', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  for (const args of [
+    ['finish', '--fast', '--gate-review'],
+    ['finish', '--fast', '--gate-autofix'],
+    ['finish', '--fast', '--preflight'],
+    ['finish', '--fast', '--direct-only'],
+  ]) {
+    assert.throws(() => branch(args), /--fast cannot be combined with/);
+  }
+  assert.equal(calls.gate.length, 0);
+  assert.equal(calls.script.length, 0);
+});
+
+test('gx ship --fast does not re-enable the AI review gate', () => {
+  const { ship, calls } = loadBranchWithStubs();
+
+  ship(['--fast']);
+
+  assert.deepEqual(calls.finish[0], [
+    '--fast',
+    '--via-pr',
+    '--wait-for-merge',
+    '--cleanup',
+  ]);
 });
 
 test('branch finish --gate-review without --branch gates the current HEAD branch', () => {
