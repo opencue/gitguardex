@@ -72,6 +72,11 @@ is_protected_branch() {
   return 1
 }
 
+is_null_oid() {
+  local oid="${1:-}"
+  [[ -n "$oid" && -z "${oid//0/}" ]]
+}
+
 blocked_refs=()
 adaptive_direct_push=1
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
@@ -83,10 +88,10 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   remote_branch="${remote_ref#refs/heads/}"
   if is_protected_branch "$remote_branch"; then
     blocked_refs+=("$remote_branch")
-    if [[ "$local_ref" != "refs/heads/$remote_branch" \
-      || "$local_sha" == "0000000000000000000000000000000000000000" ]]; then
+    if [[ "$local_ref" != "refs/heads/$remote_branch" ]] \
+      || is_null_oid "$local_sha"; then
       adaptive_direct_push=0
-    elif [[ "$remote_sha" != "0000000000000000000000000000000000000000" ]] \
+    elif ! is_null_oid "$remote_sha" \
       && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
       adaptive_direct_push=0
     fi
