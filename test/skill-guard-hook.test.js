@@ -180,12 +180,13 @@ test('skill_guard still BLOCKS writing a file INSIDE the repo on a protected bra
   }
 });
 
-test('skill_guard adaptive mode allows bounded edits and allowlisted shell commands on protected main', () => {
+test('skill_guard adaptive mode blocks edits and allows allowlisted shell commands on protected main', () => {
   const dir = makeRepoOn('main');
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     let result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
-    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /BLOCKED/);
 
     for (const command of [
       'git add seed.txt',
@@ -212,11 +213,11 @@ test('skill_guard adaptive mode atomically gives one session exclusive direct-ma
     const attempts = await Promise.all([
       invokeHookAsync(
         dir,
-        writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-owner-a'),
+        bashPayload('git add seed.txt', dir, 'adaptive-owner-a'),
       ),
       invokeHookAsync(
         dir,
-        writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-owner-b'),
+        bashPayload('git add seed.txt', dir, 'adaptive-owner-b'),
       ),
     ]);
     assert.deepEqual(
@@ -326,7 +327,7 @@ test('skill_guard adaptive mode treats same-branch anonymous claims as foreign',
   }
 });
 
-test('skill_guard adaptive mode allows edits, adds, and commits for the current session claims', () => {
+test('skill_guard adaptive mode blocks edits but allows adds and commits for current session claims', () => {
   const dir = makeRepoOn('main');
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
@@ -340,8 +341,14 @@ test('skill_guard adaptive mode allows edits, adds, and commits for the current 
     fs.writeFileSync(path.join(dir, 'src', 'owned.js'), 'owned\n');
     assert.equal(cp.spawnSync('git', ['add', 'src/owned.js'], { cwd: dir }).status, 0);
 
-    for (const payload of [
+    const edit = invokeHook(
+      dir,
       writePayload(path.join(dir, 'src', 'owned.js'), dir, 'adaptive-owner'),
+    );
+    assert.equal(edit.status, 2, edit.stderr || edit.stdout);
+    assert.match(edit.stderr, /BLOCKED/);
+
+    for (const payload of [
       bashPayload('git add src/owned.js', dir, 'adaptive-owner'),
       bashPayload('git add src', dir, 'adaptive-owner'),
       bashPayload('git commit -m owned', dir, 'adaptive-owner'),
@@ -439,7 +446,7 @@ test('skill_guard adaptive direct-main ownership expires after the configured le
 
     const first = invokeHook(
       dir,
-      writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-stale-a'),
+      bashPayload('git add seed.txt', dir, 'adaptive-stale-a'),
       leaseEnv,
     );
     assert.equal(first.status, 0, first.stderr || first.stdout);
@@ -447,7 +454,7 @@ test('skill_guard adaptive direct-main ownership expires after the configured le
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
     const reclaimed = invokeHook(
       dir,
-      writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-stale-b'),
+      bashPayload('git add seed.txt', dir, 'adaptive-stale-b'),
       leaseEnv,
     );
     assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);
@@ -511,7 +518,7 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
     assert.equal(activeStatus, 0);
     const reclaimed = await invokeHookAsync(
       dir,
-      writePayload(path.join(dir, 'src', 'third.js'), dir, 'adaptive-active-b'),
+      bashPayload('git add seed.txt', dir, 'adaptive-active-b'),
       leaseEnv,
     );
     assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);

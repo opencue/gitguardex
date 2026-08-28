@@ -1104,8 +1104,6 @@ def ensure_protected_branch_edit_allowed(
             session_id,
             file_path=target_file_path or file_path,
         )
-        if adaptive_error == "":
-            return None
         if adaptive_error:
             return adaptive_error
     if is_agent_branch(branch, protected):
