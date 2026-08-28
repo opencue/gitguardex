@@ -279,6 +279,31 @@ test('skill_guard adaptive mode blocks a target claimed in the primary checkout 
   }
 });
 
+test('skill_guard adaptive mode preserves the final symlink name for lock checks', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked-link.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'target.js'), 'target\n');
+    fs.symlinkSync('../target.js', path.join(dir, 'src', 'locked-link.js'));
+
+    const result = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'locked-link.js'), dir, 'adaptive-link-contender'),
+    );
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /target is claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard adaptive mode treats same-branch anonymous claims as foreign', () => {
   const dir = makeRepoOn('main');
   try {
@@ -654,6 +679,27 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
       const result = invokeHook(dir, bashPayload(command, dir));
       assert.equal(result.status, 2, `command must be blocked: ${command}\n${result.stderr}`);
       assert.match(result.stderr, /Branch\/worktree mutation is unsafe/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode ignores aliases named after supported Git built-ins', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    for (const subcommand of ['add', 'commit', 'push']) {
+      const configured = cp.spawnSync('git', ['config', `alias.${subcommand}`, 'status'], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      assert.equal(configured.status, 0, configured.stderr);
+    }
+
+    for (const command of ['git add seed.txt', 'git commit -m safe', 'git push origin main']) {
+      const result = invokeHook(dir, bashPayload(command, dir, 'adaptive-built-in-alias'));
+      assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

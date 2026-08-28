@@ -424,7 +424,9 @@ def has_competing_worktree_activity(repo_root: Path) -> bool:
 def target_has_file_lock(repo_root: Path, file_path: str, session_id: str) -> bool:
     """Fail closed when any foreign local registry claims the edit target."""
     try:
-        relative_path = Path(file_path).resolve().relative_to(repo_root.resolve()).as_posix()
+        target_path = Path(file_path)
+        lexical_target = target_path.parent.resolve() / target_path.name
+        relative_path = lexical_target.relative_to(repo_root.resolve()).as_posix()
     except (OSError, ValueError):
         return False
     try:
@@ -1441,7 +1443,11 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             )
         except OSError:
             return True
-        if alias.returncode not in {0, 1} or (alias.returncode == 0 and alias.stdout.strip()):
+        if alias.returncode not in {0, 1} or (
+            subcommand not in {"add", "commit", "push"}
+            and alias.returncode == 0
+            and alias.stdout.strip()
+        ):
             return True
     return False
 
@@ -1684,6 +1690,13 @@ def main() -> None:
     session_common_dir = git_common_dir(repo_root)
     for target_path in in_repo_targets:
         abs_target = resolve_target_path(target_path, repo_root, cwd)
+        lexical_target = Path(target_path).expanduser()
+        if not lexical_target.is_absolute():
+            lexical_target = Path(cwd or repo_root) / lexical_target
+        try:
+            lexical_target = lexical_target.parent.resolve() / lexical_target.name
+        except OSError:
+            pass
         target_root = find_repo_root(str(abs_target))
         # Judge by the target's OWN branch only when it lives in a linked
         # worktree of the SAME repo (shared git common dir). For the session
@@ -1702,7 +1715,7 @@ def main() -> None:
         protected_branch_error = ensure_protected_branch_edit_allowed(
             judge_path,
             session_id,
-            str(abs_target),
+            str(lexical_target),
         )
         if protected_branch_error:
             emit_event(
