@@ -765,6 +765,33 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
 });
 
 
+test('adaptive worktree mode gives one agent session exclusive protected-main commit ownership', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  fs.writeFileSync(path.join(repoDir, 'first.txt'), 'first\n', 'utf8');
+  let result = runCmd('git', ['add', 'first.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'first adaptive owner'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-owner-a',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  fs.writeFileSync(path.join(repoDir, 'second.txt'), 'second\n', 'utf8');
+  result = runCmd('git', ['add', 'second.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'competing adaptive owner'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-owner-b',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /another agent session owns this checkout/);
+});
+
+
 test('adaptive worktree hooks fail closed when the competition helper is unavailable', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

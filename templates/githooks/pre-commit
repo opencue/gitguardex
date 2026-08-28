@@ -116,6 +116,11 @@ Inspect `gx mcp list-agents --no-prs`, then isolate this work:
 MSG
     exit 1
   fi
+  if ! declare -F guardex_claim_adaptive_session_lease >/dev/null 2>&1 \
+    || ! guardex_claim_adaptive_session_lease "$repo_root"; then
+    echo "[guardex-adaptive] Adaptive direct commit blocked: another agent session owns this checkout." >&2
+    exit 1
+  fi
   exit 0
 fi
 

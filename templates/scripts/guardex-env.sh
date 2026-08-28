@@ -209,3 +209,91 @@ guardex_repo_has_competing_worktree_activity() {
 
   return 1
 }
+
+guardex_agent_session_id() {
+  printf '%s' "${CODEX_THREAD_ID:-${OMX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}"
+}
+
+guardex_claim_adaptive_session_lease() {
+  local repo_root="$1"
+  local session_id="${2:-$(guardex_agent_session_id)}"
+  local python_bin="${GUARDEX_PYTHON_BIN:-python3}"
+  local common_dir
+
+  [[ -n "$session_id" ]] || return 1
+  command -v "$python_bin" >/dev/null 2>&1 || return 1
+  common_dir="$(guardex_git_clean_env -C "$repo_root" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  if [[ "$common_dir" != /* ]]; then
+    common_dir="${repo_root}/${common_dir}"
+  fi
+  common_dir="$(cd "$common_dir" 2>/dev/null && pwd -P)" || return 1
+
+  "$python_bin" - "$common_dir" "$session_id" "${GUARDEX_ADAPTIVE_SESSION_LEASE_SEC:-900}" <<'PY'
+import fcntl
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+common_dir, session_id, raw_ttl = sys.argv[1:]
+try:
+    ttl_seconds = float(raw_ttl)
+except ValueError:
+    raise SystemExit(1)
+if ttl_seconds <= 0:
+    raise SystemExit(1)
+
+state_dir = Path(common_dir) / "gitguardex"
+lease_path = state_dir / "adaptive-direct-session.json"
+lock_path = state_dir / "adaptive-direct-session.lock"
+try:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    lock_handle = open(lock_path, "a+")
+except OSError:
+    raise SystemExit(1)
+
+try:
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+    try:
+        lease = json.loads(lease_path.read_text())
+    except FileNotFoundError:
+        lease = {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        raise SystemExit(1)
+    if not isinstance(lease, dict):
+        raise SystemExit(1)
+
+    owner = lease.get("session_id")
+    last_seen = lease.get("last_seen_epoch")
+    if owner is not None and not isinstance(owner, str):
+        raise SystemExit(1)
+    if last_seen is not None and (
+        isinstance(last_seen, bool) or not isinstance(last_seen, (int, float))
+    ):
+        raise SystemExit(1)
+
+    now = time.time()
+    if owner and owner != session_id and last_seen is not None and now - float(last_seen) < ttl_seconds:
+        print("Adaptive direct work is owned by another active agent session.", file=sys.stderr)
+        raise SystemExit(1)
+
+    tmp_path = lease_path.with_name(f"{lease_path.name}.tmp-{os.getpid()}")
+    try:
+        tmp_path.write_text(
+            json.dumps({"session_id": session_id, "last_seen_epoch": now}, sort_keys=True) + "\n"
+        )
+        os.replace(tmp_path, lease_path)
+    except OSError:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise SystemExit(1)
+finally:
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_handle.close()
+PY
+}

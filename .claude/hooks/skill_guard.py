@@ -874,7 +874,7 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
 
 def is_allowed_adaptive_direct_shell_command(command: str) -> bool:
     normalized = command.strip()
-    if re.search(r"`|\$\(|[<>]\(", normalized):
+    if re.search(r"`|\$|[<>]\(|[*?\[\]{}]", normalized):
         return False
     segments = split_shell_segments(normalized)
     if not segments:
