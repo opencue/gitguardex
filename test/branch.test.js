@@ -736,6 +736,502 @@ test('pre-commit blocks codex commits on protected local-only branches even from
 });
 
 
+test('adaptive worktree mode allows agent commits and pushes on protected main', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+
+  let result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'small adaptive direct change'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const lockRegistryPath = path.join(repoDir, '.omx', 'state', 'agent-file-locks.json');
+  const lockRegistry = fs.existsSync(lockRegistryPath)
+    ? JSON.parse(fs.readFileSync(lockRegistryPath, 'utf8'))
+    : { locks: {} };
+  assert.deepEqual(lockRegistry.locks || {}, {}, 'adaptive direct commits must not create durable file claims');
+
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread' },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test('adaptive worktree mode rejects protected pushes mixed with non-branch refs', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' 'refs/tags/v1 2222222222222222222222222222222222222222 refs/tags/v1 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread' },
+  );
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /Codex push detected toward protected branch/);
+});
+
+test('adaptive rewritten commit completes through the installed pre-commit hook', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'wrapped.txt'), 'wrapped commit\n', 'utf8');
+  let result = runCmd('git', ['add', 'wrapped.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const sessionEnv = {
+    ...stripAgentSessionEnv(process.env),
+    CODEX_THREAD_ID: 'adaptive-wrapper-owner',
+    GUARDEX_CLI_ENTRY: cliPath,
+    GUARDEX_WORKTREE_MODE: 'adaptive',
+    GUARDEX_NODE_BIN: process.execPath,
+    GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const skillGuardHook = path.resolve(__dirname, '..', '.claude', 'hooks', 'skill_guard.py');
+  const hookResult = cp.spawnSync('python3', [skillGuardHook], {
+    cwd: repoDir,
+    encoding: 'utf8',
+    env: sessionEnv,
+    input: JSON.stringify({
+      session_id: 'adaptive-wrapper-owner',
+      cwd: repoDir,
+      tool_name: 'Bash',
+      tool_input: { command: 'git commit -m wrapped' },
+    }),
+  });
+  assert.equal(hookResult.status, 0, hookResult.stderr || hookResult.stdout);
+  const rewritten = JSON.parse(hookResult.stdout).hookSpecificOutput.updatedInput.command;
+
+  result = cp.spawnSync('bash', ['-lc', rewritten], {
+    cwd: repoDir,
+    encoding: 'utf8',
+    env: sessionEnv,
+    timeout: 5000,
+  });
+  assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+  assert.match(result.stdout, /wrapped/);
+});
+
+test('adaptive lease helper rejects a stale same-session lease during foreign lock ownership', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  const commonDirResult = runCmd('git', ['rev-parse', '--git-common-dir'], repoDir);
+  assert.equal(commonDirResult.status, 0, commonDirResult.stderr || commonDirResult.stdout);
+  const commonDir = path.resolve(repoDir, commonDirResult.stdout.trim());
+  const stateDir = path.join(commonDir, 'gitguardex');
+  const lockPath = path.join(stateDir, 'adaptive-direct-session.lock');
+  const leasePath = path.join(stateDir, 'adaptive-direct-session.json');
+  const readyPath = path.join(stateDir, 'foreign-lock-ready');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    leasePath,
+    `${JSON.stringify({ session_id: 'stale-owner', last_seen_epoch: Date.now() / 1000 })}\n`,
+  );
+
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; python3 -c 'import fcntl, sys, time; from pathlib import Path; handle=open(sys.argv[1], "a+"); fcntl.flock(handle.fileno(), fcntl.LOCK_EX); Path(sys.argv[2]).touch(); time.sleep(0.5)' '${lockPath}' '${readyPath}' & holder=$!; while [[ ! -e '${readyPath}' ]]; do sleep 0.01; done; guardex_claim_adaptive_session_lease '${repoDir}' stale-owner; status=$?; wait "$holder"; exit "$status"`,
+    ],
+    repoDir,
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /owned by another active agent session/);
+});
+
+test('adaptive lease helper rejects isolated claims while holding the shared lock', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  const otherWorktree = path.join(repoDir, 'other-lane');
+  let result = runCmd('git', ['worktree', 'add', '-q', '-b', 'agent/other/lane', otherWorktree], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const stateDir = path.join(otherWorktree, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, 'agent-file-locks.json'),
+    `${JSON.stringify({ locks: { 'claimed.txt': { branch: 'agent/other/lane' } } })}\n`,
+  );
+
+  result = runCmd(
+    'bash',
+    ['-lc', `source '${helper}'; guardex_claim_adaptive_session_lease '${repoDir}' direct-owner`],
+    repoDir,
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /blocked by an active isolated lane/);
+});
+
+test('empty repo worktree-mode override falls back to adaptive Git config', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=\n', 'utf8');
+  let result = runCmd('git', ['config', '--local', 'multiagent.worktreeMode', 'adaptive'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'configured adaptive change\n', 'utf8');
+  result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'configured adaptive direct change'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-config-owner',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+
+test('adaptive worktree mode gives one agent session exclusive protected-main commit ownership', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  fs.writeFileSync(path.join(repoDir, 'first.txt'), 'first\n', 'utf8');
+  let result = runCmd('git', ['add', 'first.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'first adaptive owner'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-owner-a',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  fs.writeFileSync(path.join(repoDir, 'second.txt'), 'second\n', 'utf8');
+  result = runCmd('git', ['add', 'second.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'competing adaptive owner'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-owner-b',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /another agent session owns this checkout/);
+});
+
+test('adaptive worktree mode rejects non-finite protected-main lease TTLs', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'invalid-ttl.txt'), 'invalid\n', 'utf8');
+  let result = runCmd('git', ['add', 'invalid-ttl.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  for (const ttl of ['nan', 'inf']) {
+    result = runCmd('git', ['commit', '-m', `reject ${ttl} lease`], repoDir, {
+      CODEX_THREAD_ID: `adaptive-${ttl}`,
+      GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: ttl,
+    });
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /another agent session owns this checkout/);
+  }
+});
+
+
+test('adaptive pre-commit validates staged files against claims in the current checkout', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  const stateDir = path.join(repoDir, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, 'agent-file-locks.json'),
+    `${JSON.stringify({ locks: { 'claimed.txt': { branch: 'agent/other/lane' } } })}\n`,
+    'utf8',
+  );
+  fs.writeFileSync(path.join(repoDir, 'claimed.txt'), 'claimed elsewhere\n', 'utf8');
+
+  let result = runCmd('git', ['add', 'claimed.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'must respect current checkout claim'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-owner',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Files claimed by another owner/);
+});
+
+
+test('adaptive worktree hooks fail closed when the competition helper is unavailable', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.rmSync(path.join(repoDir, 'scripts', 'guardex-env.sh'));
+
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+  let result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('bash', ['.githooks/pre-commit'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+    GUARDEX_WORKTREE_MODE: 'adaptive',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked/);
+
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread', GUARDEX_WORKTREE_MODE: 'adaptive' },
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct push blocked/);
+});
+
+
+test('adaptive worktree detection fails closed when the worktree list is unavailable', () => {
+  const repoRoot = path.resolve(__dirname, '..');
+  const helper = path.join(repoRoot, 'templates', 'scripts', 'guardex-env.sh');
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; guardex_git_clean_env() { return 1; }; guardex_repo_has_competing_worktree_activity '${repoRoot}' node`,
+    ],
+    repoRoot,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+
+test('adaptive worktree detection fails closed when the sibling lock parser is unavailable', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const linkedWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'other-lane');
+  let result = runCmd(
+    'git',
+    ['worktree', 'add', '-b', 'agent/other/lock-parser', linkedWorktree],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const stateDir = path.join(linkedWorktree, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '{"locks":{}}\n', 'utf8');
+
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; guardex_repo_has_competing_worktree_activity '${repoDir}' '${path.join(repoDir, 'missing-node')}'`,
+    ],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+
+test('adaptive worktree detection ignores the current linked worktree by path', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const linkedWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'current-lane');
+  let result = runCmd(
+    'git',
+    ['worktree', 'add', '-b', 'agent/current/lane', linkedWorktree],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(linkedWorktree, 'current-dirty.txt'), 'current lane work\n', 'utf8');
+
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  result = runCmd(
+    'bash',
+    ['-lc', `source '${helper}'; guardex_repo_has_competing_worktree_activity '${linkedWorktree}' node`],
+    linkedWorktree,
+  );
+  assert.equal(result.status, 1, `current worktree must not compete with itself: ${result.stderr}`);
+});
+
+
+test('adaptive worktree mode ignores stale remote branches but blocks shared lock refs', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-shared-remote-'));
+  let result = runCmd('git', ['init', '--bare', '-q'], remoteDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['remote', 'add', 'shared', remoteDir], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['push', '-q', 'shared', 'HEAD:refs/heads/agent/remote/lane'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['config', 'multiagent.sharedState', 'git'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['config', 'multiagent.sharedStateRemote', 'shared'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  fs.writeFileSync(path.join(repoDir, 'stale-agent-branch.txt'), 'allowed\n', 'utf8');
+  result = runCmd('git', ['add', 'stale-agent-branch.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'stale remote branch is inactive'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd('git', ['push', '-q', 'shared', 'HEAD:refs/gitguardex/locks/remote-lane'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+  result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'blocked by remote shared lane'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked: another agent lane has dirty files or locks\./);
+});
+
+
+test('adaptive worktree mode blocks indirect, deleted, and non-fast-forward protected pushes', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  let result = runCmd('git', ['rev-parse', 'HEAD'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const remoteSha = result.stdout.trim();
+
+  fs.writeFileSync(path.join(repoDir, 'next.txt'), 'next\n', 'utf8');
+  result = runCmd('git', ['add', 'next.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'next protected commit'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['rev-parse', 'HEAD'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const localSha = result.stdout.trim();
+
+  const pushes = [
+    `refs/heads/agent/foo ${localSha} refs/heads/main ${remoteSha}`,
+    `(delete) 0000000000000000000000000000000000000000 refs/heads/main ${remoteSha}`,
+    `refs/heads/main ${remoteSha} refs/heads/main ${localSha}`,
+    [
+      `refs/heads/main ${localSha} refs/heads/main ${remoteSha}`,
+      `refs/heads/dev ${localSha} refs/heads/dev ${remoteSha}`,
+    ].join('\n'),
+    [
+      `refs/heads/main ${localSha} refs/heads/main ${remoteSha}`,
+      `refs/heads/agent/other ${localSha} refs/heads/agent/other ${remoteSha}`,
+    ].join('\n'),
+  ];
+  for (const push of pushes) {
+    result = runCmd(
+      'bash',
+      ['-lc', `printf '%s\\n' '${push}' | .githooks/pre-push origin origin`],
+      repoDir,
+      { CODEX_THREAD_ID: 'test-thread' },
+    );
+    assert.notEqual(result.status, 0, `push must be blocked: ${push}`);
+  }
+});
+
+
+test('adaptive worktree mode blocks direct agent commits while another lane has changes', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  const otherWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'other-lane');
+  let result = runCmd(
+    'git',
+    ['worktree', 'add', '-b', 'agent/other/concurrent-change', otherWorktree],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(otherWorktree, 'other-change.txt'), 'in progress\n', 'utf8');
+
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+  result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'blocked adaptive direct change'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked: another agent lane has dirty files or locks\./);
+  assert.match(result.stderr, /gx branch start --new --no-transfer/);
+
+  fs.rmSync(path.join(otherWorktree, 'other-change.txt'));
+  const stateDir = path.join(otherWorktree, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '{"locks":[]}\n', 'utf8');
+  result = runCmd('git', ['commit', '-m', 'blocked by invalid sibling lock state'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked: another agent lane has dirty files or locks\./);
+
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread' },
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct push blocked: another agent lane has dirty files or locks\./);
+});
+
+
+test('adaptive shared-state detection fails closed when no timeout utility is available', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const marker = path.join(repoDir, 'unbounded-remote-probe');
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; export GUARDEX_SHARED_STATE=git GUARDEX_SHARED_STATE_REMOTE=origin; command() { return 1; }; guardex_git_clean_env() { : > '${marker}'; return 1; }; guardex_repo_has_shared_agent_activity '${repoDir}'`,
+    ],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(marker), false, 'must not start an unbounded remote query');
+});
+
+
 test('pre-push allows human pushes to protected branches from VS Code Source Control env by default', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

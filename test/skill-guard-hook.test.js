@@ -46,6 +46,8 @@ function invokeHook(cwd, payload, env = {}) {
     'ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE',
     'GUARDEX_AGENT_BRANCH_PREFIXES',
     'GUARDEX_PROTECTED_BRANCHES',
+    'GUARDEX_WORKTREE_MODE',
+    'GUARDEX_ADAPTIVE_SESSION_LEASE_SEC',
     'GUARDEX_ON',
   ]) {
     delete cleaned[key];
@@ -58,18 +60,49 @@ function invokeHook(cwd, payload, env = {}) {
   });
 }
 
-function bashPayload(cmd, cwd) {
+function invokeHookAsync(cwd, payload, env = {}) {
+  const cleaned = { ...process.env };
+  for (const key of [
+    'ALLOW_BASH_ON_NON_AGENT_BRANCH',
+    'ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH',
+    'ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE',
+    'GUARDEX_AGENT_BRANCH_PREFIXES',
+    'GUARDEX_PROTECTED_BRANCHES',
+    'GUARDEX_WORKTREE_MODE',
+    'GUARDEX_ADAPTIVE_SESSION_LEASE_SEC',
+    'GUARDEX_ON',
+  ]) {
+    delete cleaned[key];
+  }
+  return new Promise((resolve, reject) => {
+    const child = cp.spawn('python3', [hookPath], {
+      cwd,
+      env: { ...cleaned, ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+function bashPayload(cmd, cwd, sessionId = 'skill-guard-test') {
   return {
-    session_id: 'skill-guard-test',
+    session_id: sessionId,
     cwd,
     tool_name: 'Bash',
     tool_input: { command: cmd },
   };
 }
 
-function writePayload(filePath, cwd) {
+function writePayload(filePath, cwd, sessionId = 'skill-guard-test') {
   return {
-    session_id: 'skill-guard-test',
+    session_id: sessionId,
     cwd,
     tool_name: 'Write',
     tool_input: { file_path: filePath, content: 'x\n' },
@@ -144,6 +177,605 @@ test('skill_guard still BLOCKS writing a file INSIDE the repo on a protected bra
     assert.match(result.stderr, /BLOCKED/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode allows bounded edits and allowlisted shell commands on protected main', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    let result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    for (const command of [
+      'git add seed.txt',
+      'git commit -m safe',
+      "git commit -m 'fix $PATH handling'",
+      'git commit -m fix\\$PATH',
+      'git push origin main',
+      'git status',
+      'pytest -q',
+    ]) {
+      result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode atomically gives one session exclusive direct-main ownership', async () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+
+    const attempts = await Promise.all([
+      invokeHookAsync(
+        dir,
+        writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-owner-a'),
+      ),
+      invokeHookAsync(
+        dir,
+        writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-owner-b'),
+      ),
+    ]);
+    assert.deepEqual(
+      attempts.map((attempt) => attempt.status).sort(),
+      [0, 2],
+      attempts.map((attempt) => attempt.stderr || attempt.stdout).join('\n'),
+    );
+    const ownerSid = attempts[0].status === 0 ? 'adaptive-owner-a' : 'adaptive-owner-b';
+    const competingSid = ownerSid === 'adaptive-owner-a' ? 'adaptive-owner-b' : 'adaptive-owner-a';
+    const blockedAttempt = attempts.find((attempt) => attempt.status === 2);
+    assert.match(blockedAttempt.stderr, /owned by another active agent session/);
+
+    const competingCommit = invokeHook(
+      dir,
+      bashPayload('git commit -m blocked', dir, competingSid),
+    );
+    assert.equal(competingCommit.status, 2, competingCommit.stderr || competingCommit.stdout);
+    assert.match(competingCommit.stderr, /owned by another active agent session/);
+
+    const ownerContinues = invokeHook(
+      dir,
+      bashPayload('git add seed.txt', dir, ownerSid),
+    );
+    assert.equal(ownerContinues.status, 0, ownerContinues.stderr || ownerContinues.stdout);
+
+    const competingLegacyCommand = invokeHook(
+      dir,
+      bashPayload('git pull --ff-only', dir, competingSid),
+    );
+    assert.equal(
+      competingLegacyCommand.status,
+      2,
+      competingLegacyCommand.stderr || competingLegacyCommand.stdout,
+    );
+    assert.match(competingLegacyCommand.stderr, /Branch\/worktree mutation is unsafe/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks a target claimed in the primary checkout registry', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/foo.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+
+    const result = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'foo.js'), dir, 'adaptive-lock-contender'),
+    );
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /target is claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode preserves the final symlink name for lock checks', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked-link.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'target.js'), 'target\n');
+    fs.symlinkSync('../target.js', path.join(dir, 'src', 'locked-link.js'));
+
+    const result = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'locked-link.js'), dir, 'adaptive-link-contender'),
+    );
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /target is claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode treats same-branch anonymous claims as foreign', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/legacy.js': { branch: 'main' } } })}\n`,
+    );
+
+    const result = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'legacy.js'), dir, 'adaptive-lock-contender'),
+    );
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /target is claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode allows edits, adds, and commits for the current session claims', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/owned.js': { branch: 'main', agent: 'adaptive-owner' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'owned.js'), 'owned\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/owned.js'], { cwd: dir }).status, 0);
+
+    for (const payload of [
+      writePayload(path.join(dir, 'src', 'owned.js'), dir, 'adaptive-owner'),
+      bashPayload('git add src/owned.js', dir, 'adaptive-owner'),
+      bashPayload('git add src', dir, 'adaptive-owner'),
+      bashPayload('git commit -m owned', dir, 'adaptive-owner'),
+    ]) {
+      const result = invokeHook(dir, payload);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks git add and commit for claimed paths', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'locked\n');
+
+    for (const command of ['git add src/locked.js', 'git add src', 'git add -A']) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `${command}: ${result.stderr || result.stdout}`);
+      assert.match(result.stderr, /git add target is claimed by another agent lane/);
+    }
+
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js'], { cwd: dir }).status, 0);
+    const commit = invokeHook(dir, bashPayload('git commit -m blocked', dir));
+    assert.equal(commit.status, 2, commit.stderr || commit.stdout);
+    assert.match(commit.stderr, /commit includes a file claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode honors directory claims and commit path options', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { src: { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'baseline\n');
+    assert.equal(
+      cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', 'add', 'src/locked.js'], { cwd: dir }).status,
+      0,
+    );
+    assert.equal(
+      cp.spawnSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'add tracked lock target'],
+        { cwd: dir },
+      ).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'changed\n');
+
+    const edit = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'locked.js'), dir, 'adaptive-dir-lock-contender'),
+    );
+    assert.equal(edit.status, 2, edit.stderr || edit.stdout);
+    assert.match(edit.stderr, /target is claimed by another agent lane/);
+
+    for (const command of [
+      'git commit -a -m blocked',
+      'git commit -amblocked',
+      'git commit --include src/locked.js -m blocked',
+      'git commit --only src/locked.js -m blocked',
+      'git commit --gpg-sign src/locked.js',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `${command}: ${result.stderr || result.stdout}`);
+      assert.match(result.stderr, /commit includes a file claimed by another agent lane/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive direct-main ownership expires after the configured lease TTL', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
+
+    const first = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-stale-a'),
+      leaseEnv,
+    );
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    const reclaimed = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-stale-b'),
+      leaseEnv,
+    );
+    assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard keeps adaptive direct-main ownership while an allowed command is active', async () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
+    const first = invokeHook(
+      dir,
+      bashPayload('pytest -q', dir, 'adaptive-active-a'),
+      leaseEnv,
+    );
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const hookOutput = JSON.parse(first.stdout);
+    assert.match(
+      hookOutput.hookSpecificOutput.updatedInput.command,
+      /--adaptive-command-lock/,
+    );
+
+    const lockPath = path.join(dir, '.git', 'gitguardex', 'adaptive-direct-session.lock');
+    const leasePath = path.join(dir, '.git', 'gitguardex', 'adaptive-direct-session.json');
+    const markerPath = path.join(dir, 'command-active');
+    const command = `python3 -c 'from pathlib import Path; import time; Path("${markerPath}").write_text("active"); time.sleep(0.2)'`;
+    const active = cp.spawn(
+      'python3',
+      [
+        hookPath,
+        '--adaptive-command-lock',
+        lockPath,
+        leasePath,
+        'adaptive-active-a',
+        command,
+      ],
+      { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    const activeDone = new Promise((resolve, reject) => {
+      active.on('error', reject);
+      active.on('close', resolve);
+    });
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(markerPath); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(fs.existsSync(markerPath), true, 'locked command did not start');
+
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    const blocked = await invokeHookAsync(
+      dir,
+      writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-active-b'),
+      leaseEnv,
+    );
+    assert.equal(blocked.status, 2, blocked.stderr || blocked.stdout);
+    assert.match(blocked.stderr, /owned by another active agent session/);
+
+    const activeStatus = await activeDone;
+    assert.equal(activeStatus, 0);
+    const reclaimed = await invokeHookAsync(
+      dir,
+      writePayload(path.join(dir, 'src', 'third.js'), dir, 'adaptive-active-b'),
+      leaseEnv,
+    );
+    assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive direct-main ownership rejects non-finite lease TTLs', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    for (const ttl of ['nan', 'inf']) {
+      const result = invokeHook(
+        dir,
+        writePayload(path.join(dir, 'src', `${ttl}.js`), dir, `adaptive-${ttl}`),
+        { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: ttl },
+      );
+      assert.equal(result.status, 2, result.stderr || result.stdout);
+      assert.match(result.stderr, /lease TTL must be positive and finite/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard ordinary commit ignores unrelated unstaged claimed files', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'baseline\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'safe\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js', 'safe.js'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'track files'],
+        { cwd: dir },
+      ).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'unstaged claimed change\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'staged safe change\n');
+    assert.equal(cp.spawnSync('git', ['add', 'safe.js'], { cwd: dir }).status, 0);
+
+    const result = invokeHook(dir, bashPayload('git commit -m safe', dir, 'adaptive-safe-owner'));
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard path-scoped commit ignores unrelated staged claimed files', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'baseline\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'baseline\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js', 'safe.js'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'track files'],
+        { cwd: dir },
+      ).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'unrelated staged claimed change\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'scoped safe change\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js'], { cwd: dir }).status, 0);
+
+    for (const command of [
+      'git commit --only safe.js -m safe',
+      'git commit --only=safe.js -m safe',
+      'git commit -osafe.js -m safe',
+      'git commit -- safe.js',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir, 'adaptive-path-owner'));
+      assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
+    }
+    const include = invokeHook(
+      dir,
+      bashPayload('git commit --include safe.js -m unsafe', dir, 'adaptive-path-owner'),
+    );
+    assert.equal(include.status, 2, include.stderr || include.stdout);
+    assert.match(include.stderr, /commit includes a file claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks protected-checkout Git mutations with global options', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const aliasResult = cp.spawnSync('git', ['config', 'alias.co', 'switch'], {
+      cwd: dir,
+      encoding: 'utf8',
+    });
+    assert.equal(aliasResult.status, 0, aliasResult.stderr);
+    for (const command of [
+      'git co other-branch',
+      'git -c alias.x=switch x other-branch',
+      'git -c include.path=aliases.inc x other-branch',
+      'git reset --soft HEAD~1',
+      'git reset HEAD~1',
+      'git rebase HEAD~1',
+      'git cherry-pick HEAD~1',
+      'git pull --ff-only',
+      'git commit --amend --no-edit',
+      'git commit --amen --no-edit',
+      'git commit --no-verify -m unsafe',
+      'git commit -n -m unsafe',
+      'git commit -an -m unsafe',
+      'git commit -anSkey -m unsafe',
+      'git push --force origin main',
+      'git push --force-with-lease origin main',
+      'git push --delete origin feature',
+      'git push --no-verify origin main',
+      'git push origin +main',
+      'git push origin feature',
+      'git update-ref refs/heads/main HEAD~1',
+      'git symbolic-ref HEAD refs/heads/other',
+      'git restore --source=HEAD~1 -- seed.txt',
+      'git branch other-branch',
+      'git branch -mnew-name',
+      'git branch --set-upstream-to=origin/main',
+      '/usr/bin/git switch other-branch',
+      'command git reset --hard',
+      'env git checkout other-branch',
+      'env TEST_MODE=1 /usr/bin/git restore seed.txt',
+      '/usr/bin/env -u TEST_MODE git reset --hard',
+      'env --unset=TEST_MODE /usr/bin/git switch other-branch',
+      'git worktree lock .',
+      'git worktree unlock .',
+      'git worktree repair .',
+      "bash -c 'git switch other-branch'",
+      "sh -lc 'git reset --hard'",
+      "eval 'git checkout other-branch'",
+      'git --no-pager switch other-branch',
+      'git -C. checkout HEAD~1',
+      'git -C /other/repo add seed.txt',
+      'git --config-env=x=Y clean -fd',
+      'git -C . switch other-branch',
+      'git -c advice.detachedHead=false checkout HEAD~1',
+      'git -c core.hooksPath=/tmp/hooks commit -m unsafe',
+      'git --git-dir=.git add seed.txt',
+      'git --git-dir=.git reset --hard',
+      'git --work-tree=. clean -fd',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `command must be blocked: ${command}\n${result.stderr}`);
+      assert.match(result.stderr, /Branch\/worktree mutation is unsafe/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode ignores aliases named after supported Git built-ins', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    for (const subcommand of ['add', 'commit', 'push']) {
+      const configured = cp.spawnSync('git', ['config', `alias.${subcommand}`, 'status'], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      assert.equal(configured.status, 0, configured.stderr);
+    }
+
+    for (const command of ['git add seed.txt', 'git commit -m safe', 'git push origin main']) {
+      const result = invokeHook(dir, bashPayload(command, dir, 'adaptive-built-in-alias'));
+      assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks non-allowlisted command executors on protected main', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    for (const command of [
+      'git commit -p',
+      'git commit --patch',
+      'git commit -i',
+      'git commit --interactive',
+      'git commit -m message -p',
+      'git commit -m message --interactive',
+      'git commit -pm message',
+      'git commit -ip',
+      "python -c 'import subprocess; subprocess.run([\"git\", \"reset\", \"--hard\"])'",
+      "printf 'HEAD~1' | xargs git reset",
+      'nice git switch other-branch',
+      'bash scripts/custom-task.sh',
+      'npm test',
+      'npm run build',
+      'pnpm run lint',
+      'yarn test',
+      'bun test',
+      'ruff --fix',
+      'python -m ruff --fix',
+      'eslint --fix',
+      'biome format --write',
+      'cargo fmt',
+      'pytest $(git reset --hard)',
+      'git add <(git reset --hard)',
+      'bun test `git reset --hard`',
+      'git ${ACTION:-reset} --hard',
+      "git $'reset' --hard",
+      'git r?set --hard',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `command must be blocked: ${command}\n${result.stderr}`);
+      assert.match(result.stderr, /outside the bounded adaptive allowlist/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode ignores stale remote branches but blocks shared lock refs', () => {
+  const dir = makeRepoOn('main');
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-guard-shared-'));
+  try {
+    assert.equal(cp.spawnSync('git', ['init', '--bare', '-q'], { cwd: remote }).status, 0);
+    assert.equal(cp.spawnSync('git', ['remote', 'add', 'shared', remote], { cwd: dir }).status, 0);
+    assert.equal(cp.spawnSync('git', ['config', 'multiagent.sharedState', 'git'], { cwd: dir }).status, 0);
+    assert.equal(cp.spawnSync('git', ['config', 'multiagent.sharedStateRemote', 'shared'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync('git', ['push', '-q', 'shared', 'HEAD:refs/heads/agent/remote/lane'], { cwd: dir }).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+
+    const staleBranch = invokeHook(dir, writePayload(path.join(dir, 'src', 'stale-ok.js'), dir));
+    assert.equal(staleBranch.status, 0, staleBranch.stderr || staleBranch.stdout);
+
+    assert.equal(
+      cp.spawnSync('git', ['push', '-q', 'shared', 'HEAD:refs/gitguardex/locks/remote-lane'], { cwd: dir }).status,
+      0,
+    );
+    const liveLock = invokeHook(dir, writePayload(path.join(dir, 'src', 'blocked.js'), dir));
+    assert.equal(liveLock.status, 2, `remote shared lock must force isolation: ${liveLock.stderr}`);
+    assert.match(liveLock.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(remote, { recursive: true, force: true });
   }
 });
 
@@ -393,6 +1025,37 @@ test('skill_guard STILL BLOCKS editing the main checkout itself while a nested a
     const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
     assert.equal(result.status, 2, `main-checkout write must still block: ${result.stderr}`);
     assert.match(result.stderr, /BLOCKED/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks main edits while a sibling lane has dirty work', () => {
+  const { dir, wt } = makeRepoWithNestedAgentWorktree();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    fs.writeFileSync(path.join(wt, 'in-progress.txt'), 'dirty\n');
+    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 2, `dirty sibling lane must force isolation: ${result.stderr}`);
+    assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+    assert.match(result.stderr, /gx branch start --new --no-transfer/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode fails closed on malformed sibling lock state', () => {
+  const { dir, wt } = makeRepoWithNestedAgentWorktree();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(wt, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    for (const lockState of ['[]\n', '{"locks":[]}\n']) {
+      fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), lockState);
+      const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+      assert.equal(result.status, 2, `invalid sibling lock state must force isolation: ${result.stderr}`);
+      assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

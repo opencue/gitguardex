@@ -10,6 +10,30 @@ Use when a GitGuardex-managed repository needs safe edits or multi-agent coordin
 Bootstrap: `gx setup`
 Ops: `gx branch start "<task>" "<agent>"`, `gx locks claim --branch "<agent-branch>" <file...>`, `gx branch finish --branch "<agent-branch>" --base <base> --via-pr --wait-for-merge --cleanup`, `gx finish --all`, `gx cleanup`
 
+## Choose the lane before editing
+
+Worktree policy is strict `always` unless the repo opts into `adaptive` with
+`GUARDEX_WORKTREE_MODE=adaptive` in `.env` or
+`git config --local multiagent.worktreeMode adaptive`.
+
+1. Run `gx status`. In adaptive mode, also inspect `list_agents` (or
+   `gx mcp list-agents --no-prs`), the current dirty paths, and `who_owns` for
+   every intended file.
+2. Stay on the current checkout only for bounded, single-agent work with no
+   competing writer, claimed target, or dirty-path overlap.
+3. Pivot to a new isolated lane when the task is substantial/long-lived,
+   another writer is active in the repo, a target is owned or dirty elsewhere,
+   or the scope expands. Use
+   `gx branch start --new --no-transfer "<bounded task>" "<agent>"`.
+4. Re-run the radar before expanding scope. Never overwrite another lane's
+   changes. If direct work already has edits when a pivot becomes necessary,
+   transfer only those known edits deliberately; do not absorb unrelated files.
+
+Direct adaptive work supports file edits, `git add`/ordinary commit/push, and
+bounded test/lint/build commands. Custom executors, scripts, or history rewrites
+pivot to an isolated lane. Isolated work uses claims and the gated
+`gx branch finish` flow below.
+
 ## Keep the default workflow lean
 
 - Default to direct T1 work in code and tests. Do not create OpenSpec artifacts from task wording alone.
@@ -24,11 +48,11 @@ Before parallel work, inspect the field with the MCP `list_agents` tool or the C
 gx mcp list-agents --no-prs
 ```
 
-For every file a writer may touch, check ownership, create an isolated lane, then claim it:
+For every file a parallel writer may touch, check ownership, create an isolated lane, then claim it:
 
 ```sh
 gx mcp who-owns path/to/file.ts
-gx branch start "<bounded task>" "<agent>"
+gx branch start --new --no-transfer "<bounded task>" "<agent>"
 gx locks claim --branch "<agent-branch>" path/to/file.ts
 ```
 

@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const hookPath = path.join(repoRoot, '.claude', 'hooks', 'agent_branch_advisor.py');
+const skillGuardPath = path.join(repoRoot, '.claude', 'hooks', 'skill_guard.py');
 const stateDir = path.join(repoRoot, '.claude', 'hooks', 'state');
 
 let counter = 0;
@@ -43,7 +44,7 @@ function invokeAdvisor(cwd, event, sessionId) {
     // Strip env that could flip branch classification so the test is deterministic.
     env: (() => {
       const e = { ...process.env };
-      for (const k of ['GUARDEX_AGENT_BRANCH_PREFIXES', 'GUARDEX_PROTECTED_BRANCHES', 'GUARDEX_ON']) delete e[k];
+      for (const k of ['GUARDEX_AGENT_BRANCH_PREFIXES', 'GUARDEX_PROTECTED_BRANCHES', 'GUARDEX_WORKTREE_MODE', 'GUARDEX_ON']) delete e[k];
       return e;
     })(),
   });
@@ -89,6 +90,67 @@ test('advisor emits only a ONE-LINE reminder on later turns of the same session'
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(statePath(sid), { force: true });
+  }
+});
+
+test('advisor stays silent on protected main when adaptive direct work is safe', () => {
+  const dir = makeRepoOn('main');
+  const sid = freshSessionId();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const result = invokeAdvisor(dir, 'SessionStart', sid);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), '', 'safe adaptive main should not demand a worktree');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(statePath(sid), { force: true });
+  }
+});
+
+test('advisor does not perform shared-remote probes for adaptive prompt routing', () => {
+  const dir = makeRepoOn('main');
+  const sid = freshSessionId();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    assert.equal(cp.spawnSync('git', ['config', 'multiagent.sharedState', 'git'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync('git', ['config', 'multiagent.sharedStateRemote', 'missing-remote'], { cwd: dir }).status,
+      0,
+    );
+    const result = invokeAdvisor(dir, 'UserPromptSubmit', sid);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), '', 'local-only advisor probe should stay responsive and silent');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(statePath(sid), { force: true });
+  }
+});
+
+test('advisor warns before work when another session owns adaptive direct main', () => {
+  const dir = makeRepoOn('main');
+  const ownerSid = freshSessionId();
+  const competingSid = freshSessionId();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const claim = cp.spawnSync('python3', [skillGuardPath], {
+      cwd: dir,
+      input: JSON.stringify({
+        session_id: ownerSid,
+        cwd: dir,
+        tool_name: 'Write',
+        tool_input: { file_path: path.join(dir, 'owned.js'), content: 'x\n' },
+      }),
+      encoding: 'utf8',
+    });
+    assert.equal(claim.status, 0, claim.stderr || claim.stdout);
+
+    const ctx = additionalContext(invokeAdvisor(dir, 'SessionStart', competingSid));
+    assert.ok(ctx, 'competing adaptive session should be warned before editing');
+    assert.match(ctx, /Agent edits and commits are BLOCKED here by gitguardex/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(statePath(ownerSid), { force: true });
+    fs.rmSync(statePath(competingSid), { force: true });
   }
 });
 

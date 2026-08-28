@@ -144,7 +144,9 @@ test('setup provisions workflow files and repo config', () => {
   assert.match(agentsContent, /GUARDEX_ON=0/);
   // Default install ships the minimal block; the full 171-line contract is opt-in via --contract.
   assert.match(agentsContent, /## Multi-Agent Safety \(minimal\)/);
-  assert.match(agentsContent, /gx branch start "<task>" "<agent-name>"/);
+  assert.match(agentsContent, /GUARDEX_WORKTREE_MODE=adaptive/);
+  assert.match(agentsContent, /small single-agent work/);
+  assert.match(agentsContent, /gx branch start --new --no-transfer "<task>" "<agent-name>"/);
   assert.match(agentsContent, /Run `gx setup --contract`/);
   assert.doesNotMatch(agentsContent, /## Multi-Agent Execution Contract/);
 
@@ -650,7 +652,8 @@ Trailing project notes after managed block.
   assert.match(nextAgents, /Trailing project notes after managed block\./);
   // Default refresh installs the minimal block; full contract is opt-in via --contract.
   assert.match(nextAgents, /## Multi-Agent Safety \(minimal\)/);
-  assert.match(nextAgents, /Work from an `agent\/\*` branch \+ worktree/);
+  assert.match(nextAgents, /GUARDEX_WORKTREE_MODE=adaptive/);
+  assert.match(nextAgents, /small single-agent work/);
   assert.match(nextAgents, /Run `gx setup --contract`/);
   assert.doesNotMatch(nextAgents, /## Multi-Agent Execution Contract/);
   assert.doesNotMatch(nextAgents, /legacy managed clause/);

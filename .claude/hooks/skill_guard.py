@@ -12,6 +12,11 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 try:
+    import fcntl
+except ImportError:  # non-POSIX: exclusive adaptive sessions must fail closed
+    fcntl = None
+
+try:
     from _analytics import emit_event
 except ImportError:
 
@@ -26,6 +31,8 @@ DEFAULT_MAIN_RS_INTEGRATOR_AGENT = os.environ.get("MAIN_RS_INTEGRATOR_AGENT", "i
 PROTECTED_BRANCH_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH"
 SHELL_GUARD_OVERRIDE_ENV = "ALLOW_BASH_ON_NON_AGENT_BRANCH"
 PRIMARY_WORKTREE_AGENT_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE"
+ADAPTIVE_SESSION_LEASE_SECONDS_ENV = "GUARDEX_ADAPTIVE_SESSION_LEASE_SEC"
+DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS = 900.0
 # Branch namespace policy.
 #
 # By default ANY branch that is not a protected base (main/dev/master, plus any
@@ -81,6 +88,16 @@ SHELL_ALLOWED_SEGMENTS = (
     re.compile(
         r"^(?:bash\s+)?(?:(?:\.{1,2}/)?scripts|(?:/|~)[^\s]*/scripts)/(?:agent-branch-start\.sh|agent-branch-finish\.sh|agent-pivot\.sh|codex-agent\.sh|install-agent-git-hooks\.sh)\b"
     ),
+)
+
+ADAPTIVE_DIRECT_SHELL_ALLOWED_SEGMENTS = (
+    re.compile(
+        r"^git\s+(?:add|push)(?:\s|$)|^git\s+commit(?![^\n]*\s(?:-[A-Za-z]*[pi][A-Za-z]*|--(?:patch|interactive))(?:\s|$))(?:\s|$)"
+    ),
+    re.compile(r"^(?:pytest|mypy|pyright|tsc)(?:\s|$)"),
+    re.compile(r"^python3?\s+-m\s+(?:pytest|mypy)(?:\s|$)"),
+    re.compile(r"^cargo\s+(?:build|check|clippy|test)(?:\s|$)"),
+    re.compile(r"^go\s+(?:build|test|vet)(?:\s|$)"),
 )
 
 
@@ -253,6 +270,664 @@ def guardex_repo_is_enabled(repo_root: Path) -> bool:
     return True
 
 
+def guardex_worktree_mode(repo_root: Path) -> str:
+    raw = os.environ.get("GUARDEX_WORKTREE_MODE")
+    if not raw:
+        raw = read_repo_dotenv_var(repo_root, "GUARDEX_WORKTREE_MODE")
+    if not raw:
+        try:
+            result = subprocess.run(
+                ["git", "config", "--local", "--get", "multiagent.worktreeMode"],
+                cwd=repo_root,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                raw = result.stdout.strip()
+        except OSError:
+            raw = ""
+    return "adaptive" if (raw or "").strip().lower() == "adaptive" else "always"
+
+
+def _clean_git_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX"):
+        env.pop(name, None)
+    return env
+
+
+def has_shared_agent_activity(repo_root: Path) -> bool:
+    try:
+        if "GUARDEX_SHARED_STATE" in os.environ:
+            mode = os.environ.get("GUARDEX_SHARED_STATE", "")
+        else:
+            mode_result = subprocess.run(
+                ["git", "config", "--local", "--get", "multiagent.sharedState"],
+                cwd=repo_root,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if mode_result.returncode not in {0, 1}:
+                return True
+            mode = mode_result.stdout.strip() if mode_result.returncode == 0 else ""
+        if mode.strip().lower() != "git":
+            return False
+
+        if "GUARDEX_SHARED_STATE_REMOTE" in os.environ:
+            remote = os.environ.get("GUARDEX_SHARED_STATE_REMOTE", "")
+        else:
+            remote_result = subprocess.run(
+                ["git", "config", "--local", "--get", "multiagent.sharedStateRemote"],
+                cwd=repo_root,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if remote_result.returncode not in {0, 1}:
+                return True
+            remote = remote_result.stdout.strip() if remote_result.returncode == 0 else "origin"
+        remote = remote.strip() or "origin"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", remote):
+            return True
+
+        shared = subprocess.run(
+            [
+                "git",
+                "ls-remote",
+                "--refs",
+                remote,
+                "refs/gitguardex/locks/*",
+            ],
+            cwd=repo_root,
+            env=_clean_git_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return shared.returncode != 0 or bool(shared.stdout.strip())
+
+
+def has_competing_worktree_activity(
+    repo_root: Path,
+    *,
+    include_shared: bool = True,
+) -> bool:
+    if include_shared and has_shared_agent_activity(repo_root):
+        return True
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo_root,
+            env=_clean_git_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return True
+    if result.returncode != 0:
+        return True
+
+    primary = repo_root.resolve()
+    worktrees = [
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in result.stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+    for worktree in worktrees:
+        if worktree == primary or not worktree.is_dir():
+            continue
+        try:
+            dirty = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=normal"],
+                cwd=worktree,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return True
+        if dirty.returncode != 0:
+            return True
+        dirty_paths = [
+            line[3:]
+            for line in dirty.stdout.splitlines()
+            if len(line) > 3
+            and not line[3:].startswith(".omx/")
+            and not line[3:].startswith(".omc/")
+        ]
+        if dirty_paths:
+            return True
+
+        lock_path = worktree / ".omx" / "state" / "agent-file-locks.json"
+        try:
+            lock_data = json.loads(lock_path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError, ValueError):
+            return True
+        if not isinstance(lock_data, dict):
+            return True
+        locks = lock_data.get("locks")
+        if locks is not None and not isinstance(locks, dict):
+            return True
+        if locks:
+            return True
+    return False
+
+
+def target_has_file_lock(repo_root: Path, file_path: str, session_id: str) -> bool:
+    """Fail closed when any foreign local registry claims the edit target."""
+    try:
+        target_path = Path(file_path)
+        lexical_target = target_path.parent.resolve() / target_path.name
+        relative_path = lexical_target.relative_to(repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return False
+    try:
+        worktree_result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo_root,
+            env=_clean_git_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return True
+    if worktree_result.returncode != 0:
+        return True
+
+    for line in worktree_result.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        lock_path = Path(line.removeprefix("worktree ")) / ".omx" / "state" / "agent-file-locks.json"
+        try:
+            lock_data = json.loads(lock_path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError, ValueError):
+            return True
+        if not isinstance(lock_data, dict):
+            return True
+        locks = lock_data.get("locks", {})
+        if not isinstance(locks, dict):
+            return True
+        branch = current_branch(repo_root)
+        target_prefix = "" if relative_path == "." else f"{relative_path.rstrip('/')}/"
+        locked_paths = {
+            path.rstrip("/")
+            for path, owner in locks.items()
+            if not isinstance(owner, dict)
+            or str(owner.get("branch", "")) != branch
+            or str(owner.get("agent", "")) != session_id
+        }
+        ancestor_claimed = any(
+            locked_path in {"", "."}
+            or relative_path == locked_path
+            or relative_path.startswith(f"{locked_path}/")
+            for locked_path in locked_paths
+        )
+        if ancestor_claimed or (
+            target_prefix and any(path.startswith(target_prefix) for path in locked_paths)
+        ) or (not target_prefix and locked_paths):
+            return True
+    return False
+
+
+def adaptive_git_lock_error(
+    repo_root: Path,
+    command: str,
+    session_id: str,
+    command_cwd: str = "",
+) -> str | None:
+    """Reject adaptive staging/commits that can touch a claimed path."""
+    for segment in split_shell_segments(command):
+        tokens = shell_segment_tokens(normalize_shell_segment(segment))
+        if len(tokens) < 2 or Path(tokens[0]).name != "git":
+            continue
+        subcommand = tokens[1]
+        if subcommand == "add":
+            targets: list[str] = []
+            after_separator = False
+            unbounded_pathspec = False
+            index = 2
+            while index < len(tokens):
+                token = tokens[index]
+                if after_separator:
+                    targets.append(token)
+                elif token == "--":
+                    after_separator = True
+                elif token in {"-A", "--all", "-u", "--update"}:
+                    pass
+                elif token in {"--chmod", "--pathspec-from-file"}:
+                    index += 1
+                    if token == "--pathspec-from-file":
+                        unbounded_pathspec = True
+                elif token.startswith("--pathspec-from-file="):
+                    unbounded_pathspec = True
+                elif token.startswith("-"):
+                    pass
+                elif token.startswith(":"):
+                    unbounded_pathspec = True
+                else:
+                    targets.append(token)
+                index += 1
+            if not targets or unbounded_pathspec:
+                targets.append(str(repo_root))
+            for target in targets:
+                target_path = Path(target)
+                if not target_path.is_absolute():
+                    target_path = Path(command_cwd or repo_root) / target_path
+                if target_has_file_lock(repo_root, str(target_path), session_id):
+                    return (
+                        "BLOCKED: Adaptive git add target is claimed by another agent lane.\n"
+                        "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
+                    )
+        elif subcommand == "commit":
+            arguments = tokens[2:]
+            option_values = {
+                "-C",
+                "-F",
+                "-c",
+                "-m",
+                "-t",
+                "--author",
+                "--cleanup",
+                "--date",
+                "--file",
+                "--fixup",
+                "--message",
+                "--reedit-message",
+                "--reuse-message",
+                "--squash",
+                "--template",
+                "--trailer",
+            }
+            include_all_worktree = False
+            pathspecs: list[str] = []
+            pathspec_mode = ""
+            after_separator = False
+            skip_value = False
+            for argument in arguments:
+                if skip_value:
+                    skip_value = False
+                elif after_separator:
+                    pathspecs.append(argument)
+                    if pathspec_mode != "include":
+                        pathspec_mode = "only"
+                elif argument == "--":
+                    after_separator = True
+                elif argument in option_values:
+                    skip_value = True
+                elif argument in {"-a", "--all"}:
+                    include_all_worktree = True
+                elif argument == "--pathspec-from-file":
+                    include_all_worktree = True
+                    skip_value = True
+                elif argument.startswith("--pathspec-from-file="):
+                    include_all_worktree = True
+                elif argument.startswith("--only="):
+                    pathspecs.append(argument.split("=", 1)[1])
+                    pathspec_mode = "only"
+                elif argument.startswith("--include="):
+                    pathspecs.append(argument.split("=", 1)[1])
+                    pathspec_mode = "include"
+                elif argument in {"-o", "--only"}:
+                    pathspec_mode = "only"
+                elif argument in {"-i", "--include"}:
+                    pathspec_mode = "include"
+                elif len(argument) > 2 and argument.startswith("-o"):
+                    pathspecs.append(argument[2:])
+                    pathspec_mode = "only"
+                elif len(argument) > 2 and argument.startswith("-i"):
+                    pathspecs.append(argument[2:])
+                    pathspec_mode = "include"
+                elif re.fullmatch(
+                    r"-[npqsvio]*a[npqsvio]*(?:[mS].*)?", argument
+                ) is not None:
+                    include_all_worktree = True
+                elif not argument.startswith("-"):
+                    pathspecs.append(argument)
+                    if pathspec_mode != "include":
+                        pathspec_mode = "only"
+            changed_paths: set[str] = set()
+            diff_commands = []
+            if pathspec_mode != "only":
+                diff_commands.append(
+                    ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"]
+                )
+            if include_all_worktree:
+                diff_commands.append(["git", "diff", "--no-renames", "--name-only", "-z"])
+            elif pathspecs:
+                normalized_pathspecs: list[str] = []
+                for pathspec in pathspecs:
+                    if pathspec.startswith(":"):
+                        include_all_worktree = True
+                        break
+                    candidate = Path(pathspec)
+                    if not candidate.is_absolute():
+                        candidate = Path(command_cwd or repo_root) / candidate
+                    try:
+                        relative = candidate.resolve().relative_to(repo_root.resolve()).as_posix()
+                    except (OSError, ValueError):
+                        include_all_worktree = True
+                        break
+                    if relative == ".":
+                        include_all_worktree = True
+                        break
+                    normalized_pathspecs.append(relative)
+                if include_all_worktree:
+                    diff_commands.append(
+                        ["git", "diff", "--no-renames", "--name-only", "-z"]
+                    )
+                elif normalized_pathspecs:
+                    comparison = ["HEAD"] if pathspec_mode == "only" else []
+                    diff_commands.append(
+                        [
+                            "git",
+                            "diff",
+                            *comparison,
+                            "--no-renames",
+                            "--name-only",
+                            "-z",
+                            "--",
+                            *normalized_pathspecs,
+                        ]
+                    )
+            for diff_args in diff_commands:
+                try:
+                    changed = subprocess.run(
+                        diff_args,
+                        cwd=repo_root,
+                        env=_clean_git_env(),
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                except OSError:
+                    return "BLOCKED: Adaptive commit cannot validate changed file ownership."
+                if changed.returncode != 0:
+                    return "BLOCKED: Adaptive commit cannot validate changed file ownership."
+                changed_paths.update(path for path in changed.stdout.split("\0") if path)
+            for changed_path in changed_paths:
+                if target_has_file_lock(repo_root, str(repo_root / changed_path), session_id):
+                    return (
+                        "BLOCKED: Adaptive commit includes a file claimed by another agent lane.\n"
+                        "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
+                    )
+    return None
+
+
+def adaptive_primary_session_lease_error(
+    repo_root: Path,
+    session_id: str,
+    *,
+    claim: bool = True,
+) -> str | None:
+    """Return why this session cannot own adaptive direct work, or None.
+
+    The lock file lives in the Git common dir, so every process operating on
+    the primary checkout serializes the lease read/update. This closes the
+    check-then-act race where two sessions could both observe no sibling
+    worktree and start mutating the same protected checkout.
+
+    ``claim=False`` is a read-only advisor probe: it reports a live foreign
+    owner without reserving the checkout merely because a session started.
+    """
+    if not isinstance(session_id, str) or not session_id.strip() or session_id == "unknown":
+        return "BLOCKED: Adaptive direct work requires a stable agent session id."
+    if fcntl is None:
+        return "BLOCKED: Adaptive direct work cannot acquire an exclusive OS session lease."
+
+    raw_ttl = os.environ.get(ADAPTIVE_SESSION_LEASE_SECONDS_ENV, "").strip()
+    try:
+        ttl_seconds = float(raw_ttl) if raw_ttl else DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS
+    except ValueError:
+        return "BLOCKED: Adaptive direct work session lease TTL is invalid."
+    if not (0 < ttl_seconds < float("inf")):
+        return "BLOCKED: Adaptive direct work session lease TTL must be positive and finite."
+
+    common_dir = git_common_dir(repo_root)
+    if not common_dir:
+        return "BLOCKED: Adaptive direct work cannot resolve the shared Git directory."
+    state_dir = Path(common_dir) / "gitguardex"
+    lease_path = state_dir / "adaptive-direct-session.json"
+    lock_path = state_dir / "adaptive-direct-session.lock"
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        lock_handle = open(lock_path, "a+")
+    except OSError:
+        return "BLOCKED: Adaptive direct work cannot open its exclusive session lease."
+
+    acquired = False
+    try:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            return (
+                "BLOCKED: Adaptive direct work is owned by another active agent session "
+                "in this checkout."
+            )
+        except OSError:
+            return "BLOCKED: Adaptive direct work cannot lock its exclusive session lease."
+
+        lease: dict = {}
+        try:
+            lease = json.loads(lease_path.read_text())
+        except FileNotFoundError:
+            pass
+        except (OSError, json.JSONDecodeError, ValueError):
+            return "BLOCKED: Adaptive direct work session lease state is unreadable."
+        if not isinstance(lease, dict):
+            return "BLOCKED: Adaptive direct work session lease state is malformed."
+
+        owner = lease.get("session_id")
+        last_seen = lease.get("last_seen_epoch")
+        if owner is not None and not isinstance(owner, str):
+            return "BLOCKED: Adaptive direct work session lease owner is malformed."
+        if last_seen is not None and (
+            isinstance(last_seen, bool) or not isinstance(last_seen, (int, float))
+        ):
+            return "BLOCKED: Adaptive direct work session lease timestamp is malformed."
+
+        now = time.time()
+        foreign_is_live = bool(
+            owner
+            and owner != session_id
+            and last_seen is not None
+            and now - float(last_seen) < ttl_seconds
+        )
+        if foreign_is_live:
+            return (
+                "BLOCKED: Adaptive direct work is owned by another active agent session "
+                "in this checkout.\n"
+                "Wait for that session to finish or open an isolated lane:\n"
+                '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+            )
+
+        if claim:
+            tmp_path = lease_path.with_suffix(f".json.tmp-{os.getpid()}")
+            try:
+                tmp_path.write_text(
+                    json.dumps(
+                        {
+                            "session_id": session_id,
+                            "last_seen_epoch": now,
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                os.replace(tmp_path, lease_path)
+            except OSError:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+                return "BLOCKED: Adaptive direct work cannot update its exclusive session lease."
+        return None
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_handle.close()
+
+
+def adaptive_command_lock_tool_input(
+    repo_root: Path,
+    tool_input: dict,
+    session_id: str,
+) -> dict | None:
+    """Wrap an adaptive Bash command so its session lock spans execution."""
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    if (
+        os.environ.get(PROTECTED_BRANCH_EDIT_OVERRIDE_ENV) == "1"
+        or os.environ.get(SHELL_GUARD_OVERRIDE_ENV) == "1"
+        or fcntl is None
+        or current_branch(repo_root) not in resolve_protected_branches(repo_root)
+        or guardex_worktree_mode(repo_root) != "adaptive"
+    ):
+        return None
+    common_dir = git_common_dir(repo_root)
+    if not common_dir:
+        return None
+    state_dir = Path(common_dir) / "gitguardex"
+    lock_path = state_dir / "adaptive-direct-session.lock"
+    lease_path = state_dir / "adaptive-direct-session.json"
+    wrapper = " ".join(
+        shlex.quote(value)
+        for value in (
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--adaptive-command-lock",
+            str(lock_path),
+            str(lease_path),
+            session_id,
+            command,
+        )
+    )
+    updated_input = dict(tool_input)
+    updated_input["command"] = wrapper
+    return updated_input
+
+
+def run_with_adaptive_command_lock(
+    lock_path: str,
+    lease_path: str,
+    session_id: str,
+    command: str,
+) -> None:
+    """Execute one shell command while holding the checkout's adaptive lock."""
+    if fcntl is None:
+        print("Adaptive direct work requires POSIX file locking.", file=sys.stderr)
+        sys.exit(126)
+    try:
+        lock_handle = open(lock_path, "a+")
+    except OSError as error:
+        print(f"Adaptive direct command lock failed: {error}", file=sys.stderr)
+        sys.exit(126)
+    with lock_handle:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("Adaptive direct command lock is already owned.", file=sys.stderr)
+            sys.exit(126)
+        except OSError as error:
+            print(f"Adaptive direct command lock failed: {error}", file=sys.stderr)
+            sys.exit(126)
+        try:
+            lease = json.loads(Path(lease_path).read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            print("Adaptive direct command lease is unreadable.", file=sys.stderr)
+            sys.exit(126)
+        if not isinstance(lease, dict) or lease.get("session_id") != session_id:
+            print("Adaptive direct command lease owner changed before execution.", file=sys.stderr)
+            sys.exit(126)
+        lock_token = os.urandom(32).hex()
+        lease["lock_token"] = lock_token
+        lease["last_seen_epoch"] = time.time()
+        lease_tmp = Path(lease_path).with_name(f"{Path(lease_path).name}.tmp-{os.getpid()}")
+        try:
+            lease_tmp.write_text(json.dumps(lease, sort_keys=True) + "\n")
+            os.replace(lease_tmp, lease_path)
+        except OSError as error:
+            print(f"Adaptive direct command lease update failed: {error}", file=sys.stderr)
+            sys.exit(126)
+        command_env = dict(os.environ)
+        command_env["GUARDEX_ADAPTIVE_COMMAND_LOCK_SESSION_ID"] = session_id
+        command_env["GUARDEX_ADAPTIVE_COMMAND_LOCK_TOKEN"] = lock_token
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                executable="/bin/bash",
+                env=command_env,
+            )
+        except OSError as error:
+            print(f"Adaptive direct command execution failed: {error}", file=sys.stderr)
+            sys.exit(126)
+    sys.exit(completed.returncode)
+
+
+def adaptive_direct_work_error(
+    repo_root: Path,
+    session_id: str,
+    *,
+    file_path: str = "",
+) -> str | None:
+    if guardex_worktree_mode(repo_root) != "adaptive":
+        return None
+    common_dir = git_common_dir(repo_root)
+    if not common_dir or fcntl is None:
+        return "BLOCKED: Adaptive direct work cannot lock file-claim coordination."
+    claim_lock_path = Path(common_dir) / "agent-file-locks.lock"
+    try:
+        claim_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_lock = open(claim_lock_path, "a+")
+    except OSError:
+        return "BLOCKED: Adaptive direct work cannot open file-claim coordination."
+    acquired = False
+    try:
+        try:
+            fcntl.flock(claim_lock.fileno(), fcntl.LOCK_EX)
+            acquired = True
+        except OSError:
+            return "BLOCKED: Adaptive direct work cannot lock file-claim coordination."
+        if has_competing_worktree_activity(repo_root):
+            return (
+                "BLOCKED: Adaptive direct work blocked: another agent lane has dirty files or locks.\n"
+                "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
+                '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+            )
+        if file_path and target_has_file_lock(repo_root, file_path, session_id):
+            return (
+                "BLOCKED: Adaptive direct work target is claimed by another agent lane.\n"
+                "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
+            )
+        lease_error = adaptive_primary_session_lease_error(repo_root, session_id)
+        return lease_error or ""
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(claim_lock.fileno(), fcntl.LOCK_UN)
+        finally:
+            claim_lock.close()
+
+
 def current_branch(repo_root: Path) -> str:
     try:
         result = subprocess.run(
@@ -344,6 +1019,7 @@ def git_common_dir(repo_root: Path) -> "str | None":
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
             cwd=repo_root,
+            env=_clean_git_env(),
             check=False,
             capture_output=True,
             text=True,
@@ -437,13 +1113,28 @@ def is_codex_session() -> bool:
     )
 
 
-def ensure_protected_branch_edit_allowed(file_path: str) -> str | None:
+def ensure_protected_branch_edit_allowed(
+    file_path: str,
+    session_id: str = "unknown",
+    target_file_path: str = "",
+) -> str | None:
     """Block Codex edits on non-agent branches and all edits on protected branches."""
     if os.environ.get(PROTECTED_BRANCH_EDIT_OVERRIDE_ENV) == "1":
         return None
     repo_root = find_repo_root(file_path)
     branch = current_branch(repo_root)
-    if is_agent_branch(branch, resolve_protected_branches(repo_root)):
+    protected = resolve_protected_branches(repo_root)
+    if branch in protected:
+        adaptive_error = adaptive_direct_work_error(
+            repo_root,
+            session_id,
+            file_path=target_file_path or file_path,
+        )
+        if adaptive_error == "":
+            return None
+        if adaptive_error:
+            return adaptive_error
+    if is_agent_branch(branch, protected):
         return None
 
     if branch in PROTECTED_BRANCHES:
@@ -568,7 +1259,231 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
     return True
 
 
-def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str | None:
+def has_dynamic_adaptive_shell_syntax(command: str) -> bool:
+    """Detect shell expansion syntax while allowing quoted or escaped literals."""
+    single_quoted = False
+    double_quoted = False
+    escaped = False
+    for index, character in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and not single_quoted:
+            escaped = True
+            continue
+        if character == "'" and not double_quoted:
+            single_quoted = not single_quoted
+            continue
+        if character == '"' and not single_quoted:
+            double_quoted = not double_quoted
+            continue
+        if single_quoted:
+            continue
+        if character in "`$":
+            return True
+        if not double_quoted and character in "*?[]{}":
+            return True
+        if (
+            not double_quoted
+            and character in "<>"
+            and index + 1 < len(command)
+            and command[index + 1] == "("
+        ):
+            return True
+    return False
+
+
+def is_allowed_adaptive_direct_shell_command(command: str) -> bool:
+    normalized = command.strip()
+    if has_dynamic_adaptive_shell_syntax(normalized):
+        return False
+    segments = split_shell_segments(normalized)
+    if not segments:
+        return True
+    for raw_segment in segments:
+        if shell_segment_has_output_redirection(raw_segment):
+            return False
+        segment = normalize_shell_segment(raw_segment)
+        if not segment:
+            continue
+        if not any(pattern.match(segment) for pattern in ADAPTIVE_DIRECT_SHELL_ALLOWED_SEGMENTS):
+            return False
+    return True
+
+
+def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
+    options_with_values = {
+        "-C",
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+    for segment in split_shell_segments(command):
+        tokens = shell_segment_tokens(normalize_shell_segment(segment))
+        if not tokens:
+            continue
+        index = 0
+        while index < len(tokens) and tokens[index] in {"command", "builtin", "exec"}:
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+        if index < len(tokens) and Path(tokens[index]).name == "env":
+            index += 1
+            while index < len(tokens):
+                token = tokens[index]
+                if token == "--":
+                    index += 1
+                    break
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token):
+                    index += 1
+                    continue
+                if token in {"-S", "--split-string"} or token.startswith(
+                    ("-S", "--split-string=")
+                ):
+                    return True
+                if token in {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}:
+                    index += 2
+                    continue
+                if token.startswith(
+                    ("-u", "--unset=", "-C", "--chdir=", "--argv0=")
+                ):
+                    index += 1
+                    continue
+                if token.startswith("-"):
+                    index += 1
+                    continue
+                break
+        if index >= len(tokens) or Path(tokens[index]).name != "git":
+            if index < len(tokens):
+                executable = Path(tokens[index]).name
+                shell_options = tokens[index + 1 :]
+                if executable == "eval" or (
+                    executable in {"bash", "dash", "fish", "ksh", "sh", "zsh"}
+                    and any(
+                        option.startswith("-") and "c" in option[1:]
+                        for option in shell_options
+                    )
+                ):
+                    return True
+            continue
+        index += 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            option = tokens[index]
+            if option in options_with_values:
+                if index + 1 >= len(tokens):
+                    return True
+                return True
+            if option.startswith(
+                (
+                    "-C",
+                    "-c",
+                    "--config-env=",
+                    "--exec-path=",
+                    "--git-dir=",
+                    "--namespace=",
+                    "--super-prefix=",
+                    "--work-tree=",
+                )
+            ):
+                return True
+            index += 1
+        if index >= len(tokens):
+            continue
+        subcommand = tokens[index]
+        arguments = tokens[index + 1 :]
+        if subcommand in {
+            "am",
+            "checkout",
+            "cherry-pick",
+            "switch",
+            "clean",
+            "merge",
+            "pull",
+            "rebase",
+            "reset",
+            "restore",
+            "revert",
+            "symbolic-ref",
+            "update-ref",
+        }:
+            return True
+        if subcommand == "commit" and any(
+            argument == "-n"
+            or re.fullmatch(r"-[apqsvio]*n[apqsvio]*(?:[mS].*)?", argument) is not None
+            or any(
+                len(argument) >= 4 and option.startswith(argument)
+                for option in ("--amend", "--no-verify")
+            )
+            for argument in arguments
+        ):
+            return True
+        if subcommand == "push":
+            branch = current_branch(repo_root)
+            if (
+                len(arguments) != 2
+                or any(argument.startswith(("-", "+")) or ":" in argument for argument in arguments)
+                or arguments[1] not in {branch, f"refs/heads/{branch}", "HEAD"}
+            ):
+                return True
+        if subcommand == "branch" and arguments and any(
+            not argument.startswith("-")
+            or argument
+            in {
+                "-c",
+                "-C",
+                "-d",
+                "-D",
+                "-m",
+                "-M",
+                "-u",
+                "--copy",
+                "--delete",
+                "--edit-description",
+                "--move",
+                "--set-upstream-to",
+                "--unset-upstream",
+            }
+            or argument.startswith(
+                ("-c", "-C", "-d", "-D", "-m", "-M", "-u", "--set-upstream-to=")
+            )
+            for argument in arguments
+        ):
+            return True
+        if subcommand == "worktree" and any(
+            argument in {"add", "lock", "move", "prune", "remove", "repair", "unlock"}
+            for argument in arguments
+        ):
+            return True
+        try:
+            alias = subprocess.run(
+                ["git", "config", "--get", f"alias.{subcommand}"],
+                cwd=repo_root,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return True
+        if alias.returncode not in {0, 1} or (
+            subcommand not in {"add", "commit", "push"}
+            and alias.returncode == 0
+            and alias.stdout.strip()
+        ):
+            return True
+    return False
+
+
+def ensure_non_agent_shell_command_allowed(
+    repo_root: Path,
+    command: str,
+    session_id: str = "unknown",
+    command_cwd: str = "",
+) -> str | None:
     if not command:
         return None
     if (
@@ -578,12 +1493,39 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
         return None
 
     branch = current_branch(repo_root)
-    if is_agent_branch(branch, resolve_protected_branches(repo_root)):
+    protected = resolve_protected_branches(repo_root)
+    if is_agent_branch(branch, protected):
         return None
+    adaptive_mode = branch in protected and guardex_worktree_mode(repo_root) == "adaptive"
+    if adaptive_mode and is_unsafe_primary_git_command(repo_root, command):
+        return (
+            f"BLOCKED: Branch/worktree mutation is unsafe on protected branch '{branch}'.\n"
+            "Use `gx branch start --new --no-transfer` instead."
+        )
     if is_allowed_non_agent_shell_command(command):
+        if adaptive_mode:
+            adaptive_error = adaptive_direct_work_error(repo_root, session_id)
+            if adaptive_error:
+                return adaptive_error
         return None
 
-    if branch in resolve_protected_branches(repo_root):
+    if adaptive_mode:
+        if not is_allowed_adaptive_direct_shell_command(command):
+            return (
+                f"BLOCKED: Shell command is outside the bounded adaptive allowlist on protected branch '{branch}'.\n"
+                "Use an isolated lane for custom executors or scripts:\n"
+                '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+            )
+        git_lock_error = adaptive_git_lock_error(repo_root, command, session_id, command_cwd)
+        if git_lock_error:
+            return git_lock_error
+        adaptive_error = adaptive_direct_work_error(repo_root, session_id)
+        if adaptive_error == "":
+            return None
+        if adaptive_error:
+            return adaptive_error
+
+    if branch in protected:
         blocked_scope = f"protected branch '{branch}'"
     else:
         blocked_scope = f"non-agent branch '{branch or 'HEAD'}'"
@@ -686,6 +1628,9 @@ def ensure_main_rs_lock(file_path: str, session_id: str) -> str | None:
 
 
 def main() -> None:
+    if len(sys.argv) == 6 and sys.argv[1] == "--adaptive-command-lock":
+        run_with_adaptive_command_lock(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+
     try:
         input_data = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, EOFError):
@@ -700,7 +1645,12 @@ def main() -> None:
         sys.exit(0)
 
     shell_command = extract_shell_command(tool_input)
-    shell_command_error = ensure_non_agent_shell_command_allowed(repo_root, shell_command)
+    shell_command_error = ensure_non_agent_shell_command_allowed(
+        repo_root,
+        shell_command,
+        session_id,
+        cwd,
+    )
     if shell_command_error:
         emit_event(
             session_id,
@@ -715,6 +1665,19 @@ def main() -> None:
         )
         print(shell_command_error, file=sys.stderr)
         sys.exit(2)
+
+    updated_tool_input = adaptive_command_lock_tool_input(repo_root, tool_input, session_id)
+    if updated_tool_input is not None:
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "updatedInput": updated_tool_input,
+                    }
+                }
+            )
+        )
 
     target_paths: list[str] = []
     if isinstance(file_path, str) and file_path.strip():
@@ -753,6 +1716,13 @@ def main() -> None:
     session_common_dir = git_common_dir(repo_root)
     for target_path in in_repo_targets:
         abs_target = resolve_target_path(target_path, repo_root, cwd)
+        lexical_target = Path(target_path).expanduser()
+        if not lexical_target.is_absolute():
+            lexical_target = Path(cwd or repo_root) / lexical_target
+        try:
+            lexical_target = lexical_target.parent.resolve() / lexical_target.name
+        except OSError:
+            pass
         target_root = find_repo_root(str(abs_target))
         # Judge by the target's OWN branch only when it lives in a linked
         # worktree of the SAME repo (shared git common dir). For the session
@@ -768,7 +1738,11 @@ def main() -> None:
             judge_path = str(abs_target)
         else:
             judge_path = str(repo_root)
-        protected_branch_error = ensure_protected_branch_edit_allowed(judge_path)
+        protected_branch_error = ensure_protected_branch_edit_allowed(
+            judge_path,
+            session_id,
+            str(lexical_target),
+        )
         if protected_branch_error:
             emit_event(
                 session_id,

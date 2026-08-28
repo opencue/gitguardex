@@ -6,16 +6,16 @@ Every other gitguardex guard is reactive: skill_guard.py (PreToolUse) and the
 pre-commit git hook only fire once the agent *attempts* a blocked action, so the
 agent learns the rule by smacking into a wall, recovering, and smacking into the
 next one. This advisor surfaces the branch state and the sanctioned
-`gx branch start` command up front, so the agent's first move on a protected
-branch is to open an isolated worktree instead of bouncing off the commit guard.
+`gx branch start` command up front when strict or competing work requires it.
 
 Behaviour:
   - Silent on agent/* (and other recognized agent) branches — the sanctioned
     state, zero noise.
   - Silent on non-agent, non-protected branches (e.g. feature/*) — Claude may
     edit there and the guards allow it.
-  - On a protected branch (dev/main/master + any GUARDEX_PROTECTED_BRANCHES /
-    multiagent.protectedBranches additions) it injects an advisory.
+  - On a protected branch it injects an advisory in strict mode, or when an
+    adaptive repo has competing dirty/locked worktrees. Safe adaptive direct
+    work stays silent.
   - Fail-open: any error → no output, exit 0. Never blocks a session or a prompt.
 
 Wired into BOTH events (see EXPECTED_HOOK_MATCHERS in src/cli/commands/claude.js):
@@ -48,9 +48,12 @@ from pathlib import Path
 
 try:
     from skill_guard import (
+        adaptive_primary_session_lease_error,
         current_branch,
         find_repo_root,
         guardex_repo_is_enabled,
+        guardex_worktree_mode,
+        has_competing_worktree_activity,
         is_agent_branch,
         resolve_protected_branches,
     )
@@ -207,7 +210,19 @@ def main() -> None:
         protected = resolve_protected_branches(repo_root)
     except Exception:  # noqa: BLE001
         protected = set()
+    adaptive_direct_is_safe = False
     if branch and not is_agent_branch(branch) and branch in protected:
+        adaptive_direct_is_safe = (
+            guardex_worktree_mode(repo_root) == "adaptive"
+            and not has_competing_worktree_activity(repo_root, include_shared=False)
+            and adaptive_primary_session_lease_error(
+                repo_root,
+                session_id,
+                claim=False,
+            )
+            is None
+        )
+    if branch and not is_agent_branch(branch) and branch in protected and not adaptive_direct_is_safe:
         if already_advised(session_id):
             advisory = reminder_text(branch)
         else:

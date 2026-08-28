@@ -63,6 +63,13 @@ if [[ -n "${CLAUDECODE:-}" || -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
   is_agent_session=1
 fi
 
+worktree_mode="always"
+if declare -F guardex_repo_worktree_mode >/dev/null 2>&1; then
+  worktree_mode="$(guardex_repo_worktree_mode "$repo_root")"
+elif [[ "${GUARDEX_WORKTREE_MODE:-}" == "adaptive" ]]; then
+  worktree_mode="adaptive"
+fi
+
 is_vscode_git_context=0
 if [[ -n "${VSCODE_GIT_IPC_HANDLE:-}" || -n "${VSCODE_GIT_ASKPASS_NODE:-}" || -n "${VSCODE_IPC_HOOK_CLI:-}" ]]; then
   is_vscode_git_context=1
@@ -94,6 +101,30 @@ for protected_branch in $protected_branches_raw; do
     break
   fi
 done
+
+# Adaptive mode is an explicit repo opt-in for bounded, single-agent work on
+# the protected checkout. The agent workflow performs the radar/ownership
+# preflight before editing and pivots to a worktree when scope or concurrency
+# grows. Strict mode remains the default.
+is_adaptive_direct_commit=0
+if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" && "$is_protected_branch" == "1" ]]; then
+  if ! declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
+    || guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
+    cat >&2 <<'MSG'
+[guardex-adaptive] Adaptive direct commit blocked: another agent lane has dirty files or locks.
+Inspect `gx mcp list-agents --no-prs`, then isolate this work:
+  gx branch start --new --no-transfer "<task-or-plan>" "<agent-name>"
+MSG
+    exit 1
+  fi
+  if ! declare -F guardex_claim_adaptive_session_lease >/dev/null 2>&1 \
+    || ! guardex_claim_adaptive_session_lease "$repo_root"; then
+    echo "[guardex-adaptive] Adaptive direct commit blocked: another agent session owns this checkout." >&2
+    exit 1
+  fi
+  is_adaptive_direct_commit=1
+  # Continue into the remaining commit validations instead of bypassing them.
+fi
 
 codex_require_agent_branch_raw="${GUARDEX_CODEX_REQUIRE_AGENT_BRANCH:-$(git config --get multiagent.codexRequireAgentBranch || true)}"
 if [[ -z "$codex_require_agent_branch_raw" ]]; then
@@ -138,7 +169,7 @@ if [[ "$is_codex_session" == "1" && "$is_protected_branch" == "1" ]]; then
   fi
 fi
 
-if [[ "$should_require_codex_agent_branch" == "1" && "${GUARDEX_ALLOW_CODEX_ON_NON_AGENT:-0}" != "1" ]]; then
+if [[ "$is_adaptive_direct_commit" != "1" && "$should_require_codex_agent_branch" == "1" && "${GUARDEX_ALLOW_CODEX_ON_NON_AGENT:-0}" != "1" ]]; then
   if [[ "$is_codex_session" == "1" && "$branch" != agent/* ]]; then
     if [[ "$is_protected_branch" == "1" ]]; then
       if [[ "$is_codex_managed_only_commit_on_protected" == "1" ]]; then
@@ -164,7 +195,7 @@ MSG
   fi
 fi
 
-if [[ "$is_protected_branch" == "1" ]]; then
+if [[ "$is_protected_branch" == "1" && "$is_adaptive_direct_commit" != "1" ]]; then
   # Humans may commit directly on protected branches; only agent sessions
   # (Codex / Claude Code / OMX) are blocked.
   if [[ "$is_agent_session" != "1" ]]; then
@@ -208,8 +239,8 @@ MSG
   exit 1
 fi
 
-if [[ "$branch" == agent/* ]]; then
-  if [[ "${GUARDEX_AUTOCLAIM_STAGED_LOCKS:-1}" == "1" ]]; then
+if [[ "$branch" == agent/* || "$is_adaptive_direct_commit" == "1" ]]; then
+  if [[ "$branch" == agent/* && "${GUARDEX_AUTOCLAIM_STAGED_LOCKS:-1}" == "1" ]]; then
     # Auto-claim non-deletion staged paths. Deletions need an explicit
     # `--allow-delete` flag below so `locks validate --staged` doesn't
     # reject the commit on the same trip the user staged the delete.
@@ -254,7 +285,11 @@ if [[ "$branch" == agent/* ]]; then
     fi
   fi
 
-  if ! run_guardex_cli locks validate --branch "$branch" --staged; then
+  _validate_args=(locks validate --branch "$branch" --staged)
+  if [[ "$is_adaptive_direct_commit" == "1" ]]; then
+    _validate_args+=(--allow-unclaimed)
+  fi
+  if ! run_guardex_cli "${_validate_args[@]}"; then
     cat >&2 <<'MSG'
 [agent-branch-guard] Agent branch commits require file ownership locks.
 Claim files first:

@@ -132,6 +132,39 @@ defineSpawnSuite('agent-file-locks migration path', () => {
   });
 });
 
+defineSpawnSuite('agent-file-locks adaptive direct coordination', () => {
+  test('a live adaptive primary-checkout lease blocks isolated claims', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'fileA.txt');
+    const stateDir = path.join(repoDir, '.git', 'gitguardex');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'adaptive-direct-session.json'),
+      `${JSON.stringify({ session_id: 'direct-owner', last_seen_epoch: Date.now() / 1000 })}\n`,
+    );
+
+    const blocked = runLockTool(
+      ['claim', '--branch', 'agent/other/lane', '--agent', 'isolated-owner', 'fileA.txt'],
+      repoDir,
+    );
+    assert.equal(blocked.status, 1, blocked.stderr || blocked.stdout);
+    assert.match(blocked.stderr, /adaptive direct work owns the primary checkout as direct-owner/);
+
+    const spoofedOwner = runLockTool(
+      ['claim', '--branch', 'main', '--agent', 'direct-owner', 'fileA.txt'],
+      repoDir,
+    );
+    assert.equal(spoofedOwner.status, 1, spoofedOwner.stderr || spoofedOwner.stdout);
+
+    const owner = runNodeWithEnv(
+      ['locks', 'claim', '--branch', 'main', '--agent', 'direct-owner', 'fileA.txt'],
+      repoDir,
+      { CODEX_THREAD_ID: 'direct-owner' },
+    );
+    assert.equal(owner.status, 0, owner.stderr || owner.stdout);
+  });
+});
+
 const LOCK_PY = path.resolve(__dirname, '..', 'templates', 'scripts', 'agent-file-locks.py');
 // Drive the python tool directly with an explicit cwd so a LINKED worktree
 // resolves to itself (git rev-parse --show-toplevel), exercising the real
