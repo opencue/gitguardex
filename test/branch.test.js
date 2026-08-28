@@ -802,6 +802,35 @@ test('adaptive worktree detection ignores the current linked worktree by path', 
 });
 
 
+test('adaptive worktree mode blocks direct commits when shared Git state has a remote lane', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-shared-remote-'));
+  let result = runCmd('git', ['init', '--bare', '-q'], remoteDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['remote', 'add', 'shared', remoteDir], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['push', '-q', 'shared', 'HEAD:refs/heads/agent/remote/lane'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['config', 'multiagent.sharedState', 'git'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['config', 'multiagent.sharedStateRemote', 'shared'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+  result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'blocked by remote shared lane'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked: another agent lane has dirty files or locks\./);
+});
+
+
 test('adaptive worktree mode blocks indirect, deleted, and non-fast-forward protected pushes', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

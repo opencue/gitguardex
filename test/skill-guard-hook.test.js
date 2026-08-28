@@ -175,6 +175,11 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
       'git co other-branch',
       'git -c alias.x=switch x other-branch',
       'git -c include.path=aliases.inc x other-branch',
+      'git reset --soft HEAD~1',
+      'git reset HEAD~1',
+      'git update-ref refs/heads/main HEAD~1',
+      'git symbolic-ref HEAD refs/heads/other',
+      'git branch other-branch',
       'git --no-pager switch other-branch',
       'git -C. checkout HEAD~1',
       'git --config-env=x=Y clean -fd',
@@ -189,6 +194,29 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks main edits when shared Git state has a remote lane', () => {
+  const dir = makeRepoOn('main');
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-guard-shared-'));
+  try {
+    assert.equal(cp.spawnSync('git', ['init', '--bare', '-q'], { cwd: remote }).status, 0);
+    assert.equal(cp.spawnSync('git', ['remote', 'add', 'shared', remote], { cwd: dir }).status, 0);
+    assert.equal(cp.spawnSync('git', ['config', 'multiagent.sharedState', 'git'], { cwd: dir }).status, 0);
+    assert.equal(cp.spawnSync('git', ['config', 'multiagent.sharedStateRemote', 'shared'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync('git', ['push', '-q', 'shared', 'HEAD:refs/heads/agent/remote/lane'], { cwd: dir }).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+
+    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 2, `remote shared lane must force isolation: ${result.stderr}`);
+    assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(remote, { recursive: true, force: true });
   }
 });
 

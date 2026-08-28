@@ -103,12 +103,50 @@ guardex_repo_worktree_mode() {
   esac
 }
 
+guardex_repo_has_shared_agent_activity() {
+  local repo_root="$1"
+  local mode remote shared status
+
+  if [[ -v GUARDEX_SHARED_STATE ]]; then
+    mode="${GUARDEX_SHARED_STATE:-}"
+  elif mode="$(guardex_git_clean_env -C "$repo_root" config --local --get multiagent.sharedState 2>/dev/null)"; then
+    :
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] && return 1
+    return 0
+  fi
+  [[ "${mode,,}" == "git" ]] || return 1
+
+  if [[ -v GUARDEX_SHARED_STATE_REMOTE ]]; then
+    remote="${GUARDEX_SHARED_STATE_REMOTE:-}"
+  elif remote="$(guardex_git_clean_env -C "$repo_root" config --local --get multiagent.sharedStateRemote 2>/dev/null)"; then
+    :
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] || return 0
+    remote="origin"
+  fi
+  remote="${remote:-origin}"
+  [[ "$remote" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || return 0
+
+  if ! shared="$(guardex_git_clean_env -C "$repo_root" ls-remote --refs "$remote" \
+    'refs/gitguardex/locks/*' 'refs/heads/agent/*' 2>/dev/null)"; then
+    return 0
+  fi
+  [[ -n "$shared" ]]
+}
+
 guardex_repo_has_competing_worktree_activity() {
   local repo_root="$1"
   local node_bin="${2:-node}"
   local current_path line worktree_list worktree_path worktree_real_path dirty lock_file
 
   if ! current_path="$(cd "$repo_root" && pwd -P)"; then
+    return 0
+  fi
+
+  if guardex_repo_has_shared_agent_activity "$repo_root"; then
     return 0
   fi
 

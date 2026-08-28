@@ -281,7 +281,67 @@ def _clean_git_env() -> dict[str, str]:
     return env
 
 
+def has_shared_agent_activity(repo_root: Path) -> bool:
+    try:
+        if "GUARDEX_SHARED_STATE" in os.environ:
+            mode = os.environ.get("GUARDEX_SHARED_STATE", "")
+        else:
+            mode_result = subprocess.run(
+                ["git", "config", "--local", "--get", "multiagent.sharedState"],
+                cwd=repo_root,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if mode_result.returncode not in {0, 1}:
+                return True
+            mode = mode_result.stdout.strip() if mode_result.returncode == 0 else ""
+        if mode.strip().lower() != "git":
+            return False
+
+        if "GUARDEX_SHARED_STATE_REMOTE" in os.environ:
+            remote = os.environ.get("GUARDEX_SHARED_STATE_REMOTE", "")
+        else:
+            remote_result = subprocess.run(
+                ["git", "config", "--local", "--get", "multiagent.sharedStateRemote"],
+                cwd=repo_root,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if remote_result.returncode not in {0, 1}:
+                return True
+            remote = remote_result.stdout.strip() if remote_result.returncode == 0 else "origin"
+        remote = remote.strip() or "origin"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", remote):
+            return True
+
+        shared = subprocess.run(
+            [
+                "git",
+                "ls-remote",
+                "--refs",
+                remote,
+                "refs/gitguardex/locks/*",
+                "refs/heads/agent/*",
+            ],
+            cwd=repo_root,
+            env=_clean_git_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return shared.returncode != 0 or bool(shared.stdout.strip())
+
+
 def has_competing_worktree_activity(repo_root: Path) -> bool:
+    if has_shared_agent_activity(repo_root):
+        return True
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
@@ -717,9 +777,27 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             continue
         subcommand = tokens[index]
         arguments = tokens[index + 1 :]
-        if subcommand in {"checkout", "switch", "clean"}:
+        if subcommand in {"checkout", "switch", "clean", "reset", "symbolic-ref", "update-ref"}:
             return True
-        if subcommand == "reset" and "--hard" in arguments:
+        if subcommand == "branch" and arguments and any(
+            not argument.startswith("-")
+            or argument
+            in {
+                "-c",
+                "-C",
+                "-d",
+                "-D",
+                "-m",
+                "-M",
+                "--copy",
+                "--delete",
+                "--edit-description",
+                "--move",
+                "--set-upstream-to",
+                "--unset-upstream",
+            }
+            for argument in arguments
+        ):
             return True
         if subcommand == "worktree" and any(
             argument in {"add", "move", "remove", "prune"} for argument in arguments
@@ -754,15 +832,16 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
     protected = resolve_protected_branches(repo_root)
     if is_agent_branch(branch, protected):
         return None
+    adaptive_mode = branch in protected and guardex_worktree_mode(repo_root) == "adaptive"
+    if adaptive_mode and is_unsafe_primary_git_command(repo_root, command):
+        return (
+            f"BLOCKED: Branch/worktree mutation is unsafe on protected branch '{branch}'.\n"
+            "Use `gx branch start --new --no-transfer` instead."
+        )
     if is_allowed_non_agent_shell_command(command):
         return None
 
-    if branch in protected and guardex_worktree_mode(repo_root) == "adaptive":
-        if is_unsafe_primary_git_command(repo_root, command):
-            return (
-                f"BLOCKED: Branch/worktree mutation is unsafe on protected branch '{branch}'.\n"
-                "Use `gx branch start --new --no-transfer` instead."
-            )
+    if adaptive_mode:
         adaptive_error = adaptive_direct_work_error(repo_root)
         if adaptive_error == "":
             return None

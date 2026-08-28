@@ -209,10 +209,12 @@ def main() -> None:
         protected = resolve_protected_branches(repo_root)
     except Exception:  # noqa: BLE001
         protected = set()
-    adaptive_direct_is_safe = (
-        guardex_worktree_mode(repo_root) == "adaptive"
-        and not has_competing_worktree_activity(repo_root)
-    )
+    adaptive_direct_is_safe = False
+    if branch and not is_agent_branch(branch) and branch in protected:
+        adaptive_direct_is_safe = (
+            guardex_worktree_mode(repo_root) == "adaptive"
+            and not has_competing_worktree_activity(repo_root)
+        )
     if branch and not is_agent_branch(branch) and branch in protected and not adaptive_direct_is_safe:
         if already_advised(session_id):
             advisory = reminder_text(branch)
