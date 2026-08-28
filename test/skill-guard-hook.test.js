@@ -266,6 +266,34 @@ test('skill_guard adaptive mode blocks a target claimed in the primary checkout 
   }
 });
 
+test('skill_guard adaptive mode blocks git add and commit for claimed paths', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'locked\n');
+
+    for (const command of ['git add src/locked.js', 'git add src', 'git add -A']) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `${command}: ${result.stderr || result.stdout}`);
+      assert.match(result.stderr, /git add target is claimed by another agent lane/);
+    }
+
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js'], { cwd: dir }).status, 0);
+    const commit = invokeHook(dir, bashPayload('git commit -m blocked', dir));
+    assert.equal(commit.status, 2, commit.stderr || commit.stdout);
+    assert.match(commit.stderr, /commit includes a file claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard adaptive direct-main ownership expires after the configured lease TTL', () => {
   const dir = makeRepoOn('main');
   try {

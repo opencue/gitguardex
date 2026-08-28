@@ -456,9 +456,83 @@ def target_has_file_lock(repo_root: Path, file_path: str) -> bool:
         locks = lock_data.get("locks", {})
         if not isinstance(locks, dict):
             return True
-        if relative_path in locks:
+        target_prefix = "" if relative_path == "." else f"{relative_path.rstrip('/')}/"
+        if relative_path in locks or (
+            target_prefix and any(path.startswith(target_prefix) for path in locks)
+        ) or (not target_prefix and locks):
             return True
     return False
+
+
+def adaptive_git_lock_error(
+    repo_root: Path,
+    command: str,
+    command_cwd: str = "",
+) -> str | None:
+    """Reject adaptive staging/commits that can touch a claimed path."""
+    for segment in split_shell_segments(command):
+        tokens = shell_segment_tokens(normalize_shell_segment(segment))
+        if len(tokens) < 2 or Path(tokens[0]).name != "git":
+            continue
+        subcommand = tokens[1]
+        if subcommand == "add":
+            targets: list[str] = []
+            after_separator = False
+            unbounded_pathspec = False
+            index = 2
+            while index < len(tokens):
+                token = tokens[index]
+                if after_separator:
+                    targets.append(token)
+                elif token == "--":
+                    after_separator = True
+                elif token in {"-A", "--all", "-u", "--update"}:
+                    pass
+                elif token in {"--chmod", "--pathspec-from-file"}:
+                    index += 1
+                    if token == "--pathspec-from-file":
+                        unbounded_pathspec = True
+                elif token.startswith("--pathspec-from-file="):
+                    unbounded_pathspec = True
+                elif token.startswith("-"):
+                    pass
+                elif token.startswith(":"):
+                    unbounded_pathspec = True
+                else:
+                    targets.append(token)
+                index += 1
+            if not targets or unbounded_pathspec:
+                targets.append(str(repo_root))
+            for target in targets:
+                target_path = Path(target)
+                if not target_path.is_absolute():
+                    target_path = Path(command_cwd or repo_root) / target_path
+                if target_has_file_lock(repo_root, str(target_path)):
+                    return (
+                        "BLOCKED: Adaptive git add target is claimed by another agent lane.\n"
+                        "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
+                    )
+        elif subcommand == "commit":
+            try:
+                staged = subprocess.run(
+                    ["git", "diff", "--cached", "--name-only", "-z"],
+                    cwd=repo_root,
+                    env=_clean_git_env(),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError:
+                return "BLOCKED: Adaptive commit cannot validate staged file ownership."
+            if staged.returncode != 0:
+                return "BLOCKED: Adaptive commit cannot validate staged file ownership."
+            for staged_path in staged.stdout.split("\0"):
+                if staged_path and target_has_file_lock(repo_root, str(repo_root / staged_path)):
+                    return (
+                        "BLOCKED: Adaptive commit includes a file claimed by another agent lane.\n"
+                        "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
+                    )
+    return None
 
 
 def adaptive_primary_session_lease_error(
@@ -1113,6 +1187,7 @@ def ensure_non_agent_shell_command_allowed(
     repo_root: Path,
     command: str,
     session_id: str = "unknown",
+    command_cwd: str = "",
 ) -> str | None:
     if not command:
         return None
@@ -1142,6 +1217,9 @@ def ensure_non_agent_shell_command_allowed(
                 "Use an isolated lane for custom executors or scripts:\n"
                 '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
             )
+        git_lock_error = adaptive_git_lock_error(repo_root, command, command_cwd)
+        if git_lock_error:
+            return git_lock_error
         adaptive_error = adaptive_direct_work_error(repo_root, session_id)
         if adaptive_error == "":
             return None
@@ -1269,6 +1347,7 @@ def main() -> None:
         repo_root,
         shell_command,
         session_id,
+        cwd,
     )
     if shell_command_error:
         emit_event(
