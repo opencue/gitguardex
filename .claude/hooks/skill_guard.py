@@ -777,7 +777,15 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             continue
         subcommand = tokens[index]
         arguments = tokens[index + 1 :]
-        if subcommand in {"checkout", "switch", "clean", "reset", "symbolic-ref", "update-ref"}:
+        if subcommand in {
+            "checkout",
+            "switch",
+            "clean",
+            "reset",
+            "restore",
+            "symbolic-ref",
+            "update-ref",
+        }:
             return True
         if subcommand == "branch" and arguments and any(
             not argument.startswith("-")
@@ -789,6 +797,7 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
                 "-D",
                 "-m",
                 "-M",
+                "-u",
                 "--copy",
                 "--delete",
                 "--edit-description",
@@ -796,6 +805,9 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
                 "--set-upstream-to",
                 "--unset-upstream",
             }
+            or argument.startswith(
+                ("-c", "-C", "-d", "-D", "-m", "-M", "-u", "--set-upstream-to=")
+            )
             for argument in arguments
         ):
             return True
