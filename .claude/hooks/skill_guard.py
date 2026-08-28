@@ -568,6 +568,10 @@ def adaptive_git_lock_error(
                     skip_value = True
                 elif argument.startswith("--pathspec-from-file="):
                     include_all_worktree = True
+                elif argument.startswith(("--only=", "--include=")):
+                    pathspecs.append(argument.split("=", 1)[1])
+                elif len(argument) > 2 and argument[:2] in {"-o", "-i"}:
+                    pathspecs.append(argument[2:])
                 elif re.fullmatch(
                     r"-[npqsvio]*a[npqsvio]*(?:[mS].*)?", argument
                 ) is not None:
@@ -1353,12 +1357,9 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
         if subcommand == "push":
             branch = current_branch(repo_root)
             if (
-                len(arguments) > 2
+                len(arguments) != 2
                 or any(argument.startswith(("-", "+")) or ":" in argument for argument in arguments)
-                or (
-                    len(arguments) == 2
-                    and arguments[1] not in {branch, f"refs/heads/{branch}", "HEAD"}
-                )
+                or arguments[1] not in {branch, f"refs/heads/{branch}", "HEAD"}
             ):
                 return True
         if subcommand == "branch" and arguments and any(
