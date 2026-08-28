@@ -398,6 +398,7 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
       'git commit --amen --no-edit',
       'git commit --no-verify -m unsafe',
       'git commit -n -m unsafe',
+      'git commit -an -m unsafe',
       'git push --force origin main',
       'git push --force-with-lease origin main',
       'git push --delete origin feature',

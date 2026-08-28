@@ -1132,6 +1132,7 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             return True
         if subcommand == "commit" and any(
             argument == "-n"
+            or re.fullmatch(r"-[apqsvio]*n[apqsvio]*", argument) is not None
             or any(
                 len(argument) >= 4 and option.startswith(argument)
                 for option in ("--amend", "--no-verify")
