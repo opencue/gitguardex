@@ -751,11 +751,11 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
     CODEX_THREAD_ID: 'test-thread',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.equal(
-    fs.existsSync(path.join(repoDir, '.omx', 'state', 'agent-file-locks.json')),
-    false,
-    'adaptive direct commits must not create durable file claims',
-  );
+  const lockRegistryPath = path.join(repoDir, '.omx', 'state', 'agent-file-locks.json');
+  const lockRegistry = fs.existsSync(lockRegistryPath)
+    ? JSON.parse(fs.readFileSync(lockRegistryPath, 'utf8'))
+    : { locks: {} };
+  assert.deepEqual(lockRegistry.locks || {}, {}, 'adaptive direct commits must not create durable file claims');
 
   result = runCmd(
     'bash',

@@ -35,6 +35,7 @@ function parseLockOperation(args) {
     branch: '',
     agent: process.env.GUARDEX_AGENT_ID || '',
     allowDelete: false,
+    allowUnclaimed: false,
     staged: false,
     files: []
   };
@@ -56,6 +57,8 @@ function parseLockOperation(args) {
       parsed.agent = arg.slice('--agent='.length);
     } else if (arg === '--allow-delete') {
       parsed.allowDelete = true;
+    } else if (arg === '--allow-unclaimed') {
+      parsed.allowUnclaimed = true;
     } else if (arg === '--staged') {
       parsed.staged = true;
     } else if (arg.startsWith('-')) {
@@ -212,6 +215,7 @@ function sharedValidate(repoRoot, args, parsed) {
   const files = parsed.staged ? stagedFiles(repoRoot) : parsed.files;
   try {
     for (const file of files) {
+      if (parsed.allowUnclaimed && !sharedGitState.getLock(repoRoot, file)) continue;
       sharedGitState.validateLock(repoRoot, { file, branch: parsed.branch, agent: parsed.agent });
     }
   } catch (error) {

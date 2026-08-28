@@ -459,7 +459,7 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) ->
     claim_session = resolve_session_id()
     claim_pane = resolve_pane()
     files = [normalize_repo_path(repo_root, p) for p in args.files]
-    if adaptive_owner and adaptive_owner not in {claim_agent, claim_session}:
+    if adaptive_owner and adaptive_owner != claim_session:
         print(
             '[agent-file-locks] Cannot claim files while adaptive direct work owns '
             f'the primary checkout as {adaptive_owner}.',

@@ -150,9 +150,16 @@ defineSpawnSuite('agent-file-locks adaptive direct coordination', () => {
     assert.equal(blocked.status, 1, blocked.stderr || blocked.stdout);
     assert.match(blocked.stderr, /adaptive direct work owns the primary checkout as direct-owner/);
 
-    const owner = runLockTool(
+    const spoofedOwner = runLockTool(
       ['claim', '--branch', 'main', '--agent', 'direct-owner', 'fileA.txt'],
       repoDir,
+    );
+    assert.equal(spoofedOwner.status, 1, spoofedOwner.stderr || spoofedOwner.stdout);
+
+    const owner = runNodeWithEnv(
+      ['locks', 'claim', '--branch', 'main', '--agent', 'direct-owner', 'fileA.txt'],
+      repoDir,
+      { CODEX_THREAD_ID: 'direct-owner' },
     );
     assert.equal(owner.status, 0, owner.stderr || owner.stdout);
   });
