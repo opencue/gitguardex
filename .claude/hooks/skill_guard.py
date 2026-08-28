@@ -737,9 +737,7 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
     if not segments:
         return True
     for raw_segment in segments:
-        if shell_segment_has_output_redirection(raw_segment) or re.search(
-            r"`|\$\(|[<>]\(", raw_segment
-        ):
+        if shell_segment_has_output_redirection(raw_segment):
             return False
         segment = normalize_shell_segment(raw_segment)
         if not segment:
@@ -751,7 +749,10 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
 
 
 def is_allowed_adaptive_direct_shell_command(command: str) -> bool:
-    segments = split_shell_segments(command.strip())
+    normalized = command.strip()
+    if re.search(r"`|\$\(|[<>]\(", normalized):
+        return False
+    segments = split_shell_segments(normalized)
     if not segments:
         return True
     for raw_segment in segments:
