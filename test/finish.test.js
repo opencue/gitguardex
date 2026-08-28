@@ -81,6 +81,16 @@ test('finish progress rejects symbolic links in its state directory path', () =>
 
 defineSpawnSuite('finish and cleanup integration suite', () => {
 
+test('cleanup --help prints command usage without running cleanup', () => {
+  const result = runNode(['cleanup', '--help'], process.cwd());
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /USAGE:\s+gx cleanup \[options\]/);
+  assert.match(result.stdout, /--include-pr-merged/);
+  assert.match(result.stdout, /--watch/);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Unknown option:/);
+});
+
 test('agent-branch-finish handles Claude-root worktrees when inferring base from source branch metadata', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
