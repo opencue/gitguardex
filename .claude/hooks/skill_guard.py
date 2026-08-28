@@ -463,10 +463,7 @@ def target_has_file_lock(repo_root: Path, file_path: str, session_id: str) -> bo
             for path, owner in locks.items()
             if not isinstance(owner, dict)
             or str(owner.get("branch", "")) != branch
-            or (
-                owner.get("agent")
-                and str(owner.get("agent")) != session_id
-            )
+            or str(owner.get("agent", "")) != session_id
         }
         ancestor_claimed = any(
             locked_path in {"", "."}
@@ -552,6 +549,7 @@ def adaptive_git_lock_error(
             }
             include_all_worktree = False
             pathspecs: list[str] = []
+            pathspec_mode = ""
             after_separator = False
             skip_value = False
             for argument in arguments:
@@ -559,6 +557,8 @@ def adaptive_git_lock_error(
                     skip_value = False
                 elif after_separator:
                     pathspecs.append(argument)
+                    if pathspec_mode != "include":
+                        pathspec_mode = "only"
                 elif argument == "--":
                     after_separator = True
                 elif argument in option_values:
@@ -570,20 +570,36 @@ def adaptive_git_lock_error(
                     skip_value = True
                 elif argument.startswith("--pathspec-from-file="):
                     include_all_worktree = True
-                elif argument.startswith(("--only=", "--include=")):
+                elif argument.startswith("--only="):
                     pathspecs.append(argument.split("=", 1)[1])
-                elif len(argument) > 2 and argument[:2] in {"-o", "-i"}:
+                    pathspec_mode = "only"
+                elif argument.startswith("--include="):
+                    pathspecs.append(argument.split("=", 1)[1])
+                    pathspec_mode = "include"
+                elif argument in {"-o", "--only"}:
+                    pathspec_mode = "only"
+                elif argument in {"-i", "--include"}:
+                    pathspec_mode = "include"
+                elif len(argument) > 2 and argument.startswith("-o"):
                     pathspecs.append(argument[2:])
+                    pathspec_mode = "only"
+                elif len(argument) > 2 and argument.startswith("-i"):
+                    pathspecs.append(argument[2:])
+                    pathspec_mode = "include"
                 elif re.fullmatch(
                     r"-[npqsvio]*a[npqsvio]*(?:[mS].*)?", argument
                 ) is not None:
                     include_all_worktree = True
                 elif not argument.startswith("-"):
                     pathspecs.append(argument)
+                    if pathspec_mode != "include":
+                        pathspec_mode = "only"
             changed_paths: set[str] = set()
-            diff_commands = [
-                ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"]
-            ]
+            diff_commands = []
+            if pathspec_mode != "only":
+                diff_commands.append(
+                    ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"]
+                )
             if include_all_worktree:
                 diff_commands.append(["git", "diff", "--no-renames", "--name-only", "-z"])
             elif pathspecs:
@@ -609,10 +625,12 @@ def adaptive_git_lock_error(
                         ["git", "diff", "--no-renames", "--name-only", "-z"]
                     )
                 elif normalized_pathspecs:
+                    comparison = ["HEAD"] if pathspec_mode == "only" else []
                     diff_commands.append(
                         [
                             "git",
                             "diff",
+                            *comparison,
                             "--no-renames",
                             "--name-only",
                             "-z",
@@ -833,8 +851,26 @@ def run_with_adaptive_command_lock(
         if not isinstance(lease, dict) or lease.get("session_id") != session_id:
             print("Adaptive direct command lease owner changed before execution.", file=sys.stderr)
             sys.exit(126)
+        lock_token = os.urandom(32).hex()
+        lease["lock_token"] = lock_token
+        lease["last_seen_epoch"] = time.time()
+        lease_tmp = Path(lease_path).with_name(f"{Path(lease_path).name}.tmp-{os.getpid()}")
         try:
-            completed = subprocess.run(command, shell=True, executable="/bin/bash")
+            lease_tmp.write_text(json.dumps(lease, sort_keys=True) + "\n")
+            os.replace(lease_tmp, lease_path)
+        except OSError as error:
+            print(f"Adaptive direct command lease update failed: {error}", file=sys.stderr)
+            sys.exit(126)
+        command_env = dict(os.environ)
+        command_env["GUARDEX_ADAPTIVE_COMMAND_LOCK_SESSION_ID"] = session_id
+        command_env["GUARDEX_ADAPTIVE_COMMAND_LOCK_TOKEN"] = lock_token
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                executable="/bin/bash",
+                env=command_env,
+            )
         except OSError as error:
             print(f"Adaptive direct command execution failed: {error}", file=sys.stderr)
             sys.exit(126)

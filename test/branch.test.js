@@ -829,6 +829,35 @@ test('adaptive rewritten commit completes through the installed pre-commit hook'
   assert.match(result.stdout, /wrapped/);
 });
 
+test('adaptive lease helper rejects a stale same-session lease during foreign lock ownership', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  const commonDirResult = runCmd('git', ['rev-parse', '--git-common-dir'], repoDir);
+  assert.equal(commonDirResult.status, 0, commonDirResult.stderr || commonDirResult.stdout);
+  const commonDir = path.resolve(repoDir, commonDirResult.stdout.trim());
+  const stateDir = path.join(commonDir, 'gitguardex');
+  const lockPath = path.join(stateDir, 'adaptive-direct-session.lock');
+  const leasePath = path.join(stateDir, 'adaptive-direct-session.json');
+  const readyPath = path.join(stateDir, 'foreign-lock-ready');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    leasePath,
+    `${JSON.stringify({ session_id: 'stale-owner', last_seen_epoch: Date.now() / 1000 })}\n`,
+  );
+
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; python3 -c 'import fcntl, sys, time; from pathlib import Path; handle=open(sys.argv[1], "a+"); fcntl.flock(handle.fileno(), fcntl.LOCK_EX); Path(sys.argv[2]).touch(); time.sleep(0.5)' '${lockPath}' '${readyPath}' & holder=$!; while [[ ! -e '${readyPath}' ]]; do sleep 0.01; done; guardex_claim_adaptive_session_lease '${repoDir}' stale-owner; status=$?; wait "$holder"; exit "$status"`,
+    ],
+    repoDir,
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /owned by another active agent session/);
+});
+
 test('empty repo worktree-mode override falls back to adaptive Git config', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

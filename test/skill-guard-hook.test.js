@@ -279,6 +279,28 @@ test('skill_guard adaptive mode blocks a target claimed in the primary checkout 
   }
 });
 
+test('skill_guard adaptive mode treats same-branch anonymous claims as foreign', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/legacy.js': { branch: 'main' } } })}\n`,
+    );
+
+    const result = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'legacy.js'), dir, 'adaptive-lock-contender'),
+    );
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /target is claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard adaptive mode allows edits, adds, and commits for the current session claims', () => {
   const dir = makeRepoOn('main');
   try {
@@ -524,7 +546,7 @@ test('skill_guard ordinary commit ignores unrelated unstaged claimed files', () 
   }
 });
 
-test('skill_guard path-scoped commit ignores unrelated unstaged claimed files', () => {
+test('skill_guard path-scoped commit ignores unrelated staged claimed files', () => {
   const dir = makeRepoOn('main');
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
@@ -546,17 +568,25 @@ test('skill_guard path-scoped commit ignores unrelated unstaged claimed files', 
       ).status,
       0,
     );
-    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'unrelated claimed change\n');
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'unrelated staged claimed change\n');
     fs.writeFileSync(path.join(dir, 'safe.js'), 'scoped safe change\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js'], { cwd: dir }).status, 0);
 
     for (const command of [
       'git commit --only safe.js -m safe',
-      'git commit --include safe.js -m safe',
+      'git commit --only=safe.js -m safe',
+      'git commit -osafe.js -m safe',
       'git commit -- safe.js',
     ]) {
       const result = invokeHook(dir, bashPayload(command, dir, 'adaptive-path-owner'));
       assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
     }
+    const include = invokeHook(
+      dir,
+      bashPayload('git commit --include safe.js -m unsafe', dir, 'adaptive-path-owner'),
+    );
+    assert.equal(include.status, 2, include.stderr || include.stdout);
+    assert.match(include.stderr, /commit includes a file claimed by another agent lane/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

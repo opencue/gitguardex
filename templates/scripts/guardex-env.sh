@@ -230,6 +230,7 @@ guardex_claim_adaptive_session_lease() {
 
   "$python_bin" - "$common_dir" "$session_id" "${GUARDEX_ADAPTIVE_SESSION_LEASE_SEC:-900}" <<'PY'
 import fcntl
+import hmac
 import json
 import os
 import sys
@@ -254,6 +255,16 @@ except OSError:
     raise SystemExit(1)
 
 acquired = False
+def wrapper_marker_matches(active_lease):
+    wrapper_session = os.environ.get("GUARDEX_ADAPTIVE_COMMAND_LOCK_SESSION_ID", "")
+    presented_token = os.environ.get("GUARDEX_ADAPTIVE_COMMAND_LOCK_TOKEN", "")
+    expected_token = active_lease.get("lock_token")
+    if wrapper_session != session_id:
+        return False
+    if not isinstance(expected_token, str) or not expected_token or not presented_token:
+        return False
+    return hmac.compare_digest(presented_token, expected_token)
+
 try:
     try:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -263,7 +274,11 @@ try:
             active_lease = json.loads(lease_path.read_text())
         except (OSError, json.JSONDecodeError, ValueError):
             raise SystemExit(1)
-        if isinstance(active_lease, dict) and active_lease.get("session_id") == session_id:
+        if (
+            isinstance(active_lease, dict)
+            and active_lease.get("session_id") == session_id
+            and wrapper_marker_matches(active_lease)
+        ):
             raise SystemExit(0)
         print("Adaptive direct work is owned by another active agent session.", file=sys.stderr)
         raise SystemExit(1)
