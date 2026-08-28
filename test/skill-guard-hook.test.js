@@ -388,17 +388,74 @@ test('skill_guard adaptive direct-main ownership expires after the configured le
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
 
-    const first = invokeHook(
+    const first = await invokeHookAsync(
       dir,
       writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-stale-a'),
       leaseEnv,
     );
+    console.error('stage:first');
     assert.equal(first.status, 0, first.stderr || first.stdout);
 
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
     const reclaimed = invokeHook(
       dir,
       writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-stale-b'),
+      leaseEnv,
+    );
+    assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard keeps adaptive direct-main ownership while an allowed command is active', async () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
+    const first = invokeHook(
+      dir,
+      bashPayload('npm test', dir, 'adaptive-active-a'),
+      leaseEnv,
+    );
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const hookOutput = JSON.parse(first.stdout);
+    assert.match(
+      hookOutput.hookSpecificOutput.updatedInput.command,
+      /--adaptive-command-lock/,
+    );
+
+    const lockPath = path.join(dir, '.git', 'gitguardex', 'adaptive-direct-session.lock');
+    const markerPath = path.join(dir, 'command-active');
+    const command = `python3 -c 'from pathlib import Path; import time; Path("${markerPath}").write_text("active"); time.sleep(0.2)'`;
+    const active = cp.spawn(
+      'python3',
+      [hookPath, '--adaptive-command-lock', lockPath, command],
+      { cwd: dir, encoding: 'utf8' },
+    );
+    const activeDone = new Promise((resolve, reject) => {
+      active.on('error', reject);
+      active.on('close', resolve);
+    });
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(markerPath); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(fs.existsSync(markerPath), true, 'locked command did not start');
+
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    const blocked = await invokeHookAsync(
+      dir,
+      writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-active-b'),
+      leaseEnv,
+    );
+    assert.equal(blocked.status, 2, blocked.stderr || blocked.stdout);
+    assert.match(blocked.stderr, /owned by another active agent session/);
+
+    const activeStatus = await activeDone;
+    assert.equal(activeStatus, 0);
+    const reclaimed = await invokeHookAsync(
+      dir,
+      writePayload(path.join(dir, 'src', 'third.js'), dir, 'adaptive-active-b'),
       leaseEnv,
     );
     assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);

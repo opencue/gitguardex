@@ -640,8 +640,13 @@ def adaptive_primary_session_lease_error(
     acquired = False
     try:
         try:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             acquired = True
+        except BlockingIOError:
+            return (
+                "BLOCKED: Adaptive direct work is owned by another active agent session "
+                "in this checkout."
+            )
         except OSError:
             return "BLOCKED: Adaptive direct work cannot lock its exclusive session lease."
 
@@ -706,6 +711,53 @@ def adaptive_primary_session_lease_error(
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         finally:
             lock_handle.close()
+
+
+def adaptive_command_lock_tool_input(repo_root: Path, tool_input: dict) -> dict | None:
+    """Wrap an adaptive Bash command so its session lock spans execution."""
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    if (
+        os.environ.get(PROTECTED_BRANCH_EDIT_OVERRIDE_ENV) == "1"
+        or os.environ.get(SHELL_GUARD_OVERRIDE_ENV) == "1"
+        or fcntl is None
+        or current_branch(repo_root) not in resolve_protected_branches(repo_root)
+        or guardex_worktree_mode(repo_root) != "adaptive"
+    ):
+        return None
+    common_dir = git_common_dir(repo_root)
+    if not common_dir:
+        return None
+    lock_path = Path(common_dir) / "gitguardex" / "adaptive-direct-session.lock"
+    wrapper = " ".join(
+        shlex.quote(value)
+        for value in (
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--adaptive-command-lock",
+            str(lock_path),
+            command,
+        )
+    )
+    updated_input = dict(tool_input)
+    updated_input["command"] = wrapper
+    return updated_input
+
+
+def run_with_adaptive_command_lock(lock_path: str, command: str) -> None:
+    """Execute one shell command while holding the checkout's adaptive lock."""
+    if fcntl is None:
+        print("Adaptive direct work requires POSIX file locking.", file=sys.stderr)
+        sys.exit(126)
+    try:
+        lock_handle = open(lock_path, "a+")
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        os.set_inheritable(lock_handle.fileno(), True)
+        os.execv("/bin/bash", ["bash", "-c", command])
+    except OSError as error:
+        print(f"Adaptive direct command lock failed: {error}", file=sys.stderr)
+        sys.exit(126)
 
 
 def adaptive_direct_work_error(
@@ -1395,6 +1447,9 @@ def ensure_main_rs_lock(file_path: str, session_id: str) -> str | None:
 
 
 def main() -> None:
+    if len(sys.argv) == 4 and sys.argv[1] == "--adaptive-command-lock":
+        run_with_adaptive_command_lock(sys.argv[2], sys.argv[3])
+
     try:
         input_data = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, EOFError):
@@ -1429,6 +1484,19 @@ def main() -> None:
         )
         print(shell_command_error, file=sys.stderr)
         sys.exit(2)
+
+    updated_tool_input = adaptive_command_lock_tool_input(repo_root, tool_input)
+    if updated_tool_input is not None:
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "updatedInput": updated_tool_input,
+                    }
+                }
+            )
+        )
 
     target_paths: list[str] = []
     if isinstance(file_path, str) and file_path.strip():
