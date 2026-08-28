@@ -190,6 +190,10 @@ finds the last published GitHub release, and writes one grouped GitHub release b
 <details>
 <summary><strong>v8.x</strong></summary>
 
+### v8.1.1
+- Prevented `gx doctor` from pruning dirty detached or managed worktrees during
+  stale-worktree repair.
+
 ### v8.1.0
 - Added shared Git lock state so independent clones coordinate file ownership.
 - Aligned npm repository metadata with `opencue/gitguardex` for trusted OIDC

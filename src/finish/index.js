@@ -1,5 +1,5 @@
 // @ts-check
-const { TOOL_NAME, LOCK_FILE_RELATIVE, path, fs } = require('../context');
+const { TOOL_NAME, SHORT_TOOL_NAME, LOCK_FILE_RELATIVE, path, fs } = require('../context');
 const { isTerseMode } = require('../output');
 const { run, runPackageAsset, assetStdio } = require('../core/runtime');
 const {
@@ -211,6 +211,30 @@ function autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options) {
  * @throws {Error} When the underlying prune subprocess exits non-zero or the watch sleep fails.
  */
 function cleanup(rawArgs) {
+  if (rawArgs.some((arg) => arg === '--help' || arg === '-h') || (rawArgs.length === 1 && rawArgs[0] === 'help')) {
+    console.log(`USAGE: ${SHORT_TOOL_NAME} cleanup [options]
+
+Prune merged or stale agent branches and worktrees.
+
+OPTIONS
+  --target <path>          Target repository (default: current directory)
+  --base <branch>          Base branch used to determine merged branches
+  --branch <agent/*>       Limit cleanup to one agent branch
+  --dry-run                Print actions without changing branches or worktrees
+  --force-dirty            Allow cleanup of dirty worktrees
+  --keep-remote            Keep remote agent branches
+  --keep-clean-worktrees   Keep clean worktrees instead of pruning them
+  --include-pr-merged      Treat branches from merged PRs as merged
+  --idle-minutes <n>       Only consider worktrees idle for at least n minutes
+  --watch                  Repeat cleanup cycles (defaults idle threshold to 60)
+  --interval <seconds>     Watch interval in seconds (minimum: 5; default: 60)
+  --once                   Run one cleanup cycle when used with --watch
+  --max-branches <n>       Limit branches processed per cycle
+  -h, --help               Show this help`);
+    process.exitCode = 0;
+    return;
+  }
+
   const activeCwd = process.cwd();
   const options = parseCleanupArgs(rawArgs);
   const repoRoot = resolveRepoRoot(options.target);
