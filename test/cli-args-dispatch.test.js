@@ -309,6 +309,11 @@ test('parseFinishArgs sweepOrphans defaults on and toggles', () => {
   assert.equal(parseFinishArgs([], { sweepOrphans: false }).sweepOrphans, false);
 });
 
+test('parseFinishArgs keeps agent-quiet opt-in and disabled by default', () => {
+  assert.equal(parseFinishArgs([]).agentQuiet, false);
+  assert.equal(parseFinishArgs(['--agent-quiet']).agentQuiet, true);
+});
+
 test('dispatch helpers preserve suggestion, alias, deprecation, and flag extraction behavior', () => {
   assert.equal(maybeSuggestCommand('docto'), 'doctor');
 

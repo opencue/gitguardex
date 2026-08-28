@@ -349,32 +349,52 @@ function repoState(repoOrCwd, { includePrs = true } = {}) {
 // Aggregate locks across ALL worktrees of the repo. Lock files are per-worktree
 // on disk, so a single worktree's file only shows its own claims — the
 // collision view requires the union.
-function whoOwns(file, { cwd = process.cwd(), repoPath } = {}) {
-  if (!file) return { file: null, owner: null, error: 'no file given' };
+function whoOwnsMany(files, { cwd = process.cwd(), repoPath } = {}) {
+  const requested = [...new Set(
+    (Array.isArray(files) ? files : [])
+      .filter((file) => typeof file === 'string' && file.trim())
+      .map((file) => file.trim()),
+  )].slice(0, 200);
+  if (requested.length === 0) return [];
   const mainRoot = mainRepoRoot(repoPath || cwd);
-  if (!mainRoot) return { file, owner: null, error: 'not a git repo' };
-  const rel = path.isAbsolute(file) ? path.relative(mainRoot, file) : file;
-  const owners = [];
-  const seenOwner = new Set();
+  if (!mainRoot) {
+    return requested.map((file) => ({ file, owner: null, error: 'not a git repo' }));
+  }
+  const targets = requested.map((file) => ({
+    file,
+    rel: path.isAbsolute(file) ? path.relative(mainRoot, file) : file,
+    owners: [],
+    seen: new Set(),
+  }));
+  const addOwner = (target, owner) => {
+    const key = `${owner.branch}\0${owner.agent || ''}`;
+    if (!owner.branch || target.seen.has(key)) return;
+    target.seen.add(key);
+    target.owners.push(owner);
+  };
+
+  // Read each worktree lock map once for the whole requested batch.
   for (const wt of listWorktrees(mainRoot)) {
     const map = readLockMap(wt.path);
-    const entry = map[rel] || map[file];
-    const key = entry && `${entry.branch}\0${entry.agent || ''}`;
-    if (entry && entry.branch && !seenOwner.has(key)) {
-      seenOwner.add(key);
-      owners.push({
+    for (const target of targets) {
+      const entry = map[target.rel] || map[target.file];
+      if (!entry) continue;
+      addOwner(target, {
         branch: entry.branch,
         agent: entry.agent || parseAgentName(entry.branch),
         claimed_at: entry.claimed_at || null,
-        worktree: wt.path
+        worktree: wt.path,
       });
     }
   }
   if (sharedGitState.settings(mainRoot).enabled) {
-    const entry = sharedGitState.getLock(mainRoot, rel);
-    const key = entry && `${entry.branch}\0${entry.agent || ''}`;
-    if (entry && !seenOwner.has(key)) {
-      owners.push({
+    const sharedByFile = new Map(
+      sharedGitState.listLocks(mainRoot).map((entry) => [entry.file, entry]),
+    );
+    for (const target of targets) {
+      const entry = sharedByFile.get(target.rel) || sharedByFile.get(target.file);
+      if (!entry) continue;
+      addOwner(target, {
         branch: entry.branch,
         agent: entry.agent || parseAgentName(entry.branch),
         claimed_at: entry.claimedAt,
@@ -384,13 +404,20 @@ function whoOwns(file, { cwd = process.cwd(), repoPath } = {}) {
       });
     }
   }
-  if (owners.length === 0) return { file: rel, owner: null };
-  return {
-    file: rel,
-    owner: owners.length === 1 ? owners[0] : null,
-    owners,
-    conflict: owners.length > 1
-  };
+  return targets.map(({ rel, owners }) => {
+    if (owners.length === 0) return { file: rel, owner: null };
+    return {
+      file: rel,
+      owner: owners.length === 1 ? owners[0] : null,
+      owners,
+      conflict: owners.length > 1,
+    };
+  });
+}
+
+function whoOwns(file, options = {}) {
+  if (!file) return { file: null, owner: null, error: 'no file given' };
+  return whoOwnsMany([file], options)[0];
 }
 
 // Slim "radar" projection of a lane for list_agents — who-is-on-what at a
@@ -450,12 +477,46 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
   };
 }
 
+function compactOwnership(result) {
+  const compactOwner = (owner) => {
+    if (!owner) return null;
+    const value = { branch: owner.branch, agent: owner.agent };
+    if (owner.remote) value.remote = true;
+    if (owner.machine) value.machine = owner.machine;
+    return value;
+  };
+  if (!result.owner && !result.conflict) return { file: result.file, owner: null };
+  if (result.conflict) {
+    return {
+      file: result.file,
+      owner: null,
+      owners: result.owners.map(compactOwner),
+      conflict: true,
+    };
+  }
+  return { file: result.file, owner: compactOwner(result.owner) };
+}
+
+/** One compact, repo-scoped snapshot for an agent about to edit files. */
+function editContext({ cwd = process.cwd(), files = [], includePrs = false } = {}) {
+  const context = myContext({ cwd, includePr: includePrs });
+  if (context.error) return context;
+  const otherAgents = collectRepoAgents(context.repoPath, { includePrs })
+    .filter((agent) => agent.branch !== context.branch)
+    .map(radarRecord);
+  const ownership = whoOwnsMany(files, { repoPath: context.repoPath })
+    .map(compactOwnership);
+  return { ...context, otherAgents, ownership };
+}
+
 module.exports = {
   collectAllAgents,
   collectRepoAgents,
   repoState,
   whoOwns,
+  whoOwnsMany,
   myContext,
+  editContext,
   radarRecord,
   indexPrsByBranch,
   daysSince,

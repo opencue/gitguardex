@@ -24,6 +24,12 @@ the AI review/autofix gate. GitHub branch protection and required CI checks are
 not bypassed. Conflicting flags such as `--gate-review`, `--preflight`, or
 `--direct-only` are rejected instead of producing a mixed policy.
 
+For agent runs where transcript size matters more than live progress, add
+`--agent-quiet`. GitGuardex captures the long finish subprocess output, keeps
+the private structured event stream, and emits one compact JSON summary per
+branch plus the final aggregate. Failures retain a bounded error tail. The
+default remains streamed human-readable progress.
+
 Review-gated finishes keep this repository-defined pre-flight enabled even
 after required CI passes because the script can contain checks that required CI
 does not. By default the PR remains draft until the AI review passes. The

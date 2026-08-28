@@ -35,8 +35,11 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
   stub('src/core/runtime.js', {
     run: () => {},
     extractTargetedArgs: (args) => ({ target: undefined, passthrough: args }),
-    runPackageAsset: () => ({ status: 0 }),
-    invokePackageAsset: (asset, args) => calls.script.push({ asset, args }),
+    runPackageAsset: (asset, args, options) => {
+      calls.script.push({ asset, args, options });
+      return { status: 0, stdout: '', stderr: '' };
+    },
+    invokePackageAsset: (asset, args, options) => calls.script.push({ asset, args, options }),
   });
   stub('src/finish/review-gate.js', {
     runReviewGate: (opts) => {
@@ -86,6 +89,15 @@ test('branch finish --no-gate-review skips the gate and strips the opt-out flag'
 
   assert.equal(calls.gate.length, 0, 'opt-out must not run the gate');
   assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/z', '--via-pr']);
+});
+
+test('branch finish --agent-quiet captures the script and strips the gx-only flag', () => {
+  const { branch, calls } = loadBranchWithStubs();
+
+  branch(['finish', '--branch', 'agent/claude/quiet', '--via-pr', '--agent-quiet']);
+
+  assert.deepEqual(calls.script[0].args, ['--branch', 'agent/claude/quiet', '--via-pr']);
+  assert.equal(calls.script[0].options.stdio, 'pipe');
 });
 
 test('branch finish --skip-review-gate is honored as an opt-out alias', () => {
