@@ -420,8 +420,8 @@ def has_competing_worktree_activity(repo_root: Path) -> bool:
     return False
 
 
-def target_has_file_lock(repo_root: Path, file_path: str) -> bool:
-    """Fail closed when any local worktree registry claims the edit target."""
+def target_has_file_lock(repo_root: Path, file_path: str, session_id: str) -> bool:
+    """Fail closed when any foreign local registry claims the edit target."""
     try:
         relative_path = Path(file_path).resolve().relative_to(repo_root.resolve()).as_posix()
     except (OSError, ValueError):
@@ -455,8 +455,18 @@ def target_has_file_lock(repo_root: Path, file_path: str) -> bool:
         locks = lock_data.get("locks", {})
         if not isinstance(locks, dict):
             return True
+        branch = current_branch(repo_root)
         target_prefix = "" if relative_path == "." else f"{relative_path.rstrip('/')}/"
-        locked_paths = {path.rstrip("/") for path in locks}
+        locked_paths = {
+            path.rstrip("/")
+            for path, owner in locks.items()
+            if not isinstance(owner, dict)
+            or str(owner.get("branch", "")) != branch
+            or (
+                owner.get("agent")
+                and str(owner.get("agent")) != session_id
+            )
+        }
         ancestor_claimed = any(
             locked_path in {"", "."}
             or relative_path == locked_path
@@ -464,8 +474,8 @@ def target_has_file_lock(repo_root: Path, file_path: str) -> bool:
             for locked_path in locked_paths
         )
         if ancestor_claimed or (
-            target_prefix and any(path.startswith(target_prefix) for path in locks)
-        ) or (not target_prefix and locks):
+            target_prefix and any(path.startswith(target_prefix) for path in locked_paths)
+        ) or (not target_prefix and locked_paths):
             return True
     return False
 
@@ -473,6 +483,7 @@ def target_has_file_lock(repo_root: Path, file_path: str) -> bool:
 def adaptive_git_lock_error(
     repo_root: Path,
     command: str,
+    session_id: str,
     command_cwd: str = "",
 ) -> str | None:
     """Reject adaptive staging/commits that can touch a claimed path."""
@@ -513,7 +524,7 @@ def adaptive_git_lock_error(
                 target_path = Path(target)
                 if not target_path.is_absolute():
                     target_path = Path(command_cwd or repo_root) / target_path
-                if target_has_file_lock(repo_root, str(target_path)):
+                if target_has_file_lock(repo_root, str(target_path), session_id):
                     return (
                         "BLOCKED: Adaptive git add target is claimed by another agent lane.\n"
                         "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
@@ -539,7 +550,7 @@ def adaptive_git_lock_error(
                     return "BLOCKED: Adaptive commit cannot validate changed file ownership."
                 changed_paths.update(path for path in changed.stdout.split("\0") if path)
             for changed_path in changed_paths:
-                if target_has_file_lock(repo_root, str(repo_root / changed_path)):
+                if target_has_file_lock(repo_root, str(repo_root / changed_path), session_id):
                     return (
                         "BLOCKED: Adaptive commit includes a file claimed by another agent lane.\n"
                         "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
@@ -673,7 +684,7 @@ def adaptive_direct_work_error(
             "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
             '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
         )
-    if file_path and target_has_file_lock(repo_root, file_path):
+    if file_path and target_has_file_lock(repo_root, file_path, session_id):
         return (
             "BLOCKED: Adaptive direct work target is claimed by another agent lane.\n"
             "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
@@ -1234,7 +1245,7 @@ def ensure_non_agent_shell_command_allowed(
                 "Use an isolated lane for custom executors or scripts:\n"
                 '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
             )
-        git_lock_error = adaptive_git_lock_error(repo_root, command, command_cwd)
+        git_lock_error = adaptive_git_lock_error(repo_root, command, session_id, command_cwd)
         if git_lock_error:
             return git_lock_error
         adaptive_error = adaptive_direct_work_error(repo_root, session_id)

@@ -277,6 +277,34 @@ test('skill_guard adaptive mode blocks a target claimed in the primary checkout 
   }
 });
 
+test('skill_guard adaptive mode allows edits, adds, and commits for the current session claims', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/owned.js': { branch: 'main', agent: 'adaptive-owner' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'owned.js'), 'owned\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/owned.js'], { cwd: dir }).status, 0);
+
+    for (const payload of [
+      writePayload(path.join(dir, 'src', 'owned.js'), dir, 'adaptive-owner'),
+      bashPayload('git add src/owned.js', dir, 'adaptive-owner'),
+      bashPayload('git add src', dir, 'adaptive-owner'),
+      bashPayload('git commit -m owned', dir, 'adaptive-owner'),
+    ]) {
+      const result = invokeHook(dir, payload);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard adaptive mode blocks git add and commit for claimed paths', () => {
   const dir = makeRepoOn('main');
   try {
