@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runReviewGate } = require('../src/finish/review-gate');
-const { createFinishProgress } = require('../src/finish/progress');
+const { createFinishProgress, summarizeFinishRun } = require('../src/finish/progress');
 
 function cleanGateDeps() {
   return {
@@ -65,6 +65,66 @@ test('finish progress persists private structured JSONL events for agent polling
   assert.equal(events.at(-1).stage, 'review');
   assert.equal(events.at(-1).state, 'complete');
   assert.equal(events.at(-1).detail, 'clean');
+});
+
+test('agent-quiet finish suppresses narrative transitions but keeps structured events', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-quiet-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const lines = [];
+  let heartbeatCalls = 0;
+  const progress = createFinishProgress({
+    repoRoot,
+    branch: 'agent/test/quiet',
+    baseBranch: 'main',
+    quiet: true,
+    write: (line) => lines.push(line),
+    heartbeat: () => {
+      heartbeatCalls += 1;
+      return () => {};
+    },
+  });
+
+  progress.start('review', 'round 1/2');
+  progress.complete('review', 'clean');
+
+  assert.deepEqual(lines, []);
+  assert.equal(heartbeatCalls, 0, 'quiet mode must not create transcript heartbeats');
+  const events = fs.readFileSync(progress.eventEnv.GUARDEX_FINISH_EVENT_FILE, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(events.at(-1).stage, 'review');
+  assert.equal(events.at(-1).state, 'complete');
+
+  assert.deepEqual(summarizeFinishRun({
+    eventFile: progress.eventEnv.GUARDEX_FINISH_EVENT_FILE,
+    branch: 'agent/test/quiet',
+    baseBranch: 'main',
+    stdout: 'PR: https://github.com/acme/repo/pull/42',
+    status: 0,
+  }), {
+    branch: 'agent/test/quiet',
+    base: 'main',
+    result: 'success',
+    stages: { review: 'complete: clean' },
+    pr: 'https://github.com/acme/repo/pull/42',
+  });
+});
+
+test('agent-quiet failure summaries keep only a bounded output tail', () => {
+  const noisyOutput = Array.from({ length: 20 }, (_, index) => `line-${index}`).join('\n');
+  const summary = summarizeFinishRun({
+    branch: 'agent/test/failure',
+    baseBranch: 'main',
+    stderr: noisyOutput,
+    status: 1,
+  });
+
+  assert.equal(summary.result, 'failed');
+  assert.equal(summary.error.split('\n').length, 12);
+  assert.equal(summary.error.startsWith('line-8'), true);
+  assert.equal(summary.error.endsWith('line-19'), true);
+  assert.ok(summary.error.length <= 2_000);
 });
 
 test('review gate reports PR, review, autofix, and CI checklist transitions', () => {

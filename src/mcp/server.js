@@ -19,45 +19,45 @@ const TOOLS = [
   {
     name: 'list_agents',
     description:
-      'List every active agent lane across all discovered repos. Returns a COMPACT radar by default — per lane: repo, branch, agent, task, dirty (count of files changed right now), locks (count), pr (number), last (commit date), and flags stale / onPrimary / unpushed when set. Use it to see who is working on what before you start. For full detail on a lane (worktree path, the actual dirty/lock file lists, full PR), call repo_state or my_context, or pass detail:true here (where the onPrimary flag appears as warning + onPrimaryCheckout instead). Read-only.',
+      'Cross-repo agent radar. Compact by default; use detail only for paths and file lists.',
     inputSchema: {
       type: 'object',
       properties: {
         include_prs: {
           type: 'boolean',
-          description: 'Fetch PR state via gh (one call per repo that has lanes). Default true; pass false to skip gh entirely.',
+          description: 'Fetch PRs. Default false.',
         },
         roots: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Override repo search roots. Default: ~/Documents, ~/code, ~/src, ~/projects.',
+          description: 'Override search roots.',
         },
-        limit: { type: 'number', description: 'Max number of repos to scan.' },
-        detail: { type: 'boolean', description: 'Return full lane records (worktree path, dirty/lock file lists, full PR) instead of the compact radar. Default false.' },
+        limit: { type: 'number', description: 'Repo scan cap.' },
+        detail: { type: 'boolean', description: 'Return full lane records. Default false.' },
       },
     },
   },
   {
     name: 'repo_state',
     description:
-      'Agent lanes for a single repository (branches, worktrees, file locks, PRs). Pass a repo path; defaults to the current working repo.',
+      'Agent lanes for one repo.',
     inputSchema: {
       type: 'object',
       properties: {
-        repo: { type: 'string', description: 'Path inside the target repo. Defaults to cwd.' },
-        include_prs: { type: 'boolean', description: 'Fetch PR state. Default true.' },
+        repo: { type: 'string', description: 'Repo path; default cwd.' },
+        include_prs: { type: 'boolean', description: 'Fetch PRs. Default false.' },
       },
     },
   },
   {
     name: 'who_owns',
     description:
-      'Check which agent/branch holds the gitguardex file lock on a path BEFORE you edit it, to avoid colliding with another agent. Returns owner=null when the file is unclaimed.',
+      'Find the lock owner for one file. owner=null means unclaimed.',
     inputSchema: {
       type: 'object',
       properties: {
-        file: { type: 'string', description: 'Repo-relative or absolute path to check.' },
-        repo: { type: 'string', description: 'Path inside the target repo. Defaults to cwd.' },
+        file: { type: 'string', description: 'File path.' },
+        repo: { type: 'string', description: 'Repo path; default cwd.' },
       },
       required: ['file'],
     },
@@ -65,19 +65,30 @@ const TOOLS = [
   {
     name: 'my_context',
     description:
-      'Report THIS session: current repo, branch, worktree, whether it is the protected primary checkout (where edits are unsafe), held locks, and the PR for the branch.',
-    inputSchema: { type: 'object', properties: {} },
+      'Current lane. Pass files to also return compact same-repo radar and batch ownership in this one call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 200,
+          description: 'Files intended for editing.',
+        },
+        include_prs: { type: 'boolean', description: 'Fetch PRs. Default false.' },
+      },
+    },
   },
 ];
 
 function callTool(name, args = {}) {
   switch (name) {
     case 'list_agents': {
-      // PRs on by default: one gh call per repo that has active lanes (most
-      // repos have none, so they cost nothing). Pass include_prs:false to skip.
+      // PR lookup is one batched gh call per repo with active lanes. Keep it
+      // opt-in so the default radar stays fast and compact.
       const full = collect.collectAllAgents({
         roots: args.roots,
-        includePrs: args.include_prs !== false,
+        includePrs: args.include_prs === true,
         limit: args.limit,
       });
       // Compact radar by default (~80% fewer tokens); detail:true keeps the
@@ -86,11 +97,16 @@ function callTool(name, args = {}) {
       return { ...full, agents: full.agents.map(collect.radarRecord) };
     }
     case 'repo_state':
-      return collect.repoState(args.repo || process.cwd(), { includePrs: args.include_prs !== false });
+      return collect.repoState(args.repo || process.cwd(), { includePrs: args.include_prs === true });
     case 'who_owns':
       return collect.whoOwns(args.file, { repoPath: args.repo });
-    case 'my_context':
-      return collect.myContext({});
+    case 'my_context': {
+      const includePrs = args.include_prs === true;
+      if (Array.isArray(args.files) && args.files.length > 0) {
+        return collect.editContext({ files: args.files, includePrs });
+      }
+      return collect.myContext({ includePr: includePrs });
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

@@ -78,6 +78,37 @@ test('whoOwns aggregates locks across ALL worktrees (per-worktree lock files)', 
   }
 });
 
+test('whoOwnsMany resolves a file batch and editContext returns one compact pre-edit snapshot', () => {
+  const { root, wtA } = makeRepoWithLanes();
+  try {
+    const ownership = collect.whoOwnsMany(['src/x.js', 'src/y.js', 'README.md'], { repoPath: wtA });
+    assert.equal(ownership.length, 3);
+    assert.equal(ownership[0].owner.agent, 'alice');
+    assert.equal(ownership[1].owner.agent, 'bob');
+    assert.equal(ownership[2].owner, null);
+
+    const context = collect.editContext({
+      cwd: wtA,
+      files: ['src/x.js', 'src/y.js', 'README.md'],
+      includePrs: false,
+    });
+    assert.equal(context.branch, 'agent/alice/feature-x');
+    assert.deepEqual(
+      context.otherAgents.map((agent) => agent.branch),
+      ['agent/bob/fix-y'],
+      'the current lane is not duplicated in the collaborator radar',
+    );
+    assert.deepEqual(
+      context.ownership.map((entry) => [entry.file, entry.owner?.agent ?? null]),
+      [['src/x.js', 'alice'], ['src/y.js', 'bob'], ['README.md', null]],
+    );
+    assert.equal('worktree' in context.ownership[0].owner, false, 'ownership is compact by default');
+    assert.equal(context.otherAgents[0].prLookupError, undefined, 'PR lookup is skipped');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('myContext resolves the real repo name + this lane from inside a worktree', () => {
   const { root, wtA } = makeRepoWithLanes();
   try {

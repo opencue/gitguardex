@@ -31,7 +31,7 @@ const {
 const submoduleModule = require('../submodule');
 const { runPreflight, summarizePreflight } = require('./preflight');
 const { runReviewGate } = require('./review-gate');
-const { createFinishProgress } = require('./progress');
+const { createFinishProgress, summarizeFinishRun } = require('./progress');
 
 /**
  * Options recognized by {@link autoCommitWorktreeForFinish} and the public
@@ -53,6 +53,7 @@ const { createFinishProgress } = require('./progress');
  * @property {string} [branch] Single branch to finish (skips discovery).
  * @property {string} [base] Explicit base branch override.
  * @property {string} [target] Path inside the target repo (defaults to cwd).
+ * @property {boolean} [agentQuiet] Capture narrative finish output and emit compact JSON summaries.
  */
 
 /**
@@ -394,7 +395,7 @@ function finish(rawArgs, defaults = {}) {
   let succeeded = 0;
   let failed = 0;
   let autoCommitted = 0;
-  const terse = isTerseMode();
+  const terse = isTerseMode() || options.agentQuiet;
 
   for (const candidate of candidates) {
     const { branch, baseBranch, worktreePath } = candidate;
@@ -403,6 +404,7 @@ function finish(rawArgs, defaults = {}) {
       branch,
       baseBranch,
       persistEvents: !options.dryRun,
+      quiet: options.agentQuiet,
     });
     // In terse mode, defer the "Finishing X -> Y" line until we know whether
     // we also need to announce an auto-commit, then emit a single combined
@@ -425,9 +427,11 @@ function finish(rawArgs, defaults = {}) {
         const suffix = commitState.committed
           ? ' [auto-committed]'
           : (commitState.changed && commitState.dryRun ? ' [dry-run: would auto-commit]' : '');
-        console.log(
-          `[${TOOL_NAME}] Finishing '${branch}' -> '${baseBranch}'${worktreePath ? ` (${worktreePath})` : ''}${suffix}`,
-        );
+        if (!options.agentQuiet) {
+          console.log(
+            `[${TOOL_NAME}] Finishing '${branch}' -> '${baseBranch}'${worktreePath ? ` (${worktreePath})` : ''}${suffix}`,
+          );
+        }
         if (commitState.committed) {
           autoCommitted += 1;
         }
@@ -510,7 +514,7 @@ function finish(rawArgs, defaults = {}) {
         const preflight = runPreflight(repoRoot, worktreePath, branch, baseBranch, {
           verbose: !terse,
         });
-        console.log(`[${TOOL_NAME}] ${summarizePreflight(preflight)}`);
+        if (!options.agentQuiet) console.log(`[${TOOL_NAME}] ${summarizePreflight(preflight)}`);
         if (preflight.status === 'failed') {
           progress.fail('preflight', `${preflight.failures.length} script(s) failed`);
           for (const f of preflight.failures) {
@@ -563,7 +567,7 @@ function finish(rawArgs, defaults = {}) {
       // drift apart.
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
         cwd: repoRoot,
-        stdio: assetStdio('branchFinish'),
+        stdio: options.agentQuiet ? 'pipe' : assetStdio('branchFinish'),
         env: {
           GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
           GUARDEX_FINISH_CHECKLIST: '1',
@@ -571,12 +575,20 @@ function finish(rawArgs, defaults = {}) {
           ...progress.eventEnv,
         },
       });
-      // Null under 'inherit'; kept so an explicit pipe still prints.
-      if (finishResult.stdout) {
-        process.stdout.write(finishResult.stdout);
-      }
-      if (finishResult.stderr) {
-        process.stderr.write(finishResult.stderr);
+      if (options.agentQuiet) {
+        const summary = summarizeFinishRun({
+          eventFile: progress.eventEnv.GUARDEX_FINISH_EVENT_FILE,
+          branch,
+          baseBranch,
+          stdout: finishResult.stdout,
+          stderr: finishResult.stderr,
+          status: finishResult.status,
+        });
+        process.stdout.write(`[gx:finish] ${JSON.stringify(summary)}\n`);
+      } else {
+        // Null under 'inherit'; kept so an explicit pipe still prints.
+        if (finishResult.stdout) process.stdout.write(finishResult.stdout);
+        if (finishResult.stderr) process.stderr.write(finishResult.stderr);
       }
       if (finishResult.status !== 0) {
         throw new Error(`agent-branch-finish exited with status ${finishResult.status}`);
@@ -592,9 +604,18 @@ function finish(rawArgs, defaults = {}) {
     }
   }
 
-  console.log(
-    `[${TOOL_NAME}] Finish summary: total=${candidates.length}, success=${succeeded}, failed=${failed}, autoCommitted=${autoCommitted}`,
-  );
+  if (options.agentQuiet) {
+    process.stdout.write(`[gx:finish] ${JSON.stringify({
+      total: candidates.length,
+      success: succeeded,
+      failed,
+      autoCommitted,
+    })}\n`);
+  } else {
+    console.log(
+      `[${TOOL_NAME}] Finish summary: total=${candidates.length}, success=${succeeded}, failed=${failed}, autoCommitted=${autoCommitted}`,
+    );
+  }
 
   // Bulk `--all` finish self-cleans: sweep merged-but-stranded worktree dirs
   // whose branch was merged out-of-band and never reaped (the post-merge
@@ -607,10 +628,10 @@ function finish(rawArgs, defaults = {}) {
     if (baseForSweep) {
       sweepArgs.push('--base', baseForSweep);
     }
-    console.log(`[${TOOL_NAME}] Sweeping merged-but-stranded worktrees...`);
+    if (!options.agentQuiet) console.log(`[${TOOL_NAME}] Sweeping merged-but-stranded worktrees...`);
     const sweep = runPackageAsset('worktreePrune', sweepArgs, {
       cwd: repoRoot,
-      stdio: 'inherit',
+      stdio: options.agentQuiet ? 'pipe' : 'inherit',
       env: { GUARDEX_PRUNE_ACTIVE_CWD: activeCwd },
     });
     if (sweep.status !== 0) {
