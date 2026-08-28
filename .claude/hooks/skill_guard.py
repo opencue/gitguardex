@@ -759,13 +759,32 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             index += 1
             while index < len(tokens) and tokens[index].startswith("-"):
                 index += 1
-        if index < len(tokens) and tokens[index] == "env":
+        if index < len(tokens) and Path(tokens[index]).name == "env":
             index += 1
-            while index < len(tokens) and (
-                tokens[index].startswith("-")
-                or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", tokens[index])
-            ):
-                index += 1
+            while index < len(tokens):
+                token = tokens[index]
+                if token == "--":
+                    index += 1
+                    break
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token):
+                    index += 1
+                    continue
+                if token in {"-S", "--split-string"} or token.startswith(
+                    ("-S", "--split-string=")
+                ):
+                    return True
+                if token in {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}:
+                    index += 2
+                    continue
+                if token.startswith(
+                    ("-u", "--unset=", "-C", "--chdir=", "--argv0=")
+                ):
+                    index += 1
+                    continue
+                if token.startswith("-"):
+                    index += 1
+                    continue
+                break
         if index >= len(tokens) or Path(tokens[index]).name != "git":
             continue
         index += 1
@@ -826,7 +845,8 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
         ):
             return True
         if subcommand == "worktree" and any(
-            argument in {"add", "move", "remove", "prune"} for argument in arguments
+            argument in {"add", "lock", "move", "prune", "remove", "repair", "unlock"}
+            for argument in arguments
         ):
             return True
         try:
