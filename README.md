@@ -190,6 +190,12 @@ finds the last published GitHub release, and writes one grouped GitHub release b
 <details>
 <summary><strong>v8.x</strong></summary>
 
+### v8.2.0
+- Reduced agent preflight and finish token overhead.
+- Preserved dirty worktrees during stale-worktree cleanup and exposed
+  command-specific cleanup help.
+- Added the owning tmux pane and worktree to file-lock conflict output.
+
 ### v8.1.1
 - Prevented `gx doctor` from pruning dirty detached or managed worktrees during
   stale-worktree repair.
