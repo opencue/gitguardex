@@ -91,10 +91,12 @@ SHELL_ALLOWED_SEGMENTS = (
 )
 
 ADAPTIVE_DIRECT_SHELL_ALLOWED_SEGMENTS = (
-    re.compile(r"^git\s+(?:add|push)(?:\s|$)|^git\s+commit(?!\s+(?:-p|--patch|-i|--interactive)(?:\s|$))(?:\s|$)"),
-    re.compile(r"^(?:pytest|ruff|mypy|pyright|tsc|eslint|biome)(?:\s|$)"),
-    re.compile(r"^python3?\s+-m\s+(?:pytest|ruff|mypy)(?:\s|$)"),
-    re.compile(r"^cargo\s+(?:build|check|clippy|fmt|test)(?:\s|$)"),
+    re.compile(
+        r"^git\s+(?:add|push)(?:\s|$)|^git\s+commit(?![^\n]*\s(?:-p|--patch|-i|--interactive)(?:\s|$))(?:\s|$)"
+    ),
+    re.compile(r"^(?:pytest|mypy|pyright|tsc)(?:\s|$)"),
+    re.compile(r"^python3?\s+-m\s+(?:pytest|mypy)(?:\s|$)"),
+    re.compile(r"^cargo\s+(?:build|check|clippy|test)(?:\s|$)"),
     re.compile(r"^go\s+(?:build|test|vet)(?:\s|$)"),
 )
 
