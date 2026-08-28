@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -39,6 +40,7 @@ except ImportError:  # non-POSIX (e.g. Windows): cross-worktree locking degrades
 
 LOCK_FILE_RELATIVE = Path('.omx/state/agent-file-locks.json')
 AGENT_ID_ENV = 'GUARDEX_AGENT_ID'
+PANE_ID_ENV = 'TMUX_PANE'
 CRITICAL_GUARDRAIL_PATHS = {
     'AGENTS.md',
     '.githooks/pre-commit',
@@ -61,6 +63,7 @@ class LockEntry:
     claimed_at: str
     allow_delete: bool = False
     agent: str = ''
+    pane: str = ''
 
 
 class LockError(Exception):
@@ -112,10 +115,28 @@ def resolve_agent(args: argparse.Namespace) -> str:
     return (value or '').strip()
 
 
+def resolve_pane() -> str:
+    """Return the caller's tmux pane when it has the canonical `%<number>` form."""
+    value = os.environ.get(PANE_ID_ENV, '').strip()
+    return value if re.fullmatch(r'%\d+', value) else ''
+
+
 def owner_label(entry: dict[str, Any]) -> str:
     branch = str(entry.get('branch', ''))
     agent = str(entry.get('agent', ''))
     return f'{branch} as {agent}' if agent else branch
+
+
+def owner_description(entry: dict[str, Any]) -> str:
+    details: list[str] = []
+    pane = str(entry.get('pane', '')).strip()
+    worktree = str(entry.get('_worktree', '')).strip()
+    if pane:
+        details.append(f'pane {pane}')
+    if worktree:
+        details.append(f'worktree {worktree}')
+    suffix = f"; {'; '.join(details)}" if details else ''
+    return f'{owner_label(entry)}{suffix}'
 
 
 def owner_matches(entry: dict[str, Any], branch: str, agent: str) -> bool:
@@ -151,7 +172,7 @@ def load_state(repo_root: Path) -> dict[str, Any]:
     if not isinstance(locks, dict):
         return {'locks': {}}
 
-    # Backward-compat normalization for older lock schema (no `agent` field).
+    # Backward-compat normalization for older lock schemas (no `agent`/`pane` fields).
     normalized_locks: dict[str, dict[str, Any]] = {}
     for file_path, entry in locks.items():
         if not isinstance(entry, dict):
@@ -160,11 +181,13 @@ def load_state(repo_root: Path) -> dict[str, Any]:
         claimed_at = str(entry.get('claimed_at', ''))
         allow_delete = bool(entry.get('allow_delete', False))
         agent = str(entry.get('agent', ''))
+        pane = str(entry.get('pane', ''))
         normalized_locks[str(file_path)] = {
             'branch': branch,
             'claimed_at': claimed_at,
             'allow_delete': allow_delete,
             'agent': agent,
+            'pane': pane,
         }
 
     return {'locks': normalized_locks}
@@ -317,7 +340,7 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
                 'lock operation blocked'
             ) from exc
         for file_path, entry in state['locks'].items():
-            merged.setdefault(file_path, []).append(entry)
+            merged.setdefault(file_path, []).append({**entry, '_worktree': str(root)})
     return merged
 
 
@@ -367,8 +390,9 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     locks: dict[str, dict[str, Any]] = state['locks']
 
     claim_agent = resolve_agent(args)
+    claim_pane = resolve_pane()
     files = [normalize_repo_path(repo_root, p) for p in args.files]
-    conflicts: list[tuple[str, str]] = []
+    conflicts: list[tuple[str, dict[str, Any]]] = []
 
     # Conflict detection spans EVERY worktree of the repo, not just this one: a
     # file claimed by another owner in a sibling worktree must still block this
@@ -381,7 +405,7 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     for file_path in files:
         foreign = [e for e in all_locks.get(file_path, []) if not owner_matches(e, args.branch, claim_agent)]
         if foreign:
-            conflicts.append((file_path, owner_label(foreign[0])))
+            conflicts.append((file_path, foreign[0]))
             claimed = parse_iso_epoch(str(foreign[0].get('claimed_at', '')))
             if claimed is not None and (now - claimed) >= ttl_seconds:
                 any_stale = True
@@ -389,7 +413,7 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     if conflicts:
         print('[agent-file-locks] Cannot claim files already locked by another owner:', file=sys.stderr)
         for file_path, owner in conflicts:
-            print(f'  - {file_path} (locked by {owner})', file=sys.stderr)
+            print(f'  - {file_path} (locked by {owner_description(owner)})', file=sys.stderr)
         if any_stale:
             print(
                 '[agent-file-locks] Some blocking locks are past the staleness TTL; if their '
@@ -404,11 +428,13 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
         # A named claim adopts/upgrades the entry's agent; an anonymous claim
         # keeps any existing agent rather than silently downgrading it.
         resolved_owner_agent = claim_agent or str(existing.get('agent', ''))
+        resolved_owner_pane = claim_pane or str(existing.get('pane', ''))
         locks[file_path] = LockEntry(
             branch=args.branch,
             claimed_at=now_iso(),
             allow_delete=args.allow_delete or existing_allow_delete,
             agent=resolved_owner_agent,
+            pane=resolved_owner_pane,
         ).__dict__
 
     write_state(repo_root, state)
