@@ -107,6 +107,25 @@ test('advisor stays silent on protected main when adaptive direct work is safe',
   }
 });
 
+test('advisor does not perform shared-remote probes for adaptive prompt routing', () => {
+  const dir = makeRepoOn('main');
+  const sid = freshSessionId();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    assert.equal(cp.spawnSync('git', ['config', 'multiagent.sharedState', 'git'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync('git', ['config', 'multiagent.sharedStateRemote', 'missing-remote'], { cwd: dir }).status,
+      0,
+    );
+    const result = invokeAdvisor(dir, 'UserPromptSubmit', sid);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), '', 'local-only advisor probe should stay responsive and silent');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(statePath(sid), { force: true });
+  }
+});
+
 test('advisor warns before work when another session owns adaptive direct main', () => {
   const dir = makeRepoOn('main');
   const ownerSid = freshSessionId();

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -55,6 +56,8 @@ LOCK_NOW_EPOCH_ENV = 'GUARDEX_LOCK_NOW_EPOCH'
 # Generous default so an active long-running lane is never reaped; `reap` is an
 # explicit, opt-in maintenance command, not an automatic background sweep.
 DEFAULT_LOCK_TTL_HOURS = 168.0  # 7 days
+ADAPTIVE_SESSION_LEASE_SECONDS_ENV = 'GUARDEX_ADAPTIVE_SESSION_LEASE_SEC'
+DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS = 900.0
 
 
 @dataclass
@@ -113,6 +116,15 @@ def resolve_agent(args: argparse.Namespace) -> str:
     if not value:
         value = os.environ.get(AGENT_ID_ENV, '')
     return (value or '').strip()
+
+
+def resolve_session_id() -> str:
+    return (
+        os.environ.get('CODEX_THREAD_ID')
+        or os.environ.get('OMX_SESSION_ID')
+        or os.environ.get('CLAUDE_CODE_SESSION_ID')
+        or ''
+    ).strip()
 
 
 def resolve_pane() -> str:
@@ -385,13 +397,74 @@ def cross_worktree_lock(repo_root: Path):
             handle.close()
 
 
+def active_adaptive_direct_owner(repo_root: Path) -> str:
+    """Return the live primary-checkout session owner while holding its OS lock."""
+    if fcntl is None:
+        raise LockError('OS file locking is unavailable; lock operation blocked')
+    state_dir = common_git_dir(repo_root) / 'gitguardex'
+    lease_path = state_dir / 'adaptive-direct-session.json'
+    lease_lock_path = state_dir / 'adaptive-direct-session.lock'
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        handle = open(lease_lock_path, 'a+')
+    except OSError as exc:
+        raise LockError('cannot open the adaptive direct-session lock; claim blocked') from exc
+    acquired = False
+    contended = False
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            contended = True
+        except OSError as exc:
+            raise LockError('cannot acquire the adaptive direct-session lock; claim blocked') from exc
+        try:
+            lease = json.loads(lease_path.read_text())
+        except FileNotFoundError:
+            return ''
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise LockError('adaptive direct-session lease is unreadable; claim blocked') from exc
+        if not isinstance(lease, dict):
+            raise LockError('adaptive direct-session lease is malformed; claim blocked')
+        owner = lease.get('session_id')
+        last_seen = lease.get('last_seen_epoch')
+        if not isinstance(owner, str) or not owner.strip():
+            raise LockError('adaptive direct-session owner is malformed; claim blocked')
+        if isinstance(last_seen, bool) or not isinstance(last_seen, (int, float)):
+            raise LockError('adaptive direct-session timestamp is malformed; claim blocked')
+        raw_ttl = os.environ.get(ADAPTIVE_SESSION_LEASE_SECONDS_ENV, '').strip()
+        try:
+            ttl_seconds = float(raw_ttl) if raw_ttl else DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS
+        except ValueError as exc:
+            raise LockError('adaptive direct-session TTL is invalid; claim blocked') from exc
+        if ttl_seconds <= 0 or not math.isfinite(ttl_seconds):
+            raise LockError('adaptive direct-session TTL is invalid; claim blocked')
+        return owner if contended or now_epoch() - float(last_seen) < ttl_seconds else ''
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
 def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
 
     claim_agent = resolve_agent(args)
+    claim_session = resolve_session_id()
     claim_pane = resolve_pane()
     files = [normalize_repo_path(repo_root, p) for p in args.files]
+    adaptive_owner = active_adaptive_direct_owner(repo_root)
+    if adaptive_owner and adaptive_owner not in {claim_agent, claim_session}:
+        print(
+            '[agent-file-locks] Cannot claim files while adaptive direct work owns '
+            f'the primary checkout as {adaptive_owner}.',
+            file=sys.stderr,
+        )
+        return 1
     conflicts: list[tuple[str, dict[str, Any]]] = []
 
     # Conflict detection spans EVERY worktree of the repo, not just this one: a

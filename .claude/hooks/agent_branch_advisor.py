@@ -214,7 +214,7 @@ def main() -> None:
     if branch and not is_agent_branch(branch) and branch in protected:
         adaptive_direct_is_safe = (
             guardex_worktree_mode(repo_root) == "adaptive"
-            and not has_competing_worktree_activity(repo_root)
+            and not has_competing_worktree_activity(repo_root, include_shared=False)
             and adaptive_primary_session_lease_error(
                 repo_root,
                 session_id,

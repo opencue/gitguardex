@@ -355,8 +355,12 @@ def has_shared_agent_activity(repo_root: Path) -> bool:
     return shared.returncode != 0 or bool(shared.stdout.strip())
 
 
-def has_competing_worktree_activity(repo_root: Path) -> bool:
-    if has_shared_agent_activity(repo_root):
+def has_competing_worktree_activity(
+    repo_root: Path,
+    *,
+    include_shared: bool = True,
+) -> bool:
+    if include_shared and has_shared_agent_activity(repo_root):
         return True
     try:
         result = subprocess.run(
@@ -887,19 +891,41 @@ def adaptive_direct_work_error(
 ) -> str | None:
     if guardex_worktree_mode(repo_root) != "adaptive":
         return None
-    if has_competing_worktree_activity(repo_root):
-        return (
-            "BLOCKED: Adaptive direct work blocked: another agent lane has dirty files or locks.\n"
-            "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
-            '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
-        )
-    if file_path and target_has_file_lock(repo_root, file_path, session_id):
-        return (
-            "BLOCKED: Adaptive direct work target is claimed by another agent lane.\n"
-            "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
-        )
-    lease_error = adaptive_primary_session_lease_error(repo_root, session_id)
-    return lease_error or ""
+    common_dir = git_common_dir(repo_root)
+    if not common_dir or fcntl is None:
+        return "BLOCKED: Adaptive direct work cannot lock file-claim coordination."
+    claim_lock_path = Path(common_dir) / "agent-file-locks.lock"
+    try:
+        claim_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_lock = open(claim_lock_path, "a+")
+    except OSError:
+        return "BLOCKED: Adaptive direct work cannot open file-claim coordination."
+    acquired = False
+    try:
+        try:
+            fcntl.flock(claim_lock.fileno(), fcntl.LOCK_EX)
+            acquired = True
+        except OSError:
+            return "BLOCKED: Adaptive direct work cannot lock file-claim coordination."
+        if has_competing_worktree_activity(repo_root):
+            return (
+                "BLOCKED: Adaptive direct work blocked: another agent lane has dirty files or locks.\n"
+                "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
+                '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+            )
+        if file_path and target_has_file_lock(repo_root, file_path, session_id):
+            return (
+                "BLOCKED: Adaptive direct work target is claimed by another agent lane.\n"
+                "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
+            )
+        lease_error = adaptive_primary_session_lease_error(repo_root, session_id)
+        return lease_error or ""
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(claim_lock.fileno(), fcntl.LOCK_UN)
+        finally:
+            claim_lock.close()
 
 
 def current_branch(repo_root: Path) -> str:
@@ -1104,6 +1130,8 @@ def ensure_protected_branch_edit_allowed(
             session_id,
             file_path=target_file_path or file_path,
         )
+        if adaptive_error == "":
+            return None
         if adaptive_error:
             return adaptive_error
     if is_agent_branch(branch, protected):
