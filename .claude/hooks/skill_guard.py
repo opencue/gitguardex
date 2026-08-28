@@ -83,6 +83,15 @@ SHELL_ALLOWED_SEGMENTS = (
     ),
 )
 
+ADAPTIVE_DIRECT_SHELL_ALLOWED_SEGMENTS = (
+    re.compile(r"^git\s+(?:add|commit|push)(?:\s|$)"),
+    re.compile(r"^(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:build|check|lint|test|typecheck|verify))(?:\s|$)"),
+    re.compile(r"^(?:pytest|ruff|mypy|pyright|tsc|eslint|biome)(?:\s|$)"),
+    re.compile(r"^python3?\s+-m\s+(?:pytest|ruff|mypy)(?:\s|$)"),
+    re.compile(r"^cargo\s+(?:build|check|clippy|fmt|test)(?:\s|$)"),
+    re.compile(r"^go\s+(?:build|test|vet)(?:\s|$)"),
+)
+
 
 def load_skill_rules() -> dict:
     """Load skill-rules.json relative to this hook's location."""
@@ -739,6 +748,21 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
     return True
 
 
+def is_allowed_adaptive_direct_shell_command(command: str) -> bool:
+    segments = split_shell_segments(command.strip())
+    if not segments:
+        return True
+    for raw_segment in segments:
+        if shell_segment_has_output_redirection(raw_segment):
+            return False
+        segment = normalize_shell_segment(raw_segment)
+        if not segment:
+            continue
+        if not any(pattern.match(segment) for pattern in ADAPTIVE_DIRECT_SHELL_ALLOWED_SEGMENTS):
+            return False
+    return True
+
+
 def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
     options_with_values = {
         "-C",
@@ -822,14 +846,21 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
         subcommand = tokens[index]
         arguments = tokens[index + 1 :]
         if subcommand in {
+            "am",
             "checkout",
+            "cherry-pick",
             "switch",
             "clean",
+            "merge",
+            "rebase",
             "reset",
             "restore",
+            "revert",
             "symbolic-ref",
             "update-ref",
         }:
+            return True
+        if subcommand == "commit" and "--amend" in arguments:
             return True
         if subcommand == "branch" and arguments and any(
             not argument.startswith("-")
@@ -899,6 +930,12 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
         return None
 
     if adaptive_mode:
+        if not is_allowed_adaptive_direct_shell_command(command):
+            return (
+                f"BLOCKED: Shell command is outside the bounded adaptive allowlist on protected branch '{branch}'.\n"
+                "Use an isolated lane for custom executors or scripts:\n"
+                '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+            )
         adaptive_error = adaptive_direct_work_error(repo_root)
         if adaptive_error == "":
             return None

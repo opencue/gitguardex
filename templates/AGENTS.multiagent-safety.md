@@ -71,6 +71,10 @@ In adaptive direct mode, ordinary bounded edits/commits/pushes are allowed after
 the radar preflight passes. Branch switching and worktree manipulation still use
 `gx branch start` rather than raw Git commands.
 
+The protected-main shell allowlist covers `git add`/ordinary commit/push and
+bounded test/lint/build commands. Custom executors, scripts, or history rewrites
+require an isolated lane.
+
 If you are about to type `git checkout agent/...` from the primary checkout, **stop** — that is the mistake that flips primary onto an agent branch.
 
 ### Dirty-tree rule

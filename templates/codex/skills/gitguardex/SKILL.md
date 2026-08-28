@@ -29,8 +29,10 @@ Worktree policy is strict `always` unless the repo opts into `adaptive` with
    changes. If direct work already has edits when a pivot becomes necessary,
    transfer only those known edits deliberately; do not absorb unrelated files.
 
-Direct adaptive work uses ordinary repo commit/push commands. Isolated work uses
-claims and the gated `gx branch finish` flow below.
+Direct adaptive work supports file edits, `git add`/ordinary commit/push, and
+bounded test/lint/build commands. Custom executors, scripts, or history rewrites
+pivot to an isolated lane. Isolated work uses claims and the gated
+`gx branch finish` flow below.
 
 ## Keep the default workflow lean
 

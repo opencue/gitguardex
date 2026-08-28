@@ -7,6 +7,7 @@ single-agent path may opt in with `GUARDEX_WORKTREE_MODE=adaptive` in `.env` (or
 `git config --local multiagent.worktreeMode adaptive`).
 
 - In adaptive mode, small single-agent work may stay on the current checkout only after `gx status`, `gx mcp list-agents --no-prs`, and `gx mcp who-owns <file>` show no competing writer or target-file ownership.
+- Direct protected-main shell work is limited to `git add`/ordinary commit/push and bounded test/lint/build commands; custom executors or history rewrites use an isolated lane.
 - Pivot to an isolated lane when the task is substantial/long-lived, another writer is active in the repo, a target path is dirty or owned elsewhere, or scope expands. Use `gx branch start --new --no-transfer "<task>" "<agent-name>"`, then `cd` into the printed worktree.
 - In strict `always` mode, work from an `agent/*` branch + worktree and never edit the protected base (`main`/`dev`) directly.
 - In an isolated lane, claim files before editing: `gx locks claim --branch "<agent-branch>" <file...>`.

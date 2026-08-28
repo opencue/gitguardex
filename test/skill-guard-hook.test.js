@@ -148,15 +148,17 @@ test('skill_guard still BLOCKS writing a file INSIDE the repo on a protected bra
   }
 });
 
-test('skill_guard adaptive mode allows bounded edits and shell commands on protected main', () => {
+test('skill_guard adaptive mode allows bounded edits and allowlisted shell commands on protected main', () => {
   const dir = makeRepoOn('main');
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     let result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
     assert.equal(result.status, 0, result.stderr || result.stdout);
 
-    result = invokeHook(dir, bashPayload('rm seed.txt', dir));
-    assert.equal(result.status, 0, result.stderr || result.stdout);
+    for (const command of ['git add seed.txt', 'bun test', 'pytest -q']) {
+      result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -177,6 +179,9 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
       'git -c include.path=aliases.inc x other-branch',
       'git reset --soft HEAD~1',
       'git reset HEAD~1',
+      'git rebase HEAD~1',
+      'git cherry-pick HEAD~1',
+      'git commit --amend --no-edit',
       'git update-ref refs/heads/main HEAD~1',
       'git symbolic-ref HEAD refs/heads/other',
       'git restore --source=HEAD~1 -- seed.txt',
@@ -206,6 +211,25 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
       const result = invokeHook(dir, bashPayload(command, dir));
       assert.equal(result.status, 2, `command must be blocked: ${command}\n${result.stderr}`);
       assert.match(result.stderr, /Branch\/worktree mutation is unsafe/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks non-allowlisted command executors on protected main', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    for (const command of [
+      "python -c 'import subprocess; subprocess.run([\"git\", \"reset\", \"--hard\"])'",
+      "printf 'HEAD~1' | xargs git reset",
+      'nice git switch other-branch',
+      'bash scripts/custom-task.sh',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `command must be blocked: ${command}\n${result.stderr}`);
+      assert.match(result.stderr, /outside the bounded adaptive allowlist/);
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
