@@ -12,6 +12,11 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 try:
+    import fcntl
+except ImportError:  # non-POSIX: exclusive adaptive sessions must fail closed
+    fcntl = None
+
+try:
     from _analytics import emit_event
 except ImportError:
 
@@ -26,6 +31,8 @@ DEFAULT_MAIN_RS_INTEGRATOR_AGENT = os.environ.get("MAIN_RS_INTEGRATOR_AGENT", "i
 PROTECTED_BRANCH_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH"
 SHELL_GUARD_OVERRIDE_ENV = "ALLOW_BASH_ON_NON_AGENT_BRANCH"
 PRIMARY_WORKTREE_AGENT_EDIT_OVERRIDE_ENV = "ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE"
+ADAPTIVE_SESSION_LEASE_SECONDS_ENV = "GUARDEX_ADAPTIVE_SESSION_LEASE_SEC"
+DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS = 900.0
 # Branch namespace policy.
 #
 # By default ANY branch that is not a protected base (main/dev/master, plus any
@@ -414,16 +421,129 @@ def has_competing_worktree_activity(repo_root: Path) -> bool:
     return False
 
 
-def adaptive_direct_work_error(repo_root: Path) -> str | None:
+def adaptive_primary_session_lease_error(
+    repo_root: Path,
+    session_id: str,
+    *,
+    claim: bool = True,
+) -> str | None:
+    """Return why this session cannot own adaptive direct work, or None.
+
+    The lock file lives in the Git common dir, so every process operating on
+    the primary checkout serializes the lease read/update. This closes the
+    check-then-act race where two sessions could both observe no sibling
+    worktree and start mutating the same protected checkout.
+
+    ``claim=False`` is a read-only advisor probe: it reports a live foreign
+    owner without reserving the checkout merely because a session started.
+    """
+    if not isinstance(session_id, str) or not session_id.strip() or session_id == "unknown":
+        return "BLOCKED: Adaptive direct work requires a stable agent session id."
+    if fcntl is None:
+        return "BLOCKED: Adaptive direct work cannot acquire an exclusive OS session lease."
+
+    raw_ttl = os.environ.get(ADAPTIVE_SESSION_LEASE_SECONDS_ENV, "").strip()
+    try:
+        ttl_seconds = float(raw_ttl) if raw_ttl else DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS
+    except ValueError:
+        return "BLOCKED: Adaptive direct work session lease TTL is invalid."
+    if ttl_seconds <= 0:
+        return "BLOCKED: Adaptive direct work session lease TTL must be positive."
+
+    common_dir = git_common_dir(repo_root)
+    if not common_dir:
+        return "BLOCKED: Adaptive direct work cannot resolve the shared Git directory."
+    state_dir = Path(common_dir) / "gitguardex"
+    lease_path = state_dir / "adaptive-direct-session.json"
+    lock_path = state_dir / "adaptive-direct-session.lock"
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        lock_handle = open(lock_path, "a+")
+    except OSError:
+        return "BLOCKED: Adaptive direct work cannot open its exclusive session lease."
+
+    acquired = False
+    try:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            acquired = True
+        except OSError:
+            return "BLOCKED: Adaptive direct work cannot lock its exclusive session lease."
+
+        lease: dict = {}
+        try:
+            lease = json.loads(lease_path.read_text())
+        except FileNotFoundError:
+            pass
+        except (OSError, json.JSONDecodeError, ValueError):
+            return "BLOCKED: Adaptive direct work session lease state is unreadable."
+        if not isinstance(lease, dict):
+            return "BLOCKED: Adaptive direct work session lease state is malformed."
+
+        owner = lease.get("session_id")
+        last_seen = lease.get("last_seen_epoch")
+        if owner is not None and not isinstance(owner, str):
+            return "BLOCKED: Adaptive direct work session lease owner is malformed."
+        if last_seen is not None and (
+            isinstance(last_seen, bool) or not isinstance(last_seen, (int, float))
+        ):
+            return "BLOCKED: Adaptive direct work session lease timestamp is malformed."
+
+        now = time.time()
+        foreign_is_live = bool(
+            owner
+            and owner != session_id
+            and last_seen is not None
+            and now - float(last_seen) < ttl_seconds
+        )
+        if foreign_is_live:
+            return (
+                "BLOCKED: Adaptive direct work is owned by another active agent session "
+                "in this checkout.\n"
+                "Wait for that session to finish or open an isolated lane:\n"
+                '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+            )
+
+        if claim:
+            tmp_path = lease_path.with_suffix(f".json.tmp-{os.getpid()}")
+            try:
+                tmp_path.write_text(
+                    json.dumps(
+                        {
+                            "session_id": session_id,
+                            "last_seen_epoch": now,
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                os.replace(tmp_path, lease_path)
+            except OSError:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+                return "BLOCKED: Adaptive direct work cannot update its exclusive session lease."
+        return None
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_handle.close()
+
+
+def adaptive_direct_work_error(repo_root: Path, session_id: str) -> str | None:
     if guardex_worktree_mode(repo_root) != "adaptive":
         return None
-    if not has_competing_worktree_activity(repo_root):
-        return ""
-    return (
-        "BLOCKED: Adaptive direct work blocked: another agent lane has dirty files or locks.\n"
-        "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
-        '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
-    )
+    if has_competing_worktree_activity(repo_root):
+        return (
+            "BLOCKED: Adaptive direct work blocked: another agent lane has dirty files or locks.\n"
+            "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
+            '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+        )
+    lease_error = adaptive_primary_session_lease_error(repo_root, session_id)
+    return lease_error or ""
 
 
 def current_branch(repo_root: Path) -> str:
@@ -517,6 +637,7 @@ def git_common_dir(repo_root: Path) -> "str | None":
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
             cwd=repo_root,
+            env=_clean_git_env(),
             check=False,
             capture_output=True,
             text=True,
@@ -610,7 +731,10 @@ def is_codex_session() -> bool:
     )
 
 
-def ensure_protected_branch_edit_allowed(file_path: str) -> str | None:
+def ensure_protected_branch_edit_allowed(
+    file_path: str,
+    session_id: str = "unknown",
+) -> str | None:
     """Block Codex edits on non-agent branches and all edits on protected branches."""
     if os.environ.get(PROTECTED_BRANCH_EDIT_OVERRIDE_ENV) == "1":
         return None
@@ -618,7 +742,7 @@ def ensure_protected_branch_edit_allowed(file_path: str) -> str | None:
     branch = current_branch(repo_root)
     protected = resolve_protected_branches(repo_root)
     if branch in protected:
-        adaptive_error = adaptive_direct_work_error(repo_root)
+        adaptive_error = adaptive_direct_work_error(repo_root, session_id)
         if adaptive_error == "":
             return None
         if adaptive_error:
@@ -925,7 +1049,11 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
     return False
 
 
-def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str | None:
+def ensure_non_agent_shell_command_allowed(
+    repo_root: Path,
+    command: str,
+    session_id: str = "unknown",
+) -> str | None:
     if not command:
         return None
     if (
@@ -954,7 +1082,7 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
                 "Use an isolated lane for custom executors or scripts:\n"
                 '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
             )
-        adaptive_error = adaptive_direct_work_error(repo_root)
+        adaptive_error = adaptive_direct_work_error(repo_root, session_id)
         if adaptive_error == "":
             return None
         if adaptive_error:
@@ -1077,7 +1205,11 @@ def main() -> None:
         sys.exit(0)
 
     shell_command = extract_shell_command(tool_input)
-    shell_command_error = ensure_non_agent_shell_command_allowed(repo_root, shell_command)
+    shell_command_error = ensure_non_agent_shell_command_allowed(
+        repo_root,
+        shell_command,
+        session_id,
+    )
     if shell_command_error:
         emit_event(
             session_id,
@@ -1145,7 +1277,7 @@ def main() -> None:
             judge_path = str(abs_target)
         else:
             judge_path = str(repo_root)
-        protected_branch_error = ensure_protected_branch_edit_allowed(judge_path)
+        protected_branch_error = ensure_protected_branch_edit_allowed(judge_path, session_id)
         if protected_branch_error:
             emit_event(
                 session_id,

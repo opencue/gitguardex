@@ -48,6 +48,7 @@ from pathlib import Path
 
 try:
     from skill_guard import (
+        adaptive_primary_session_lease_error,
         current_branch,
         find_repo_root,
         guardex_repo_is_enabled,
@@ -214,6 +215,12 @@ def main() -> None:
         adaptive_direct_is_safe = (
             guardex_worktree_mode(repo_root) == "adaptive"
             and not has_competing_worktree_activity(repo_root)
+            and adaptive_primary_session_lease_error(
+                repo_root,
+                session_id,
+                claim=False,
+            )
+            is None
         )
     if branch and not is_agent_branch(branch) and branch in protected and not adaptive_direct_is_safe:
         if already_advised(session_id):

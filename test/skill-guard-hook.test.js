@@ -47,6 +47,7 @@ function invokeHook(cwd, payload, env = {}) {
     'GUARDEX_AGENT_BRANCH_PREFIXES',
     'GUARDEX_PROTECTED_BRANCHES',
     'GUARDEX_WORKTREE_MODE',
+    'GUARDEX_ADAPTIVE_SESSION_LEASE_SEC',
     'GUARDEX_ON',
   ]) {
     delete cleaned[key];
@@ -59,18 +60,49 @@ function invokeHook(cwd, payload, env = {}) {
   });
 }
 
-function bashPayload(cmd, cwd) {
+function invokeHookAsync(cwd, payload, env = {}) {
+  const cleaned = { ...process.env };
+  for (const key of [
+    'ALLOW_BASH_ON_NON_AGENT_BRANCH',
+    'ALLOW_CODE_EDIT_ON_PROTECTED_BRANCH',
+    'ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE',
+    'GUARDEX_AGENT_BRANCH_PREFIXES',
+    'GUARDEX_PROTECTED_BRANCHES',
+    'GUARDEX_WORKTREE_MODE',
+    'GUARDEX_ADAPTIVE_SESSION_LEASE_SEC',
+    'GUARDEX_ON',
+  ]) {
+    delete cleaned[key];
+  }
+  return new Promise((resolve, reject) => {
+    const child = cp.spawn('python3', [hookPath], {
+      cwd,
+      env: { ...cleaned, ...env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+function bashPayload(cmd, cwd, sessionId = 'skill-guard-test') {
   return {
-    session_id: 'skill-guard-test',
+    session_id: sessionId,
     cwd,
     tool_name: 'Bash',
     tool_input: { command: cmd },
   };
 }
 
-function writePayload(filePath, cwd) {
+function writePayload(filePath, cwd, sessionId = 'skill-guard-test') {
   return {
-    session_id: 'skill-guard-test',
+    session_id: sessionId,
     cwd,
     tool_name: 'Write',
     tool_input: { file_path: filePath, content: 'x\n' },
@@ -165,6 +197,73 @@ test('skill_guard adaptive mode allows bounded edits and allowlisted shell comma
       result = invokeHook(dir, bashPayload(command, dir));
       assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode atomically gives one session exclusive direct-main ownership', async () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+
+    const attempts = await Promise.all([
+      invokeHookAsync(
+        dir,
+        writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-owner-a'),
+      ),
+      invokeHookAsync(
+        dir,
+        writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-owner-b'),
+      ),
+    ]);
+    assert.deepEqual(
+      attempts.map((attempt) => attempt.status).sort(),
+      [0, 2],
+      attempts.map((attempt) => attempt.stderr || attempt.stdout).join('\n'),
+    );
+    const ownerSid = attempts[0].status === 0 ? 'adaptive-owner-a' : 'adaptive-owner-b';
+    const competingSid = ownerSid === 'adaptive-owner-a' ? 'adaptive-owner-b' : 'adaptive-owner-a';
+    const blockedAttempt = attempts.find((attempt) => attempt.status === 2);
+    assert.match(blockedAttempt.stderr, /owned by another active agent session/);
+
+    const competingCommit = invokeHook(
+      dir,
+      bashPayload('git commit -m blocked', dir, competingSid),
+    );
+    assert.equal(competingCommit.status, 2, competingCommit.stderr || competingCommit.stdout);
+    assert.match(competingCommit.stderr, /owned by another active agent session/);
+
+    const ownerContinues = invokeHook(
+      dir,
+      bashPayload('git add seed.txt', dir, ownerSid),
+    );
+    assert.equal(ownerContinues.status, 0, ownerContinues.stderr || ownerContinues.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive direct-main ownership expires after the configured lease TTL', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
+
+    const first = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-stale-a'),
+      leaseEnv,
+    );
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    const reclaimed = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-stale-b'),
+      leaseEnv,
+    );
+    assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
