@@ -531,13 +531,6 @@ def adaptive_git_lock_error(
                     )
         elif subcommand == "commit":
             arguments = tokens[2:]
-            include_worktree = any(
-                argument in {"-a", "--all", "-i", "--include", "-o", "--only"}
-                or re.fullmatch(r"-[npqsvio]*a[npqsvio]*(?:[mS].*)?", argument) is not None
-                or argument == "--pathspec-from-file"
-                or argument.startswith("--pathspec-from-file=")
-                for argument in arguments
-            )
             option_values = {
                 "-C",
                 "-F",
@@ -556,22 +549,72 @@ def adaptive_git_lock_error(
                 "--template",
                 "--trailer",
             }
+            include_all_worktree = False
+            pathspecs: list[str] = []
+            after_separator = False
             skip_value = False
             for argument in arguments:
                 if skip_value:
                     skip_value = False
+                elif after_separator:
+                    pathspecs.append(argument)
                 elif argument == "--":
-                    include_worktree = True
+                    after_separator = True
                 elif argument in option_values:
                     skip_value = True
+                elif argument in {"-a", "--all"}:
+                    include_all_worktree = True
+                elif argument == "--pathspec-from-file":
+                    include_all_worktree = True
+                    skip_value = True
+                elif argument.startswith("--pathspec-from-file="):
+                    include_all_worktree = True
+                elif re.fullmatch(
+                    r"-[npqsvio]*a[npqsvio]*(?:[mS].*)?", argument
+                ) is not None:
+                    include_all_worktree = True
                 elif not argument.startswith("-"):
-                    include_worktree = True
+                    pathspecs.append(argument)
             changed_paths: set[str] = set()
             diff_commands = [
                 ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"]
             ]
-            if include_worktree:
+            if include_all_worktree:
                 diff_commands.append(["git", "diff", "--no-renames", "--name-only", "-z"])
+            elif pathspecs:
+                normalized_pathspecs: list[str] = []
+                for pathspec in pathspecs:
+                    if pathspec.startswith(":"):
+                        include_all_worktree = True
+                        break
+                    candidate = Path(pathspec)
+                    if not candidate.is_absolute():
+                        candidate = Path(command_cwd or repo_root) / candidate
+                    try:
+                        relative = candidate.resolve().relative_to(repo_root.resolve()).as_posix()
+                    except (OSError, ValueError):
+                        include_all_worktree = True
+                        break
+                    if relative == ".":
+                        include_all_worktree = True
+                        break
+                    normalized_pathspecs.append(relative)
+                if include_all_worktree:
+                    diff_commands.append(
+                        ["git", "diff", "--no-renames", "--name-only", "-z"]
+                    )
+                elif normalized_pathspecs:
+                    diff_commands.append(
+                        [
+                            "git",
+                            "diff",
+                            "--no-renames",
+                            "--name-only",
+                            "-z",
+                            "--",
+                            *normalized_pathspecs,
+                        ]
+                    )
             for diff_args in diff_commands:
                 try:
                     changed = subprocess.run(
@@ -713,7 +756,11 @@ def adaptive_primary_session_lease_error(
             lock_handle.close()
 
 
-def adaptive_command_lock_tool_input(repo_root: Path, tool_input: dict) -> dict | None:
+def adaptive_command_lock_tool_input(
+    repo_root: Path,
+    tool_input: dict,
+    session_id: str,
+) -> dict | None:
     """Wrap an adaptive Bash command so its session lock spans execution."""
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -729,7 +776,9 @@ def adaptive_command_lock_tool_input(repo_root: Path, tool_input: dict) -> dict 
     common_dir = git_common_dir(repo_root)
     if not common_dir:
         return None
-    lock_path = Path(common_dir) / "gitguardex" / "adaptive-direct-session.lock"
+    state_dir = Path(common_dir) / "gitguardex"
+    lock_path = state_dir / "adaptive-direct-session.lock"
+    lease_path = state_dir / "adaptive-direct-session.json"
     wrapper = " ".join(
         shlex.quote(value)
         for value in (
@@ -737,6 +786,8 @@ def adaptive_command_lock_tool_input(repo_root: Path, tool_input: dict) -> dict 
             str(Path(__file__).resolve()),
             "--adaptive-command-lock",
             str(lock_path),
+            str(lease_path),
+            session_id,
             command,
         )
     )
@@ -745,19 +796,44 @@ def adaptive_command_lock_tool_input(repo_root: Path, tool_input: dict) -> dict 
     return updated_input
 
 
-def run_with_adaptive_command_lock(lock_path: str, command: str) -> None:
+def run_with_adaptive_command_lock(
+    lock_path: str,
+    lease_path: str,
+    session_id: str,
+    command: str,
+) -> None:
     """Execute one shell command while holding the checkout's adaptive lock."""
     if fcntl is None:
         print("Adaptive direct work requires POSIX file locking.", file=sys.stderr)
         sys.exit(126)
     try:
         lock_handle = open(lock_path, "a+")
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        os.set_inheritable(lock_handle.fileno(), True)
-        os.execv("/bin/bash", ["bash", "-c", command])
     except OSError as error:
         print(f"Adaptive direct command lock failed: {error}", file=sys.stderr)
         sys.exit(126)
+    with lock_handle:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("Adaptive direct command lock is already owned.", file=sys.stderr)
+            sys.exit(126)
+        except OSError as error:
+            print(f"Adaptive direct command lock failed: {error}", file=sys.stderr)
+            sys.exit(126)
+        try:
+            lease = json.loads(Path(lease_path).read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            print("Adaptive direct command lease is unreadable.", file=sys.stderr)
+            sys.exit(126)
+        if not isinstance(lease, dict) or lease.get("session_id") != session_id:
+            print("Adaptive direct command lease owner changed before execution.", file=sys.stderr)
+            sys.exit(126)
+        try:
+            completed = subprocess.run(command, shell=True, executable="/bin/bash")
+        except OSError as error:
+            print(f"Adaptive direct command execution failed: {error}", file=sys.stderr)
+            sys.exit(126)
+    sys.exit(completed.returncode)
 
 
 def adaptive_direct_work_error(
@@ -1447,8 +1523,8 @@ def ensure_main_rs_lock(file_path: str, session_id: str) -> str | None:
 
 
 def main() -> None:
-    if len(sys.argv) == 4 and sys.argv[1] == "--adaptive-command-lock":
-        run_with_adaptive_command_lock(sys.argv[2], sys.argv[3])
+    if len(sys.argv) == 6 and sys.argv[1] == "--adaptive-command-lock":
+        run_with_adaptive_command_lock(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
 
     try:
         input_data = json.loads(sys.stdin.read())
@@ -1485,7 +1561,7 @@ def main() -> None:
         print(shell_command_error, file=sys.stderr)
         sys.exit(2)
 
-    updated_tool_input = adaptive_command_lock_tool_input(repo_root, tool_input)
+    updated_tool_input = adaptive_command_lock_tool_input(repo_root, tool_input, session_id)
     if updated_tool_input is not None:
         print(
             json.dumps(

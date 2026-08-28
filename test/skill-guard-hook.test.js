@@ -388,12 +388,11 @@ test('skill_guard adaptive direct-main ownership expires after the configured le
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
 
-    const first = await invokeHookAsync(
+    const first = invokeHook(
       dir,
       writePayload(path.join(dir, 'src', 'first.js'), dir, 'adaptive-stale-a'),
       leaseEnv,
     );
-    console.error('stage:first');
     assert.equal(first.status, 0, first.stderr || first.stdout);
 
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
@@ -426,12 +425,20 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
     );
 
     const lockPath = path.join(dir, '.git', 'gitguardex', 'adaptive-direct-session.lock');
+    const leasePath = path.join(dir, '.git', 'gitguardex', 'adaptive-direct-session.json');
     const markerPath = path.join(dir, 'command-active');
     const command = `python3 -c 'from pathlib import Path; import time; Path("${markerPath}").write_text("active"); time.sleep(0.2)'`;
     const active = cp.spawn(
       'python3',
-      [hookPath, '--adaptive-command-lock', lockPath, command],
-      { cwd: dir, encoding: 'utf8' },
+      [
+        hookPath,
+        '--adaptive-command-lock',
+        lockPath,
+        leasePath,
+        'adaptive-active-a',
+        command,
+      ],
+      { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
     const activeDone = new Promise((resolve, reject) => {
       active.on('error', reject);
@@ -510,6 +517,44 @@ test('skill_guard ordinary commit ignores unrelated unstaged claimed files', () 
 
     const result = invokeHook(dir, bashPayload('git commit -m safe', dir, 'adaptive-safe-owner'));
     assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard path-scoped commit ignores unrelated unstaged claimed files', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'baseline\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'baseline\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js', 'safe.js'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'track files'],
+        { cwd: dir },
+      ).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'unrelated claimed change\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'scoped safe change\n');
+
+    for (const command of [
+      'git commit --only safe.js -m safe',
+      'git commit --include safe.js -m safe',
+      'git commit -- safe.js',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir, 'adaptive-path-owner'));
+      assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

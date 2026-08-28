@@ -85,7 +85,7 @@ guardex_repo_worktree_mode_raw() {
     printf '%s' "$GUARDEX_WORKTREE_MODE"
     return 0
   fi
-  if configured="$(guardex_read_repo_dotenv_var "$repo_root" "GUARDEX_WORKTREE_MODE")"; then
+  if configured="$(guardex_read_repo_dotenv_var "$repo_root" "GUARDEX_WORKTREE_MODE")" && [[ -n "$configured" ]]; then
     printf '%s' "$configured"
     return 0
   fi

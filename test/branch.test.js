@@ -764,6 +764,24 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
+test('empty repo worktree-mode override falls back to adaptive Git config', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=\n', 'utf8');
+  let result = runCmd('git', ['config', '--local', 'multiagent.worktreeMode', 'adaptive'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'configured adaptive change\n', 'utf8');
+  result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'configured adaptive direct change'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-config-owner',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
 
 test('adaptive worktree mode gives one agent session exclusive protected-main commit ownership', () => {
   const repoDir = initRepoOnBranch('main');
