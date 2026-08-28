@@ -162,6 +162,25 @@ test('skill_guard adaptive mode allows bounded edits and shell commands on prote
   }
 });
 
+test('skill_guard adaptive mode blocks protected-checkout Git mutations with global options', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    for (const command of [
+      'git -C . switch other-branch',
+      'git -c advice.detachedHead=false checkout HEAD~1',
+      'git --git-dir=.git reset --hard',
+      'git --work-tree=. clean -fd',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `command must be blocked: ${command}\n${result.stderr}`);
+      assert.match(result.stderr, /Branch\/worktree mutation is unsafe/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard allows writing a file INSIDE the repo on an agent/* branch', () => {
   const dir = makeRepoOn('agent/test/lane');
   try {
@@ -422,6 +441,22 @@ test('skill_guard adaptive mode blocks main edits while a sibling lane has dirty
     assert.equal(result.status, 2, `dirty sibling lane must force isolation: ${result.stderr}`);
     assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
     assert.match(result.stderr, /gx branch start --new --no-transfer/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode fails closed on non-object sibling lock state', () => {
+  const { dir, wt } = makeRepoWithNestedAgentWorktree();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(wt, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '[]\n');
+
+    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 2, `invalid sibling lock state must force isolation: ${result.stderr}`);
+    assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

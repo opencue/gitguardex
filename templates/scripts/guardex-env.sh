@@ -115,10 +115,12 @@ guardex_repo_has_competing_worktree_activity() {
     worktree_path="${line#worktree }"
     [[ -d "$worktree_path" ]] || continue
 
-    dirty="$(
+    if ! dirty="$(
       guardex_git_clean_env -C "$worktree_path" status --porcelain --untracked-files=normal -- \
-        . ':(exclude).omx/**' ':(exclude).omc/**' 2>/dev/null || true
-    )"
+        . ':(exclude).omx/**' ':(exclude).omc/**' 2>/dev/null
+    )"; then
+      return 0
+    fi
     if [[ -n "$dirty" ]]; then
       return 0
     fi
@@ -130,7 +132,7 @@ guardex_repo_has_competing_worktree_activity() {
         const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
         process.exit(Object.keys(data?.locks || {}).length > 0 ? 0 : 1);
       } catch {
-        process.exit(1);
+        process.exit(0);
       }
     ' "$lock_file" >/dev/null 2>&1; then
       return 0

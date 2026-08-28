@@ -334,6 +334,8 @@ def has_competing_worktree_activity(repo_root: Path) -> bool:
             continue
         except (OSError, json.JSONDecodeError, ValueError):
             return True
+        if not isinstance(lock_data, dict):
+            return True
         if isinstance(lock_data.get("locks"), dict) and lock_data["locks"]:
             return True
     return False
@@ -674,7 +676,7 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
 
 
 def is_unsafe_primary_git_command(command: str) -> bool:
-    unsafe = re.compile(r"^git\s+(?:checkout|switch|worktree\s+(?:add|move|remove|prune)|reset\s+--hard|clean\b)")
+    unsafe = re.compile(r"^git(?:\s+(?:-C|-c|--git-dir|--work-tree)\s+\S+|\s+--(?:git-dir|work-tree)=\S+)*\s+(?:checkout|switch|worktree\s+(?:add|move|remove|prune)|reset\s+--hard|clean\b)")
     return any(unsafe.match(normalize_shell_segment(segment)) for segment in split_shell_segments(command))
 
 
