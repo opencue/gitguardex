@@ -43,7 +43,7 @@ function invokeAdvisor(cwd, event, sessionId) {
     // Strip env that could flip branch classification so the test is deterministic.
     env: (() => {
       const e = { ...process.env };
-      for (const k of ['GUARDEX_AGENT_BRANCH_PREFIXES', 'GUARDEX_PROTECTED_BRANCHES', 'GUARDEX_ON']) delete e[k];
+      for (const k of ['GUARDEX_AGENT_BRANCH_PREFIXES', 'GUARDEX_PROTECTED_BRANCHES', 'GUARDEX_WORKTREE_MODE', 'GUARDEX_ON']) delete e[k];
       return e;
     })(),
   });
@@ -86,6 +86,20 @@ test('advisor emits only a ONE-LINE reminder on later turns of the same session'
       assert.doesNotMatch(ctx, /Finish completed work with:/, `${label} must not repeat the full text`);
       assert.ok(ctx.length < first.length / 2, `${label} should be much shorter than full (${ctx.length} vs ${first.length})`);
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(statePath(sid), { force: true });
+  }
+});
+
+test('advisor stays silent on protected main when adaptive direct work is safe', () => {
+  const dir = makeRepoOn('main');
+  const sid = freshSessionId();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const result = invokeAdvisor(dir, 'SessionStart', sid);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), '', 'safe adaptive main should not demand a worktree');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(statePath(sid), { force: true });

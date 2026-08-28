@@ -46,6 +46,7 @@ function invokeHook(cwd, payload, env = {}) {
     'ALLOW_CODE_EDIT_ON_PRIMARY_WORKTREE',
     'GUARDEX_AGENT_BRANCH_PREFIXES',
     'GUARDEX_PROTECTED_BRANCHES',
+    'GUARDEX_WORKTREE_MODE',
     'GUARDEX_ON',
   ]) {
     delete cleaned[key];
@@ -142,6 +143,20 @@ test('skill_guard still BLOCKS writing a file INSIDE the repo on a protected bra
     const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
     assert.equal(result.status, 2, `in-repo write on main must still be blocked: ${result.stderr}`);
     assert.match(result.stderr, /BLOCKED/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode allows bounded edits and shell commands on protected main', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    let result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    result = invokeHook(dir, bashPayload('rm seed.txt', dir));
+    assert.equal(result.status, 0, result.stderr || result.stdout);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -393,6 +408,20 @@ test('skill_guard STILL BLOCKS editing the main checkout itself while a nested a
     const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
     assert.equal(result.status, 2, `main-checkout write must still block: ${result.stderr}`);
     assert.match(result.stderr, /BLOCKED/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive mode blocks main edits while a sibling lane has dirty work', () => {
+  const { dir, wt } = makeRepoWithNestedAgentWorktree();
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    fs.writeFileSync(path.join(wt, 'in-progress.txt'), 'dirty\n');
+    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+    assert.equal(result.status, 2, `dirty sibling lane must force isolation: ${result.stderr}`);
+    assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+    assert.match(result.stderr, /gx branch start --new --no-transfer/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

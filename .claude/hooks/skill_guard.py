@@ -253,6 +253,104 @@ def guardex_repo_is_enabled(repo_root: Path) -> bool:
     return True
 
 
+def guardex_worktree_mode(repo_root: Path) -> str:
+    raw = os.environ.get("GUARDEX_WORKTREE_MODE")
+    if not raw:
+        raw = read_repo_dotenv_var(repo_root, "GUARDEX_WORKTREE_MODE")
+    if not raw:
+        try:
+            result = subprocess.run(
+                ["git", "config", "--get", "multiagent.worktreeMode"],
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                raw = result.stdout.strip()
+        except OSError:
+            raw = ""
+    return "adaptive" if (raw or "").strip().lower() == "adaptive" else "always"
+
+
+def _clean_git_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX"):
+        env.pop(name, None)
+    return env
+
+
+def has_competing_worktree_activity(repo_root: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo_root,
+            env=_clean_git_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return True
+    if result.returncode != 0:
+        return True
+
+    primary = repo_root.resolve()
+    worktrees = [
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in result.stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+    for worktree in worktrees:
+        if worktree == primary or not worktree.is_dir():
+            continue
+        try:
+            dirty = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=normal"],
+                cwd=worktree,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return True
+        if dirty.returncode != 0:
+            return True
+        dirty_paths = [
+            line[3:]
+            for line in dirty.stdout.splitlines()
+            if len(line) > 3
+            and not line[3:].startswith(".omx/")
+            and not line[3:].startswith(".omc/")
+        ]
+        if dirty_paths:
+            return True
+
+        lock_path = worktree / ".omx" / "state" / "agent-file-locks.json"
+        try:
+            lock_data = json.loads(lock_path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError, ValueError):
+            return True
+        if isinstance(lock_data.get("locks"), dict) and lock_data["locks"]:
+            return True
+    return False
+
+
+def adaptive_direct_work_error(repo_root: Path) -> str | None:
+    if guardex_worktree_mode(repo_root) != "adaptive":
+        return None
+    if not has_competing_worktree_activity(repo_root):
+        return ""
+    return (
+        "BLOCKED: Adaptive direct work blocked: another agent lane has dirty files or locks.\n"
+        "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
+        '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+    )
+
+
 def current_branch(repo_root: Path) -> str:
     try:
         result = subprocess.run(
@@ -443,7 +541,14 @@ def ensure_protected_branch_edit_allowed(file_path: str) -> str | None:
         return None
     repo_root = find_repo_root(file_path)
     branch = current_branch(repo_root)
-    if is_agent_branch(branch, resolve_protected_branches(repo_root)):
+    protected = resolve_protected_branches(repo_root)
+    if branch in protected:
+        adaptive_error = adaptive_direct_work_error(repo_root)
+        if adaptive_error == "":
+            return None
+        if adaptive_error:
+            return adaptive_error
+    if is_agent_branch(branch, protected):
         return None
 
     if branch in PROTECTED_BRANCHES:
@@ -568,6 +673,11 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
     return True
 
 
+def is_unsafe_primary_git_command(command: str) -> bool:
+    unsafe = re.compile(r"^git\s+(?:checkout|switch|worktree\s+(?:add|move|remove|prune)|reset\s+--hard|clean\b)")
+    return any(unsafe.match(normalize_shell_segment(segment)) for segment in split_shell_segments(command))
+
+
 def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str | None:
     if not command:
         return None
@@ -578,12 +688,25 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
         return None
 
     branch = current_branch(repo_root)
-    if is_agent_branch(branch, resolve_protected_branches(repo_root)):
+    protected = resolve_protected_branches(repo_root)
+    if is_agent_branch(branch, protected):
         return None
     if is_allowed_non_agent_shell_command(command):
         return None
 
-    if branch in resolve_protected_branches(repo_root):
+    if branch in protected and guardex_worktree_mode(repo_root) == "adaptive":
+        if is_unsafe_primary_git_command(command):
+            return (
+                f"BLOCKED: Branch/worktree mutation is unsafe on protected branch '{branch}'.\n"
+                "Use `gx branch start --new --no-transfer` instead."
+            )
+        adaptive_error = adaptive_direct_work_error(repo_root)
+        if adaptive_error == "":
+            return None
+        if adaptive_error:
+            return adaptive_error
+
+    if branch in protected:
         blocked_scope = f"protected branch '{branch}'"
     else:
         blocked_scope = f"non-agent branch '{branch or 'HEAD'}'"

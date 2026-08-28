@@ -9,6 +9,7 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$repo_root" ]]; then
   exit 0
 fi
+NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 guardex_env_helper="${repo_root}/scripts/guardex-env.sh"
 if [[ -f "$guardex_env_helper" ]]; then
   # shellcheck source=/dev/null
@@ -48,6 +49,13 @@ if [[ -n "${CLAUDECODE:-}" || -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
   is_agent_session=1
 fi
 
+worktree_mode="always"
+if declare -F guardex_repo_worktree_mode >/dev/null 2>&1; then
+  worktree_mode="$(guardex_repo_worktree_mode "$repo_root")"
+elif [[ "${GUARDEX_WORKTREE_MODE:-}" == "adaptive" ]]; then
+  worktree_mode="adaptive"
+fi
+
 protected_branches_raw="${GUARDEX_PROTECTED_BRANCHES:-$(git config --get multiagent.protectedBranches || true)}"
 if [[ -z "$protected_branches_raw" ]]; then
   protected_branches_raw="dev main master"
@@ -77,6 +85,18 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
 done
 
 if [[ "${#blocked_refs[@]}" -gt 0 ]]; then
+  if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" ]]; then
+    if declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
+      && guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
+      cat >&2 <<'MSG'
+[guardex-adaptive] Adaptive direct push blocked: another agent lane has dirty files or locks.
+Inspect `gx mcp list-agents --no-prs`; coordinate or finish the isolated lane first.
+MSG
+      exit 1
+    fi
+    exit 0
+  fi
+
   if [[ "$is_codex_session" == "1" ]]; then
     {
       echo "[guardex-preedit-guard] Codex push detected toward protected branch."

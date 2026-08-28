@@ -5,31 +5,51 @@
 
 Guardex is enabled by default. Disable via repo-root `.env` with `GUARDEX_ON=0|false|no|off`. Re-enable with `GUARDEX_ON=1`.
 
+Worktree policy defaults to strict `always`. Opt a repository into adaptive
+routing with `GUARDEX_WORKTREE_MODE=adaptive` in `.env` or
+`git config multiagent.worktreeMode adaptive`.
+
 ### Core rules
 
-- Work from an `agent/*` branch + worktree. **Never** edit the protected base directly.
-- Claim files before editing. Confirm a path is in your claim before deleting it.
+- In strict `always` mode, work from an `agent/*` branch + worktree. **Never** edit the protected base directly.
+- In adaptive mode, bounded single-agent work may remain on the current checkout after the radar and ownership checks below pass.
+- Claim files before editing in isolated lanes. Confirm a path is in your claim before deleting it.
 - Commit, push, and open/update a PR for completed work unless the user says keep-local.
 - Keep outputs and notes compact. Less word, same proof.
 
 ### Task-size routing
 
-Small tasks stay direct and caveman-only.
+Small tasks stay direct and caveman-only when adaptive mode is enabled and no
+other writer or overlapping change is present. Strict mode still isolates them.
 
 For typos, single-file tweaks, one-liners, version bumps, comment-only changes, or similarly bounded asks, solve directly and do not escalate into heavy orchestration just because a keyword appears.
 
 Lightweight escape prefixes: `quick:`, `simple:`, `tiny:`, `minor:`, `small:`, `just:`, `only:`.
 
-Promote to full Guardex / OMX orchestration only when scope grows into multi-file behavior change, API/schema work, refactor, migration, architecture, cross-cutting scope, long prompt, or multi-agent execution. Orchestration alone does not require OpenSpec.
+Promote to an isolated Guardex lane when scope grows into a multi-file behavior
+change, API/schema work, refactor, migration, architecture, cross-cutting or
+long-lived work, or multi-agent execution. Orchestration alone does not require
+OpenSpec.
 
 OpenSpec is opt-in. Do not create or update OpenSpec artifacts unless the user asks for them, the task continues an existing OpenSpec change, or an explicit T2/T3 workflow is selected.
 
+### Adaptive lane selection
+
+Before direct edits, run `gx status`, inspect active lanes with
+`gx mcp list-agents --no-prs`, and check every intended path with
+`gx mcp who-owns <file>`. Also inspect the current checkout's dirty paths.
+
+Stay direct only for bounded work when no competing writer, ownership claim, or
+dirty-path overlap exists. Pivot before editing (or before expanding scope) if
+another writer appears, a target is owned/dirty elsewhere, or the task becomes
+substantial or long-lived.
+
 ### Isolation (the load-bearing rule)
 
-Every task = one `agent/*` branch + worktree. Start with:
+Start an isolated lane with:
 
 ```bash
-gx branch start "<task>" "<agent-name>"
+gx branch start --new --no-transfer "<task>" "<agent-name>"
 ```
 
 Then `cd` into the printed worktree path. Every subsequent git command runs from inside that worktree.
@@ -38,7 +58,8 @@ If a worktree is already open for this chat/session, **continue in it** instead 
 
 ### Primary-tree lock
 
-On the primary checkout, do not run:
+In strict mode, or after adaptive routing selects isolation, do not run these on
+the primary checkout:
 
 ```bash
 git checkout <ref>          git switch <ref>
@@ -46,7 +67,9 @@ git switch -c ...           git checkout -b ...
 git worktree add <p> <agent-branch>
 ```
 
-Allowed on primary: `git fetch`, `git pull --ff-only`. Anything else needs `gx branch start` first.
+In adaptive direct mode, ordinary bounded edits/commits/pushes are allowed after
+the radar preflight passes. Branch switching and worktree manipulation still use
+`gx branch start` rather than raw Git commands.
 
 If you are about to type `git checkout agent/...` from the primary checkout, **stop** — that is the mistake that flips primary onto an agent branch.
 
@@ -80,7 +103,8 @@ No long proof dumps, no stale narrative, no full logs. Bulky proof goes in PRs o
 
 ### Completion
 
-Finish with:
+Direct adaptive work uses the repository's ordinary commit/push flow. Finish an
+isolated lane with:
 
 ```bash
 gx branch finish --branch "<agent-branch>" --via-pr --wait-for-merge --cleanup

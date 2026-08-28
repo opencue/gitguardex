@@ -736,6 +736,76 @@ test('pre-commit blocks codex commits on protected local-only branches even from
 });
 
 
+test('adaptive worktree mode allows agent commits and pushes on protected main', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+
+  let result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'small adaptive direct change'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread' },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+
+test('adaptive worktree mode blocks direct agent commits while another lane has changes', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  const otherWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'other-lane');
+  let result = runCmd(
+    'git',
+    ['worktree', 'add', '-b', 'agent/other/concurrent-change', otherWorktree],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(otherWorktree, 'other-change.txt'), 'in progress\n', 'utf8');
+
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+  result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'blocked adaptive direct change'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked: another agent lane has dirty files or locks\./);
+  assert.match(result.stderr, /gx branch start --new --no-transfer/);
+
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread' },
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct push blocked: another agent lane has dirty files or locks\./);
+});
+
+
 test('pre-push allows human pushes to protected branches from VS Code Source Control env by default', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

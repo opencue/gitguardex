@@ -63,6 +63,13 @@ if [[ -n "${CLAUDECODE:-}" || -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
   is_agent_session=1
 fi
 
+worktree_mode="always"
+if declare -F guardex_repo_worktree_mode >/dev/null 2>&1; then
+  worktree_mode="$(guardex_repo_worktree_mode "$repo_root")"
+elif [[ "${GUARDEX_WORKTREE_MODE:-}" == "adaptive" ]]; then
+  worktree_mode="adaptive"
+fi
+
 is_vscode_git_context=0
 if [[ -n "${VSCODE_GIT_IPC_HANDLE:-}" || -n "${VSCODE_GIT_ASKPASS_NODE:-}" || -n "${VSCODE_IPC_HOOK_CLI:-}" ]]; then
   is_vscode_git_context=1
@@ -94,6 +101,23 @@ for protected_branch in $protected_branches_raw; do
     break
   fi
 done
+
+# Adaptive mode is an explicit repo opt-in for bounded, single-agent work on
+# the protected checkout. The agent workflow performs the radar/ownership
+# preflight before editing and pivots to a worktree when scope or concurrency
+# grows. Strict mode remains the default.
+if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" && "$is_protected_branch" == "1" ]]; then
+  if declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
+    && guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
+    cat >&2 <<'MSG'
+[guardex-adaptive] Adaptive direct commit blocked: another agent lane has dirty files or locks.
+Inspect `gx mcp list-agents --no-prs`, then isolate this work:
+  gx branch start --new --no-transfer "<task-or-plan>" "<agent-name>"
+MSG
+    exit 1
+  fi
+  exit 0
+fi
 
 codex_require_agent_branch_raw="${GUARDEX_CODEX_REQUIRE_AGENT_BRANCH:-$(git config --get multiagent.codexRequireAgentBranch || true)}"
 if [[ -z "$codex_require_agent_branch_raw" ]]; then
