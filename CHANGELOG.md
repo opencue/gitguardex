@@ -1,5 +1,19 @@
 # Changelog
 
+## [8.2.0](https://github.com/opencue/gitguardex/compare/v8.1.1...v8.2.0) (2026-08-28)
+
+
+### Features
+
+* cut agent preflight and finish token overhead ([#732](https://github.com/opencue/gitguardex/issues/732)) ([d3ad95a](https://github.com/opencue/gitguardex/commit/d3ad95a6179c96fc6f3fef4905a7aa73fdaafc45))
+
+
+### Bug Fixes
+
+* **cleanup:** expose command-specific help ([#733](https://github.com/opencue/gitguardex/issues/733)) ([5eaf54d](https://github.com/opencue/gitguardex/commit/5eaf54d5bcd365457005d629164960e6328510fd))
+* **doctor:** preserve dirty worktrees during stale pruning ([#730](https://github.com/opencue/gitguardex/issues/730)) ([bd845db](https://github.com/opencue/gitguardex/commit/bd845db13d392b078e3c38864f4e23d861e185f1))
+* surface the pane holding a file lock ([#734](https://github.com/opencue/gitguardex/issues/734)) ([2bcfda2](https://github.com/opencue/gitguardex/commit/2bcfda2087f3927f333b005c88428575ab369b78))
+
 ## [8.1.1](https://github.com/opencue/gitguardex/compare/v8.1.0...v8.1.1) (2026-08-27)
 
 

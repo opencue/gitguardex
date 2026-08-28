@@ -119,10 +119,14 @@ function createFinishProgress({
   now = Date.now,
   heartbeat,
   heartbeatIntervalMs = 15_000,
+  quiet = false,
 } = {}) {
-  const output = write || ((line) => process.stderr.write(`${line}\n`));
-  const heartbeatFactory = heartbeat === undefined
-    ? (write ? null : startStageHeartbeat)
+  const sink = write || ((line) => process.stderr.write(`${line}\n`));
+  const output = quiet ? () => {} : sink;
+  const heartbeatFactory = quiet
+    ? null
+    : heartbeat === undefined
+      ? (write ? null : startStageHeartbeat)
     : heartbeat;
   const clock = typeof now === 'function' ? now : Date.now;
   const eventStream = persistEvents ? createEventStream(repoRoot, branch, baseBranch) : null;
@@ -251,10 +255,60 @@ function createFinishProgress({
   };
 }
 
+function readFinishEvents(filePath) {
+  if (!filePath) return [];
+  try {
+    return fs.readFileSync(filePath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch (_error) {
+    return [];
+  }
+}
+
+/** Build one bounded machine-readable result from a captured finish run. */
+function summarizeFinishRun({
+  eventFile,
+  branch,
+  baseBranch,
+  stdout = '',
+  stderr = '',
+  status = 0,
+} = {}) {
+  const events = readFinishEvents(eventFile);
+  const latest = new Map();
+  for (const event of events) {
+    if (event && event.stage && event.stage !== 'finish') latest.set(event.stage, event);
+  }
+  const stages = {};
+  for (const [id] of STAGES) {
+    const event = latest.get(id);
+    if (!event || event.state === 'pending') continue;
+    stages[id] = event.detail ? `${event.state}: ${event.detail}` : event.state;
+  }
+  const combined = `${stdout}\n${stderr}`;
+  const pr = combined.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/)?.[0] || undefined;
+  const result = {
+    branch: branch || '',
+    base: baseBranch || '',
+    result: status === 0 ? 'success' : 'failed',
+    stages,
+  };
+  if (pr) result.pr = pr;
+  if (status !== 0) {
+    const lines = combined.split('\n').map((line) => line.trim()).filter(Boolean);
+    const tail = lines.slice(-12).join('\n');
+    if (tail) result.error = tail.slice(-2_000);
+  }
+  return result;
+}
+
 module.exports = {
   STAGES,
   createEventStream,
   createFinishProgress,
+  summarizeFinishRun,
 };
 const crypto = require('node:crypto');
 const fs = require('node:fs');

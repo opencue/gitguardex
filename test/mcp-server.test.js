@@ -25,6 +25,37 @@ test('tools/list returns the four read-only tools, each with a schema', () => {
     assert.ok(t.description, `${t.name} has a description`);
     assert.equal(t.inputSchema.type, 'object', `${t.name} has an object input schema`);
   }
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(r.result.tools), 'utf8') <= 2247,
+    'the batched preflight must not grow the startup tool schema past the previous baseline',
+  );
+});
+
+test('my_context batches edit ownership and repo radar while PR lookups stay opt-in', () => {
+  const collect = require('../src/mcp/collect');
+  const originalEditContext = collect.editContext;
+  const originalCollectAllAgents = collect.collectAllAgents;
+  const calls = [];
+  collect.editContext = (args) => {
+    calls.push(['editContext', args]);
+    return { branch: 'agent/test', otherAgents: [], ownership: [] };
+  };
+  collect.collectAllAgents = (args) => {
+    calls.push(['collectAllAgents', args]);
+    return { agents: [], scannedRepos: 0, roots: [], errors: [] };
+  };
+  try {
+    const context = server.callTool('my_context', { files: ['src/a.js', 'src/b.js'] });
+    assert.equal(context.branch, 'agent/test');
+    server.callTool('list_agents', {});
+    assert.deepEqual(calls, [
+      ['editContext', { files: ['src/a.js', 'src/b.js'], includePrs: false }],
+      ['collectAllAgents', { roots: undefined, includePrs: false, limit: undefined }],
+    ]);
+  } finally {
+    collect.editContext = originalEditContext;
+    collect.collectAllAgents = originalCollectAllAgents;
+  }
 });
 
 test('notifications (no id) produce no response', () => {

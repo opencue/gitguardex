@@ -1176,6 +1176,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     commitMessage: '',
     mergeMode: fastMode ? 'pr' : (defaults.mergeMode || 'pr'),
     fastMode,
+    agentQuiet: false,
     skipPreflight: fastMode,
     // Precedence: explicit flag (set in the loop below) > defaults (caller) >
     // GUARDEX_AUTO_SHIP env > hardcoded off. Note `defaults.gateReview === false`
@@ -1258,6 +1259,10 @@ function parseFinishArgs(rawArgs, defaults = {}) {
       continue;
     }
     if (arg === '--fast') {
+      continue;
+    }
+    if (arg === '--agent-quiet') {
+      options.agentQuiet = true;
       continue;
     }
     if (arg === '--wait-for-merge') {

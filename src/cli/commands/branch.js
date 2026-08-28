@@ -19,7 +19,7 @@ const {
   invokePackageAsset,
 } = require('../../core/runtime');
 const { runReviewGate } = require('../../finish/review-gate');
-const { createFinishProgress } = require('../../finish/progress');
+const { createFinishProgress, summarizeFinishRun } = require('../../finish/progress');
 const { autoCommitWorktreeForFinish } = require('../../finish');
 const { finish, merge } = require('./finish');
 const { locks } = require('../shared-locks');
@@ -44,10 +44,13 @@ function splitGateReviewFlags(args) {
   let reviewTimeoutMs;
   let noAutoCommit = false;
   let commitMessage = '';
+  let agentQuiet = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--fast') {
       fastMode = true;
+    } else if (arg === '--agent-quiet') {
+      agentQuiet = true;
     } else if (arg === '--no-auto-commit') {
       noAutoCommit = true;
     } else if (arg === '--commit-message') {
@@ -173,6 +176,7 @@ function splitGateReviewFlags(args) {
     gateSerialCi,
     noAutoCommit,
     commitMessage,
+    agentQuiet,
     scriptArgs,
   };
 }
@@ -215,6 +219,7 @@ function branch(rawArgs) {
       gateSerialCi,
       noAutoCommit,
       commitMessage,
+      agentQuiet,
       scriptArgs,
     } = splitGateReviewFlags(passthrough);
     const finishBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
@@ -228,7 +233,12 @@ function branch(rawArgs) {
     const autoCommitWorktree = finishWorktree && isLinkedAgentWorktree(finishWorktree)
       ? finishWorktree
       : '';
-    const progress = createFinishProgress({ repoRoot, branch: finishBranch, baseBranch: finishBase });
+    const progress = createFinishProgress({
+      repoRoot,
+      branch: finishBranch,
+      baseBranch: finishBase,
+      quiet: agentQuiet,
+    });
     progress.start(
       'prepare',
       autoCommitWorktree ? 'checking worktree and pending changes' : 'resolving branch and finish policy',
@@ -236,7 +246,7 @@ function branch(rawArgs) {
     const commitState = autoCommitWorktree
       ? autoCommitWorktreeForFinish(repoRoot, autoCommitWorktree, finishBranch, { noAutoCommit, commitMessage })
       : { changed: false, committed: false };
-    if (commitState.committed) {
+    if (commitState.committed && !agentQuiet) {
       console.log(`[${TOOL_NAME}] Auto-committed '${finishBranch}' before finish.`);
     }
     progress.complete(
@@ -272,7 +282,7 @@ function branch(rawArgs) {
       progress.skip('autofix', 'review gate disabled');
       progress.skip('ci', 'review gate disabled; repository policy controls merge readiness');
     }
-    invokePackageAsset('branchFinish', scriptArgs, {
+    const assetOptions = {
       cwd: repoRoot,
       env: {
         GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
@@ -280,7 +290,24 @@ function branch(rawArgs) {
         GUARDEX_FINISH_GATE_DONE: gateReview ? '1' : '0',
         ...progress.eventEnv,
       },
-    });
+    };
+    if (agentQuiet) {
+      const result = runPackageAsset('branchFinish', scriptArgs, { ...assetOptions, stdio: 'pipe' });
+      const summary = summarizeFinishRun({
+        eventFile: progress.eventEnv.GUARDEX_FINISH_EVENT_FILE,
+        branch: finishBranch,
+        baseBranch: finishBase,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        status: result.status,
+      });
+      process.stdout.write(`[gx:finish] ${JSON.stringify(summary)}\n`);
+      if (result.status !== 0) {
+        throw new Error(`branchFinish command failed with status ${result.status}`);
+      }
+    } else {
+      invokePackageAsset('branchFinish', scriptArgs, assetOptions);
+    }
     return;
   }
   if (subcommand === 'merge') return merge(rest);
