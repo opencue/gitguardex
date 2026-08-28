@@ -97,8 +97,8 @@ if [[ "${#blocked_refs[@]}" -gt 0 ]]; then
     && "${#blocked_refs[@]}" == "1" \
     && "$adaptive_direct_push" == "1" \
     && "$(git branch --show-current 2>/dev/null)" == "${blocked_refs[0]}" ]]; then
-    if declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
-      && guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
+    if ! declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
+      || guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
       cat >&2 <<'MSG'
 [guardex-adaptive] Adaptive direct push blocked: another agent lane has dirty files or locks.
 Inspect `gx mcp list-agents --no-prs`; coordinate or finish the isolated lane first.

@@ -107,8 +107,8 @@ done
 # preflight before editing and pivots to a worktree when scope or concurrency
 # grows. Strict mode remains the default.
 if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" && "$is_protected_branch" == "1" ]]; then
-  if declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
-    && guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
+  if ! declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
+    || guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
     cat >&2 <<'MSG'
 [guardex-adaptive] Adaptive direct commit blocked: another agent lane has dirty files or locks.
 Inspect `gx mcp list-agents --no-prs`, then isolate this work:

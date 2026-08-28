@@ -737,7 +737,9 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
     if not segments:
         return True
     for raw_segment in segments:
-        if shell_segment_has_output_redirection(raw_segment):
+        if shell_segment_has_output_redirection(raw_segment) or re.search(
+            r"`|\$\(|[<>]\(", raw_segment
+        ):
             return False
         segment = normalize_shell_segment(raw_segment)
         if not segment:

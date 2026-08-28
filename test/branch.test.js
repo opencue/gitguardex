@@ -765,6 +765,38 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
 });
 
 
+test('adaptive worktree hooks fail closed when the competition helper is unavailable', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.rmSync(path.join(repoDir, 'scripts', 'guardex-env.sh'));
+
+  fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
+  let result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('bash', ['.githooks/pre-commit'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+    GUARDEX_WORKTREE_MODE: 'adaptive',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked/);
+
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread', GUARDEX_WORKTREE_MODE: 'adaptive' },
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct push blocked/);
+});
+
+
 test('adaptive worktree detection fails closed when the worktree list is unavailable', () => {
   const repoRoot = path.resolve(__dirname, '..');
   const helper = path.join(repoRoot, 'templates', 'scripts', 'guardex-env.sh');

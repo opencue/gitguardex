@@ -226,6 +226,9 @@ test('skill_guard adaptive mode blocks non-allowlisted command executors on prot
       "printf 'HEAD~1' | xargs git reset",
       'nice git switch other-branch',
       'bash scripts/custom-task.sh',
+      'pytest $(git reset --hard)',
+      'git add <(git reset --hard)',
+      'bun test `git reset --hard`',
     ]) {
       const result = invokeHook(dir, bashPayload(command, dir));
       assert.equal(result.status, 2, `command must be blocked: ${command}\n${result.stderr}`);
