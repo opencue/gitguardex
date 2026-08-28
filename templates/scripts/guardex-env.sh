@@ -241,7 +241,7 @@ try:
     ttl_seconds = float(raw_ttl)
 except ValueError:
     raise SystemExit(1)
-if ttl_seconds <= 0:
+if not (0 < ttl_seconds < float("inf")):
     raise SystemExit(1)
 
 state_dir = Path(common_dir) / "gitguardex"

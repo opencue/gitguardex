@@ -368,8 +368,10 @@ test('skill_guard adaptive mode honors directory claims and commit path options'
 
     for (const command of [
       'git commit -a -m blocked',
+      'git commit -amblocked',
       'git commit --include src/locked.js -m blocked',
       'git commit --only src/locked.js -m blocked',
+      'git commit --gpg-sign src/locked.js',
     ]) {
       const result = invokeHook(dir, bashPayload(command, dir));
       assert.equal(result.status, 2, `${command}: ${result.stderr || result.stdout}`);
@@ -400,6 +402,57 @@ test('skill_guard adaptive direct-main ownership expires after the configured le
       leaseEnv,
     );
     assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard adaptive direct-main ownership rejects non-finite lease TTLs', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    for (const ttl of ['nan', 'inf']) {
+      const result = invokeHook(
+        dir,
+        writePayload(path.join(dir, 'src', `${ttl}.js`), dir, `adaptive-${ttl}`),
+        { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: ttl },
+      );
+      assert.equal(result.status, 2, result.stderr || result.stdout);
+      assert.match(result.stderr, /lease TTL must be positive and finite/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_guard ordinary commit ignores unrelated unstaged claimed files', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/locked.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'baseline\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'safe\n');
+    assert.equal(cp.spawnSync('git', ['add', 'src/locked.js', 'safe.js'], { cwd: dir }).status, 0);
+    assert.equal(
+      cp.spawnSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'track files'],
+        { cwd: dir },
+      ).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'unstaged claimed change\n');
+    fs.writeFileSync(path.join(dir, 'safe.js'), 'staged safe change\n');
+    assert.equal(cp.spawnSync('git', ['add', 'safe.js'], { cwd: dir }).status, 0);
+
+    const result = invokeHook(dir, bashPayload('git commit -m safe', dir, 'adaptive-safe-owner'));
+    assert.equal(result.status, 0, result.stderr || result.stdout);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

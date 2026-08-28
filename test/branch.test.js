@@ -791,6 +791,27 @@ test('adaptive worktree mode gives one agent session exclusive protected-main co
   assert.match(result.stderr, /another agent session owns this checkout/);
 });
 
+test('adaptive worktree mode rejects non-finite protected-main lease TTLs', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'invalid-ttl.txt'), 'invalid\n', 'utf8');
+  let result = runCmd('git', ['add', 'invalid-ttl.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  for (const ttl of ['nan', 'inf']) {
+    result = runCmd('git', ['commit', '-m', `reject ${ttl} lease`], repoDir, {
+      CODEX_THREAD_ID: `adaptive-${ttl}`,
+      GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: ttl,
+    });
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /another agent session owns this checkout/);
+  }
+});
+
 
 test('adaptive pre-commit validates staged files against claims in the current checkout', () => {
   const repoDir = initRepoOnBranch('main');

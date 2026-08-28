@@ -530,11 +530,49 @@ def adaptive_git_lock_error(
                         "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
                     )
         elif subcommand == "commit":
+            arguments = tokens[2:]
+            include_worktree = any(
+                argument in {"-a", "--all", "-i", "--include", "-o", "--only"}
+                or re.fullmatch(r"-[npqsvio]*a[npqsvio]*(?:[mS].*)?", argument) is not None
+                or argument == "--pathspec-from-file"
+                or argument.startswith("--pathspec-from-file=")
+                for argument in arguments
+            )
+            option_values = {
+                "-C",
+                "-F",
+                "-c",
+                "-m",
+                "-t",
+                "--author",
+                "--cleanup",
+                "--date",
+                "--file",
+                "--fixup",
+                "--message",
+                "--reedit-message",
+                "--reuse-message",
+                "--squash",
+                "--template",
+                "--trailer",
+            }
+            skip_value = False
+            for argument in arguments:
+                if skip_value:
+                    skip_value = False
+                elif argument == "--":
+                    include_worktree = True
+                elif argument in option_values:
+                    skip_value = True
+                elif not argument.startswith("-"):
+                    include_worktree = True
             changed_paths: set[str] = set()
-            for diff_args in (
-                ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"],
-                ["git", "diff", "--no-renames", "--name-only", "-z"],
-            ):
+            diff_commands = [
+                ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"]
+            ]
+            if include_worktree:
+                diff_commands.append(["git", "diff", "--no-renames", "--name-only", "-z"])
+            for diff_args in diff_commands:
                 try:
                     changed = subprocess.run(
                         diff_args,
@@ -584,8 +622,8 @@ def adaptive_primary_session_lease_error(
         ttl_seconds = float(raw_ttl) if raw_ttl else DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS
     except ValueError:
         return "BLOCKED: Adaptive direct work session lease TTL is invalid."
-    if ttl_seconds <= 0:
-        return "BLOCKED: Adaptive direct work session lease TTL must be positive."
+    if not (0 < ttl_seconds < float("inf")):
+        return "BLOCKED: Adaptive direct work session lease TTL must be positive and finite."
 
     common_dir = git_common_dir(repo_root)
     if not common_dir:
