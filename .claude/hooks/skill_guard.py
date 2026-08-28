@@ -752,9 +752,23 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
     }
     for segment in split_shell_segments(command):
         tokens = shell_segment_tokens(normalize_shell_segment(segment))
-        if not tokens or tokens[0] != "git":
+        if not tokens:
             continue
-        index = 1
+        index = 0
+        while index < len(tokens) and tokens[index] in {"command", "builtin", "exec"}:
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+        if index < len(tokens) and tokens[index] == "env":
+            index += 1
+            while index < len(tokens) and (
+                tokens[index].startswith("-")
+                or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", tokens[index])
+            ):
+                index += 1
+        if index >= len(tokens) or Path(tokens[index]).name != "git":
+            continue
+        index += 1
         while index < len(tokens) and tokens[index].startswith("-"):
             option = tokens[index]
             if option in options_with_values:

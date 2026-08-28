@@ -130,8 +130,17 @@ guardex_repo_has_shared_agent_activity() {
   remote="${remote:-origin}"
   [[ "$remote" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || return 0
 
-  if ! shared="$(guardex_git_clean_env -C "$repo_root" ls-remote --refs "$remote" \
-    'refs/gitguardex/locks/*' 'refs/heads/agent/*' 2>/dev/null)"; then
+  local timeout_bin=""
+  timeout_bin="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+  if [[ -n "$timeout_bin" ]]; then
+    shared="$("$timeout_bin" 15s bash -c '
+      unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+      export GIT_TERMINAL_PROMPT=0
+      git "$@"
+    ' guardex-shared-state -C "$repo_root" ls-remote --refs "$remote" \
+      'refs/gitguardex/locks/*' 'refs/heads/agent/*' 2>/dev/null)" || return 0
+  elif ! shared="$(GIT_TERMINAL_PROMPT=0 guardex_git_clean_env -C "$repo_root" \
+    ls-remote --refs "$remote" 'refs/gitguardex/locks/*' 'refs/heads/agent/*' 2>/dev/null)"; then
     return 0
   fi
   [[ -n "$shared" ]]
