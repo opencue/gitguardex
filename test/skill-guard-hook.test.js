@@ -193,8 +193,6 @@ test('skill_guard adaptive mode allows bounded edits and allowlisted shell comma
       "git commit -m 'fix $PATH handling'",
       'git commit -m fix\\$PATH',
       'git push origin main',
-      'bun test',
-      "bun test -- --test-name-pattern='cost $5'",
       'pytest -q',
     ]) {
       result = invokeHook(dir, bashPayload(command, dir));
@@ -417,7 +415,7 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
     const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
     const first = invokeHook(
       dir,
-      bashPayload('npm test', dir, 'adaptive-active-a'),
+      bashPayload('pytest -q', dir, 'adaptive-active-a'),
       leaseEnv,
     );
     assert.equal(first.status, 0, first.stderr || first.stdout);
@@ -642,6 +640,11 @@ test('skill_guard adaptive mode blocks non-allowlisted command executors on prot
       "printf 'HEAD~1' | xargs git reset",
       'nice git switch other-branch',
       'bash scripts/custom-task.sh',
+      'npm test',
+      'npm run build',
+      'pnpm run lint',
+      'yarn test',
+      'bun test',
       'pytest $(git reset --hard)',
       'git add <(git reset --hard)',
       'bun test `git reset --hard`',

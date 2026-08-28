@@ -76,6 +76,7 @@ blocked_refs=()
 adaptive_direct_push=1
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   if [[ -z "${remote_ref:-}" || "$remote_ref" != refs/heads/* ]]; then
+    adaptive_direct_push=0
     continue
   fi
 
@@ -95,6 +96,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
 done
 
 if [[ "${#blocked_refs[@]}" -gt 0 ]]; then
+  allow_adaptive_direct_push=0
   if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" \
     && "${#blocked_refs[@]}" == "1" \
     && "$adaptive_direct_push" == "1" \
@@ -112,41 +114,43 @@ MSG
       echo "[guardex-adaptive] Adaptive direct push blocked: another agent session owns this checkout." >&2
       exit 1
     fi
-    exit 0
+    allow_adaptive_direct_push=1
   fi
 
-  if [[ "$is_codex_session" == "1" ]]; then
+  if [[ "$allow_adaptive_direct_push" != "1" ]]; then
+    if [[ "$is_codex_session" == "1" ]]; then
+      {
+        echo "[guardex-preedit-guard] Codex push detected toward protected branch."
+        echo "[guardex-preedit-guard] Protected target(s): ${blocked_refs[*]}"
+        echo "[guardex-preedit-guard] Run Codex from an agent/* branch and merge via PR."
+        echo
+        echo "Temporary bypass (not recommended):"
+        echo "  ALLOW_PUSH_ON_PROTECTED_BRANCH=1 git push ..."
+      } >&2
+      exit 1
+    fi
+
+    # Humans may push directly to protected branches; only agent sessions are blocked.
+    if [[ "$is_agent_session" != "1" ]]; then
+      exit 0
+    fi
+
+    if [[ "$is_vscode_git_context" == "1" && "$allow_vscode_protected_branch_writes" == "1" ]]; then
+      exit 0
+    fi
+
     {
-      echo "[guardex-preedit-guard] Codex push detected toward protected branch."
-      echo "[guardex-preedit-guard] Protected target(s): ${blocked_refs[*]}"
-      echo "[guardex-preedit-guard] Run Codex from an agent/* branch and merge via PR."
+      echo "[agent-branch-guard] Push to protected branch blocked."
+      echo "[agent-branch-guard] Protected target(s): ${blocked_refs[*]}"
+      echo "[agent-branch-guard] Use an agent branch and merge via PR."
+      echo "[agent-branch-guard] Optional repo opt-in for VS Code protected-branch push:"
+      echo "  git config multiagent.allowVscodeProtectedBranchWrites true"
       echo
       echo "Temporary bypass (not recommended):"
       echo "  ALLOW_PUSH_ON_PROTECTED_BRANCH=1 git push ..."
     } >&2
     exit 1
   fi
-
-  # Humans may push directly to protected branches; only agent sessions are blocked.
-  if [[ "$is_agent_session" != "1" ]]; then
-    exit 0
-  fi
-
-  if [[ "$is_vscode_git_context" == "1" && "$allow_vscode_protected_branch_writes" == "1" ]]; then
-    exit 0
-  fi
-
-  {
-    echo "[agent-branch-guard] Push to protected branch blocked."
-    echo "[agent-branch-guard] Protected target(s): ${blocked_refs[*]}"
-    echo "[agent-branch-guard] Use an agent branch and merge via PR."
-    echo "[agent-branch-guard] Optional repo opt-in for VS Code protected-branch push:"
-    echo "  git config multiagent.allowVscodeProtectedBranchWrites true"
-    echo
-    echo "Temporary bypass (not recommended):"
-    echo "  ALLOW_PUSH_ON_PROTECTED_BRANCH=1 git push ..."
-  } >&2
-  exit 1
 fi
 
 exit 0

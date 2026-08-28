@@ -764,6 +764,27 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
+test('adaptive worktree mode rejects protected pushes mixed with non-branch refs', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `printf '%s\n' 'refs/heads/main 1111111111111111111111111111111111111111 refs/heads/main 0000000000000000000000000000000000000000' 'refs/tags/v1 2222222222222222222222222222222222222222 refs/tags/v1 0000000000000000000000000000000000000000' | .githooks/pre-push origin origin`,
+    ],
+    repoDir,
+    { CODEX_THREAD_ID: 'test-thread' },
+  );
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /Codex push detected toward protected branch/);
+});
+
 test('adaptive rewritten commit completes through the installed pre-commit hook', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
