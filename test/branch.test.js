@@ -780,6 +780,28 @@ test('adaptive worktree detection fails closed when the worktree list is unavail
 });
 
 
+test('adaptive worktree detection ignores the current linked worktree by path', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const linkedWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'current-lane');
+  let result = runCmd(
+    'git',
+    ['worktree', 'add', '-b', 'agent/current/lane', linkedWorktree],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  fs.writeFileSync(path.join(linkedWorktree, 'current-dirty.txt'), 'current lane work\n', 'utf8');
+
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  result = runCmd(
+    'bash',
+    ['-lc', `source '${helper}'; guardex_repo_has_competing_worktree_activity '${linkedWorktree}' node`],
+    linkedWorktree,
+  );
+  assert.equal(result.status, 1, `current worktree must not compete with itself: ${result.stderr}`);
+});
+
+
 test('adaptive worktree mode blocks indirect, deleted, and non-fast-forward protected pushes', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
@@ -854,7 +876,7 @@ test('adaptive worktree mode blocks direct agent commits while another lane has 
   fs.rmSync(path.join(otherWorktree, 'other-change.txt'));
   const stateDir = path.join(otherWorktree, '.omx', 'state');
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '[]\n', 'utf8');
+  fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '{"locks":[]}\n', 'utf8');
   result = runCmd('git', ['commit', '-m', 'blocked by invalid sibling lock state'], repoDir, {
     CODEX_THREAD_ID: 'test-thread',
   });

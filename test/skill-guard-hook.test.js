@@ -457,17 +457,18 @@ test('skill_guard adaptive mode blocks main edits while a sibling lane has dirty
   }
 });
 
-test('skill_guard adaptive mode fails closed on non-object sibling lock state', () => {
+test('skill_guard adaptive mode fails closed on malformed sibling lock state', () => {
   const { dir, wt } = makeRepoWithNestedAgentWorktree();
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     const stateDir = path.join(wt, '.omx', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '[]\n');
-
-    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
-    assert.equal(result.status, 2, `invalid sibling lock state must force isolation: ${result.stderr}`);
-    assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+    for (const lockState of ['[]\n', '{"locks":[]}\n']) {
+      fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), lockState);
+      const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
+      assert.equal(result.status, 2, `invalid sibling lock state must force isolation: ${result.stderr}`);
+      assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

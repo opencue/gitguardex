@@ -337,7 +337,10 @@ def has_competing_worktree_activity(repo_root: Path) -> bool:
             return True
         if not isinstance(lock_data, dict):
             return True
-        if isinstance(lock_data.get("locks"), dict) and lock_data["locks"]:
+        locks = lock_data.get("locks")
+        if locks is not None and not isinstance(locks, dict):
+            return True
+        if locks:
             return True
     return False
 

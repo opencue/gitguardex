@@ -106,7 +106,11 @@ guardex_repo_worktree_mode() {
 guardex_repo_has_competing_worktree_activity() {
   local repo_root="$1"
   local node_bin="${2:-node}"
-  local line worktree_list worktree_path worktree_index=0 dirty lock_file
+  local current_path line worktree_list worktree_path worktree_real_path dirty lock_file
+
+  if ! current_path="$(cd "$repo_root" && pwd -P)"; then
+    return 0
+  fi
 
   if ! worktree_list="$(guardex_git_clean_env -C "$repo_root" worktree list --porcelain 2>/dev/null)"; then
     return 0
@@ -114,10 +118,12 @@ guardex_repo_has_competing_worktree_activity() {
 
   while IFS= read -r line; do
     [[ "$line" == worktree\ * ]] || continue
-    worktree_index=$((worktree_index + 1))
-    [[ "$worktree_index" -gt 1 ]] || continue
     worktree_path="${line#worktree }"
     [[ -d "$worktree_path" ]] || continue
+    if ! worktree_real_path="$(cd "$worktree_path" && pwd -P)"; then
+      return 0
+    fi
+    [[ "$worktree_real_path" != "$current_path" ]] || continue
 
     if ! dirty="$(
       guardex_git_clean_env -C "$worktree_path" status --porcelain --untracked-files=normal -- \
@@ -134,9 +140,12 @@ guardex_repo_has_competing_worktree_activity() {
       const fs = require("node:fs");
       try {
         const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-        process.exit(data && typeof data === "object" && !Array.isArray(data)
-          ? (Object.keys(data.locks || {}).length > 0 ? 0 : 1)
-          : 0);
+        if (!data || typeof data !== "object" || Array.isArray(data)) process.exit(0);
+        const locks = data.locks;
+        if (locks !== undefined && (!locks || typeof locks !== "object" || Array.isArray(locks))) {
+          process.exit(0);
+        }
+        process.exit(Object.keys(locks || {}).length > 0 ? 0 : 1);
       } catch {
         process.exit(0);
       }
