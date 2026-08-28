@@ -397,8 +397,9 @@ def cross_worktree_lock(repo_root: Path):
             handle.close()
 
 
-def active_adaptive_direct_owner(repo_root: Path) -> str:
-    """Return the live primary-checkout session owner while holding its OS lock."""
+@contextmanager
+def adaptive_direct_owner_lock(repo_root: Path):
+    """Yield the live primary-checkout owner while holding its OS lock."""
     if fcntl is None:
         raise LockError('OS file locking is unavailable; lock operation blocked')
     state_dir = common_git_dir(repo_root) / 'gitguardex'
@@ -422,7 +423,8 @@ def active_adaptive_direct_owner(repo_root: Path) -> str:
         try:
             lease = json.loads(lease_path.read_text())
         except FileNotFoundError:
-            return ''
+            yield ''
+            return
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             raise LockError('adaptive direct-session lease is unreadable; claim blocked') from exc
         if not isinstance(lease, dict):
@@ -440,7 +442,7 @@ def active_adaptive_direct_owner(repo_root: Path) -> str:
             raise LockError('adaptive direct-session TTL is invalid; claim blocked') from exc
         if ttl_seconds <= 0 or not math.isfinite(ttl_seconds):
             raise LockError('adaptive direct-session TTL is invalid; claim blocked')
-        return owner if contended or now_epoch() - float(last_seen) < ttl_seconds else ''
+        yield owner if contended or now_epoch() - float(last_seen) < ttl_seconds else ''
     finally:
         try:
             if acquired:
@@ -449,7 +451,7 @@ def active_adaptive_direct_owner(repo_root: Path) -> str:
             handle.close()
 
 
-def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
+def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) -> int:
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
 
@@ -457,7 +459,6 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path) -> int:
     claim_session = resolve_session_id()
     claim_pane = resolve_pane()
     files = [normalize_repo_path(repo_root, p) for p in args.files]
-    adaptive_owner = active_adaptive_direct_owner(repo_root)
     if adaptive_owner and adaptive_owner not in {claim_agent, claim_session}:
         print(
             '[agent-file-locks] Cannot claim files while adaptive direct work owns '
@@ -694,7 +695,10 @@ def cmd_validate(args: argparse.Namespace, repo_root: Path) -> int:
     for status, file_path in file_changes:
         owners = all_locks.get(file_path, [])
         if not owners:
-            missing.append(file_path)
+            if not args.allow_unclaimed:
+                missing.append(file_path)
+            elif status == 'D' and file_path in CRITICAL_GUARDRAIL_PATHS and not allow_guardrail_delete:
+                guardrail_delete_blocked.append(file_path)
             continue
 
         foreign_owners = [e for e in owners if not owner_matches(e, args.branch, agent)]
@@ -799,6 +803,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument('--branch', required=True, help='Owner branch name')
     add_agent_arg(validate)
     validate.add_argument('--staged', action='store_true', help='Validate staged files from git index')
+    validate.add_argument(
+        '--allow-unclaimed',
+        action='store_true',
+        help='Allow unclaimed files while still rejecting foreign claims',
+    )
     validate.add_argument('files', nargs='*', help='Files to validate when --staged is not used')
 
     return parser
@@ -806,7 +815,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def dispatch_command(args: argparse.Namespace, repo_root: Path) -> int:
     if args.command == 'claim':
-        return cmd_claim(args, repo_root)
+        raise LockError('claim must run while holding the adaptive direct-session lock')
     if args.command == 'allow-delete':
         return cmd_allow_delete(args, repo_root)
     if args.command == 'release':
@@ -833,6 +842,9 @@ def main() -> int:
         # each other or both win the same file. status is a pure read -> unlocked.
         if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate'}:
             with cross_worktree_lock(repo_root):
+                if args.command == 'claim':
+                    with adaptive_direct_owner_lock(repo_root) as adaptive_owner:
+                        return cmd_claim(args, repo_root, adaptive_owner)
                 return dispatch_command(args, repo_root)
         return dispatch_command(args, repo_root)
     except LockError as exc:

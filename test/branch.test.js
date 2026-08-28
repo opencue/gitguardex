@@ -751,6 +751,11 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
     CODEX_THREAD_ID: 'test-thread',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(
+    fs.existsSync(path.join(repoDir, '.omx', 'state', 'agent-file-locks.json')),
+    false,
+    'adaptive direct commits must not create durable file claims',
+  );
 
   result = runCmd(
     'bash',
@@ -856,6 +861,29 @@ test('adaptive lease helper rejects a stale same-session lease during foreign lo
   );
   assert.notEqual(result.status, 0, result.stdout);
   assert.match(result.stderr, /owned by another active agent session/);
+});
+
+test('adaptive lease helper rejects isolated claims while holding the shared lock', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  const otherWorktree = path.join(repoDir, 'other-lane');
+  let result = runCmd('git', ['worktree', 'add', '-q', '-b', 'agent/other/lane', otherWorktree], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const stateDir = path.join(otherWorktree, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, 'agent-file-locks.json'),
+    `${JSON.stringify({ locks: { 'claimed.txt': { branch: 'agent/other/lane' } } })}\n`,
+  );
+
+  result = runCmd(
+    'bash',
+    ['-lc', `source '${helper}'; guardex_claim_adaptive_session_lease '${repoDir}' direct-owner`],
+    repoDir,
+  );
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /blocked by an active isolated lane/);
 });
 
 test('empty repo worktree-mode override falls back to adaptive Git config', () => {

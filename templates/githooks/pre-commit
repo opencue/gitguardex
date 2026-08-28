@@ -240,7 +240,7 @@ MSG
 fi
 
 if [[ "$branch" == agent/* || "$is_adaptive_direct_commit" == "1" ]]; then
-  if [[ "${GUARDEX_AUTOCLAIM_STAGED_LOCKS:-1}" == "1" ]]; then
+  if [[ "$branch" == agent/* && "${GUARDEX_AUTOCLAIM_STAGED_LOCKS:-1}" == "1" ]]; then
     # Auto-claim non-deletion staged paths. Deletions need an explicit
     # `--allow-delete` flag below so `locks validate --staged` doesn't
     # reject the commit on the same trip the user staged the delete.
@@ -285,7 +285,11 @@ if [[ "$branch" == agent/* || "$is_adaptive_direct_commit" == "1" ]]; then
     fi
   fi
 
-  if ! run_guardex_cli locks validate --branch "$branch" --staged; then
+  _validate_args=(locks validate --branch "$branch" --staged)
+  if [[ "$is_adaptive_direct_commit" == "1" ]]; then
+    _validate_args+=(--allow-unclaimed)
+  fi
+  if ! run_guardex_cli "${_validate_args[@]}"; then
     cat >&2 <<'MSG'
 [agent-branch-guard] Agent branch commits require file ownership locks.
 Claim files first:

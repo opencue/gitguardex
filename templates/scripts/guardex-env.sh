@@ -228,7 +228,7 @@ guardex_claim_adaptive_session_lease() {
   fi
   common_dir="$(cd "$common_dir" 2>/dev/null && pwd -P)" || return 1
 
-  "$python_bin" - "$common_dir" "$session_id" "${GUARDEX_ADAPTIVE_SESSION_LEASE_SEC:-900}" <<'PY'
+  "$python_bin" - "$common_dir" "$repo_root" "$session_id" "${GUARDEX_ADAPTIVE_SESSION_LEASE_SEC:-900}" <<'PY'
 import fcntl
 import hmac
 import json
@@ -237,7 +237,7 @@ import sys
 import time
 from pathlib import Path
 
-common_dir, session_id, raw_ttl = sys.argv[1:]
+common_dir, repo_root, session_id, raw_ttl = sys.argv[1:]
 try:
     ttl_seconds = float(raw_ttl)
 except ValueError:
@@ -248,13 +248,16 @@ if not (0 < ttl_seconds < float("inf")):
 state_dir = Path(common_dir) / "gitguardex"
 lease_path = state_dir / "adaptive-direct-session.json"
 lock_path = state_dir / "adaptive-direct-session.lock"
+agent_lock_path = Path(common_dir) / "agent-file-locks.lock"
 try:
     state_dir.mkdir(parents=True, exist_ok=True)
+    agent_lock_handle = open(agent_lock_path, "a+")
     lock_handle = open(lock_path, "a+")
 except OSError:
     raise SystemExit(1)
 
 acquired = False
+agent_lock_acquired = False
 def wrapper_marker_matches(active_lease):
     wrapper_session = os.environ.get("GUARDEX_ADAPTIVE_COMMAND_LOCK_SESSION_ID", "")
     presented_token = os.environ.get("GUARDEX_ADAPTIVE_COMMAND_LOCK_TOKEN", "")
@@ -266,6 +269,34 @@ def wrapper_marker_matches(active_lease):
     return hmac.compare_digest(presented_token, expected_token)
 
 try:
+    try:
+        fcntl.flock(agent_lock_handle.fileno(), fcntl.LOCK_EX)
+        agent_lock_acquired = True
+    except OSError:
+        raise SystemExit(1)
+
+    current_root = Path(repo_root).resolve()
+    for gitdir_path in (Path(common_dir) / "worktrees").glob("*/gitdir"):
+        try:
+            worktree_root = Path(gitdir_path.read_text().strip()).resolve().parent
+        except OSError:
+            raise SystemExit(1)
+        if worktree_root == current_root:
+            continue
+        registry_path = worktree_root / ".omx/state/agent-file-locks.json"
+        try:
+            registry = json.loads(registry_path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError, ValueError):
+            raise SystemExit(1)
+        locks = registry.get("locks") if isinstance(registry, dict) else None
+        if not isinstance(locks, dict):
+            raise SystemExit(1)
+        if locks:
+            print("Adaptive direct work is blocked by an active isolated lane.", file=sys.stderr)
+            raise SystemExit(1)
+
     try:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         acquired = True
@@ -322,6 +353,13 @@ finally:
         if acquired:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
     finally:
-        lock_handle.close()
+        try:
+            lock_handle.close()
+        finally:
+            try:
+                if agent_lock_acquired:
+                    fcntl.flock(agent_lock_handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                agent_lock_handle.close()
 PY
 }
