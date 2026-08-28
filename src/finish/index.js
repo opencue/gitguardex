@@ -224,6 +224,8 @@ OPTIONS
   --force-dirty            Allow cleanup of dirty worktrees
   --keep-remote            Keep remote agent branches
   --keep-clean-worktrees   Keep clean worktrees instead of pruning them
+  --include-clean-linked-worktrees
+                           Also prune clean linked worktrees outside managed agent directories
   --include-pr-merged      Treat branches from merged PRs as merged
   --idle-minutes <n>       Only consider worktrees idle for at least n minutes
   --watch                  Repeat cleanup cycles (defaults idle threshold to 60)
@@ -254,6 +256,9 @@ OPTIONS
   }
   if (!options.keepCleanWorktrees) {
     args.push('--only-dirty-worktrees');
+  }
+  if (options.includeCleanLinkedWorktrees) {
+    args.push('--include-clean-linked-worktrees');
   }
   if (options.includePrMerged) {
     args.push('--include-pr-merged');

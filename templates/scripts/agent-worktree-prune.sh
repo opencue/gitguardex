@@ -8,6 +8,7 @@ FORCE_DIRTY=0
 DELETE_BRANCHES=0
 DELETE_REMOTE_BRANCHES=0
 ONLY_DIRTY_WORKTREES=0
+INCLUDE_CLEAN_LINKED_WORKTREES=0
 INCLUDE_PR_MERGED=0
 TARGET_BRANCH=""
 IDLE_MINUTES=0
@@ -56,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       ONLY_DIRTY_WORKTREES=1
       shift
       ;;
+    --include-clean-linked-worktrees)
+      INCLUDE_CLEAN_LINKED_WORKTREES=1
+      shift
+      ;;
     --include-pr-merged)
       INCLUDE_PR_MERGED=1
       shift
@@ -70,7 +75,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[agent-worktree-prune] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-pr-merged] [--branch <agent/...>] [--idle-minutes <minutes>]" >&2
+      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--branch <agent/...>] [--idle-minutes <minutes>]" >&2
       exit 1
       ;;
   esac
@@ -503,7 +508,8 @@ process_entry() {
   local branch_ref="$2"
 
   [[ -z "$wt" ]] && return
-  if ! is_managed_worktree_path "$wt"; then
+  [[ "$wt" == "$repo_root" ]] && return
+  if ! is_managed_worktree_path "$wt" && [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -ne 1 ]]; then
     return
   fi
 
@@ -549,6 +555,8 @@ process_entry() {
     fi
   elif [[ "$branch" == __agent_integrate_* || "$branch" == __source-probe-* ]]; then
     remove_reason="temporary-worktree"
+  elif [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
+    remove_reason="clean-linked-worktree"
   fi
 
   if [[ -z "$remove_reason" ]]; then

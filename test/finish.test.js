@@ -86,6 +86,7 @@ test('cleanup --help prints command usage without running cleanup', () => {
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /USAGE:\s+gx cleanup \[options\]/);
+  assert.match(result.stdout, /--include-clean-linked-worktrees/);
   assert.match(result.stdout, /--include-pr-merged/);
   assert.match(result.stdout, /--watch/);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Unknown option:/);
@@ -1610,6 +1611,37 @@ test('cleanup command keeps unmerged agent branch refs but removes clean agent w
 
   const localBranch = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-cleanup-keep-branch'], repoDir);
   assert.equal(localBranch.status, 0, 'cleanup should keep unmerged local branch');
+});
+
+
+test('cleanup command can opt into removing clean linked worktrees outside managed directories', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const worktreePath = path.join(path.dirname(repoDir), `${path.basename(repoDir)}-external-clean-worktree`);
+  result = runCmd('git', ['worktree', 'add', '-b', 'work/external-clean-worktree', worktreePath, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runNode(['cleanup', '--target', repoDir, '--keep-remote'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(worktreePath), true, 'external linked worktree should require explicit opt-in');
+
+  result = runNode(
+    ['cleanup', '--target', repoDir, '--keep-remote', '--include-clean-linked-worktrees'],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(worktreePath), false, 'clean linked worktree should be removed');
+
+  const branchResult = runCmd(
+    'git',
+    ['show-ref', '--verify', '--quiet', 'refs/heads/work/external-clean-worktree'],
+    repoDir,
+  );
+  assert.equal(branchResult.status, 0, 'cleanup should preserve the linked worktree branch');
 });
 
 
