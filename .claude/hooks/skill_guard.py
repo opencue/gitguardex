@@ -955,19 +955,21 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             if option in options_with_values:
                 if index + 1 >= len(tokens):
                     return True
-                config_value = tokens[index + 1]
-                if option in {"-c", "--config-env"} and config_value.startswith(
-                    ("alias.", "include.", "includeIf.")
-                ):
-                    return True
-                index += 2
-            else:
-                inline_config = option.removeprefix("-c") if option.startswith("-c") else ""
-                if option.startswith("--config-env="):
-                    inline_config = option.removeprefix("--config-env=")
-                if inline_config.startswith(("alias.", "include.", "includeIf.")):
-                    return True
-                index += 1
+                return True
+            if option.startswith(
+                (
+                    "-C",
+                    "-c",
+                    "--config-env=",
+                    "--exec-path=",
+                    "--git-dir=",
+                    "--namespace=",
+                    "--super-prefix=",
+                    "--work-tree=",
+                )
+            ):
+                return True
+            index += 1
         if index >= len(tokens):
             continue
         subcommand = tokens[index]
@@ -988,8 +990,11 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
         }:
             return True
         if subcommand == "commit" and any(
-            argument == "--amend"
-            or (len(argument) >= 4 and "--amend".startswith(argument))
+            argument == "-n"
+            or any(
+                len(argument) >= 4 and option.startswith(argument)
+                for option in ("--amend", "--no-verify")
+            )
             for argument in arguments
         ):
             return True
