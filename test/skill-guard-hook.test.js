@@ -294,6 +294,53 @@ test('skill_guard adaptive mode blocks git add and commit for claimed paths', ()
   }
 });
 
+test('skill_guard adaptive mode honors directory claims and commit path options', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { src: { branch: 'agent/other/lane' } } })}\n`,
+    );
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'baseline\n');
+    assert.equal(
+      cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', 'add', 'src/locked.js'], { cwd: dir }).status,
+      0,
+    );
+    assert.equal(
+      cp.spawnSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'add tracked lock target'],
+        { cwd: dir },
+      ).status,
+      0,
+    );
+    fs.writeFileSync(path.join(dir, 'src', 'locked.js'), 'changed\n');
+
+    const edit = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'locked.js'), dir, 'adaptive-dir-lock-contender'),
+    );
+    assert.equal(edit.status, 2, edit.stderr || edit.stdout);
+    assert.match(edit.stderr, /target is claimed by another agent lane/);
+
+    for (const command of [
+      'git commit -a -m blocked',
+      'git commit --include src/locked.js -m blocked',
+      'git commit --only src/locked.js -m blocked',
+    ]) {
+      const result = invokeHook(dir, bashPayload(command, dir));
+      assert.equal(result.status, 2, `${command}: ${result.stderr || result.stdout}`);
+      assert.match(result.stderr, /commit includes a file claimed by another agent lane/);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard adaptive direct-main ownership expires after the configured lease TTL', () => {
   const dir = makeRepoOn('main');
   try {
@@ -409,7 +456,7 @@ test('skill_guard adaptive mode blocks non-allowlisted command executors on prot
   }
 });
 
-test('skill_guard adaptive mode blocks main edits when shared Git state has a remote lane', () => {
+test('skill_guard adaptive mode ignores stale remote branches but blocks shared lock refs', () => {
   const dir = makeRepoOn('main');
   const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-guard-shared-'));
   try {
@@ -423,9 +470,16 @@ test('skill_guard adaptive mode blocks main edits when shared Git state has a re
     );
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
 
-    const result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
-    assert.equal(result.status, 2, `remote shared lane must force isolation: ${result.stderr}`);
-    assert.match(result.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
+    const staleBranch = invokeHook(dir, writePayload(path.join(dir, 'src', 'stale-ok.js'), dir));
+    assert.equal(staleBranch.status, 0, staleBranch.stderr || staleBranch.stdout);
+
+    assert.equal(
+      cp.spawnSync('git', ['push', '-q', 'shared', 'HEAD:refs/gitguardex/locks/remote-lane'], { cwd: dir }).status,
+      0,
+    );
+    const liveLock = invokeHook(dir, writePayload(path.join(dir, 'src', 'blocked.js'), dir));
+    assert.equal(liveLock.status, 2, `remote shared lock must force isolation: ${liveLock.stderr}`);
+    assert.match(liveLock.stderr, /Adaptive direct work blocked: another agent lane has dirty files or locks\./);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(remote, { recursive: true, force: true });

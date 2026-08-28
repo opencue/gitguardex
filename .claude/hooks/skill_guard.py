@@ -341,7 +341,6 @@ def has_shared_agent_activity(repo_root: Path) -> bool:
                 "--refs",
                 remote,
                 "refs/gitguardex/locks/*",
-                "refs/heads/agent/*",
             ],
             cwd=repo_root,
             env=_clean_git_env(),
@@ -457,7 +456,14 @@ def target_has_file_lock(repo_root: Path, file_path: str) -> bool:
         if not isinstance(locks, dict):
             return True
         target_prefix = "" if relative_path == "." else f"{relative_path.rstrip('/')}/"
-        if relative_path in locks or (
+        locked_paths = {path.rstrip("/") for path in locks}
+        ancestor_claimed = any(
+            locked_path in {"", "."}
+            or relative_path == locked_path
+            or relative_path.startswith(f"{locked_path}/")
+            for locked_path in locked_paths
+        )
+        if ancestor_claimed or (
             target_prefix and any(path.startswith(target_prefix) for path in locks)
         ) or (not target_prefix and locks):
             return True
@@ -513,21 +519,27 @@ def adaptive_git_lock_error(
                         "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
                     )
         elif subcommand == "commit":
-            try:
-                staged = subprocess.run(
-                    ["git", "diff", "--cached", "--name-only", "-z"],
-                    cwd=repo_root,
-                    env=_clean_git_env(),
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-            except OSError:
-                return "BLOCKED: Adaptive commit cannot validate staged file ownership."
-            if staged.returncode != 0:
-                return "BLOCKED: Adaptive commit cannot validate staged file ownership."
-            for staged_path in staged.stdout.split("\0"):
-                if staged_path and target_has_file_lock(repo_root, str(repo_root / staged_path)):
+            changed_paths: set[str] = set()
+            for diff_args in (
+                ["git", "diff", "--cached", "--no-renames", "--name-only", "-z"],
+                ["git", "diff", "--no-renames", "--name-only", "-z"],
+            ):
+                try:
+                    changed = subprocess.run(
+                        diff_args,
+                        cwd=repo_root,
+                        env=_clean_git_env(),
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                except OSError:
+                    return "BLOCKED: Adaptive commit cannot validate changed file ownership."
+                if changed.returncode != 0:
+                    return "BLOCKED: Adaptive commit cannot validate changed file ownership."
+                changed_paths.update(path for path in changed.stdout.split("\0") if path)
+            for changed_path in changed_paths:
+                if target_has_file_lock(repo_root, str(repo_root / changed_path)):
                     return (
                         "BLOCKED: Adaptive commit includes a file claimed by another agent lane.\n"
                         "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."

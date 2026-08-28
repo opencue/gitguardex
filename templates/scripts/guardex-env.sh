@@ -138,7 +138,7 @@ guardex_repo_has_shared_agent_activity() {
       export GIT_TERMINAL_PROMPT=0
       git "$@"
     ' guardex-shared-state -C "$repo_root" ls-remote --refs "$remote" \
-      'refs/gitguardex/locks/*' 'refs/heads/agent/*' 2>/dev/null)" || return 0
+      'refs/gitguardex/locks/*' 2>/dev/null)" || return 0
   else
     return 0
   fi

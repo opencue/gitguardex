@@ -888,7 +888,7 @@ test('adaptive worktree detection ignores the current linked worktree by path', 
 });
 
 
-test('adaptive worktree mode blocks direct commits when shared Git state has a remote lane', () => {
+test('adaptive worktree mode ignores stale remote branches but blocks shared lock refs', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
   const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-shared-remote-'));
@@ -906,6 +906,17 @@ test('adaptive worktree mode blocks direct commits when shared Git state has a r
   const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
   assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
   fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  fs.writeFileSync(path.join(repoDir, 'stale-agent-branch.txt'), 'allowed\n', 'utf8');
+  result = runCmd('git', ['add', 'stale-agent-branch.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'stale remote branch is inactive'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd('git', ['push', '-q', 'shared', 'HEAD:refs/gitguardex/locks/remote-lane'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
   fs.writeFileSync(path.join(repoDir, 'notes-main.txt'), 'small direct change\n', 'utf8');
   result = runCmd('git', ['add', 'notes-main.txt'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
