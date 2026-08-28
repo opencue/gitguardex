@@ -244,6 +244,28 @@ test('skill_guard adaptive mode atomically gives one session exclusive direct-ma
   }
 });
 
+test('skill_guard adaptive mode blocks a target claimed in the primary checkout registry', () => {
+  const dir = makeRepoOn('main');
+  try {
+    fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const stateDir = path.join(dir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks: { 'src/foo.js': { branch: 'agent/other/lane' } } })}\n`,
+    );
+
+    const result = invokeHook(
+      dir,
+      writePayload(path.join(dir, 'src', 'foo.js'), dir, 'adaptive-lock-contender'),
+    );
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.match(result.stderr, /target is claimed by another agent lane/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('skill_guard adaptive direct-main ownership expires after the configured lease TTL', () => {
   const dir = makeRepoOn('main');
   try {

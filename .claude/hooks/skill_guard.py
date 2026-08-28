@@ -421,6 +421,46 @@ def has_competing_worktree_activity(repo_root: Path) -> bool:
     return False
 
 
+def target_has_file_lock(repo_root: Path, file_path: str) -> bool:
+    """Fail closed when any local worktree registry claims the edit target."""
+    try:
+        relative_path = Path(file_path).resolve().relative_to(repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return False
+    try:
+        worktree_result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo_root,
+            env=_clean_git_env(),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return True
+    if worktree_result.returncode != 0:
+        return True
+
+    for line in worktree_result.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        lock_path = Path(line.removeprefix("worktree ")) / ".omx" / "state" / "agent-file-locks.json"
+        try:
+            lock_data = json.loads(lock_path.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError, ValueError):
+            return True
+        if not isinstance(lock_data, dict):
+            return True
+        locks = lock_data.get("locks", {})
+        if not isinstance(locks, dict):
+            return True
+        if relative_path in locks:
+            return True
+    return False
+
+
 def adaptive_primary_session_lease_error(
     repo_root: Path,
     session_id: str,
@@ -533,7 +573,12 @@ def adaptive_primary_session_lease_error(
             lock_handle.close()
 
 
-def adaptive_direct_work_error(repo_root: Path, session_id: str) -> str | None:
+def adaptive_direct_work_error(
+    repo_root: Path,
+    session_id: str,
+    *,
+    file_path: str = "",
+) -> str | None:
     if guardex_worktree_mode(repo_root) != "adaptive":
         return None
     if has_competing_worktree_activity(repo_root):
@@ -541,6 +586,11 @@ def adaptive_direct_work_error(repo_root: Path, session_id: str) -> str | None:
             "BLOCKED: Adaptive direct work blocked: another agent lane has dirty files or locks.\n"
             "Inspect `gx mcp list-agents --no-prs`, then isolate this work:\n"
             '  gx branch start --new --no-transfer "<task>" "<agent-name>"'
+        )
+    if file_path and target_has_file_lock(repo_root, file_path):
+        return (
+            "BLOCKED: Adaptive direct work target is claimed by another agent lane.\n"
+            "Inspect `gx mcp who-owns <file>`, then wait for release or open an isolated lane."
         )
     lease_error = adaptive_primary_session_lease_error(repo_root, session_id)
     return lease_error or ""
@@ -734,6 +784,7 @@ def is_codex_session() -> bool:
 def ensure_protected_branch_edit_allowed(
     file_path: str,
     session_id: str = "unknown",
+    target_file_path: str = "",
 ) -> str | None:
     """Block Codex edits on non-agent branches and all edits on protected branches."""
     if os.environ.get(PROTECTED_BRANCH_EDIT_OVERRIDE_ENV) == "1":
@@ -742,7 +793,11 @@ def ensure_protected_branch_edit_allowed(
     branch = current_branch(repo_root)
     protected = resolve_protected_branches(repo_root)
     if branch in protected:
-        adaptive_error = adaptive_direct_work_error(repo_root, session_id)
+        adaptive_error = adaptive_direct_work_error(
+            repo_root,
+            session_id,
+            file_path=target_file_path or file_path,
+        )
         if adaptive_error == "":
             return None
         if adaptive_error:
@@ -1282,7 +1337,11 @@ def main() -> None:
             judge_path = str(abs_target)
         else:
             judge_path = str(repo_root)
-        protected_branch_error = ensure_protected_branch_edit_allowed(judge_path, session_id)
+        protected_branch_error = ensure_protected_branch_edit_allowed(
+            judge_path,
+            session_id,
+            str(abs_target),
+        )
         if protected_branch_error:
             emit_event(
                 session_id,
