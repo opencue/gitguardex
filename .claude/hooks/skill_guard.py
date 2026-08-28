@@ -1190,9 +1190,43 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
     return True
 
 
+def has_dynamic_adaptive_shell_syntax(command: str) -> bool:
+    """Detect shell expansion syntax while allowing quoted or escaped literals."""
+    single_quoted = False
+    double_quoted = False
+    escaped = False
+    for index, character in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and not single_quoted:
+            escaped = True
+            continue
+        if character == "'" and not double_quoted:
+            single_quoted = not single_quoted
+            continue
+        if character == '"' and not single_quoted:
+            double_quoted = not double_quoted
+            continue
+        if single_quoted:
+            continue
+        if character in "`$":
+            return True
+        if not double_quoted and character in "*?[]{}":
+            return True
+        if (
+            not double_quoted
+            and character in "<>"
+            and index + 1 < len(command)
+            and command[index + 1] == "("
+        ):
+            return True
+    return False
+
+
 def is_allowed_adaptive_direct_shell_command(command: str) -> bool:
     normalized = command.strip()
-    if re.search(r"`|\$|[<>]\(|[*?\[\]{}]", normalized):
+    if has_dynamic_adaptive_shell_syntax(normalized):
         return False
     segments = split_shell_segments(normalized)
     if not segments:

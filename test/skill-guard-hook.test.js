@@ -190,8 +190,11 @@ test('skill_guard adaptive mode allows bounded edits and allowlisted shell comma
     for (const command of [
       'git add seed.txt',
       'git commit -m safe',
+      "git commit -m 'fix $PATH handling'",
+      'git commit -m fix\\$PATH',
       'git push origin main',
       'bun test',
+      "bun test -- --test-name-pattern='cost $5'",
       'pytest -q',
     ]) {
       result = invokeHook(dir, bashPayload(command, dir));
