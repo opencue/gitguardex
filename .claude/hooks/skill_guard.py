@@ -863,8 +863,23 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             "update-ref",
         }:
             return True
-        if subcommand == "commit" and "--amend" in arguments:
+        if subcommand == "commit" and any(
+            argument == "--amend"
+            or (len(argument) >= 4 and "--amend".startswith(argument))
+            for argument in arguments
+        ):
             return True
+        if subcommand == "push":
+            branch = current_branch(repo_root)
+            if (
+                len(arguments) > 2
+                or any(argument.startswith(("-", "+")) or ":" in argument for argument in arguments)
+                or (
+                    len(arguments) == 2
+                    and arguments[1] not in {branch, f"refs/heads/{branch}", "HEAD"}
+                )
+            ):
+                return True
         if subcommand == "branch" and arguments and any(
             not argument.startswith("-")
             or argument

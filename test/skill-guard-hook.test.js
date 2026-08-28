@@ -155,7 +155,13 @@ test('skill_guard adaptive mode allows bounded edits and allowlisted shell comma
     let result = invokeHook(dir, writePayload(path.join(dir, 'src', 'foo.js'), dir));
     assert.equal(result.status, 0, result.stderr || result.stdout);
 
-    for (const command of ['git add seed.txt', 'bun test', 'pytest -q']) {
+    for (const command of [
+      'git add seed.txt',
+      'git commit -m safe',
+      'git push origin main',
+      'bun test',
+      'pytest -q',
+    ]) {
       result = invokeHook(dir, bashPayload(command, dir));
       assert.equal(result.status, 0, `${command}: ${result.stderr || result.stdout}`);
     }
@@ -182,6 +188,13 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
       'git rebase HEAD~1',
       'git cherry-pick HEAD~1',
       'git commit --amend --no-edit',
+      'git commit --amen --no-edit',
+      'git push --force origin main',
+      'git push --force-with-lease origin main',
+      'git push --delete origin feature',
+      'git push --no-verify origin main',
+      'git push origin +main',
+      'git push origin feature',
       'git update-ref refs/heads/main HEAD~1',
       'git symbolic-ref HEAD refs/heads/other',
       'git restore --source=HEAD~1 -- seed.txt',
