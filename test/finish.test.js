@@ -1614,7 +1614,7 @@ test('cleanup command keeps unmerged agent branch refs but removes clean agent w
 });
 
 
-test('cleanup command can opt into removing clean linked worktrees outside managed directories', () => {
+test('cleanup command removes merged work branches after opting into clean linked worktree cleanup', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
 
@@ -1641,7 +1641,7 @@ test('cleanup command can opt into removing clean linked worktrees outside manag
     ['show-ref', '--verify', '--quiet', 'refs/heads/work/external-clean-worktree'],
     repoDir,
   );
-  assert.equal(branchResult.status, 0, 'cleanup should preserve the linked worktree branch');
+  assert.notEqual(branchResult.status, 0, 'cleanup should remove the merged work branch');
 });
 
 

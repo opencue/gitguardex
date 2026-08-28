@@ -264,6 +264,41 @@ test('worktree prune deletes stale temporary helper branches without worktrees',
 });
 
 
+test('worktree prune deletes merged work branches without worktrees and preserves unmerged work', () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  result = runCmd('git', ['branch', 'work/merged-without-worktree', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd('git', ['checkout', '-b', 'work/unmerged-without-worktree'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(repoDir, 'unmerged-work.txt', 'unmerged work branch\n', 'unmerged work branch');
+  result = runCmd('git', ['checkout', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Deleted stale merged branch: work\/merged-without-worktree/);
+
+  const mergedBranch = runCmd(
+    'git',
+    ['show-ref', '--verify', '--quiet', 'refs/heads/work/merged-without-worktree'],
+    repoDir,
+  );
+  assert.notEqual(mergedBranch.status, 0, 'merged work branch without a worktree should be removed');
+
+  const unmergedBranch = runCmd(
+    'git',
+    ['show-ref', '--verify', '--quiet', 'refs/heads/work/unmerged-without-worktree'],
+    repoDir,
+  );
+  assert.equal(unmergedBranch.status, 0, 'unmerged work branch should remain');
+});
+
+
 test('worktree prune reroutes foreign worktrees to the owning repo .omx root', () => {
   const repoDir = initRepo();
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
