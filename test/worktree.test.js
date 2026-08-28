@@ -158,6 +158,32 @@ test('worktree prune --only-dirty-worktrees removes clean agent worktrees but ke
 });
 
 
+test('worktree prune can remove clean linked worktrees outside managed agent directories', () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  const worktreePath = path.join(path.dirname(repoDir), `${path.basename(repoDir)}-external-clean-worktree`);
+  result = runCmd('git', ['worktree', 'add', '-b', 'work/external-clean-worktree', worktreePath, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(
+    ['--only-dirty-worktrees', '--include-clean-linked-worktrees'],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(worktreePath), false, 'clean linked worktree should be removed');
+
+  const branchResult = runCmd(
+    'git',
+    ['show-ref', '--verify', '--quiet', 'refs/heads/work/external-clean-worktree'],
+    repoDir,
+  );
+  assert.equal(branchResult.status, 0, 'cleanup should preserve the linked worktree branch');
+});
+
+
 test('worktree prune removes __source-probe worktrees even when they track agent branches', () => {
   const repoDir = initRepo();
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
