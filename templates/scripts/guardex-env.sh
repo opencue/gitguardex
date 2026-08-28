@@ -139,8 +139,7 @@ guardex_repo_has_shared_agent_activity() {
       git "$@"
     ' guardex-shared-state -C "$repo_root" ls-remote --refs "$remote" \
       'refs/gitguardex/locks/*' 'refs/heads/agent/*' 2>/dev/null)" || return 0
-  elif ! shared="$(GIT_TERMINAL_PROMPT=0 guardex_git_clean_env -C "$repo_root" \
-    ls-remote --refs "$remote" 'refs/gitguardex/locks/*' 'refs/heads/agent/*' 2>/dev/null)"; then
+  else
     return 0
   fi
   [[ -n "$shared" ]]
@@ -149,7 +148,7 @@ guardex_repo_has_shared_agent_activity() {
 guardex_repo_has_competing_worktree_activity() {
   local repo_root="$1"
   local node_bin="${2:-node}"
-  local current_path line worktree_list worktree_path worktree_real_path dirty lock_file
+  local current_path line worktree_list worktree_path worktree_real_path dirty lock_file lock_status
 
   if ! current_path="$(cd "$repo_root" && pwd -P)"; then
     return 0
@@ -183,21 +182,28 @@ guardex_repo_has_competing_worktree_activity() {
     fi
 
     lock_file="${worktree_path}/.omx/state/agent-file-locks.json"
-    if [[ -f "$lock_file" ]] && "$node_bin" -e '
-      const fs = require("node:fs");
-      try {
-        const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-        if (!data || typeof data !== "object" || Array.isArray(data)) process.exit(0);
-        const locks = data.locks;
-        if (locks !== undefined && (!locks || typeof locks !== "object" || Array.isArray(locks))) {
+    if [[ -f "$lock_file" ]]; then
+      if "$node_bin" -e '
+        const fs = require("node:fs");
+        try {
+          const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+          if (!data || typeof data !== "object" || Array.isArray(data)) process.exit(0);
+          const locks = data.locks;
+          if (locks !== undefined && (!locks || typeof locks !== "object" || Array.isArray(locks))) {
+            process.exit(0);
+          }
+          process.exit(Object.keys(locks || {}).length > 0 ? 0 : 1);
+        } catch {
           process.exit(0);
         }
-        process.exit(Object.keys(locks || {}).length > 0 ? 0 : 1);
-      } catch {
-        process.exit(0);
-      }
-    ' "$lock_file" >/dev/null 2>&1; then
-      return 0
+      ' "$lock_file" >/dev/null 2>&1; then
+        return 0
+      else
+        lock_status=$?
+        if [[ "$lock_status" -ne 1 ]]; then
+          return 0
+        fi
+      fi
     fi
   done <<< "$worktree_list"
 

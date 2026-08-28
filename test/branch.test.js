@@ -812,6 +812,33 @@ test('adaptive worktree detection fails closed when the worktree list is unavail
 });
 
 
+test('adaptive worktree detection fails closed when the sibling lock parser is unavailable', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const linkedWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'other-lane');
+  let result = runCmd(
+    'git',
+    ['worktree', 'add', '-b', 'agent/other/lock-parser', linkedWorktree],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const stateDir = path.join(linkedWorktree, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '{"locks":{}}\n', 'utf8');
+
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; guardex_repo_has_competing_worktree_activity '${repoDir}' '${path.join(repoDir, 'missing-node')}'`,
+    ],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+
 test('adaptive worktree detection ignores the current linked worktree by path', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
@@ -955,6 +982,24 @@ test('adaptive worktree mode blocks direct agent commits while another lane has 
   );
   assert.notEqual(result.status, 0, result.stdout);
   assert.match(result.stderr, /Adaptive direct push blocked: another agent lane has dirty files or locks\./);
+});
+
+
+test('adaptive shared-state detection fails closed when no timeout utility is available', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  const marker = path.join(repoDir, 'unbounded-remote-probe');
+  const helper = path.resolve(__dirname, '..', 'templates', 'scripts', 'guardex-env.sh');
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; export GUARDEX_SHARED_STATE=git GUARDEX_SHARED_STATE_REMOTE=origin; command() { return 1; }; guardex_git_clean_env() { : > '${marker}'; return 1; }; guardex_repo_has_shared_agent_activity '${repoDir}'`,
+    ],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(marker), false, 'must not start an unbounded remote query');
 });
 
 
