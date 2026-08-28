@@ -136,8 +136,12 @@ const LOCK_PY = path.resolve(__dirname, '..', 'templates', 'scripts', 'agent-fil
 // Drive the python tool directly with an explicit cwd so a LINKED worktree
 // resolves to itself (git rev-parse --show-toplevel), exercising the real
 // cross-worktree path rather than whatever the CLI collapses cwd to.
-function locksAt(cwd, args) {
-  return cp.spawnSync('python3', [LOCK_PY, ...args], { cwd, encoding: 'utf8' });
+function locksAt(cwd, args, env = {}) {
+  return cp.spawnSync('python3', [LOCK_PY, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
 }
 
 defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
@@ -152,7 +156,11 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     );
 
     // wt2 (agent/two/lane) claims shared.txt.
-    const c2 = locksAt(wt2, ['claim', '--branch', 'agent/two/lane', 'shared.txt']);
+    const c2 = locksAt(
+      wt2,
+      ['claim', '--branch', 'agent/two/lane', 'shared.txt'],
+      { TMUX_PANE: '%42' },
+    );
     assert.equal(c2.status, 0, c2.stderr || c2.stdout);
 
     // wt1 (agent/one/lane) tries to claim the SAME repo-relative file -> blocked
@@ -160,6 +168,8 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     const c1 = locksAt(repoDir, ['claim', '--branch', 'agent/one/lane', 'shared.txt']);
     assert.equal(c1.status, 1, `cross-worktree claim must conflict: ${c1.status} ${c1.stdout}${c1.stderr}`);
     assert.match(c1.stderr, /agent\/two\/lane/, 'names the sibling owner');
+    assert.match(c1.stderr, /pane %42/, 'names the locking pane immediately');
+    assert.match(c1.stderr, new RegExp(wt2.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'names the owner worktree');
 
     // wt1 stages shared.txt and validates -> blocked (foreign owner in wt2).
     assert.equal(runHumanCmd('git', ['add', 'shared.txt'], repoDir).status, 0);
