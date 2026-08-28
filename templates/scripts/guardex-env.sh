@@ -253,8 +253,20 @@ try:
 except OSError:
     raise SystemExit(1)
 
+acquired = False
 try:
-    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquired = True
+    except BlockingIOError:
+        try:
+            active_lease = json.loads(lease_path.read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            raise SystemExit(1)
+        if isinstance(active_lease, dict) and active_lease.get("session_id") == session_id:
+            raise SystemExit(0)
+        print("Adaptive direct work is owned by another active agent session.", file=sys.stderr)
+        raise SystemExit(1)
     try:
         lease = json.loads(lease_path.read_text())
     except FileNotFoundError:
@@ -292,7 +304,8 @@ try:
         raise SystemExit(1)
 finally:
     try:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        if acquired:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
     finally:
         lock_handle.close()
 PY

@@ -764,6 +764,50 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
+test('adaptive rewritten commit completes through the installed pre-commit hook', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  fs.writeFileSync(path.join(repoDir, 'wrapped.txt'), 'wrapped commit\n', 'utf8');
+  let result = runCmd('git', ['add', 'wrapped.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const sessionEnv = {
+    ...stripAgentSessionEnv(process.env),
+    CODEX_THREAD_ID: 'adaptive-wrapper-owner',
+    GUARDEX_CLI_ENTRY: cliPath,
+    GUARDEX_WORKTREE_MODE: 'adaptive',
+    GUARDEX_NODE_BIN: process.execPath,
+    GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const skillGuardHook = path.resolve(__dirname, '..', '.claude', 'hooks', 'skill_guard.py');
+  const hookResult = cp.spawnSync('python3', [skillGuardHook], {
+    cwd: repoDir,
+    encoding: 'utf8',
+    env: sessionEnv,
+    input: JSON.stringify({
+      session_id: 'adaptive-wrapper-owner',
+      cwd: repoDir,
+      tool_name: 'Bash',
+      tool_input: { command: 'git commit -m wrapped' },
+    }),
+  });
+  assert.equal(hookResult.status, 0, hookResult.stderr || hookResult.stdout);
+  const rewritten = JSON.parse(hookResult.stdout).hookSpecificOutput.updatedInput.command;
+
+  result = cp.spawnSync('bash', ['-lc', rewritten], {
+    cwd: repoDir,
+    encoding: 'utf8',
+    env: sessionEnv,
+    timeout: 5000,
+  });
+  assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+  assert.match(result.stdout, /wrapped/);
+});
+
 test('empty repo worktree-mode override falls back to adaptive Git config', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
@@ -1023,6 +1067,10 @@ test('adaptive worktree mode blocks indirect, deleted, and non-fast-forward prot
     [
       `refs/heads/main ${localSha} refs/heads/main ${remoteSha}`,
       `refs/heads/dev ${localSha} refs/heads/dev ${remoteSha}`,
+    ].join('\n'),
+    [
+      `refs/heads/main ${localSha} refs/heads/main ${remoteSha}`,
+      `refs/heads/agent/other ${localSha} refs/heads/agent/other ${remoteSha}`,
     ].join('\n'),
   ];
   for (const push of pushes) {

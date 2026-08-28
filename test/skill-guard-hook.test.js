@@ -631,6 +631,10 @@ test('skill_guard adaptive mode blocks non-allowlisted command executors on prot
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     for (const command of [
+      'git commit -p',
+      'git commit --patch',
+      'git commit -i',
+      'git commit --interactive',
       "python -c 'import subprocess; subprocess.run([\"git\", \"reset\", \"--hard\"])'",
       "printf 'HEAD~1' | xargs git reset",
       'nice git switch other-branch',
