@@ -193,6 +193,7 @@ test('skill_guard adaptive mode allows bounded edits and allowlisted shell comma
       "git commit -m 'fix $PATH handling'",
       'git commit -m fix\\$PATH',
       'git push origin main',
+      'git status',
       'pytest -q',
     ]) {
       result = invokeHook(dir, bashPayload(command, dir));
@@ -250,7 +251,7 @@ test('skill_guard adaptive mode atomically gives one session exclusive direct-ma
       2,
       competingLegacyCommand.stderr || competingLegacyCommand.stdout,
     );
-    assert.match(competingLegacyCommand.stderr, /owned by another active agent session/);
+    assert.match(competingLegacyCommand.stderr, /Branch\/worktree mutation is unsafe/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -578,6 +579,7 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
       'git reset HEAD~1',
       'git rebase HEAD~1',
       'git cherry-pick HEAD~1',
+      'git pull --ff-only',
       'git commit --amend --no-edit',
       'git commit --amen --no-edit',
       'git commit --no-verify -m unsafe',
@@ -639,6 +641,8 @@ test('skill_guard adaptive mode blocks non-allowlisted command executors on prot
       'git commit --interactive',
       'git commit -m message -p',
       'git commit -m message --interactive',
+      'git commit -pm message',
+      'git commit -ip',
       "python -c 'import subprocess; subprocess.run([\"git\", \"reset\", \"--hard\"])'",
       "printf 'HEAD~1' | xargs git reset",
       'nice git switch other-branch',

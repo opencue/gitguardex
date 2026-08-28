@@ -92,7 +92,7 @@ SHELL_ALLOWED_SEGMENTS = (
 
 ADAPTIVE_DIRECT_SHELL_ALLOWED_SEGMENTS = (
     re.compile(
-        r"^git\s+(?:add|push)(?:\s|$)|^git\s+commit(?![^\n]*\s(?:-p|--patch|-i|--interactive)(?:\s|$))(?:\s|$)"
+        r"^git\s+(?:add|push)(?:\s|$)|^git\s+commit(?![^\n]*\s(?:-[A-Za-z]*[pi][A-Za-z]*|--(?:patch|interactive))(?:\s|$))(?:\s|$)"
     ),
     re.compile(r"^(?:pytest|mypy|pyright|tsc)(?:\s|$)"),
     re.compile(r"^python3?\s+-m\s+(?:pytest|mypy)(?:\s|$)"),
@@ -1338,6 +1338,7 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
             "switch",
             "clean",
             "merge",
+            "pull",
             "rebase",
             "reset",
             "restore",
@@ -1433,7 +1434,7 @@ def ensure_non_agent_shell_command_allowed(
             f"BLOCKED: Branch/worktree mutation is unsafe on protected branch '{branch}'.\n"
             "Use `gx branch start --new --no-transfer` instead."
         )
-    if is_allowed_non_agent_shell_command(command) and not adaptive_mode:
+    if is_allowed_non_agent_shell_command(command):
         if adaptive_mode:
             adaptive_error = adaptive_direct_work_error(repo_root, session_id)
             if adaptive_error:
