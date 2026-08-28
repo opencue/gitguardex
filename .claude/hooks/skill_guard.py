@@ -1433,7 +1433,7 @@ def ensure_non_agent_shell_command_allowed(
             f"BLOCKED: Branch/worktree mutation is unsafe on protected branch '{branch}'.\n"
             "Use `gx branch start --new --no-transfer` instead."
         )
-    if is_allowed_non_agent_shell_command(command):
+    if is_allowed_non_agent_shell_command(command) and not adaptive_mode:
         if adaptive_mode:
             adaptive_error = adaptive_direct_work_error(repo_root, session_id)
             if adaptive_error:
