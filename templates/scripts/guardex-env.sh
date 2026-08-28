@@ -106,7 +106,11 @@ guardex_repo_worktree_mode() {
 guardex_repo_has_competing_worktree_activity() {
   local repo_root="$1"
   local node_bin="${2:-node}"
-  local line worktree_path worktree_index=0 dirty lock_file
+  local line worktree_list worktree_path worktree_index=0 dirty lock_file
+
+  if ! worktree_list="$(guardex_git_clean_env -C "$repo_root" worktree list --porcelain 2>/dev/null)"; then
+    return 0
+  fi
 
   while IFS= read -r line; do
     [[ "$line" == worktree\ * ]] || continue
@@ -139,7 +143,7 @@ guardex_repo_has_competing_worktree_activity() {
     ' "$lock_file" >/dev/null 2>&1; then
       return 0
     fi
-  done < <(guardex_git_clean_env -C "$repo_root" worktree list --porcelain 2>/dev/null || true)
+  done <<< "$worktree_list"
 
   return 1
 }

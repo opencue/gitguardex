@@ -765,6 +765,21 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
 });
 
 
+test('adaptive worktree detection fails closed when the worktree list is unavailable', () => {
+  const repoRoot = path.resolve(__dirname, '..');
+  const helper = path.join(repoRoot, 'templates', 'scripts', 'guardex-env.sh');
+  const result = runCmd(
+    'bash',
+    [
+      '-lc',
+      `source '${helper}'; guardex_git_clean_env() { return 1; }; guardex_repo_has_competing_worktree_activity '${repoRoot}' node`,
+    ],
+    repoRoot,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+
 test('adaptive worktree mode blocks indirect, deleted, and non-fast-forward protected pushes', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

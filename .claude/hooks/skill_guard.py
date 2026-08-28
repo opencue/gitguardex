@@ -262,6 +262,7 @@ def guardex_worktree_mode(repo_root: Path) -> str:
             result = subprocess.run(
                 ["git", "config", "--get", "multiagent.worktreeMode"],
                 cwd=repo_root,
+                env=_clean_git_env(),
                 check=False,
                 capture_output=True,
                 text=True,
@@ -675,7 +676,7 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
     return True
 
 
-def is_unsafe_primary_git_command(command: str) -> bool:
+def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
     options_with_values = {
         "-C",
         "-c",
@@ -694,8 +695,20 @@ def is_unsafe_primary_git_command(command: str) -> bool:
         while index < len(tokens) and tokens[index].startswith("-"):
             option = tokens[index]
             if option in options_with_values:
+                if index + 1 >= len(tokens):
+                    return True
+                config_value = tokens[index + 1]
+                if option in {"-c", "--config-env"} and config_value.startswith(
+                    ("alias.", "include.", "includeIf.")
+                ):
+                    return True
                 index += 2
             else:
+                inline_config = option.removeprefix("-c") if option.startswith("-c") else ""
+                if option.startswith("--config-env="):
+                    inline_config = option.removeprefix("--config-env=")
+                if inline_config.startswith(("alias.", "include.", "includeIf.")):
+                    return True
                 index += 1
         if index >= len(tokens):
             continue
@@ -708,6 +721,19 @@ def is_unsafe_primary_git_command(command: str) -> bool:
         if subcommand == "worktree" and any(
             argument in {"add", "move", "remove", "prune"} for argument in arguments
         ):
+            return True
+        try:
+            alias = subprocess.run(
+                ["git", "config", "--get", f"alias.{subcommand}"],
+                cwd=repo_root,
+                env=_clean_git_env(),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return True
+        if alias.returncode not in {0, 1} or (alias.returncode == 0 and alias.stdout.strip()):
             return True
     return False
 
@@ -729,7 +755,7 @@ def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str
         return None
 
     if branch in protected and guardex_worktree_mode(repo_root) == "adaptive":
-        if is_unsafe_primary_git_command(command):
+        if is_unsafe_primary_git_command(repo_root, command):
             return (
                 f"BLOCKED: Branch/worktree mutation is unsafe on protected branch '{branch}'.\n"
                 "Use `gx branch start --new --no-transfer` instead."

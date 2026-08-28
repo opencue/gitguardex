@@ -166,7 +166,15 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
   const dir = makeRepoOn('main');
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
+    const aliasResult = cp.spawnSync('git', ['config', 'alias.co', 'switch'], {
+      cwd: dir,
+      encoding: 'utf8',
+    });
+    assert.equal(aliasResult.status, 0, aliasResult.stderr);
     for (const command of [
+      'git co other-branch',
+      'git -c alias.x=switch x other-branch',
+      'git -c include.path=aliases.inc x other-branch',
       'git --no-pager switch other-branch',
       'git -C. checkout HEAD~1',
       'git --config-env=x=Y clean -fd',
