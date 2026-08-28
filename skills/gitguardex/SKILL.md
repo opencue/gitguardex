@@ -14,7 +14,7 @@ Ops: `gx branch start "<task>" "<agent>"`, `gx locks claim --branch "<agent-bran
 
 Worktree policy is strict `always` unless the repo opts into `adaptive` with
 `GUARDEX_WORKTREE_MODE=adaptive` in `.env` or
-`git config multiagent.worktreeMode adaptive`.
+`git config --local multiagent.worktreeMode adaptive`.
 
 1. Run `gx status`. In adaptive mode, also inspect `list_agents` (or
    `gx mcp list-agents --no-prs`), the current dirty paths, and `who_owns` for

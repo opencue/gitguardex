@@ -7,7 +7,7 @@ Guardex is enabled by default. Disable via repo-root `.env` with `GUARDEX_ON=0|f
 
 Worktree policy defaults to strict `always`. Opt a repository into adaptive
 routing with `GUARDEX_WORKTREE_MODE=adaptive` in `.env` or
-`git config multiagent.worktreeMode adaptive`.
+`git config --local multiagent.worktreeMode adaptive`.
 
 ### Core rules
 

@@ -260,7 +260,7 @@ def guardex_worktree_mode(repo_root: Path) -> str:
     if not raw:
         try:
             result = subprocess.run(
-                ["git", "config", "--get", "multiagent.worktreeMode"],
+                ["git", "config", "--local", "--get", "multiagent.worktreeMode"],
                 cwd=repo_root,
                 env=_clean_git_env(),
                 check=False,
@@ -786,6 +786,17 @@ def is_unsafe_primary_git_command(repo_root: Path, command: str) -> bool:
                     continue
                 break
         if index >= len(tokens) or Path(tokens[index]).name != "git":
+            if index < len(tokens):
+                executable = Path(tokens[index]).name
+                shell_options = tokens[index + 1 :]
+                if executable == "eval" or (
+                    executable in {"bash", "dash", "fish", "ksh", "sh", "zsh"}
+                    and any(
+                        option.startswith("-") and "c" in option[1:]
+                        for option in shell_options
+                    )
+                ):
+                    return True
             continue
         index += 1
         while index < len(tokens) and tokens[index].startswith("-"):

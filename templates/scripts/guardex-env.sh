@@ -89,7 +89,7 @@ guardex_repo_worktree_mode_raw() {
     printf '%s' "$configured"
     return 0
   fi
-  guardex_git_clean_env -C "$repo_root" config --get multiagent.worktreeMode 2>/dev/null || true
+  guardex_git_clean_env -C "$repo_root" config --local --get multiagent.worktreeMode 2>/dev/null || true
 }
 
 guardex_repo_worktree_mode() {

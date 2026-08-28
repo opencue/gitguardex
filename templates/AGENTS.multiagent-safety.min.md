@@ -4,7 +4,7 @@
 Guardex is enabled by default. Disable via repo-root `.env` with `GUARDEX_ON=0`.
 Worktrees default to strict `always` mode. Repositories that prefer a faster
 single-agent path may opt in with `GUARDEX_WORKTREE_MODE=adaptive` in `.env` (or
-`git config multiagent.worktreeMode adaptive`).
+`git config --local multiagent.worktreeMode adaptive`).
 
 - In adaptive mode, small single-agent work may stay on the current checkout only after `gx status`, `gx mcp list-agents --no-prs`, and `gx mcp who-owns <file>` show no competing writer or target-file ownership.
 - Pivot to an isolated lane when the task is substantial/long-lived, another writer is active in the repo, a target path is dirty or owned elsewhere, or scope expands. Use `gx branch start --new --no-transfer "<task>" "<agent-name>"`, then `cd` into the printed worktree.
