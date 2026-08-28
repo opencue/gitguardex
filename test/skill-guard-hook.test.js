@@ -167,6 +167,9 @@ test('skill_guard adaptive mode blocks protected-checkout Git mutations with glo
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     for (const command of [
+      'git --no-pager switch other-branch',
+      'git -C. checkout HEAD~1',
+      'git --config-env=x=Y clean -fd',
       'git -C . switch other-branch',
       'git -c advice.detachedHead=false checkout HEAD~1',
       'git --git-dir=.git reset --hard',

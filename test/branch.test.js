@@ -765,6 +765,50 @@ test('adaptive worktree mode allows agent commits and pushes on protected main',
 });
 
 
+test('adaptive worktree mode blocks indirect, deleted, and non-fast-forward protected pushes', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+
+  let result = runCmd('git', ['rev-parse', 'HEAD'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const remoteSha = result.stdout.trim();
+
+  fs.writeFileSync(path.join(repoDir, 'next.txt'), 'next\n', 'utf8');
+  result = runCmd('git', ['add', 'next.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'next protected commit'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['rev-parse', 'HEAD'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const localSha = result.stdout.trim();
+
+  const pushes = [
+    `refs/heads/agent/foo ${localSha} refs/heads/main ${remoteSha}`,
+    `(delete) 0000000000000000000000000000000000000000 refs/heads/main ${remoteSha}`,
+    `refs/heads/main ${remoteSha} refs/heads/main ${localSha}`,
+    [
+      `refs/heads/main ${localSha} refs/heads/main ${remoteSha}`,
+      `refs/heads/dev ${localSha} refs/heads/dev ${remoteSha}`,
+    ].join('\n'),
+  ];
+  for (const push of pushes) {
+    result = runCmd(
+      'bash',
+      ['-lc', `printf '%s\\n' '${push}' | .githooks/pre-push origin origin`],
+      repoDir,
+      { CODEX_THREAD_ID: 'test-thread' },
+    );
+    assert.notEqual(result.status, 0, `push must be blocked: ${push}`);
+  }
+});
+
+
 test('adaptive worktree mode blocks direct agent commits while another lane has changes', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
@@ -791,6 +835,16 @@ test('adaptive worktree mode blocks direct agent commits while another lane has 
   assert.notEqual(result.status, 0, result.stdout);
   assert.match(result.stderr, /Adaptive direct commit blocked: another agent lane has dirty files or locks\./);
   assert.match(result.stderr, /gx branch start --new --no-transfer/);
+
+  fs.rmSync(path.join(otherWorktree, 'other-change.txt'));
+  const stateDir = path.join(otherWorktree, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'agent-file-locks.json'), '[]\n', 'utf8');
+  result = runCmd('git', ['commit', '-m', 'blocked by invalid sibling lock state'], repoDir, {
+    CODEX_THREAD_ID: 'test-thread',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Adaptive direct commit blocked: another agent lane has dirty files or locks\./);
 
   result = runCmd(
     'bash',

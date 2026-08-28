@@ -130,7 +130,9 @@ guardex_repo_has_competing_worktree_activity() {
       const fs = require("node:fs");
       try {
         const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-        process.exit(Object.keys(data?.locks || {}).length > 0 ? 0 : 1);
+        process.exit(data && typeof data === "object" && !Array.isArray(data)
+          ? (Object.keys(data.locks || {}).length > 0 ? 0 : 1)
+          : 0);
       } catch {
         process.exit(0);
       }

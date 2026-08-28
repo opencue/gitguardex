@@ -676,8 +676,40 @@ def is_allowed_non_agent_shell_command(command: str) -> bool:
 
 
 def is_unsafe_primary_git_command(command: str) -> bool:
-    unsafe = re.compile(r"^git(?:\s+(?:-C|-c|--git-dir|--work-tree)\s+\S+|\s+--(?:git-dir|work-tree)=\S+)*\s+(?:checkout|switch|worktree\s+(?:add|move|remove|prune)|reset\s+--hard|clean\b)")
-    return any(unsafe.match(normalize_shell_segment(segment)) for segment in split_shell_segments(command))
+    options_with_values = {
+        "-C",
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+    for segment in split_shell_segments(command):
+        tokens = shell_segment_tokens(normalize_shell_segment(segment))
+        if not tokens or tokens[0] != "git":
+            continue
+        index = 1
+        while index < len(tokens) and tokens[index].startswith("-"):
+            option = tokens[index]
+            if option in options_with_values:
+                index += 2
+            else:
+                index += 1
+        if index >= len(tokens):
+            continue
+        subcommand = tokens[index]
+        arguments = tokens[index + 1 :]
+        if subcommand in {"checkout", "switch", "clean"}:
+            return True
+        if subcommand == "reset" and "--hard" in arguments:
+            return True
+        if subcommand == "worktree" and any(
+            argument in {"add", "move", "remove", "prune"} for argument in arguments
+        ):
+            return True
+    return False
 
 
 def ensure_non_agent_shell_command_allowed(repo_root: Path, command: str) -> str | None:

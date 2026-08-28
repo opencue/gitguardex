@@ -73,6 +73,7 @@ is_protected_branch() {
 }
 
 blocked_refs=()
+adaptive_direct_push=1
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   if [[ -z "${remote_ref:-}" || "$remote_ref" != refs/heads/* ]]; then
     continue
@@ -81,11 +82,21 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   remote_branch="${remote_ref#refs/heads/}"
   if is_protected_branch "$remote_branch"; then
     blocked_refs+=("$remote_branch")
+    if [[ "$local_ref" != "refs/heads/$remote_branch" \
+      || "$local_sha" == "0000000000000000000000000000000000000000" ]]; then
+      adaptive_direct_push=0
+    elif [[ "$remote_sha" != "0000000000000000000000000000000000000000" ]] \
+      && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      adaptive_direct_push=0
+    fi
   fi
 done
 
 if [[ "${#blocked_refs[@]}" -gt 0 ]]; then
-  if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" ]]; then
+  if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" \
+    && "${#blocked_refs[@]}" == "1" \
+    && "$adaptive_direct_push" == "1" \
+    && "$(git branch --show-current 2>/dev/null)" == "${blocked_refs[0]}" ]]; then
     if declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
       && guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
       cat >&2 <<'MSG'
