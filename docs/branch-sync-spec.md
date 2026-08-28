@@ -21,13 +21,18 @@ Scope: CLI UX + behavior spec + test matrix for keeping `agent/*` branches synce
 ## 1) Sync current branch
 
 ```bash
-gx sync [--target <path>] [--base <branch>] [--strategy rebase|merge] [--ff-only] [--dry-run]
+gx sync [--target <path>] [--branch <agent/*>] [--base <branch>] [--strategy rebase|merge] [--ff-only] [--dry-run]
 ```
 
 Defaults:
 - `--base dev`
 - `--strategy rebase`
 - `--ff-only` off
+- `--branch` omitted (sync the branch checked out at `--target` or in the current directory)
+
+When `--branch <agent/*>` is supplied, GitGuardex resolves the branch's linked
+worktree and runs the sync there without changing the caller's checkout. A named
+branch that has no linked worktree is rejected rather than checked out implicitly.
 
 Behavior:
 1. Resolve repo root.
@@ -41,7 +46,7 @@ Behavior:
 ## 2) Check-only mode
 
 ```bash
-gx sync --check [--target <path>] [--base <branch>] [--json]
+gx sync --check [--target <path>] [--branch <agent/*>] [--base <branch>] [--json]
 ```
 
 Outputs:
