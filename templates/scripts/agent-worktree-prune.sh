@@ -684,7 +684,7 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
       fi
       continue
     fi
-    if [[ "$branch" != agent/* ]]; then
+    if [[ "$branch" != agent/* && "$branch" != work/* ]]; then
       continue
     fi
     if ! branch_idle_gate "$branch" "" "stale-merged-branch"; then
