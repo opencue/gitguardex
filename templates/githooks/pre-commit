@@ -106,6 +106,7 @@ done
 # the protected checkout. The agent workflow performs the radar/ownership
 # preflight before editing and pivots to a worktree when scope or concurrency
 # grows. Strict mode remains the default.
+is_adaptive_direct_commit=0
 if [[ "$worktree_mode" == "adaptive" && "$is_agent_session" == "1" && "$is_protected_branch" == "1" ]]; then
   if ! declare -F guardex_repo_has_competing_worktree_activity >/dev/null 2>&1 \
     || guardex_repo_has_competing_worktree_activity "$repo_root" "$NODE_BIN"; then
@@ -121,7 +122,8 @@ MSG
     echo "[guardex-adaptive] Adaptive direct commit blocked: another agent session owns this checkout." >&2
     exit 1
   fi
-  exit 0
+  is_adaptive_direct_commit=1
+  # Continue into the remaining commit validations instead of bypassing them.
 fi
 
 codex_require_agent_branch_raw="${GUARDEX_CODEX_REQUIRE_AGENT_BRANCH:-$(git config --get multiagent.codexRequireAgentBranch || true)}"
@@ -167,7 +169,7 @@ if [[ "$is_codex_session" == "1" && "$is_protected_branch" == "1" ]]; then
   fi
 fi
 
-if [[ "$should_require_codex_agent_branch" == "1" && "${GUARDEX_ALLOW_CODEX_ON_NON_AGENT:-0}" != "1" ]]; then
+if [[ "$is_adaptive_direct_commit" != "1" && "$should_require_codex_agent_branch" == "1" && "${GUARDEX_ALLOW_CODEX_ON_NON_AGENT:-0}" != "1" ]]; then
   if [[ "$is_codex_session" == "1" && "$branch" != agent/* ]]; then
     if [[ "$is_protected_branch" == "1" ]]; then
       if [[ "$is_codex_managed_only_commit_on_protected" == "1" ]]; then
@@ -193,7 +195,7 @@ MSG
   fi
 fi
 
-if [[ "$is_protected_branch" == "1" ]]; then
+if [[ "$is_protected_branch" == "1" && "$is_adaptive_direct_commit" != "1" ]]; then
   # Humans may commit directly on protected branches; only agent sessions
   # (Codex / Claude Code / OMX) are blocked.
   if [[ "$is_agent_session" != "1" ]]; then
@@ -237,7 +239,7 @@ MSG
   exit 1
 fi
 
-if [[ "$branch" == agent/* ]]; then
+if [[ "$branch" == agent/* || "$is_adaptive_direct_commit" == "1" ]]; then
   if [[ "${GUARDEX_AUTOCLAIM_STAGED_LOCKS:-1}" == "1" ]]; then
     # Auto-claim non-deletion staged paths. Deletions need an explicit
     # `--allow-delete` flag below so `locks validate --staged` doesn't

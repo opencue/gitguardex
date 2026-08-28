@@ -792,6 +792,32 @@ test('adaptive worktree mode gives one agent session exclusive protected-main co
 });
 
 
+test('adaptive pre-commit validates staged files against claims in the current checkout', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const setupResult = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+  fs.writeFileSync(path.join(repoDir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n', 'utf8');
+  const stateDir = path.join(repoDir, '.omx', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, 'agent-file-locks.json'),
+    `${JSON.stringify({ locks: { 'claimed.txt': { branch: 'agent/other/lane' } } })}\n`,
+    'utf8',
+  );
+  fs.writeFileSync(path.join(repoDir, 'claimed.txt'), 'claimed elsewhere\n', 'utf8');
+
+  let result = runCmd('git', ['add', 'claimed.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'must respect current checkout claim'], repoDir, {
+    CODEX_THREAD_ID: 'adaptive-owner',
+  });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(result.stderr, /Files claimed by another owner/);
+});
+
+
 test('adaptive worktree hooks fail closed when the competition helper is unavailable', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

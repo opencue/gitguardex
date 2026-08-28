@@ -239,6 +239,17 @@ test('skill_guard adaptive mode atomically gives one session exclusive direct-ma
       bashPayload('git add seed.txt', dir, ownerSid),
     );
     assert.equal(ownerContinues.status, 0, ownerContinues.stderr || ownerContinues.stdout);
+
+    const competingLegacyCommand = invokeHook(
+      dir,
+      bashPayload('git pull --ff-only', dir, competingSid),
+    );
+    assert.equal(
+      competingLegacyCommand.status,
+      2,
+      competingLegacyCommand.stderr || competingLegacyCommand.stdout,
+    );
+    assert.match(competingLegacyCommand.stderr, /owned by another active agent session/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
