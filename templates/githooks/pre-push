@@ -89,6 +89,8 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
       && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
       adaptive_direct_push=0
     fi
+  else
+    adaptive_direct_push=0
   fi
 done
 
