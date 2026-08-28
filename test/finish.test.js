@@ -1698,9 +1698,12 @@ test('cleanup command watch mode defaults to 60-minute idle threshold and suppor
   assert.equal(resultSetup.status, 0, resultSetup.stderr || resultSetup.stdout);
   seedCommit(repoDir);
 
-  const result = runNode(['cleanup', '--target', repoDir, '--watch', '--once', '--interval', '15'], repoDir);
+  const result = runNode(
+    ['cleanup', '--target', repoDir, '--watch', '--once', '--interval', '15', '--max-branches', '1'],
+    repoDir,
+  );
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /Cleanup watch cycle=1 \(interval=15s, idleMinutes=60, maxBranches=unbounded\)\./);
+  assert.match(result.stdout, /Cleanup watch cycle=1 \(interval=15s, idleMinutes=60, maxBranches=1\)\./);
 });
 
 });

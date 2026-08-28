@@ -12,6 +12,8 @@ INCLUDE_CLEAN_LINKED_WORKTREES=0
 INCLUDE_PR_MERGED=0
 TARGET_BRANCH=""
 IDLE_MINUTES=0
+MAX_BRANCHES=0
+MAX_BRANCHES_EXPLICIT=0
 NOW_EPOCH_RAW="${GUARDEX_PRUNE_NOW_EPOCH:-}"
 IDLE_SECONDS=0
 NOW_EPOCH=0
@@ -73,9 +75,14 @@ while [[ $# -gt 0 ]]; do
       IDLE_MINUTES="${2:-}"
       shift 2
       ;;
+    --max-branches)
+      MAX_BRANCHES="${2:-}"
+      MAX_BRANCHES_EXPLICIT=1
+      shift 2
+      ;;
     *)
       echo "[agent-worktree-prune] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--branch <agent/...>] [--idle-minutes <minutes>]" >&2
+      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
       exit 1
       ;;
   esac
@@ -212,6 +219,11 @@ fi
 
 if [[ ! "$IDLE_MINUTES" =~ ^[0-9]+$ ]]; then
   echo "[agent-worktree-prune] --idle-minutes must be an integer >= 0." >&2
+  exit 1
+fi
+
+if [[ "$MAX_BRANCHES_EXPLICIT" -eq 1 ]] && { [[ ! "$MAX_BRANCHES" =~ ^[0-9]+$ ]] || [[ "$MAX_BRANCHES" -lt 1 ]]; }; then
+  echo "[agent-worktree-prune] --max-branches must be an integer >= 1." >&2
   exit 1
 fi
 
@@ -500,6 +512,18 @@ removed_worktrees=0
 removed_branches=0
 skipped_active=0
 skipped_dirty=0
+processed_branches=0
+skipped_limited=0
+
+reserve_branch_slot() {
+  local branch="$1"
+  [[ -z "$branch" ]] && return 0
+  if [[ "$MAX_BRANCHES" -gt 0 && "$processed_branches" -ge "$MAX_BRANCHES" ]]; then
+    skipped_limited=$((skipped_limited + 1))
+    return 1
+  fi
+  processed_branches=$((processed_branches + 1))
+}
 
 relocate_foreign_worktree_entries
 
@@ -576,6 +600,11 @@ process_entry() {
     skipped_dirty=$((skipped_dirty + 1))
     echo "[agent-worktree-prune] Skipping dirty worktree (${remove_reason}): ${wt}"
     summarize_worktree_dirt "$wt"
+    return
+  fi
+
+  if ! reserve_branch_slot "$branch"; then
+    echo "[agent-worktree-prune] Skipping branch limit worktree: ${branch} (${wt})"
     return
   fi
 
@@ -669,6 +698,10 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
       merged_by_pr=1
     fi
     if [[ "$merged_by_ancestor" -eq 1 || "$merged_by_pr" -eq 1 ]]; then
+      if ! reserve_branch_slot "$branch"; then
+        echo "[agent-worktree-prune] Skipping branch limit: ${branch}"
+        continue
+      fi
       delete_flag="-d"
       deleted_label="merged"
       if [[ "$merged_by_pr" -eq 1 && "$merged_by_ancestor" -eq 0 ]]; then
@@ -691,7 +724,7 @@ fi
 
 run_cmd git -C "$repo_root" worktree prune
 
-echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_recent=${skipped_recent}"
+echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_recent=${skipped_recent}, skipped_limited=${skipped_limited}"
 if [[ "$relocated_foreign" -gt 0 || "$skipped_foreign" -gt 0 ]]; then
   echo "[agent-worktree-prune] Foreign routing: relocated=${relocated_foreign}, skipped=${skipped_foreign}"
 fi

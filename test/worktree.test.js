@@ -184,6 +184,32 @@ test('worktree prune can remove clean linked worktrees outside managed agent dir
 });
 
 
+test('worktree prune limits clean linked worktree removals with --max-branches', () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  const worktreePaths = ['one', 'two'].map((suffix) =>
+    path.join(path.dirname(repoDir), `${path.basename(repoDir)}-external-clean-${suffix}`));
+  for (const [index, worktreePath] of worktreePaths.entries()) {
+    result = runCmd('git', ['worktree', 'add', '-b', `work/external-clean-${index + 1}`, worktreePath, 'dev'], repoDir);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+
+  result = runWorktreePrune(
+    ['--only-dirty-worktrees', '--include-clean-linked-worktrees', '--max-branches', '1'],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(
+    worktreePaths.filter((worktreePath) => fs.existsSync(worktreePath)).length,
+    1,
+    'one clean linked worktree should remain after the one-branch limit is reached',
+  );
+});
+
+
 test('worktree prune removes __source-probe worktrees even when they track agent branches', () => {
   const repoDir = initRepo();
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
