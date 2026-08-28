@@ -211,7 +211,7 @@ function autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options) {
  * @throws {Error} When the underlying prune subprocess exits non-zero or the watch sleep fails.
  */
 function cleanup(rawArgs) {
-  if (rawArgs.some((arg) => arg === '--help' || arg === '-h' || arg === 'help')) {
+  if (rawArgs.some((arg) => arg === '--help' || arg === '-h') || (rawArgs.length === 1 && rawArgs[0] === 'help')) {
     console.log(`USAGE: ${SHORT_TOOL_NAME} cleanup [options]
 
 Prune merged or stale agent branches and worktrees.
