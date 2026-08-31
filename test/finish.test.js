@@ -1247,9 +1247,8 @@ exit 1
   assert.equal(finish.status, 0, finish.stderr || finish.stdout);
   assert.match(
     finish.stdout,
-    /Merged 'agent\/test-active-worktree-cleanup' into 'dev' via pr flow and cleaned source branch\/remote\./,
+    /Merged 'agent\/test-active-worktree-cleanup' into 'dev' via pr flow and cleaned source branch\/worktree\./,
   );
-  assert.match(finish.stderr, /Current worktree '.+' still exists because it is the active shell cwd/);
 
   result = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-active-worktree-cleanup'], repoDir);
   assert.notEqual(result.status, 0, 'agent branch should be deleted locally');

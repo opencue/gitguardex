@@ -72,13 +72,9 @@ function cleanupFinishedDetachedWorktree(plan) {
       return false;
     }
 
-    const remove = run(
-      'git',
-      ['-C', plan.repoRoot, 'worktree', 'remove', plan.worktreePath, '--force'],
-      {
-        cwd: plan.repoRoot
-      }
-    );
+    const remove = run('git', ['-C', plan.repoRoot, 'worktree', 'remove', plan.worktreePath], {
+      cwd: plan.repoRoot
+    });
     if (remove.status !== 0) {
       console.error(
         `[${TOOL_NAME}] Warning: finished detached worktree cleanup failed: ${plan.worktreePath}`
