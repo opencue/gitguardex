@@ -233,12 +233,11 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // pre-existing: UNSTABLE joins the trusted verdicts, and the no-verdict
     // fallback accounts every check as success-or-cleared-failure. `other` must
     // still be zero either way — an ambiguous state is never a pass.
-    const billingCompanionSkipped = namedWaivers ? count('skipped') : 0;
     const allAccountedFor = baselineMode
       ? count('other') === 0
-        && count('success') + billingCompanionSkipped + failingCount + waivedCount === count('total')
+        && count('success') + failingCount + waivedCount === count('total')
       : count('other') === 0
-        && count('success') + billingCompanionSkipped + waivedCount === count('total');
+        && count('success') + waivedCount === count('total');
     const trusted = baselineBlockedByKnownChecks
       || unstableOnlyBecauseBillingChecksWereWaived
       || (mss ? trustedStates.has(mss) : allAccountedFor);
