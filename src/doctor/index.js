@@ -1103,7 +1103,7 @@ function pruneStaleAgentWorktrees(repoRoot, options = {}) {
 
   const args = [
     '--idle-minutes', String(idleMinutes),
-    '--only-dirty-worktrees',
+    '--prune-clean-worktrees',
     '--delete-branches',
     '--delete-remote-branches',
     '--include-pr-merged',
