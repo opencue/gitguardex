@@ -1087,10 +1087,10 @@ function branchExists(repoRoot, branch) {
 }
 
 /**
- * Resolve the base branch for the finish flow: CLI override wins; otherwise
- * the per-branch `branch.<source>.guardexBase` recorded at branch-start;
- * otherwise the repo-wide configured base; otherwise the repo's detected
- * default branch.
+ * Resolve the base branch for the finish flow: CLI override wins and repairs
+ * the branch metadata before any gate can restart the finish; otherwise the
+ * per-branch `branch.<source>.guardexBase` recorded at branch-start; otherwise
+ * the repo-wide configured base; otherwise the repo's detected default branch.
  *
  * @param {string} repoRoot Repo to inspect.
  * @param {string} sourceBranch Source agent branch (used for per-branch base).
@@ -1099,6 +1099,9 @@ function branchExists(repoRoot, branch) {
  */
 function resolveFinishBaseBranch(repoRoot, sourceBranch, explicitBase) {
   if (explicitBase) {
+    if (sourceBranch) {
+      gitRun(repoRoot, ['config', `branch.${sourceBranch}.guardexBase`, explicitBase]);
+    }
     return explicitBase;
   }
 

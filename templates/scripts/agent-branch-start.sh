@@ -433,6 +433,21 @@ resolve_worktree_leaf() {
 print_reused_agent_worktree() {
   local branch_name="$1"
   local worktree_path="$2"
+  local stored_base=""
+
+  if [[ "$BASE_BRANCH_EXPLICIT" -eq 1 ]]; then
+    if ! git -C "$repo_root" config "branch.${branch_name}.guardexBase" "$BASE_BRANCH"; then
+      echo "[agent-branch-start] Failed to persist base '${BASE_BRANCH}' for reused branch '${branch_name}'." >&2
+      return 1
+    fi
+  elif [[ -z "$BASE_BRANCH" ]]; then
+    stored_base="$(git -C "$repo_root" config --get "branch.${branch_name}.guardexBase" || true)"
+    if [[ -n "$stored_base" ]]; then
+      BASE_BRANCH="$stored_base"
+    else
+      echo "[agent-branch-start] Warning: reused branch '${branch_name}' has no Guardex base metadata; pass --base <branch> to repair it." >&2
+    fi
+  fi
 
   echo "[agent-branch-start] Reusing existing branch: ${branch_name}"
   echo "[agent-branch-start] Worktree: ${worktree_path}"
@@ -780,7 +795,7 @@ fi
 current_branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 if [[ "$REUSE_EXISTING_WORKTREE" -eq 1 && "$current_branch" == agent/* ]]; then
   print_reused_agent_worktree "$current_branch" "$repo_root"
-  exit 0
+  exit $?
 fi
 
 task_slug="$(sanitize_slug "$TASK_NAME" "task")"
@@ -804,7 +819,7 @@ if [[ "$REUSE_EXISTING_WORKTREE" -eq 1 ]]; then
     IFS=$'\t' read -r reused_branch reused_worktree <<<"$matching_dirty_worktree"
     echo "[agent-branch-start] Matched dirty managed worktree for requested task."
     print_reused_agent_worktree "$reused_branch" "$reused_worktree"
-    exit 0
+    exit $?
   fi
 fi
 
