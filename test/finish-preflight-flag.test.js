@@ -64,27 +64,33 @@ test('a billing waiver makes local preflight mandatory and fail-closed', () => {
     'gx finish must propagate the waiver result to the shell preflight gate',
   );
   assert.ok(
-    script.includes('git -C "$worktree" show "${start_ref}:${configured}"'),
-    'a mandatory preflight must load its implementation from the trusted base ref',
+    script.includes('git -C "$worktree" archive "$start_ref"'),
+    'a mandatory preflight must load its execution tree from the trusted base ref',
   );
   assert.ok(
-    script.indexOf('git -C "$worktree" show "${start_ref}:${configured}"')
+    script.indexOf('git -C "$worktree" archive "$start_ref"')
       < script.indexOf('local candidate="${worktree}/${configured}"'),
     'mandatory preflight resolution must happen before the untrusted worktree fallback',
   );
 });
 
-test('a mandatory relative preflight executes the trusted base version, not the PR version', () => {
+test('a mandatory relative preflight executes the trusted base script and its relative helpers', () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-trusted-preflight-'));
   const preflightPath = path.join(repoDir, 'scripts', 'agent-preflight.sh');
+  const helperPath = path.join(repoDir, 'scripts', 'preflight-helper.sh');
   fs.mkdirSync(path.dirname(preflightPath), { recursive: true });
 
   try {
     cp.execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir });
     cp.execFileSync('git', ['config', 'user.name', 'Guardex Test'], { cwd: repoDir });
     cp.execFileSync('git', ['config', 'user.email', 'guardex@example.test'], { cwd: repoDir });
-    fs.writeFileSync(preflightPath, "#!/usr/bin/env bash\nprintf '%s\\n' trusted-base\n", { mode: 0o755 });
-    cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh'], { cwd: repoDir });
+    fs.writeFileSync(helperPath, "printf '%s\\n' trusted-base\n");
+    fs.writeFileSync(
+      preflightPath,
+      '#!/usr/bin/env bash\nsource "$(dirname "${BASH_SOURCE[0]}")/preflight-helper.sh"\n',
+      { mode: 0o755 },
+    );
+    cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh', 'scripts/preflight-helper.sh'], { cwd: repoDir });
     cp.execFileSync('git', ['commit', '-m', 'trusted preflight'], {
       cwd: repoDir,
       env: {
@@ -93,7 +99,8 @@ test('a mandatory relative preflight executes the trusted base version, not the 
         GUARDEX_ALLOW_CODEX_ON_NON_AGENT: '1',
       },
     });
-    fs.writeFileSync(preflightPath, "#!/usr/bin/env bash\nprintf '%s\\n' tampered-pr\n", { mode: 0o755 });
+    fs.writeFileSync(preflightPath, "#!/usr/bin/env bash\nprintf '%s\\n' tampered-script\n", { mode: 0o755 });
+    fs.writeFileSync(helperPath, "printf '%s\\n' tampered-helper\n");
 
     const functionStart = script.indexOf('resolve_preflight_script() {');
     const functionEnd = script.indexOf('\n}\n\n# Run the pre-flight', functionStart) + 2;
@@ -105,7 +112,7 @@ test('a mandatory relative preflight executes the trusted base version, not the 
       'start_ref=main',
       'resolved="$(resolve_preflight_script "$1" scripts/agent-preflight.sh)"',
       '"$resolved"',
-      'rm -f -- "$resolved"',
+      'rm -rf -- "${resolved%/scripts/agent-preflight.sh}"',
     ].join('\n');
     const result = cp.spawnSync('bash', ['-c', command, 'trusted-preflight-test', repoDir], {
       encoding: 'utf8',

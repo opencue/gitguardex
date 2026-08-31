@@ -143,8 +143,9 @@ finish_progress() {
   finish_event "$stage" "$state" "$number" "$label" "$detail"
 }
 
-# Resolve the pre-flight script path. Required relative scripts are materialized
-# from the trusted base ref; optional relative scripts retain worktree behavior.
+# Resolve the pre-flight script path. Required relative scripts run from a
+# temporary archive of the trusted base ref so script-relative helpers are also
+# trusted; optional relative scripts retain worktree behavior.
 resolve_preflight_script() {
   local worktree="$1"
   local configured="$2"
@@ -158,14 +159,21 @@ resolve_preflight_script() {
     return 0
   fi
   if [[ "${PREFLIGHT_REQUIRED:-0}" -eq 1 ]]; then
-    local trusted_script=""
-    trusted_script="$(mktemp "${TMPDIR:-/tmp}/guardex-preflight.XXXXXX")" || return 0
-    if git -C "$worktree" show "${start_ref}:${configured}" > "$trusted_script" 2>/dev/null; then
-      chmod 500 "$trusted_script"
-      printf '%s' "$trusted_script"
-    else
-      rm -f -- "$trusted_script"
+    configured="${configured#./}"
+    if [[ -z "$configured" || "$configured" == ".." || "$configured" == ../*
+      || "$configured" == */../* || "$configured" == */.. ]]; then
+      return 0
     fi
+    local trusted_tree=""
+    trusted_tree="$(mktemp -d "${TMPDIR:-/tmp}/guardex-preflight.XXXXXX")" || return 0
+    if git -C "$worktree" archive "$start_ref" 2>/dev/null | tar -x -C "$trusted_tree" 2>/dev/null; then
+      local trusted_script="${trusted_tree}/${configured}"
+      if [[ -x "$trusted_script" ]]; then
+        printf '%s' "$trusted_script"
+        return 0
+      fi
+    fi
+    rm -rf -- "$trusted_tree"
     return 0
   fi
   local candidate="${worktree}/${configured}"
@@ -206,7 +214,12 @@ run_preflight() {
   local preflight_status=0
   ( cd "$worktree" && "$script_path" ) || preflight_status=$?
   if [[ "$PREFLIGHT_REQUIRED" -eq 1 && "$PREFLIGHT_SCRIPT_RAW" != /* ]]; then
-    rm -f -- "$script_path"
+    local relative_configured="${PREFLIGHT_SCRIPT_RAW#./}"
+    local trusted_prefix="${TMPDIR:-/tmp}/guardex-preflight."
+    if [[ "$script_path" == "$trusted_prefix"*"/$relative_configured" ]]; then
+      local trusted_tree_length=$((${#script_path} - ${#relative_configured} - 1))
+      rm -rf -- "${script_path:0:$trusted_tree_length}"
+    fi
   fi
   if [[ "$preflight_status" -eq 0 ]]; then
     finish_progress complete preflight "passed"
