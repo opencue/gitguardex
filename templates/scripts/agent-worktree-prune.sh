@@ -28,6 +28,7 @@ LANE_PR_LOOKUP_LOADED=0
 LANE_PR_LOOKUP_UNAVAILABLE=0
 declare -A LANE_PR_STATES=()
 declare -A LANE_PR_BASES=()
+declare -A LANE_PR_HEAD_SHAS=()
 WORKTREE_ROOT_RELS=(
   ".omx/agent-worktrees"
   ".omx/.tmp-worktrees"
@@ -257,10 +258,12 @@ load_lane_pr_metadata() {
     if [[ "$state" == "OPEN" ]]; then
       LANE_PR_STATES["$head"]="$state"
       LANE_PR_BASES["$head"]="$base"
+      LANE_PR_HEAD_SHAS["$head"]="$head_sha"
     elif [[ -n "$local_tip" && "$head_sha" == "$local_tip" && "${head_repo,,}" == "${base_repo,,}" && "$existing" != "OPEN" ]] && \
       { [[ -z "$existing" ]] || [[ "$state" == "MERGED" && "$existing" == "CLOSED" ]]; }; then
       LANE_PR_STATES["$head"]="$state"
       LANE_PR_BASES["$head"]="$base"
+      LANE_PR_HEAD_SHAS["$head"]="$head_sha"
     fi
   done <<< "$rows"
   return 0
@@ -276,6 +279,15 @@ lane_pr_base() {
   local branch="$1"
   load_lane_pr_metadata || return 1
   printf '%s' "${LANE_PR_BASES[$branch]:-}"
+}
+
+classified_merged_pr_head() {
+  local branch="$1"
+  load_lane_pr_metadata || return 1
+  [[ "${LANE_PR_STATES[$branch]:-}" == "MERGED" ]] || return 1
+  local classified_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+  [[ -n "$classified_head" ]] || return 1
+  printf '%s' "$classified_head"
 }
 
 should_preserve_open_pr_branch() {
@@ -696,6 +708,7 @@ process_entry() {
   local branch_delete_mode="safe"
   local branch_delete_label="merged"
   local delete_remote_branch=1
+  local remote_delete_head=""
 
   if is_temporary_worktree_path "$wt"; then
     remove_reason="temporary-worktree"
@@ -775,13 +788,17 @@ process_entry() {
       if [[ "$branch_delete_mode" == "force" ]]; then
         delete_flag="-D"
       fi
+      if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
+        remote_delete_head="$(classified_merged_pr_head "$branch" || true)"
+      fi
       if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
         echo "[agent-worktree-prune] Deleted ${deleted_label} branch: ${branch}"
-        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
-          if git -C "$repo_root" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            run_cmd git -C "$repo_root" push origin --delete "$branch" >/dev/null 2>&1 || true
+        if [[ -n "$remote_delete_head" ]]; then
+          if run_cmd git -C "$repo_root" push --force-with-lease="refs/heads/${branch}:${remote_delete_head}" origin --delete "$branch" >/dev/null 2>&1; then
             echo "[agent-worktree-prune] Deleted ${deleted_label} remote branch: ${branch}"
+          else
+            echo "[agent-worktree-prune] Preserved advanced remote branch: ${branch}" >&2
           fi
         fi
       fi
@@ -854,6 +871,7 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
     merged_by_pr=0
     closed_by_pr=0
     pr_base=""
+    remote_delete_head=""
     if [[ "$PRUNE_STALE_LANES" -eq 1 ]]; then
       pr_state="$(lane_pr_state "$branch" || true)"
       pr_base="$(lane_pr_base "$branch" || true)"
@@ -886,13 +904,17 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
         delete_flag="-D"
         deleted_label="merged PR${pr_base:+ to ${pr_base}}"
       fi
+      if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
+        remote_delete_head="$(classified_merged_pr_head "$branch" || true)"
+      fi
       if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
         echo "[agent-worktree-prune] Deleted stale ${deleted_label} branch: ${branch}"
-        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
-          if git -C "$repo_root" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            run_cmd git -C "$repo_root" push origin --delete "$branch" >/dev/null 2>&1 || true
+        if [[ -n "$remote_delete_head" ]]; then
+          if run_cmd git -C "$repo_root" push --force-with-lease="refs/heads/${branch}:${remote_delete_head}" origin --delete "$branch" >/dev/null 2>&1; then
             echo "[agent-worktree-prune] Deleted stale ${deleted_label} remote branch: ${branch}"
+          else
+            echo "[agent-worktree-prune] Preserved advanced remote branch: ${branch}" >&2
           fi
         fi
       fi

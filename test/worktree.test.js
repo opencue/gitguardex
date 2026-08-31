@@ -142,6 +142,60 @@ exit 0
   );
 });
 
+test('worktree prune preserves a remote branch advanced while merged PR cleanup runs', () => {
+  const repoDir = initRepoOnBranch('main');
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+  const originPath = attachOriginRemoteForBranch(repoDir, 'main');
+
+  const branch = 'agent/advanced-during-prune';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'advanced-during-prune');
+  result = runHumanCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(worktreePath, 'merged.txt', 'merged PR head\n', 'merged PR head');
+  const mergedHeadSha = runHumanCmd('git', ['rev-parse', branch], repoDir).stdout.trim();
+  result = runHumanCmd('git', ['push', '-u', 'origin', branch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const remoteWriter = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-remote-writer-'));
+  result = runHumanCmd('git', ['clone', '--branch', branch, originPath, remoteWriter], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  configureGitIdentity(remoteWriter);
+  commitFile(remoteWriter, 'advanced.txt', 'newer remote work\n', 'advance remote branch');
+  const advancedSha = runHumanCmd('git', ['rev-parse', 'HEAD'], remoteWriter).stdout.trim();
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${branch}" "${mergedHeadSha}" recodeee/gitguardex main MERGED recodeee/gitguardex
+  exit 0
+fi
+exit 0
+`);
+  const realGit = runCmd('bash', ['-lc', 'command -v git'], repoDir);
+  assert.equal(realGit.status, 0, realGit.stderr || realGit.stdout);
+  const { fakeBin } = createFakeBin('git', `
+real_git="${realGit.stdout.trim()}"
+if [[ "$1" == "-C" && "$3" == "push" && "$4" == --force-with-lease=* && "$5" == "origin" && "$6" == "--delete" && "$7" == "${branch}" ]]; then
+  "$real_git" -C "${remoteWriter}" push origin "${branch}" >/dev/null
+fi
+"$real_git" "$@"
+`);
+  result = runWorktreePrune(
+    ['--prune-stale-lanes', '--preserve-open-prs', '--delete-branches', '--delete-remote-branches'],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      PATH: `${fakeBin}:${process.env.PATH || ''}`,
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stderr, /Preserved advanced remote branch: agent\/advanced-during-prune/);
+  const remoteHead = runHumanCmd('git', ['ls-remote', '--heads', 'origin', branch], repoDir).stdout.trim().split(/\s+/)[0];
+  assert.equal(remoteHead, advancedSha, 'newer remote commits should remain reachable');
+});
+
 
 test('worktree prune preserves dirty agent worktrees unless --force-dirty is used', () => {
   const repoDir = initRepo();
