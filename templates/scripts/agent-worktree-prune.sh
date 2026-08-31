@@ -634,7 +634,7 @@ try:
                     file=sys.stderr,
                 )
                 raise SystemExit(10)
-            if str(entry.get('branch', '')) == branch:
+            if not branch or str(entry.get('branch', '')) == branch:
                 raise SystemExit(10)
 
         print(f'[agent-worktree-prune] Removing worktree ({remove_reason}): {worktree}', flush=True)

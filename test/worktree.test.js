@@ -428,6 +428,9 @@ test('worktree prune preserves worktrees with active Guardex file locks', () => 
   result = runLockTool(['claim', '--branch', branch, 'locked.txt'], worktreePath);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
+  result = runCmd('git', ['checkout', '--detach'], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
   result = runWorktreePrune(['--delete-branches'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /Skipping actively locked worktree:/);
