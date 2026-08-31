@@ -61,7 +61,11 @@ const {
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
 const { createEventStream } = require('../src/finish/progress');
-const { hasUnsafeWorktreeChanges } = require('../src/finish/post-branch-finish-cleanup');
+const {
+  hasLiveProcessInWorktree,
+  hasUnsafeWorktreeChanges,
+  isManagedAgentWorktree,
+} = require('../src/finish/post-branch-finish-cleanup');
 
 test('post-finish cleanup preserves ignored user data but permits generated agent directories', () => {
   assert.equal(hasUnsafeWorktreeChanges(''), false);
@@ -72,6 +76,28 @@ test('post-finish cleanup preserves ignored user data but permits generated agen
   assert.equal(hasUnsafeWorktreeChanges('!! .env\0'), true);
   assert.equal(hasUnsafeWorktreeChanges('?? notes.txt\0'), true);
   assert.equal(hasUnsafeWorktreeChanges(' M src/index.js\0'), true);
+});
+
+test('post-finish cleanup detects a process cwd inside the worktree', () => {
+  const procRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-proc-'));
+  const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-live-worktree-'));
+  const outsidePath = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-outside-worktree-'));
+  fs.mkdirSync(path.join(procRoot, '101'));
+  fs.symlinkSync(path.join(worktreePath, 'nested'), path.join(procRoot, '101', 'cwd'));
+  assert.equal(hasLiveProcessInWorktree(worktreePath, procRoot), true);
+  fs.unlinkSync(path.join(procRoot, '101', 'cwd'));
+  fs.symlinkSync(outsidePath, path.join(procRoot, '101', 'cwd'));
+  assert.equal(hasLiveProcessInWorktree(worktreePath, procRoot), false);
+});
+
+test('post-finish cleanup only targets GitGuardex-managed agent worktrees', () => {
+  const repoRoot = path.join(path.sep, 'tmp', 'repo');
+  assert.equal(
+    isManagedAgentWorktree(repoRoot, path.join(repoRoot, '.omx', 'agent-worktrees', 'agent__one')),
+    true,
+  );
+  assert.equal(isManagedAgentWorktree(repoRoot, repoRoot), false);
+  assert.equal(isManagedAgentWorktree(repoRoot, path.join(path.sep, 'tmp', 'manual-worktree')), false);
 });
 
 test('finish progress rejects symbolic links in its state directory path', () => {
@@ -1266,7 +1292,14 @@ exit 1
   assert.notEqual(result.status, 0, 'agent branch should be deleted locally');
   result = runCmd('git', ['ls-remote', '--heads', 'origin', 'agent/test-active-worktree-cleanup'], repoDir);
   assert.equal(result.stdout.trim(), '', 'agent branch should be deleted on origin');
-  assert.match(finish.stdout, /Removed finished detached worktree after finish worker exit:/);
+  assert.match(
+    finish.stdout,
+    /(Removed finished detached worktree after finish worker exit|Scheduled finished worktree cleanup after active processes leave):/,
+  );
+  const cleanupDeadline = Date.now() + 5_000;
+  while (fs.existsSync(agentWorktreePath) && Date.now() < cleanupDeadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
   assert.equal(fs.existsSync(agentWorktreePath), false, 'successful cleanup should remove the detached worktree');
   assert.doesNotMatch(
     runCmd('git', ['worktree', 'list', '--porcelain'], repoDir).stdout,

@@ -1,4 +1,4 @@
-const { fs, path, TOOL_NAME } = require('../context');
+const { cp, fs, path, TOOL_NAME } = require('../context');
 const { currentBranchName, listAgentWorktrees, resolveRepoRoot } = require('../git');
 const { extractTargetedArgs, run } = require('../core/runtime');
 
@@ -31,6 +31,24 @@ function pathContains(root, candidate) {
   );
 }
 
+function resolveSharedRepoRoot(target) {
+  const worktreeRoot = resolveRepoRoot(target);
+  const commonDir = run('git', ['-C', worktreeRoot, 'rev-parse', '--git-common-dir'], {
+    cwd: worktreeRoot
+  });
+  if (commonDir.status !== 0 || !String(commonDir.stdout || '').trim()) {
+    throw new Error('Unable to resolve the shared git directory');
+  }
+  return path.dirname(path.resolve(worktreeRoot, String(commonDir.stdout).trim()));
+}
+
+function isManagedAgentWorktree(repoRoot, worktreePath) {
+  const relative = path.relative(repoRoot, worktreePath).split(path.sep).join('/');
+  return (
+    relative.startsWith('.omx/agent-worktrees/') || relative.startsWith('.omc/agent-worktrees/')
+  );
+}
+
 function hasUnsafeWorktreeChanges(output) {
   return String(output || '')
     .split('\0')
@@ -47,6 +65,31 @@ function hasUnsafeWorktreeChanges(output) {
     });
 }
 
+function hasLiveProcessInWorktree(
+  worktreePath,
+  procRoot = process.platform === 'linux' ? '/proc' : ''
+) {
+  if (!procRoot || !fs.existsSync(procRoot)) return true;
+
+  try {
+    for (const entry of fs.readdirSync(procRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+      try {
+        const liveCwd = fs
+          .readlinkSync(path.join(procRoot, entry.name, 'cwd'))
+          .replace(/ \(deleted\)$/, '');
+        if (pathContains(worktreePath, liveCwd)) return true;
+      } catch {
+        // Processes can exit or deny access while /proc is being scanned.
+      }
+    }
+  } catch {
+    return true;
+  }
+
+  return false;
+}
+
 function prepareBranchFinishCleanup(argv, activeCwd) {
   if (argv[0] !== 'branch' || argv[1] !== 'finish') return null;
   const finishArgs = argv.slice(2);
@@ -56,12 +99,18 @@ function prepareBranchFinishCleanup(argv, activeCwd) {
 
   try {
     const { target, passthrough } = extractTargetedArgs(finishArgs, activeCwd);
-    const repoRoot = resolveRepoRoot(target);
+    const repoRoot = resolveSharedRepoRoot(target);
     const branch = flagValue(passthrough, '--branch') || currentBranchName(target);
     const worktreePath = listAgentWorktrees(repoRoot).find(
       (entry) => entry.branch === branch
     )?.worktreePath;
-    if (!worktreePath || !pathContains(worktreePath, activeCwd)) return null;
+    if (
+      !worktreePath ||
+      !isManagedAgentWorktree(repoRoot, worktreePath) ||
+      !pathContains(worktreePath, activeCwd)
+    ) {
+      return null;
+    }
     return { repoRoot, worktreePath };
   } catch {
     return null;
@@ -73,6 +122,7 @@ function cleanupFinishedDetachedWorktree(plan) {
 
   try {
     process.chdir(plan.repoRoot);
+    if (hasLiveProcessInWorktree(plan.worktreePath)) return false;
     const status = run(
       'git',
       ['-C', plan.worktreePath, 'status', '--porcelain=v1', '-z', '--ignored'],
@@ -112,8 +162,59 @@ function cleanupFinishedDetachedWorktree(plan) {
   }
 }
 
+function scheduleFinishedDetachedWorktreeCleanup(plan) {
+  if (!plan || !fs.existsSync(plan.worktreePath)) return false;
+
+  try {
+    const payload = Buffer.from(JSON.stringify(plan), 'utf8').toString('base64url');
+    const child = cp.spawn(process.execPath, [__filename, '--deferred-worker', payload], {
+      cwd: plan.repoRoot,
+      detached: true,
+      stdio: 'ignore'
+    });
+    child.unref();
+    console.log(
+      `[${TOOL_NAME}] Scheduled finished worktree cleanup after active processes leave: ${plan.worktreePath}`
+    );
+    return true;
+  } catch (error) {
+    console.error(
+      `[${TOOL_NAME}] Warning: could not schedule finished worktree cleanup: ${error.message}`
+    );
+    return false;
+  }
+}
+
+async function runDeferredCleanupWorker(plan, options = {}) {
+  const attempts = options.attempts || 120;
+  const intervalMs = options.intervalMs || 1000;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!fs.existsSync(plan.worktreePath)) return true;
+    if (!hasLiveProcessInWorktree(plan.worktreePath)) {
+      return cleanupFinishedDetachedWorktree(plan);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
 module.exports = {
   cleanupFinishedDetachedWorktree,
   hasUnsafeWorktreeChanges,
-  prepareBranchFinishCleanup
+  hasLiveProcessInWorktree,
+  isManagedAgentWorktree,
+  prepareBranchFinishCleanup,
+  runDeferredCleanupWorker,
+  scheduleFinishedDetachedWorktreeCleanup
 };
+
+if (require.main === module && process.argv[2] === '--deferred-worker') {
+  try {
+    const plan = JSON.parse(Buffer.from(process.argv[3] || '', 'base64url').toString('utf8'));
+    void runDeferredCleanupWorker(plan).then((cleaned) => {
+      process.exitCode = cleaned ? 0 : 1;
+    });
+  } catch {
+    process.exitCode = 1;
+  }
+}
