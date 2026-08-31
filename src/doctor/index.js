@@ -1103,6 +1103,10 @@ function pruneStaleAgentWorktrees(repoRoot, options = {}) {
 
   const args = [
     '--idle-minutes', String(idleMinutes),
+    // This calls the low-level prune asset directly; its clean-worktree mode is
+    // named --only-dirty-worktrees. The public cleanup command translates
+    // --prune-clean-worktrees to this asset flag.
+    '--only-dirty-worktrees',
     '--delete-branches',
     '--delete-remote-branches',
     '--include-pr-merged',

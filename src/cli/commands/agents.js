@@ -288,6 +288,7 @@ function agents(rawArgs) {
           String(options.cleanupIntervalSeconds),
           '--idle-minutes',
           String(options.idleMinutes),
+          '--prune-clean-worktrees',
         ],
         cwd: repoRoot,
         logPath: cleanupLogPath,
