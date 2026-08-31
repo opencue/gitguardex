@@ -367,12 +367,14 @@ read_branch_activity_epoch() {
   local branch="$1"
   local wt="${2:-}"
   local activity_epoch=""
+  local reflog_selector=""
 
-  activity_epoch="$(
-    git -C "$repo_root" reflog show --format='%ct' -n 1 "refs/heads/${branch}" 2>/dev/null \
+  reflog_selector="$(
+    git -C "$repo_root" reflog show --date=unix --format='%gd' -n 1 "refs/heads/${branch}" 2>/dev/null \
       | head -n 1 \
       | tr -d '[:space:]'
   )"
+  activity_epoch="$(printf '%s' "$reflog_selector" | sed -n -E 's/.*@\{([0-9]+)\}$/\1/p')"
   if [[ -z "$activity_epoch" ]]; then
     activity_epoch="$(
       git -C "$repo_root" log -1 --format='%ct' "$branch" 2>/dev/null \

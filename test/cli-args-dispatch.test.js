@@ -262,6 +262,15 @@ test('parseCleanupArgs defaults idle minutes when watch mode is enabled', () => 
   assert.equal(options.idleMinutes, DEFAULT_SHADOW_CLEANUP_IDLE_MINUTES);
 });
 
+test('parseCleanupArgs preserves clean worktrees unless pruning is explicitly requested', () => {
+  assert.equal(parseCleanupArgs([]).keepCleanWorktrees, true);
+  assert.equal(parseCleanupArgs(['--prune-clean-worktrees']).keepCleanWorktrees, false);
+  assert.equal(
+    parseCleanupArgs(['--prune-clean-worktrees', '--keep-clean-worktrees']).keepCleanWorktrees,
+    true,
+  );
+});
+
 test('parseMergeArgs requires at least one agent branch', () => {
   assert.throws(
     () => parseMergeArgs(['--base', 'dev']),
