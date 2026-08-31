@@ -171,7 +171,7 @@ resolve_preflight_script() {
       local trusted_script_real=""
       trusted_script_real="$(realpath -e -- "$trusted_script" 2>/dev/null || true)"
       if [[ -n "$trusted_script_real" && "$trusted_script_real" == "$trusted_tree/"* && -x "$trusted_script_real" ]] \
-        && grep -Fq 'GUARDEX_PREFLIGHT_TARGET_WORKTREE' "$trusted_script_real"; then
+        && grep -Eq '^[[:space:]]*[^#][^#]*\$\{?GUARDEX_PREFLIGHT_TARGET_WORKTREE([^[:alnum:]_]|$)' "$trusted_script_real"; then
         trusted_script="$trusted_script_real"
         printf '%s' "$trusted_script"
         return 0

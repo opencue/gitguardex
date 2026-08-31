@@ -84,7 +84,7 @@ test('a billing waiver makes local preflight mandatory and fail-closed', () => {
     'a mandatory preflight must execute from its trusted tree while receiving the target worktree explicitly',
   );
   assert.ok(
-    script.includes("grep -Fq 'GUARDEX_PREFLIGHT_TARGET_WORKTREE' \"$trusted_script_real\""),
+    script.includes("grep -Eq '^[[:space:]]*[^#][^#]*\\$\\{?GUARDEX_PREFLIGHT_TARGET_WORKTREE([^[:alnum:]_]|$)' \"$trusted_script_real\""),
     'a mandatory preflight must fail closed unless the trusted base script opts into the target-worktree contract',
   );
 });
