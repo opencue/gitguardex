@@ -1264,6 +1264,7 @@ test('setup prevents worktree SCM discovery and merges repo-scan ignores into VS
   const settings = JSON.parse(fs.readFileSync(path.join(vscodeDir, 'settings.json'), 'utf8'));
   assert.equal(settings['editor.formatOnSave'], true);
   assert.equal(settings['git.autoRepositoryDetection'], 'subFolders');
+  assert.equal(settings['git.detectWorktrees'], false);
   assert.deepEqual(settings['git.repositoryScanIgnoredFolders'], [
     'custom-folder',
     '.omx/agent-worktrees',

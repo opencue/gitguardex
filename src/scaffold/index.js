@@ -722,6 +722,10 @@ function buildRepoVscodeSettings(existingSettings = {}) {
   if (existingSettings['git.autoRepositoryDetection'] !== false) {
     nextSettings['git.autoRepositoryDetection'] = 'subFolders';
   }
+  // Repository scan ignores do not affect VS Code's separate Git worktree
+  // detector. Disable it for the primary checkout so a removed Guardex
+  // worktree cannot remain registered as an endlessly syncing SCM provider.
+  nextSettings['git.detectWorktrees'] = false;
   nextSettings[REPO_SCAN_IGNORED_FOLDERS_SETTING] = uniqueStringList([
     ...existingIgnoredFolders,
     ...MANAGED_REPO_SCAN_IGNORED_FOLDERS,
