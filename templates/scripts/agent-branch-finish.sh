@@ -168,7 +168,8 @@ resolve_preflight_script() {
     trusted_tree="$(mktemp -d "${TMPDIR:-/tmp}/guardex-preflight.XXXXXX")" || return 0
     if git -C "$worktree" archive "$start_ref" 2>/dev/null | tar -x -C "$trusted_tree" 2>/dev/null; then
       local trusted_script="${trusted_tree}/${configured}"
-      if [[ -x "$trusted_script" ]]; then
+      if [[ -x "$trusted_script" ]] \
+        && grep -Fq 'GUARDEX_PREFLIGHT_TARGET_WORKTREE' "$trusted_script"; then
         printf '%s' "$trusted_script"
         return 0
       fi
@@ -202,7 +203,7 @@ run_preflight() {
   if [[ -z "$script_path" ]]; then
     if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
       finish_progress failed preflight "required executable script missing"
-      echo "[agent-branch-finish] Billing-waived GitHub checks require a pre-flight script at ${PREFLIGHT_SCRIPT_RAW} in trusted base ${start_ref}; refusing push." >&2
+      echo "[agent-branch-finish] Billing-waived GitHub checks require a target-aware pre-flight script at ${PREFLIGHT_SCRIPT_RAW} in trusted base ${start_ref}; refusing push." >&2
       return 1
     fi
     finish_progress skipped preflight "no executable pre-flight script"
