@@ -193,11 +193,11 @@ function parseSetupArgs(rawArgs, defaults) {
 
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
-    if (arg === '--parent-workspace-view') {
+    if (arg === '--parent-workspace-view' || arg === '--vscode-worktree-view') {
       setupDefaults.parentWorkspaceView = true;
       continue;
     }
-    if (arg === '--no-parent-workspace-view') {
+    if (arg === '--no-parent-workspace-view' || arg === '--no-vscode-worktree-view') {
       setupDefaults.parentWorkspaceView = false;
       continue;
     }

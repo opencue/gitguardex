@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">GitGuardex safe delivery workflow</title>
+  <desc id="desc">A dark structured diagram showing isolated task lanes moving from branch creation through file claims, verification, pull request, merge, and cleanup.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070a0f"/>
+      <stop offset="0.55" stop-color="#0b111a"/>
+      <stop offset="1" stop-color="#101827"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="0.5" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#94a3b8" stroke-opacity="0.055"/>
+    </pattern>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="700" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="700" rx="28" fill="url(#grid)"/>
+  <rect x="1" y="1" width="1198" height="698" rx="27" fill="none" stroke="#334155" stroke-opacity="0.75"/>
+
+  <g transform="translate(64 58)">
+    <g aria-label="Header">
+      <rect width="154" height="30" rx="15" fill="#0e7490" fill-opacity="0.22" stroke="#22d3ee" stroke-opacity="0.58"/>
+      <circle cx="18" cy="15" r="4" fill="#22d3ee" filter="url(#glow)"/>
+      <text x="32" y="20" fill="#67e8f9" font-family="Inter,Segoe UI,sans-serif" font-size="12" font-weight="700" letter-spacing="1.5">SAFE DELIVERY</text>
+      <text x="0" y="79" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="42" font-weight="760" letter-spacing="-1.1">ONE TASK. ONE SAFE LANE.</text>
+      <text x="0" y="112" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="17">Every change stays isolated, reviewable, and recoverable from start to cleanup.</text>
+    </g>
+
+    <g transform="translate(0 160)" aria-label="Workflow">
+      <rect x="20" y="44" width="1016" height="4" rx="2" fill="#1e293b"/>
+      <rect x="20" y="44" width="1016" height="4" rx="2" fill="url(#line)" opacity="0.82"/>
+
+      <g transform="translate(0)">
+        <circle cx="46" cy="46" r="31" fill="#0c2630" stroke="#22d3ee" stroke-width="2"/>
+        <text x="46" y="52" text-anchor="middle" fill="#67e8f9" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="800">01</text>
+        <text x="46" y="96" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">START LANE</text>
+      </g>
+      <g transform="translate(166)">
+        <circle cx="46" cy="46" r="31" fill="#0c2630" stroke="#22d3ee" stroke-width="2"/>
+        <text x="46" y="52" text-anchor="middle" fill="#67e8f9" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="800">02</text>
+        <text x="46" y="96" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">CLAIM FILES</text>
+      </g>
+      <g transform="translate(332)">
+        <circle cx="46" cy="46" r="31" fill="#0b2a22" stroke="#34d399" stroke-width="2"/>
+        <text x="46" y="52" text-anchor="middle" fill="#6ee7b7" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="800">03</text>
+        <text x="46" y="96" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">BUILD</text>
+      </g>
+      <g transform="translate(498)">
+        <circle cx="46" cy="46" r="31" fill="#0b2a22" stroke="#34d399" stroke-width="2"/>
+        <text x="46" y="52" text-anchor="middle" fill="#6ee7b7" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="800">04</text>
+        <text x="46" y="96" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">VERIFY</text>
+      </g>
+      <g transform="translate(664)">
+        <circle cx="46" cy="46" r="31" fill="#241a3d" stroke="#a78bfa" stroke-width="2"/>
+        <text x="46" y="52" text-anchor="middle" fill="#c4b5fd" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="800">05</text>
+        <text x="46" y="96" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">OPEN PR</text>
+      </g>
+      <g transform="translate(830)">
+        <circle cx="46" cy="46" r="31" fill="#241a3d" stroke="#a78bfa" stroke-width="2"/>
+        <text x="46" y="52" text-anchor="middle" fill="#c4b5fd" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="800">06</text>
+        <text x="46" y="96" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">MERGE</text>
+      </g>
+      <g transform="translate(996)">
+        <circle cx="46" cy="46" r="31" fill="#241a3d" stroke="#a78bfa" stroke-width="2"/>
+        <text x="46" y="52" text-anchor="middle" fill="#c4b5fd" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="800">07</text>
+        <text x="46" y="96" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">CLEANUP</text>
+      </g>
+    </g>
+
+    <g transform="translate(0 330)" aria-label="Capabilities">
+      <g>
+        <rect width="336" height="210" rx="18" fill="#0b1220" stroke="#164e63"/>
+        <rect width="336" height="4" rx="2" fill="#22d3ee"/>
+        <rect x="24" y="28" width="44" height="44" rx="12" fill="#083344"/>
+        <path d="M37 51h18m-9-9v18" stroke="#67e8f9" stroke-width="2.4" stroke-linecap="round"/>
+        <text x="84" y="47" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="17" font-weight="760">ISOLATE &amp; COORDINATE</text>
+        <text x="24" y="101" fill="#cbd5e1" font-family="Inter,Segoe UI,sans-serif" font-size="14">
+          <tspan x="24" dy="0">Separate agent/* branches and worktrees</tspan>
+          <tspan x="24" dy="26">Shared file locks before edits</tspan>
+          <tspan x="24" dy="26">Protected base branches stay untouched</tspan>
+        </text>
+        <text x="24" y="188" fill="#67e8f9" font-family="ui-monospace,SFMono-Regular,monospace" font-size="12">gx branch start → gx locks claim</text>
+      </g>
+
+      <g transform="translate(368)">
+        <rect width="336" height="210" rx="18" fill="#0b1220" stroke="#14532d"/>
+        <rect width="336" height="4" rx="2" fill="#34d399"/>
+        <rect x="24" y="28" width="44" height="44" rx="12" fill="#052e24"/>
+        <path d="M36 50l7 7 14-17" fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="84" y="47" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="17" font-weight="760">SHIP WITH EVIDENCE</text>
+        <text x="24" y="101" fill="#cbd5e1" font-family="Inter,Segoe UI,sans-serif" font-size="14">
+          <tspan x="24" dy="0">Focused preflight and CI checks</tspan>
+          <tspan x="24" dy="26">Optional fail-closed AI review</tspan>
+          <tspan x="24" dy="26">Correct PR target for every lane</tspan>
+        </text>
+        <text x="24" y="188" fill="#6ee7b7" font-family="ui-monospace,SFMono-Regular,monospace" font-size="12">verify → PR → merge</text>
+      </g>
+
+      <g transform="translate(736)">
+        <rect width="336" height="210" rx="18" fill="#0b1220" stroke="#4c1d95"/>
+        <rect width="336" height="4" rx="2" fill="#a78bfa"/>
+        <rect x="24" y="28" width="44" height="44" rx="12" fill="#2e1065"/>
+        <path d="M36 46a12 12 0 1 1 3 15m-3 0v-9h9" fill="none" stroke="#c4b5fd" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="84" y="47" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="17" font-weight="760">RECOVER WITHOUT LOSS</text>
+        <text x="24" y="101" fill="#cbd5e1" font-family="Inter,Segoe UI,sans-serif" font-size="14">
+          <tspan x="24" dy="0">Dirty or uncertain lanes are preserved</tspan>
+          <tspan x="24" dy="26">Clean merged lanes are removed safely</tspan>
+          <tspan x="24" dy="26">Billing-aware checks still require proof</tspan>
+        </text>
+        <text x="24" y="188" fill="#c4b5fd" font-family="ui-monospace,SFMono-Regular,monospace" font-size="12">merge → cleanup → ready</text>
+      </g>
+    </g>
+  </g>
+</svg>

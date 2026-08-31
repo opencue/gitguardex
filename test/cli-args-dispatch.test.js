@@ -89,6 +89,25 @@ test('parseSetupArgs keeps nested traversal and parent workspace view flags', ()
   assert.equal(options.parentWorkspaceView, true);
 });
 
+test('parseSetupArgs accepts the operator-facing VS Code worktree view aliases', () => {
+  const enabled = parseSetupArgs(['--vscode-worktree-view'], {
+    target: process.cwd(),
+    force: false,
+    dryRun: false,
+  });
+  const disabled = parseSetupArgs([
+    '--parent-workspace-view',
+    '--no-vscode-worktree-view',
+  ], {
+    target: process.cwd(),
+    force: false,
+    dryRun: false,
+  });
+
+  assert.equal(enabled.parentWorkspaceView, true);
+  assert.equal(disabled.parentWorkspaceView, false);
+});
+
 test('parseAgentsArgs applies interval overrides and validates the subcommand', () => {
   const options = parseAgentsArgs([
     'start',

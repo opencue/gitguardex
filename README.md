@@ -21,6 +21,7 @@
   <a href="#install">Install</a> ·
   <a href="#the-problem">Why</a> ·
   <a href="#what-gitguardex-can-do">Capabilities</a> ·
+  <a href="#see-every-lane-in-vs-code">VS Code view</a> ·
   <a href="#daily-workflow">Workflow</a> ·
   <a href="#code-assist-review-gate">Code assist</a> ·
   <a href="#essential-commands">Commands</a>
@@ -59,29 +60,19 @@ Parallel agents can edit the same files, overwrite tests, or commit directly to
 
 ### What GitGuardex can do
 
-![Agent branch/worktree start protocol](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/workflow-branch-start.svg)
-
-GitGuardex gives every task an isolated lane:
-
 <p align="center">
-  <strong>Start lane → Claim files → Build → Verify → PR → Merge → Cleanup</strong>
+  <img alt="GitGuardex capability map: isolated lanes, evidence-driven shipping, and safe cleanup" src="https://raw.githubusercontent.com/opencue/gitguardex/main/docs/images/capabilities-dark.svg" width="900">
 </p>
 
-#### 🔒 Isolate and coordinate
+| Isolate and coordinate | Ship with evidence | Recover without loss |
+| --- | --- | --- |
+| One `agent/*` branch and worktree per task. | Preflight, CI, and optional AI review block risky merges. | Dirty, locked, blocked, and uncertain lanes are preserved. |
+| Shared file claims prevent silent overwrites. | The recorded base keeps unattended finishes on the correct target. | Successful lanes are merged, then their temporary branch and worktree are removed. |
+| Protected branches stay behind a PR boundary. | Billing-aware fallbacks waive only explicitly named checks. | Cleanup fails closed instead of deleting work it cannot prove safe. |
 
-- **Dedicated task lanes** — each `agent/*` branch gets its own worktree, so
-  agents never share a working directory.
-- **Shared file ownership** — independent lanes and clones coordinate claims
-  before editing.
-- **Protected base branches** — changes to `main`, `dev`, and `master` must go
-  through a PR.
+<details>
+<summary><strong>Implementation evidence and shipped hardening</strong></summary>
 
-#### ✅ Ship with evidence
-
-- **Preflight, CI, and optional AI review** — broken or risky changes stop
-  before merge.
-- **Safe finish** — merge the PR, then remove its temporary branch and
-  worktree.
 - **Correct base targeting** — persist and validate each lane's base so an
   unattended finish cannot use another checkout's target. ([#745](https://github.com/opencue/gitguardex/pull/745), [#750](https://github.com/opencue/gitguardex/pull/750), [#751](https://github.com/opencue/gitguardex/pull/751))
 - **Billing-aware CI fallback** — waive only named checks that GitHub could not
@@ -92,15 +83,33 @@ GitGuardex gives every task an isolated lane:
 - **Reusable successful preflight** — reuse proof only while the source HEAD,
   base commit, command, and script stay unchanged; billing-waiver preflights
   are never cached. ([#757](https://github.com/opencue/gitguardex/pull/757))
-
-#### 🧹 Recover without losing work
-
 - **Fail-closed cleanup** — preserve dirty, locked, open-PR, blocked, or
   uncertain lanes; close idle clean worktrees without deleting their branches.
   ([#741](https://github.com/opencue/gitguardex/pull/741), [#744](https://github.com/opencue/gitguardex/pull/744), [#746](https://github.com/opencue/gitguardex/pull/746), [#752](https://github.com/opencue/gitguardex/pull/752))
 - **Workspace hygiene** — safely remove successful detached lanes, avoid stale
   VS Code worktree providers, and keep `gx branch finish --help` free of
   repository side effects. ([#742](https://github.com/opencue/gitguardex/pull/742), [#747](https://github.com/opencue/gitguardex/pull/747), [#748](https://github.com/opencue/gitguardex/pull/748), [#754](https://github.com/opencue/gitguardex/pull/754))
+
+</details>
+
+### See every lane in VS Code
+
+Create an explicit multi-root workspace when you want every managed worktree to
+appear as its own Source Control repository:
+
+```bash
+gx setup --vscode-worktree-view
+code ../<repo>-branches.code-workspace
+```
+
+<p align="center">
+  <img alt="VS Code Explorer showing separate Codex and Claude worktree groups" src="https://raw.githubusercontent.com/opencue/gitguardex/main/docs/images/vscode-worktrees-overview.png" width="668">
+</p>
+
+The generated workspace enables Git subfolder discovery, worktree detection,
+and an empty repository-scan exclusion list. This is opt-in: GitGuardex does not
+rewrite your repository's `.gitignore` or loosen the default single-repository
+workspace. Disable future generation with `--no-vscode-worktree-view`.
 
 ---
 
