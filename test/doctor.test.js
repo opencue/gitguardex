@@ -1320,7 +1320,7 @@ test('gx doctor auto-prunes detached-HEAD agent worktrees under .omc/agent-workt
   );
 });
 
-test('gx doctor preserves idle clean worktrees whose branches are still unmerged', () => {
+test('gx doctor prunes idle clean no-PR worktrees but preserves their recovery branches', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
 
@@ -1336,37 +1336,44 @@ test('gx doctor preserves idle clean worktrees whose branches are still unmerged
   commitFile(cleanWorktree, 'completed.txt', 'committed work must remain reachable\n', 'completed agent work');
 
   const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
+  exit 0
+fi
+exit 0
+`);
   result = runNodeWithEnv(
     ['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'],
     repoDir,
     {
+      GUARDEX_GH_BIN: fakeGhPath,
       GUARDEX_PRUNE_NOW_EPOCH: String(fakeNowEpoch),
       GUARDEX_SKIP_AUTO_FINISH_READY_BRANCHES: '1',
     },
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Removing worktree \(clean-agent-worktree\)/);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Removing worktree \(stale-no-pr-worktree\)/);
   assert.equal(
     fs.existsSync(cleanWorktree),
-    true,
-    'an automatic doctor sweep must retain an unmerged lane for conflict recovery',
+    false,
+    'an automatic doctor sweep should remove an idle clean worktree without a PR',
   );
 
   const branchExists = runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir);
-  assert.equal(branchExists.status, 0, 'unmerged branch must remain with its recovery worktree');
+  assert.equal(branchExists.status, 0, 'unreviewed branch must remain as a recovery point');
   const committedContent = runHumanCmd('git', ['show', `${branch}:completed.txt`], repoDir);
   assert.equal(committedContent.status, 0, committedContent.stderr || committedContent.stdout);
   assert.equal(committedContent.stdout, 'committed work must remain reachable\n');
 });
 
-test('gx doctor preserves idle work lanes while their pull requests are still open', () => {
+test('gx doctor preserves idle agent and work lanes while their pull requests are still open', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
 
   const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
   fs.mkdirSync(worktreeRoot, { recursive: true });
-  const cleanWorktree = path.join(worktreeRoot, 'open-pr-work-worktree');
-  const branch = 'work/open-pr-demo';
+  const cleanWorktree = path.join(worktreeRoot, 'open-pr-agent-worktree');
+  const branch = 'agent/claude/open-pr-demo';
   const branchWithoutWorktree = 'work/open-pr-branch-only';
 
   let result = runHumanCmd('git', ['branch', branch], repoDir);
@@ -1377,11 +1384,9 @@ test('gx doctor preserves idle work lanes while their pull requests are still op
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
-if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state open "* ]]; then
-  echo "${branch}"
-  exit 0
-fi
-if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state merged "* ]]; then
+if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
+  printf '%s\t%s\t%s\n' "${branch}" main OPEN
+  printf '%s\t%s\t%s\n' "${branchWithoutWorktree}" ksskkfb03 OPEN
   exit 0
 fi
 exit 0
@@ -1414,6 +1419,67 @@ exit 0
     repoDir,
   );
   assert.equal(branchWithoutWorktreeExists.status, 0, 'open PR branch without a worktree must remain available');
+});
+
+test('gx doctor prunes clean merged and closed PR lanes using each PR base branch', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  let result = runHumanCmd('git', ['branch', 'ksskkfb02'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['branch', 'ksskkfb03'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['config', 'multiagent.baseBranch', 'ksskkfb02'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  const mergedBranch = 'agent/claude/merged-to-ksskkfb03';
+  const closedBranch = 'work/closed-against-ksskkfb03';
+  const mergedWorktree = path.join(worktreeRoot, 'merged-ksskkfb03-worktree');
+  const closedWorktree = path.join(worktreeRoot, 'closed-ksskkfb03-worktree');
+
+  result = runHumanCmd('git', ['worktree', 'add', '-b', mergedBranch, mergedWorktree, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(mergedWorktree, 'merged-lane.txt', 'merged lane\n', 'merged lane work');
+  result = runHumanCmd('git', ['worktree', 'add', '-b', closedBranch, closedWorktree, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(closedWorktree, 'closed-lane.txt', 'closed lane\n', 'closed lane work');
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
+  printf '%s\t%s\t%s\n' "${mergedBranch}" ksskkfb03 MERGED
+  printf '%s\t%s\t%s\n' "${closedBranch}" ksskkfb03 CLOSED
+  exit 0
+fi
+exit 0
+`);
+  const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  result = runNodeWithEnv(
+    ['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      GUARDEX_PRUNE_NOW_EPOCH: String(fakeNowEpoch),
+      GUARDEX_SKIP_AUTO_FINISH_READY_BRANCHES: '1',
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert.match(combined, /Removing worktree \(merged-pr:ksskkfb03\)/);
+  assert.match(combined, /Removing worktree \(closed-pr:ksskkfb03\)/);
+  assert.equal(fs.existsSync(mergedWorktree), false, 'merged PR worktree should be removed');
+  assert.equal(fs.existsSync(closedWorktree), false, 'closed PR worktree should be removed');
+  assert.notEqual(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${mergedBranch}`], repoDir).status,
+    0,
+    'merged PR branch should be deleted even when its base differs from multiagent.baseBranch',
+  );
+  assert.notEqual(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${closedBranch}`], repoDir).status,
+    0,
+    'closed PR branch should be deleted after its clean inactive worktree is pruned',
+  );
 });
 
 
