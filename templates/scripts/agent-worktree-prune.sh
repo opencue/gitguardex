@@ -579,49 +579,72 @@ has_live_process_in_worktree() {
   return 1
 }
 
-branch_has_active_file_locks() {
+remove_worktree_with_lock_guard() {
   local branch="$1"
   local worktree="$2"
+  local remove_reason="$3"
   local lock_file="${worktree}/.omx/state/agent-file-locks.json"
-  local inspect_status=0
-
-  [[ -n "$branch" && -f "$lock_file" ]] || return 1
+  local shared_lock="${repo_common_dir}/agent-file-locks.lock"
 
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "[agent-worktree-prune] Cannot safely inspect active locks without python3: ${lock_file}" >&2
-    return 0
+    echo "[agent-worktree-prune] Cannot safely lock active claims without python3: ${shared_lock}" >&2
+    return 10
   fi
 
-  if python3 - "$lock_file" "$branch" <<'PY'
+  python3 - "$shared_lock" "$lock_file" "$branch" "$repo_root" "$worktree" "$remove_reason" "$DRY_RUN" <<'PY'
 import json
+import subprocess
 import sys
 
-lock_file, branch = sys.argv[1:]
 try:
-    with open(lock_file, encoding='utf-8') as handle:
-        state = json.load(handle)
-except (OSError, UnicodeError, json.JSONDecodeError):
-    raise SystemExit(2)
+    import fcntl
+except ImportError:
+    print('[agent-worktree-prune] OS file locking is unavailable; prune blocked', file=sys.stderr)
+    raise SystemExit(10)
 
-if not isinstance(state, dict) or not isinstance(state.get('locks', {}), dict):
-    raise SystemExit(2)
+shared_lock, lock_file, branch, repo_root, worktree, remove_reason, dry_run = sys.argv[1:]
+try:
+    with open(shared_lock, 'a+', encoding='utf-8') as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
 
-for entry in state.get('locks', {}).values():
-    if isinstance(entry, dict) and str(entry.get('branch', '')) == branch:
-        raise SystemExit(0)
-raise SystemExit(1)
+        try:
+            with open(lock_file, encoding='utf-8') as handle:
+                state = json.load(handle)
+        except FileNotFoundError:
+            state = {'locks': {}}
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            print(
+                f'[agent-worktree-prune] Cannot safely inspect active locks: {lock_file}',
+                file=sys.stderr,
+            )
+            raise SystemExit(10)
+
+        if not isinstance(state, dict) or not isinstance(state.get('locks', {}), dict):
+            print(
+                f'[agent-worktree-prune] Cannot safely inspect active locks: {lock_file}',
+                file=sys.stderr,
+            )
+            raise SystemExit(10)
+
+        for entry in state.get('locks', {}).values():
+            if isinstance(entry, dict) and str(entry.get('branch', '')) == branch:
+                raise SystemExit(10)
+
+        print(f'[agent-worktree-prune] Removing worktree ({remove_reason}): {worktree}', flush=True)
+        command = ['git', '-C', repo_root, 'worktree', 'remove', worktree, '--force']
+        if dry_run == '1':
+            print(f"[agent-worktree-prune] [dry-run] {' '.join(command)}")
+            raise SystemExit(0)
+
+        result = subprocess.run(command, check=False)
+        raise SystemExit(0 if result.returncode == 0 else 1)
+except OSError:
+    print(
+        f'[agent-worktree-prune] Cannot safely acquire active lock guard: {shared_lock}',
+        file=sys.stderr,
+    )
+    raise SystemExit(10)
 PY
-  then
-    return 0
-  else
-    inspect_status=$?
-    if [[ "$inspect_status" -ne 1 ]]; then
-      echo "[agent-worktree-prune] Cannot safely inspect active locks: ${lock_file}" >&2
-      return 0
-    fi
-  fi
-
-  return 1
 }
 
 branch_idle_gate() {
@@ -851,15 +874,18 @@ process_entry() {
     return
   fi
 
-  if branch_has_active_file_locks "$branch" "$wt"; then
+  local remove_status=0
+  if remove_worktree_with_lock_guard "$branch" "$wt" "$remove_reason"; then
+    removed_worktrees=$((removed_worktrees + 1))
+  else
+    remove_status=$?
+    if [[ "$remove_status" -ne 10 ]]; then
+      exit "$remove_status"
+    fi
     skipped_active=$((skipped_active + 1))
     echo "[agent-worktree-prune] Skipping actively locked worktree: ${wt}"
     return
   fi
-
-  echo "[agent-worktree-prune] Removing worktree (${remove_reason}): ${wt}"
-  run_cmd git -C "$repo_root" worktree remove "$wt" --force
-  removed_worktrees=$((removed_worktrees + 1))
 
   if [[ -z "$branch" ]]; then
     return
