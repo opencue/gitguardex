@@ -78,8 +78,10 @@ function probeLiveProcessInWorktree(worktreePath, options = {}) {
             .readlinkSync(path.join(procRoot, entry.name, 'cwd'))
             .replace(/ \(deleted\)$/, '');
           if (pathContains(worktreePath, liveCwd)) return { supported: true, active: true };
-        } catch {
-          // Processes can exit or deny access while /proc is being scanned.
+        } catch (error) {
+          if (!['ENOENT', 'ESRCH'].includes(error.code)) {
+            return { supported: false, active: true };
+          }
         }
       }
       return { supported: true, active: false };
