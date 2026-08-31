@@ -716,10 +716,10 @@ function buildRepoVscodeSettings(existingSettings = {}) {
     ? existingSettings[REPO_SCAN_IGNORED_FOLDERS_SETTING]
     : [];
 
-  // Worktree files are often opened from the primary workspace. Letting VS Code
-  // auto-register each one as a separate SCM provider leaves a stale, endlessly
-  // syncing repository row when Guardex later prunes that worktree.
-  nextSettings['git.autoRepositoryDetection'] = false;
+  // Keep normal subfolder discovery, but do not auto-register a worktree just
+  // because one of its files was opened in the primary workspace. Otherwise
+  // pruning it can leave a stale, endlessly syncing SCM provider behind.
+  nextSettings['git.autoRepositoryDetection'] = 'subFolders';
   nextSettings[REPO_SCAN_IGNORED_FOLDERS_SETTING] = uniqueStringList([
     ...existingIgnoredFolders,
     ...MANAGED_REPO_SCAN_IGNORED_FOLDERS,

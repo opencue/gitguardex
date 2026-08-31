@@ -174,7 +174,7 @@ function assertZeroCopyManagedGitignore(content) {
 function assertManagedRepoVscodeSettings(settings) {
   assert.equal(typeof settings, 'object');
   assert.notEqual(settings, null);
-  assert.equal(settings['git.autoRepositoryDetection'], false);
+  assert.equal(settings['git.autoRepositoryDetection'], 'subFolders');
   assert.equal(Array.isArray(settings['git.repositoryScanIgnoredFolders']), true);
   assert.deepEqual(settings['git.repositoryScanIgnoredFolders'], [
     '.omx/agent-worktrees',
