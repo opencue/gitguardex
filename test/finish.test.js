@@ -1240,7 +1240,7 @@ exit 1
 `);
 
   const finish = runBranchFinish(
-    ['--target', repoDir, '--branch', 'agent/test-active-worktree-cleanup', '--base', 'dev', '--mode', 'pr', '--cleanup'],
+    ['--target', agentWorktreePath, '--base', 'dev', '--mode', 'pr', '--cleanup'],
     agentSubdir,
     { GUARDEX_GH_BIN: fakeGhPath },
   );

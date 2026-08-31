@@ -41,7 +41,7 @@ function prepareBranchFinishCleanup(argv, activeCwd) {
   try {
     const { target, passthrough } = extractTargetedArgs(finishArgs, activeCwd);
     const repoRoot = resolveRepoRoot(target);
-    const branch = flagValue(passthrough, '--branch') || currentBranchName(repoRoot);
+    const branch = flagValue(passthrough, '--branch') || currentBranchName(target);
     const worktreePath = listAgentWorktrees(repoRoot).find(
       (entry) => entry.branch === branch
     )?.worktreePath;
