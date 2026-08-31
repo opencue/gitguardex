@@ -600,7 +600,7 @@ lock_file, branch = sys.argv[1:]
 try:
     with open(lock_file, encoding='utf-8') as handle:
         state = json.load(handle)
-except (OSError, json.JSONDecodeError):
+except (OSError, UnicodeError, json.JSONDecodeError):
     raise SystemExit(2)
 
 if not isinstance(state, dict) or not isinstance(state.get('locks', {}), dict):
