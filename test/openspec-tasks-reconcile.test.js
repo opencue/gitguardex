@@ -122,19 +122,42 @@ test('branch finish enables reconciliation for both rebase and merge conflicts',
 });
 
 test('unions checkbox completion while preserving identical document structure', () => {
+  const base = '# Tasks\n\n- [ ] 1. First\n- [ ] 2. Second\n';
   const ours = '# Tasks\n\n- [x] 1. First\n- [ ] 2. Second\n';
   const theirs = '# Tasks\n\n- [ ] 1. First\n- [X] 2. Second\n';
-  assert.equal(mergeTaskDocuments(ours, theirs), '# Tasks\n\n- [x] 1. First\n- [x] 2. Second\n');
+  assert.equal(
+    mergeTaskDocuments(base, ours, theirs),
+    '# Tasks\n\n- [x] 1. First\n- [x] 2. Second\n'
+  );
+});
+
+test('preserves an intentional reopening while merging newly completed work', () => {
+  const base = '# Tasks\n\n- [x] 1. First\n- [ ] 2. Second\n';
+  const ours = '# Tasks\n\n- [ ] 1. First\n- [ ] 2. Second\n';
+  const theirs = '# Tasks\n\n- [x] 1. First\n- [x] 2. Second\n';
+  assert.equal(
+    mergeTaskDocuments(base, ours, theirs),
+    '# Tasks\n\n- [ ] 1. First\n- [x] 2. Second\n'
+  );
 });
 
 test('fails closed when checklist or evidence content diverges', () => {
   assert.throws(
-    () => mergeTaskDocuments('- [ ] 1. First\n', '- [ ] 1. Renamed\n'),
+    () =>
+      mergeTaskDocuments(
+        '- [ ] 1. First\n',
+        '- [ ] 1. First\n',
+        '- [ ] 1. Renamed\n'
+      ),
     /checklist text differs/
   );
   assert.throws(
     () =>
-      mergeTaskDocuments('- [ ] 1. First\nEvidence: ours\n', '- [ ] 1. First\nEvidence: theirs\n'),
+      mergeTaskDocuments(
+        '- [ ] 1. First\nEvidence: base\n',
+        '- [ ] 1. First\nEvidence: ours\n',
+        '- [ ] 1. First\nEvidence: theirs\n'
+      ),
     /non-checklist content differs/
   );
 });

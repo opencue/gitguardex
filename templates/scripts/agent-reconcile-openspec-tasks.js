@@ -12,34 +12,44 @@ function isOpenSpecTasksPath(filePath) {
   return TASKS_PATH.test(String(filePath || ''));
 }
 
-function mergeTaskDocuments(ours, theirs) {
+function mergeTaskDocuments(base, ours, theirs) {
+  const baseLines = String(base).split('\n');
   const oursLines = String(ours).split('\n');
   const theirsLines = String(theirs).split('\n');
-  if (oursLines.length !== theirsLines.length) {
+  if (baseLines.length !== oursLines.length || oursLines.length !== theirsLines.length) {
     throw new Error('task documents have different line counts');
   }
 
   let taskCount = 0;
   const merged = oursLines.map((oursLine, index) => {
+    const baseLine = baseLines[index];
     const theirsLine = theirsLines[index];
+    const baseTask = baseLine.match(TASK_LINE);
     const oursTask = oursLine.match(TASK_LINE);
     const theirsTask = theirsLine.match(TASK_LINE);
 
-    if (!oursTask && !theirsTask) {
-      if (oursLine !== theirsLine) {
+    if (!baseTask && !oursTask && !theirsTask) {
+      if (baseLine !== oursLine || oursLine !== theirsLine) {
         throw new Error(`non-checklist content differs at line ${index + 1}`);
       }
       return oursLine;
     }
-    if (!oursTask || !theirsTask) {
+    if (!baseTask || !oursTask || !theirsTask) {
       throw new Error(`checklist structure differs at line ${index + 1}`);
     }
-    if (`${oursTask[1]} ${oursTask[3]}` !== `${theirsTask[1]} ${theirsTask[3]}`) {
+    const baseText = `${baseTask[1]} ${baseTask[3]}`;
+    if (
+      baseText !== `${oursTask[1]} ${oursTask[3]}` ||
+      baseText !== `${theirsTask[1]} ${theirsTask[3]}`
+    ) {
       throw new Error(`checklist text differs at line ${index + 1}`);
     }
 
     taskCount += 1;
-    const checked = /x/i.test(oursTask[2]) || /x/i.test(theirsTask[2]);
+    const baseChecked = /x/i.test(baseTask[2]);
+    const oursChecked = /x/i.test(oursTask[2]);
+    const theirsChecked = /x/i.test(theirsTask[2]);
+    const checked = oursChecked === baseChecked ? theirsChecked : oursChecked;
     return `${oursTask[1]}${checked ? 'x' : ' '}${oursTask[3]}`;
   });
 
@@ -60,9 +70,10 @@ function reconcileFromIndex(worktree, filePath) {
   if (!isOpenSpecTasksPath(filePath)) {
     throw new Error(`unsupported conflict path: ${filePath}`);
   }
+  const base = readIndexStage(worktree, 1, filePath);
   const ours = readIndexStage(worktree, 2, filePath);
   const theirs = readIndexStage(worktree, 3, filePath);
-  const merged = mergeTaskDocuments(ours, theirs);
+  const merged = mergeTaskDocuments(base, ours, theirs);
   const destination = path.join(worktree, filePath);
   fs.writeFileSync(destination, merged);
   cp.execFileSync('git', ['-C', worktree, 'add', '--', filePath], { stdio: 'pipe' });
