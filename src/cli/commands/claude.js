@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
-const { resolveRepoRoot } = require('../../git');
+const { gitRun, resolveRepoRoot } = require('../../git');
 
 const SETTINGS_REL = '.claude/settings.json';
 const HOOKS_REL = '.claude/hooks';
@@ -363,45 +363,91 @@ function mcpServerSpec() {
   return MCP_SERVER_SPECS[MCP_SERVER_KEY];
 }
 
+function mcpSpecsMatch(actual, desired) {
+  return JSON.stringify(actual) === JSON.stringify(desired);
+}
+
+function missingManagedMcpServers(config) {
+  return Object.entries(MCP_SERVER_SPECS)
+    .filter(([key, desired]) => !mcpSpecsMatch(config?.mcpServers?.[key], desired))
+    .map(([key]) => key);
+}
+
+function resolveMcpStatePath(repoRoot) {
+  const result = gitRun(repoRoot, ['rev-parse', '--git-dir'], { allowFailure: true });
+  if (result.status !== 0 || !result.stdout.trim()) {
+    throw new Error(`Unable to resolve git metadata directory for ${repoRoot}`);
+  }
+  const gitDir = path.resolve(repoRoot, result.stdout.trim());
+  return path.join(gitDir, 'guardex', 'claude-mcp-state.json');
+}
+
 // Register the read-only `gx mcp` server in the target repo's .mcp.json so any
 // agent there can call list_agents / who_owns / my_context. Merges into an
 // existing .mcp.json without disturbing other servers; idempotent.
 function installMcpServer(repoRoot, { dryRun }) {
   const filePath = path.join(repoRoot, MCP_REL);
+  const statePath = resolveMcpStatePath(repoRoot);
   const fileExisted = fs.existsSync(filePath);
   const config = readJsonIfExists(filePath) || {};
   config.mcpServers = config.mcpServers || {};
-  const allCurrent = Object.entries(MCP_SERVER_SPECS).every(([key, desired]) =>
-    JSON.stringify(config.mcpServers[key]) === JSON.stringify(desired));
-  if (allCurrent) {
+  const missingServers = missingManagedMcpServers(config);
+  if (missingServers.length === 0) {
     return { status: 'unchanged', dest: filePath };
   }
-  const hasManagedServer = Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key]);
-  const status = hasManagedServer ? 'updated' : fileExisted ? 'merged' : 'created';
-  Object.assign(config.mcpServers, MCP_SERVER_SPECS);
+
+  const hadManagedServer = Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key]);
+  const state = readJsonIfExists(statePath) || { version: 1, servers: {} };
+  state.servers = state.servers || {};
+  for (const key of missingServers) {
+    if (!Object.prototype.hasOwnProperty.call(state.servers, key)) {
+      const hadPrevious = Object.prototype.hasOwnProperty.call(config.mcpServers, key);
+      state.servers[key] = {
+        hadPrevious,
+        ...(hadPrevious ? { previous: deepClone(config.mcpServers[key]) } : {}),
+      };
+    }
+    config.mcpServers[key] = deepClone(MCP_SERVER_SPECS[key]);
+  }
+
+  const status = hadManagedServer ? 'updated' : fileExisted ? 'merged' : 'created';
+  writeJson(statePath, state, { dryRun });
   writeJson(filePath, config, { dryRun });
-  return { status, dest: filePath };
+  return { status, dest: filePath, state: statePath };
 }
 
-// Inverse of installMcpServer: drop the gx server. Removes the whole .mcp.json
-// only when it held nothing but our server (no other servers AND no other
-// top-level keys); otherwise prunes just the gx entry and preserves the rest.
+// Restore the MCP values captured by installMcpServer. A server without a
+// matching ownership record is user-owned and must never be removed.
 function uninstallMcpServer(repoRoot, { dryRun }) {
   const filePath = path.join(repoRoot, MCP_REL);
+  const statePath = resolveMcpStatePath(repoRoot);
   const config = readJsonIfExists(filePath);
-  if (!config || !config.mcpServers
-    || !Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key])) {
+  const state = readJsonIfExists(statePath);
+  if (!config || !config.mcpServers || !state || !state.servers) {
     return { status: 'absent', dest: filePath };
   }
-  for (const key of Object.keys(MCP_SERVER_SPECS)) {
-    delete config.mcpServers[key];
+
+  let changed = false;
+  for (const [key, ownership] of Object.entries(state.servers)) {
+    const desired = MCP_SERVER_SPECS[key];
+    if (!desired || !mcpSpecsMatch(config.mcpServers[key], desired)) continue;
+    if (ownership.hadPrevious) {
+      config.mcpServers[key] = deepClone(ownership.previous);
+    } else {
+      delete config.mcpServers[key];
+    }
+    changed = true;
   }
-  const onlyOurs = Object.keys(config.mcpServers).length === 0 && Object.keys(config).length === 1;
+
+  const removeConfig = changed
+    && Object.keys(config.mcpServers).length === 0
+    && Object.keys(config).length === 1;
   if (!dryRun) {
-    if (onlyOurs) fs.unlinkSync(filePath);
-    else writeJson(filePath, config, { dryRun: false });
+    if (removeConfig) fs.unlinkSync(filePath);
+    else if (changed) writeJson(filePath, config, { dryRun: false });
+    fs.unlinkSync(statePath);
   }
-  return { status: onlyOurs ? 'removed' : 'pruned', dest: filePath };
+  return { status: removeConfig ? 'removed' : changed ? 'pruned' : 'preserved', dest: filePath };
 }
 
 function runInstall(rawArgs) {
@@ -518,9 +564,7 @@ function runCheck(rawArgs) {
 
   // MCP registration check
   const mcpConfig = readJsonIfExists(path.join(repoRoot, MCP_REL));
-  const missingMcpServers = Object.keys(MCP_SERVER_SPECS).filter(
-    (key) => !(mcpConfig && mcpConfig.mcpServers && mcpConfig.mcpServers[key]),
-  );
+  const missingMcpServers = missingManagedMcpServers(mcpConfig);
   if (missingMcpServers.length > 0) {
     issues.push({
       severity: 'warning',
@@ -704,6 +748,8 @@ module.exports = {
   MCP_REL,
   MCP_SERVER_KEY,
   MCP_SERVER_SPECS,
+  missingManagedMcpServers,
+  resolveMcpStatePath,
   MANAGED_AGENT_SKILLS,
   TEMPLATE_DEFAULT_SETTINGS,
   EXPECTED_HOOK_MATCHERS,

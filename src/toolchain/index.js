@@ -570,10 +570,10 @@ function backupGlobalAgentFile(filePath) {
   if (!fs.existsSync(filePath)) {
     return { status: 'absent', path: filePath };
   }
-  const backupPath = `${filePath}.guardex.bak`;
-  if (fs.existsSync(backupPath)) {
-    return { status: 'unchanged', path: backupPath };
-  }
+  const defaultBackupPath = `${filePath}.guardex.bak`;
+  const backupPath = fs.existsSync(defaultBackupPath)
+    ? `${filePath}.guardex.${Date.now()}.bak`
+    : defaultBackupPath;
   fs.copyFileSync(filePath, backupPath);
   return { status: 'created', path: backupPath };
 }

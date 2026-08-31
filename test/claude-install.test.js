@@ -224,6 +224,50 @@ test('installMcpServer is idempotent on a second run', () => {
   assert.equal(result.status, 'unchanged');
 });
 
+test('installMcpServer records and uninstall restores pre-existing managed server definitions', () => {
+  const repoRoot = makeRepo();
+  const customCodegraph = { command: '/custom/codegraph', args: ['mcp'] };
+  fs.writeFileSync(
+    path.join(repoRoot, claudeModule.MCP_REL),
+    `${JSON.stringify({ mcpServers: { codegraph: customCodegraph } }, null, 2)}\n`,
+  );
+
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const statePath = claudeModule.resolveMcpStatePath(repoRoot);
+  assert.equal(fs.existsSync(statePath), true);
+
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'pruned');
+  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
+  assert.deepEqual(config.mcpServers, { codegraph: customCodegraph });
+  assert.equal(fs.existsSync(statePath), false);
+});
+
+test('uninstallMcpServer preserves a managed server changed after installation', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  config.mcpServers.codegraph = { command: '/new/user/codegraph' };
+  fs.writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
+
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'pruned');
+  const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  assert.deepEqual(after.mcpServers.codegraph, { command: '/new/user/codegraph' });
+  assert.equal(after.mcpServers.gx, undefined);
+});
+
+test('missingManagedMcpServers rejects truthy but incorrect definitions', () => {
+  const missing = claudeModule.missingManagedMcpServers({
+    mcpServers: {
+      gx: { command: 'wrong' },
+      codegraph: { command: 'codegraph' },
+    },
+  });
+  assert.deepEqual(missing, ['gx', 'codegraph']);
+});
+
 test('installMcpServer dry-run does not write .mcp.json', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: true });
