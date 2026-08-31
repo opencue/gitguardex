@@ -11,6 +11,7 @@ ONLY_DIRTY_WORKTREES=0
 INCLUDE_CLEAN_LINKED_WORKTREES=0
 INCLUDE_PR_MERGED=0
 PRESERVE_OPEN_PRS=0
+PRUNE_STALE_LANES=0
 TARGET_BRANCH=""
 IDLE_MINUTES=0
 MAX_BRANCHES=0
@@ -23,6 +24,11 @@ PR_MERGED_LOOKUP_DISABLED=0
 PR_MERGED_LOOKUP_LOADED=0
 declare -A MERGED_PR_BRANCHES=()
 OPEN_PR_LOOKUP_UNAVAILABLE=0
+LANE_PR_LOOKUP_LOADED=0
+LANE_PR_LOOKUP_UNAVAILABLE=0
+declare -A LANE_PR_STATES=()
+declare -A LANE_PR_BASES=()
+declare -A LANE_PR_HEAD_SHAS=()
 WORKTREE_ROOT_RELS=(
   ".omx/agent-worktrees"
   ".omx/.tmp-worktrees"
@@ -73,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       PRESERVE_OPEN_PRS=1
       shift
       ;;
+    --prune-stale-lanes)
+      PRUNE_STALE_LANES=1
+      shift
+      ;;
     --branch)
       TARGET_BRANCH="${2:-}"
       shift 2
@@ -88,7 +98,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[agent-worktree-prune] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--preserve-open-prs] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
+      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--preserve-open-prs] [--prune-stale-lanes] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
       exit 1
       ;;
   esac
@@ -213,6 +223,84 @@ branch_has_merged_pr() {
   [[ -n "${MERGED_PR_BRANCHES[$branch]:-}" ]]
 }
 
+load_lane_pr_metadata() {
+  if [[ "$LANE_PR_LOOKUP_LOADED" -eq 1 ]]; then
+    [[ "$LANE_PR_LOOKUP_UNAVAILABLE" -eq 0 ]]
+    return
+  fi
+  LANE_PR_LOOKUP_LOADED=1
+  if ! command -v "$GH_BIN" >/dev/null 2>&1; then
+    LANE_PR_LOOKUP_UNAVAILABLE=1
+    return 1
+  fi
+
+  local rows=""
+  if ! rows="$(
+    cd "$repo_root" &&
+      "$GH_BIN" api --paginate 'repos/{owner}/{repo}/pulls?state=all&per_page=100' \
+        --jq '.[] | [.head.ref, .head.sha, (.head.repo.full_name // "-"), .base.ref, (if .merged_at then "MERGED" else (.state | ascii_upcase) end), .base.repo.full_name] | @tsv' 2>/dev/null
+  )"; then
+    LANE_PR_LOOKUP_UNAVAILABLE=1
+    return 1
+  fi
+
+  local head=""
+  local head_sha=""
+  local head_repo=""
+  local base=""
+  local state=""
+  local base_repo=""
+  local local_tip=""
+  local existing=""
+  while IFS=$'\t' read -r head head_sha head_repo base state base_repo; do
+    [[ "$head" == agent/* || "$head" == work/* ]] || continue
+    local_tip="$(git -C "$repo_root" rev-parse --verify "refs/heads/${head}^{commit}" 2>/dev/null || true)"
+    existing="${LANE_PR_STATES[$head]:-}"
+    if [[ "$state" == "OPEN" ]]; then
+      LANE_PR_STATES["$head"]="$state"
+      LANE_PR_BASES["$head"]="$base"
+      LANE_PR_HEAD_SHAS["$head"]="$head_sha"
+    elif [[ -n "$local_tip" && "$head_sha" == "$local_tip" && "${head_repo,,}" == "${base_repo,,}" && -z "$existing" ]]; then
+      LANE_PR_STATES["$head"]="$state"
+      LANE_PR_BASES["$head"]="$base"
+      LANE_PR_HEAD_SHAS["$head"]="$head_sha"
+    fi
+  done <<< "$rows"
+  return 0
+}
+
+lane_pr_state() {
+  local branch="$1"
+  load_lane_pr_metadata || return 1
+  printf '%s' "${LANE_PR_STATES[$branch]:-}"
+}
+
+lane_pr_base() {
+  local branch="$1"
+  load_lane_pr_metadata || return 1
+  printf '%s' "${LANE_PR_BASES[$branch]:-}"
+}
+
+classified_merged_pr_head() {
+  local branch="$1"
+  load_lane_pr_metadata || return 1
+  [[ "${LANE_PR_STATES[$branch]:-}" == "MERGED" ]] || return 1
+  local classified_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+  [[ -n "$classified_head" ]] || return 1
+  printf '%s' "$classified_head"
+}
+
+closed_pr_has_remote_recovery() {
+  local branch="$1"
+  load_lane_pr_metadata || return 1
+  [[ "${LANE_PR_STATES[$branch]:-}" == "CLOSED" ]] || return 1
+  local classified_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+  local remote_head=""
+  [[ -n "$classified_head" ]] || return 1
+  remote_head="$(git -C "$repo_root" ls-remote --heads origin "refs/heads/${branch}" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  [[ "$remote_head" == "$classified_head" ]]
+}
+
 should_preserve_open_pr_branch() {
   local branch="$1"
   local open_branch=""
@@ -220,6 +308,14 @@ should_preserve_open_pr_branch() {
     return 1
   fi
   OPEN_PR_LOOKUP_UNAVAILABLE=0
+  if [[ "$PRUNE_STALE_LANES" -eq 1 ]]; then
+    if ! load_lane_pr_metadata; then
+      OPEN_PR_LOOKUP_UNAVAILABLE=1
+      return 0
+    fi
+    [[ "${LANE_PR_STATES[$branch]:-}" == "OPEN" ]]
+    return
+  fi
   # This flag is used by unattended cleanup. If GitHub cannot prove the lane
   # has no open PR, fail closed and preserve it; a later doctor run can retry.
   if ! command -v "$GH_BIN" >/dev/null 2>&1; then
@@ -233,6 +329,28 @@ should_preserve_open_pr_branch() {
     return 0
   fi
   [[ -n "$open_branch" ]]
+}
+
+stale_lane_removal_reason() {
+  local branch="$1"
+  [[ "$PRUNE_STALE_LANES" -eq 1 ]] || return 1
+  load_lane_pr_metadata || return 1
+  local state="${LANE_PR_STATES[$branch]:-}"
+  local base="${LANE_PR_BASES[$branch]:-unknown}"
+  case "$state" in
+    MERGED)
+      printf 'merged-pr:%s' "$base"
+      ;;
+    CLOSED)
+      printf 'closed-pr:%s' "$base"
+      ;;
+    "")
+      printf 'stale-no-pr-worktree'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 if [[ "$BASE_BRANCH_EXPLICIT" -eq 1 && -z "$BASE_BRANCH" ]]; then
@@ -287,6 +405,18 @@ run_cmd() {
     return 0
   fi
   "$@"
+}
+
+delete_local_branch() {
+  local branch="$1"
+  local mode="$2"
+  local expected_head="${3:-}"
+  if [[ "$mode" == "force" ]]; then
+    [[ -n "$expected_head" ]] || return 1
+    run_cmd git -C "$repo_root" update-ref -d "refs/heads/${branch}" "$expected_head"
+    return
+  fi
+  run_cmd git -C "$repo_root" branch -d "$branch"
 }
 
 branch_has_worktree() {
@@ -599,6 +729,10 @@ process_entry() {
 
   local remove_reason=""
   local branch_delete_mode="safe"
+  local branch_delete_label="merged"
+  local delete_remote_branch=1
+  local remote_delete_head=""
+  local expected_branch_head=""
 
   if is_temporary_worktree_path "$wt"; then
     remove_reason="temporary-worktree"
@@ -606,14 +740,33 @@ process_entry() {
     remove_reason="detached-worktree"
   elif ! git -C "$repo_root" show-ref --verify --quiet "refs/heads/${branch}"; then
     remove_reason="missing-branch"
-  elif [[ "$branch" == agent/* ]]; then
-    if git -C "$repo_root" merge-base --is-ancestor "$branch" "$BASE_BRANCH"; then
+  elif [[ "$branch" == agent/* ]] || { [[ "$branch" == work/* ]] && is_managed_worktree_path "$wt"; }; then
+    if [[ "$PRUNE_STALE_LANES" -eq 1 ]]; then
+      load_lane_pr_metadata || true
+      remove_reason="$(stale_lane_removal_reason "$branch" || true)"
+      case "$remove_reason" in
+        merged-pr:*)
+          branch_delete_mode="force"
+          branch_delete_label="merged PR"
+          expected_branch_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+          ;;
+        closed-pr:*)
+          branch_delete_mode="force"
+          branch_delete_label="closed PR"
+          expected_branch_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+          # Force-deletion is authorized only after closed_pr_has_remote_recovery
+          # verifies the exact PR head is still durable on origin.
+          delete_remote_branch=0
+          ;;
+      esac
+    elif git -C "$repo_root" merge-base --is-ancestor "$branch" "$BASE_BRANCH"; then
       if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
         remove_reason="merged-agent-branch"
       fi
     elif [[ "$DELETE_BRANCHES" -eq 1 ]] && branch_has_merged_pr "$branch"; then
       remove_reason="merged-agent-pr"
       branch_delete_mode="force"
+      expected_branch_head="$(git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
     elif [[ "$ONLY_DIRTY_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
       remove_reason="clean-agent-worktree"
     fi
@@ -643,6 +796,11 @@ process_entry() {
     return
   fi
 
+  if [[ "$remove_reason" == closed-pr:* ]] && ! closed_pr_has_remote_recovery "$branch"; then
+    echo "[agent-worktree-prune] Skipping closed PR worktree without matching remote recovery branch: ${wt}" >&2
+    return
+  fi
+
   if ! reserve_branch_slot "$branch"; then
     echo "[agent-worktree-prune] Skipping branch limit worktree: ${branch} (${wt})"
     return
@@ -657,22 +815,23 @@ process_entry() {
   fi
 
   if git -C "$repo_root" show-ref --verify --quiet "refs/heads/${branch}" && ! branch_has_worktree "$branch"; then
-    if [[ "$branch" == agent/* && "$DELETE_BRANCHES" -eq 1 ]]; then
-      local delete_flag="-d"
-      local deleted_label="merged"
-      if [[ "$branch_delete_mode" == "force" ]]; then
-        delete_flag="-D"
-        deleted_label="merged PR"
+    if [[ ( "$branch" == agent/* || "$branch" == work/* ) && "$DELETE_BRANCHES" -eq 1 && "$remove_reason" != "stale-no-pr-worktree" ]]; then
+      local deleted_label="$branch_delete_label"
+      if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
+        remote_delete_head="$(classified_merged_pr_head "$branch" || git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
       fi
-      if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
+      if delete_local_branch "$branch" "$branch_delete_mode" "$expected_branch_head" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
         echo "[agent-worktree-prune] Deleted ${deleted_label} branch: ${branch}"
-        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 ]]; then
-          if git -C "$repo_root" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            run_cmd git -C "$repo_root" push origin --delete "$branch" >/dev/null 2>&1 || true
+        if [[ -n "$remote_delete_head" ]]; then
+          if run_cmd git -C "$repo_root" push --force-with-lease="refs/heads/${branch}:${remote_delete_head}" origin --delete "$branch" >/dev/null 2>&1; then
             echo "[agent-worktree-prune] Deleted ${deleted_label} remote branch: ${branch}"
+          else
+            echo "[agent-worktree-prune] Preserved advanced remote branch: ${branch}" >&2
           fi
         fi
+      elif [[ "$branch_delete_mode" == "force" ]]; then
+        echo "[agent-worktree-prune] Preserved advanced local branch: ${branch}" >&2
       fi
     elif [[ "$branch" == __agent_integrate_* || "$branch" == __source-probe-* ]]; then
       run_cmd git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1 || true
@@ -741,31 +900,65 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
     fi
     merged_by_ancestor=0
     merged_by_pr=0
+    closed_by_pr=0
+    pr_base=""
+    remote_delete_head=""
+    expected_branch_head=""
+    if [[ "$PRUNE_STALE_LANES" -eq 1 ]]; then
+      load_lane_pr_metadata || true
+      pr_state="${LANE_PR_STATES[$branch]:-}"
+      pr_base="${LANE_PR_BASES[$branch]:-}"
+      if [[ "$pr_state" == "MERGED" ]]; then
+        merged_by_pr=1
+        expected_branch_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+      elif [[ "$pr_state" == "CLOSED" ]]; then
+        closed_by_pr=1
+        expected_branch_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+      fi
+    fi
     if git -C "$repo_root" merge-base --is-ancestor "$branch" "$BASE_BRANCH"; then
       merged_by_ancestor=1
-    elif branch_has_merged_pr "$branch"; then
+    elif [[ "$PRUNE_STALE_LANES" -ne 1 ]] && branch_has_merged_pr "$branch"; then
       merged_by_pr=1
+      expected_branch_head="$(git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
     fi
-    if [[ "$merged_by_ancestor" -eq 1 || "$merged_by_pr" -eq 1 ]]; then
+    if [[ "$merged_by_ancestor" -eq 1 || "$merged_by_pr" -eq 1 || "$closed_by_pr" -eq 1 ]]; then
       if ! reserve_branch_slot "$branch"; then
         echo "[agent-worktree-prune] Skipping branch limit: ${branch}"
         continue
       fi
-      delete_flag="-d"
+      branch_delete_mode="safe"
       deleted_label="merged"
-      if [[ "$merged_by_pr" -eq 1 && "$merged_by_ancestor" -eq 0 ]]; then
-        delete_flag="-D"
-        deleted_label="merged PR"
+      delete_remote_branch=1
+      if [[ "$closed_by_pr" -eq 1 ]]; then
+        branch_delete_mode="force"
+        deleted_label="closed PR${pr_base:+ to ${pr_base}}"
+        # Match attached-worktree cleanup: force-delete only after verifying
+        # the exact remote PR head remains available for recovery.
+        delete_remote_branch=0
+      elif [[ "$merged_by_pr" -eq 1 && "$merged_by_ancestor" -eq 0 ]]; then
+        branch_delete_mode="force"
+        deleted_label="merged PR${pr_base:+ to ${pr_base}}"
       fi
-      if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
+      if [[ "$closed_by_pr" -eq 1 ]] && ! closed_pr_has_remote_recovery "$branch"; then
+        echo "[agent-worktree-prune] Skipping closed PR branch without matching remote recovery branch: ${branch}" >&2
+        continue
+      fi
+      if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
+        remote_delete_head="$(classified_merged_pr_head "$branch" || git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
+      fi
+      if delete_local_branch "$branch" "$branch_delete_mode" "$expected_branch_head" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
         echo "[agent-worktree-prune] Deleted stale ${deleted_label} branch: ${branch}"
-        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 ]]; then
-          if git -C "$repo_root" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            run_cmd git -C "$repo_root" push origin --delete "$branch" >/dev/null 2>&1 || true
+        if [[ -n "$remote_delete_head" ]]; then
+          if run_cmd git -C "$repo_root" push --force-with-lease="refs/heads/${branch}:${remote_delete_head}" origin --delete "$branch" >/dev/null 2>&1; then
             echo "[agent-worktree-prune] Deleted stale ${deleted_label} remote branch: ${branch}"
+          else
+            echo "[agent-worktree-prune] Preserved advanced remote branch: ${branch}" >&2
           fi
         fi
+      elif [[ "$branch_delete_mode" == "force" ]]; then
+        echo "[agent-worktree-prune] Preserved advanced local branch: ${branch}" >&2
       fi
     fi
   done < <(git -C "$repo_root" for-each-ref --format='%(refname:short)' refs/heads)

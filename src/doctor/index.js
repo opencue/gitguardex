@@ -1098,12 +1098,10 @@ function pruneStaleAgentWorktrees(repoRoot, options = {}) {
 
   const args = [
     '--idle-minutes', String(idleMinutes),
-    // Doctor is an unattended repair command, not an explicit request to
-    // discard a lane. Limit its sweep to worktrees that are already merged or
-    // structurally stale. A clean but unmerged lane may be the only convenient
-    // recovery point after a blocked/conflicting PR, so pruning it here makes a
-    // failed finish destructive. Operators can still opt into that behavior
-    // explicitly with `gx cleanup --prune-clean-worktrees`.
+    // Doctor may retire clean inactive lanes after the grace period, but the
+    // prune asset must classify them from PR metadata first. Open PRs, dirty
+    // worktrees, and live processes remain fail-closed recovery points.
+    '--prune-stale-lanes',
     '--preserve-open-prs',
     '--delete-branches',
     '--delete-remote-branches',
