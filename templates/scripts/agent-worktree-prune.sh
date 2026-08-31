@@ -236,8 +236,9 @@ load_lane_pr_metadata() {
 
   local rows=""
   if ! rows="$(
-    "$GH_BIN" api --paginate 'repos/{owner}/{repo}/pulls?state=all&per_page=100' \
-      --jq '.[] | [.head.ref, .head.sha, (.head.repo.full_name // "-"), .base.ref, (if .merged_at then "MERGED" else (.state | ascii_upcase) end), .base.repo.full_name] | @tsv' 2>/dev/null
+    cd "$repo_root" &&
+      "$GH_BIN" api --paginate 'repos/{owner}/{repo}/pulls?state=all&per_page=100' \
+        --jq '.[] | [.head.ref, .head.sha, (.head.repo.full_name // "-"), .base.ref, (if .merged_at then "MERGED" else (.state | ascii_upcase) end), .base.repo.full_name] | @tsv' 2>/dev/null
   )"; then
     LANE_PR_LOOKUP_UNAVAILABLE=1
     return 1
@@ -259,8 +260,7 @@ load_lane_pr_metadata() {
       LANE_PR_STATES["$head"]="$state"
       LANE_PR_BASES["$head"]="$base"
       LANE_PR_HEAD_SHAS["$head"]="$head_sha"
-    elif [[ -n "$local_tip" && "$head_sha" == "$local_tip" && "${head_repo,,}" == "${base_repo,,}" && "$existing" != "OPEN" ]] && \
-      { [[ -z "$existing" ]] || [[ "$state" == "MERGED" && "$existing" == "CLOSED" ]]; }; then
+    elif [[ -n "$local_tip" && "$head_sha" == "$local_tip" && "${head_repo,,}" == "${base_repo,,}" && -z "$existing" ]]; then
       LANE_PR_STATES["$head"]="$state"
       LANE_PR_BASES["$head"]="$base"
       LANE_PR_HEAD_SHAS["$head"]="$head_sha"

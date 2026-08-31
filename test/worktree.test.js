@@ -114,6 +114,7 @@ test('worktree prune retires closed PR lanes locally but preserves their remote 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${branch}" "${headSha}" recodeee/gitguardex main CLOSED recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${branch}" "${headSha}" recodeee/gitguardex main MERGED recodeee/gitguardex
   exit 0
 fi
 exit 0
