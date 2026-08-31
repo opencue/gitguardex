@@ -265,6 +265,11 @@ function scheduleFinishedDetachedWorktreeCleanup(plan, options = {}) {
         stdio: 'ignore'
       }
     );
+    child.once('error', (error) => {
+      console.error(
+        `[${TOOL_NAME}] Warning: deferred cleanup worker failed to start: ${error.message}`
+      );
+    });
     child.unref();
     console.log(
       `[${TOOL_NAME}] Scheduled finished worktree cleanup after active processes leave: ${plan.worktreePath}`

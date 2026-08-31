@@ -60,6 +60,7 @@ const {
   sanitizeSlug,
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
+const { EventEmitter } = require('node:events');
 const { createEventStream } = require('../src/finish/progress');
 const {
   captureWorktreeIdentity,
@@ -153,6 +154,33 @@ test('post-finish cleanup does not spawn an unmonitorable deferred worker', () =
   );
   assert.equal(scheduled, false);
   assert.equal(spawned, false);
+});
+
+test('post-finish cleanup handles an asynchronous deferred worker spawn failure', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-cleanup-spawn-repo-'));
+  const worktreePath = fs.mkdtempSync(path.join(repoRoot, 'worktree-'));
+  const gitDir = fs.mkdtempSync(path.join(repoRoot, 'gitdir-'));
+  const child = new EventEmitter();
+  child.unref = () => {};
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    assert.equal(
+      scheduleFinishedDetachedWorktreeCleanup(
+        { repoRoot, worktreePath },
+        {
+          procRoot: '',
+          runner: (command) =>
+            command === 'git' ? { status: 0, stdout: gitDir } : { status: 1, stdout: '' },
+          spawn: () => child,
+        },
+      ),
+      true,
+    );
+    assert.doesNotThrow(() => child.emit('error', new Error('EAGAIN')));
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test('post-finish cleanup rejects a replacement created at the original worktree path', () => {
