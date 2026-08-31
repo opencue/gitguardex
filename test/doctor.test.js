@@ -1536,6 +1536,8 @@ test('gx doctor never force-deletes reused lanes that advanced beyond historical
   const reusedWorktree = path.join(worktreeRoot, 'reused-after-merge-worktree');
   const advancedBranch = 'work/advanced-after-close';
   const advancedWorktree = path.join(worktreeRoot, 'advanced-after-close-worktree');
+  const forkBranch = 'agent/claude/fork-closed-same-tip';
+  const forkWorktree = path.join(worktreeRoot, 'fork-closed-same-tip-worktree');
 
   let result = runHumanCmd('git', ['worktree', 'add', '-b', reusedBranch, reusedWorktree, 'main'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -1551,10 +1553,16 @@ test('gx doctor never force-deletes reused lanes that advanced beyond historical
   result = runHumanCmd('git', ['worktree', 'remove', advancedWorktree], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
+  result = runHumanCmd('git', ['worktree', 'add', '-b', forkBranch, forkWorktree, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(forkWorktree, 'fork.txt', 'same tip as closed fork PR\n', 'closed fork lane work');
+  const forkPrHeadSha = runHumanCmd('git', ['rev-parse', forkBranch], repoDir).stdout.trim();
+
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${reusedBranch}" "${mergedPrHeadSha}" recodeee/gitguardex main MERGED recodeee/gitguardex
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${advancedBranch}" "${closedPrHeadSha}" recodeee/gitguardex main CLOSED recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${forkBranch}" "${forkPrHeadSha}" contributor/gitguardex-fork main CLOSED recodeee/gitguardex
   exit 0
 fi
 exit 0
@@ -1574,6 +1582,7 @@ exit 0
   const combined = `${result.stdout}\n${result.stderr}`;
   assert.match(combined, /Removing worktree \(stale-no-pr-worktree\)/);
   assert.equal(fs.existsSync(reusedWorktree), false, 'stale reused worktree should be removed');
+  assert.equal(fs.existsSync(forkWorktree), false, 'closed fork PR must not authorize destructive lane cleanup');
   assert.equal(
     runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${reusedBranch}`], repoDir).status,
     0,
@@ -1583,6 +1592,11 @@ exit 0
     runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${advancedBranch}`], repoDir).status,
     0,
     'advanced branch without a worktree must be preserved',
+  );
+  assert.equal(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${forkBranch}`], repoDir).status,
+    0,
+    'closed fork PR must not authorize deleting a same-named base-repository branch',
   );
 });
 

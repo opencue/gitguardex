@@ -257,7 +257,7 @@ load_lane_pr_metadata() {
     if [[ "$state" == "OPEN" ]]; then
       LANE_PR_STATES["$head"]="$state"
       LANE_PR_BASES["$head"]="$base"
-    elif [[ -n "$local_tip" && "$head_sha" == "$local_tip" && "$existing" != "OPEN" ]] && \
+    elif [[ -n "$local_tip" && "$head_sha" == "$local_tip" && "${head_repo,,}" == "${base_repo,,}" && "$existing" != "OPEN" ]] && \
       { [[ -z "$existing" ]] || [[ "$state" == "MERGED" && "$existing" == "CLOSED" ]]; }; then
       LANE_PR_STATES["$head"]="$state"
       LANE_PR_BASES["$head"]="$base"
