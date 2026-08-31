@@ -1099,7 +1099,9 @@ function branchExists(repoRoot, branch) {
  */
 function resolveFinishBaseBranch(repoRoot, sourceBranch, explicitBase) {
   if (explicitBase) {
-    if (sourceBranch) {
+    const explicitBaseExists = branchExists(repoRoot, explicitBase)
+      || gitRefExists(repoRoot, `refs/remotes/origin/${explicitBase}`);
+    if (sourceBranch && explicitBaseExists) {
       gitRun(repoRoot, ['config', `branch.${sourceBranch}.guardexBase`, explicitBase]);
     }
     return explicitBase;
