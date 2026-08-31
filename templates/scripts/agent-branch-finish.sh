@@ -152,12 +152,6 @@ resolve_preflight_script() {
   if [[ -z "$configured" ]]; then
     configured="scripts/agent-preflight.sh"
   fi
-  if [[ "$configured" = /* ]]; then
-    if [[ -x "$configured" ]]; then
-      printf '%s' "$configured"
-    fi
-    return 0
-  fi
   if [[ "${PREFLIGHT_REQUIRED:-0}" -eq 1 ]]; then
     configured="${configured#./}"
     if [[ -z "$configured" || "$configured" == ".." || "$configured" == ../*
@@ -177,6 +171,12 @@ resolve_preflight_script() {
       fi
     fi
     rm -rf -- "$trusted_tree"
+    return 0
+  fi
+  if [[ "$configured" = /* ]]; then
+    if [[ -x "$configured" ]]; then
+      printf '%s' "$configured"
+    fi
     return 0
   fi
   local candidate="${worktree}/${configured}"

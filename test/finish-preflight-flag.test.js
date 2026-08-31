@@ -87,6 +87,11 @@ test('a billing waiver makes local preflight mandatory and fail-closed', () => {
     'mandatory preflight resolution must happen before the untrusted worktree fallback',
   );
   assert.ok(
+    script.indexOf('if [[ "${PREFLIGHT_REQUIRED:-0}" -eq 1 ]]')
+      < script.indexOf('if [[ "$configured" = /* ]]'),
+    'mandatory preflight resolution must happen before the optional absolute-path fallback',
+  );
+  assert.ok(
     script.includes('( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" )'),
     'a mandatory preflight must execute from its trusted tree while receiving the target worktree explicitly',
   );
