@@ -385,7 +385,7 @@ def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | No
     except subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
-        return False
+        return None
     pane_cwd = Path(result.stdout.strip())
     if not result.stdout.strip() or not pane_cwd.exists():
         return False

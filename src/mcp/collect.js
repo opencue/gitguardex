@@ -133,7 +133,7 @@ function paneStillOwnsBranch(mainRoot, pane, branch) {
     { encoding: 'utf8', timeout: 3000, maxBuffer: 1024 * 1024 },
   );
   if (result.error) return null;
-  if (!result || result.status !== 0) return false;
+  if (!result || result.status !== 0) return null;
   const paneCwd = (result.stdout || '').trim();
   if (!paneCwd || !fs.existsSync(paneCwd)) return false;
   const paneRepoRoot = mainRepoRoot(paneCwd);
