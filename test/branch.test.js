@@ -167,6 +167,13 @@ test('agent-branch-start repairs missing base metadata when reusing with an expl
   const storedBase = runCmd('git', ['config', '--get', `branch.${branch}.guardexBase`], repoDir);
   assert.equal(storedBase.status, 0, storedBase.stderr || storedBase.stdout);
   assert.equal(storedBase.stdout.trim(), 'dev');
+
+  result = runBranchStart(['--tier', 'T1', '--base', 'missing-base', 'retry metadata repair', 'bot'], worktree);
+  assert.notEqual(result.status, 0, 'a missing explicit base must fail before overwriting metadata');
+  assert.match(result.stderr, /Base branch not found locally or on origin: missing-base/);
+  const preservedBase = runCmd('git', ['config', '--get', `branch.${branch}.guardexBase`], repoDir);
+  assert.equal(preservedBase.status, 0, preservedBase.stderr || preservedBase.stdout);
+  assert.equal(preservedBase.stdout.trim(), 'dev');
 });
 
 test('agent-branch-start reuses a single dirty matching managed worktree from the protected checkout', () => {

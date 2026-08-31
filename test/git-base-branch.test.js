@@ -43,12 +43,27 @@ test('resolveFinishBaseBranch persists an explicit base for a restarted finish',
   const branch = 'agent/codex/restored-lane';
   let result = runHumanCmd('git', ['config', 'multiagent.baseBranch', 'ksskkfb02'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['branch', 'ksskkfb03'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   assert.equal(resolveFinishBaseBranch(repoDir, branch, 'ksskkfb03'), 'ksskkfb03');
   result = runHumanCmd('git', ['config', '--get', `branch.${branch}.guardexBase`], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.stdout.trim(), 'ksskkfb03');
   assert.equal(resolveFinishBaseBranch(repoDir, branch), 'ksskkfb03');
+});
+
+test('resolveFinishBaseBranch preserves valid metadata when an explicit base does not exist', () => {
+  const repoDir = initRepo({ branch: 'main' });
+  seedCommit(repoDir);
+  const branch = 'agent/codex/restored-lane';
+  let result = runHumanCmd('git', ['config', `branch.${branch}.guardexBase`, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  assert.equal(resolveFinishBaseBranch(repoDir, branch, 'missing-base'), 'missing-base');
+  result = runHumanCmd('git', ['config', '--get', `branch.${branch}.guardexBase`], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), 'main');
 });
 
 test('resolveFinishBaseBranch does not persist a repo fallback as branch metadata', () => {

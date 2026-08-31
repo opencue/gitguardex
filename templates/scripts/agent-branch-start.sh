@@ -436,6 +436,11 @@ print_reused_agent_worktree() {
   local stored_base=""
 
   if [[ "$BASE_BRANCH_EXPLICIT" -eq 1 ]]; then
+    if ! git -C "$repo_root" show-ref --verify --quiet "refs/heads/${BASE_BRANCH}" \
+      && ! git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
+      echo "[agent-branch-start] Base branch not found locally or on origin: ${BASE_BRANCH}" >&2
+      return 1
+    fi
     if ! git -C "$repo_root" config "branch.${branch_name}.guardexBase" "$BASE_BRANCH"; then
       echo "[agent-branch-start] Failed to persist base '${BASE_BRANCH}' for reused branch '${branch_name}'." >&2
       return 1
