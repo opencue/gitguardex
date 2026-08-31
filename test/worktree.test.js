@@ -511,7 +511,13 @@ test('worktree prune serializes removal with Guardex lock claims', async () => {
     prune.once('close', resolve);
   });
   assert.equal(pruneStatus, 0, stderr || stdout);
-  assert.equal(holder.exitCode, 0, 'lock holder should release the shared Guardex mutex');
+  const holderStatus = holder.exitCode !== null
+    ? holder.exitCode
+    : await new Promise((resolve, reject) => {
+      holder.once('error', reject);
+      holder.once('close', resolve);
+    });
+  assert.equal(holderStatus, 0, 'lock holder should release the shared Guardex mutex');
   assert.equal(fs.existsSync(worktreePath), false, 'worktree should be pruned after mutex release');
 });
 
