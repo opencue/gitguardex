@@ -143,12 +143,7 @@ test('preserves an intentional reopening while merging newly completed work', ()
 
 test('fails closed when checklist or evidence content diverges', () => {
   assert.throws(
-    () =>
-      mergeTaskDocuments(
-        '- [ ] 1. First\n',
-        '- [ ] 1. First\n',
-        '- [ ] 1. Renamed\n'
-      ),
+    () => mergeTaskDocuments('- [ ] 1. First\n', '- [ ] 1. First\n', '- [ ] 1. Renamed\n'),
     /checklist text differs/
   );
   assert.throws(
