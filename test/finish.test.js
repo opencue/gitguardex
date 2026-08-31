@@ -65,6 +65,8 @@ const {
   hasLiveProcessInWorktree,
   hasUnsafeWorktreeChanges,
   isManagedAgentWorktree,
+  probeLiveProcessInWorktree,
+  scheduleFinishedDetachedWorktreeCleanup,
 } = require('../src/finish/post-branch-finish-cleanup');
 
 test('post-finish cleanup preserves ignored user data but permits generated agent directories', () => {
@@ -88,6 +90,47 @@ test('post-finish cleanup detects a process cwd inside the worktree', () => {
   fs.unlinkSync(path.join(procRoot, '101', 'cwd'));
   fs.symlinkSync(outsidePath, path.join(procRoot, '101', 'cwd'));
   assert.equal(hasLiveProcessInWorktree(worktreePath, procRoot), false);
+});
+
+test('post-finish cleanup uses lsof when proc cwd inspection is unavailable', () => {
+  const worktreePath = path.join(path.sep, 'tmp', 'repo', '.omx', 'agent-worktrees', 'agent__one');
+  const liveProbe = probeLiveProcessInWorktree(worktreePath, {
+    procRoot: '',
+    runner: () => ({ status: 0, stdout: `p101\nn${path.join(worktreePath, 'nested')}\n` }),
+  });
+  assert.deepEqual(liveProbe, { supported: true, active: true });
+  assert.deepEqual(
+    probeLiveProcessInWorktree(worktreePath, {
+      procRoot: '',
+      runner: () => ({ status: 1, stdout: '' }),
+    }),
+    { supported: true, active: false },
+  );
+  assert.deepEqual(
+    probeLiveProcessInWorktree(worktreePath, {
+      procRoot: '',
+      runner: () => ({ status: 127, stdout: '' }),
+    }),
+    { supported: false, active: true },
+  );
+});
+
+test('post-finish cleanup does not spawn an unmonitorable deferred worker', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-cleanup-repo-'));
+  const worktreePath = fs.mkdtempSync(path.join(repoRoot, 'worktree-'));
+  let spawned = false;
+  const scheduled = scheduleFinishedDetachedWorktreeCleanup(
+    { repoRoot, worktreePath },
+    {
+      procRoot: '',
+      runner: () => ({ status: 127, stdout: '' }),
+      spawn: () => {
+        spawned = true;
+      },
+    },
+  );
+  assert.equal(scheduled, false);
+  assert.equal(spawned, false);
 });
 
 test('post-finish cleanup only targets GitGuardex-managed agent worktrees', () => {

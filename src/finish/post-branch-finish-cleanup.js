@@ -65,29 +65,47 @@ function hasUnsafeWorktreeChanges(output) {
     });
 }
 
-function hasLiveProcessInWorktree(
-  worktreePath,
-  procRoot = process.platform === 'linux' ? '/proc' : ''
-) {
-  if (!procRoot || !fs.existsSync(procRoot)) return true;
+function probeLiveProcessInWorktree(worktreePath, options = {}) {
+  const procRoot = options.procRoot ?? (process.platform === 'linux' ? '/proc' : '');
+  const runner = options.runner || run;
 
-  try {
-    for (const entry of fs.readdirSync(procRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-      try {
-        const liveCwd = fs
-          .readlinkSync(path.join(procRoot, entry.name, 'cwd'))
-          .replace(/ \(deleted\)$/, '');
-        if (pathContains(worktreePath, liveCwd)) return true;
-      } catch {
-        // Processes can exit or deny access while /proc is being scanned.
+  if (procRoot && fs.existsSync(procRoot)) {
+    try {
+      for (const entry of fs.readdirSync(procRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+        try {
+          const liveCwd = fs
+            .readlinkSync(path.join(procRoot, entry.name, 'cwd'))
+            .replace(/ \(deleted\)$/, '');
+          if (pathContains(worktreePath, liveCwd)) return { supported: true, active: true };
+        } catch {
+          // Processes can exit or deny access while /proc is being scanned.
+        }
       }
+      return { supported: true, active: false };
+    } catch {
+      return { supported: false, active: true };
     }
-  } catch {
-    return true;
   }
 
-  return false;
+  const lsof = runner('lsof', ['-a', '-d', 'cwd', '-Fn'], {
+    cwd: path.dirname(worktreePath)
+  });
+  if (![0, 1].includes(lsof.status)) return { supported: false, active: true };
+  const active = String(lsof.stdout || '')
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('n'))
+    .map((line) => line.slice(1).replace(/ \(deleted\)$/, ''))
+    .some((liveCwd) => pathContains(worktreePath, liveCwd));
+  return { supported: true, active };
+}
+
+function hasLiveProcessInWorktree(
+  worktreePath,
+  procRoot = process.platform === 'linux' ? '/proc' : '',
+  runner = run
+) {
+  return probeLiveProcessInWorktree(worktreePath, { procRoot, runner }).active;
 }
 
 function prepareBranchFinishCleanup(argv, activeCwd) {
@@ -162,16 +180,27 @@ function cleanupFinishedDetachedWorktree(plan) {
   }
 }
 
-function scheduleFinishedDetachedWorktreeCleanup(plan) {
+function scheduleFinishedDetachedWorktreeCleanup(plan, options = {}) {
   if (!plan || !fs.existsSync(plan.worktreePath)) return false;
 
   try {
+    const probe = probeLiveProcessInWorktree(plan.worktreePath, options);
+    if (!probe.supported) {
+      console.error(
+        `[${TOOL_NAME}] Warning: cannot safely monitor the finished worktree; deferred cleanup was not started: ${plan.worktreePath}`
+      );
+      return false;
+    }
     const payload = Buffer.from(JSON.stringify(plan), 'utf8').toString('base64url');
-    const child = cp.spawn(process.execPath, [__filename, '--deferred-worker', payload], {
-      cwd: plan.repoRoot,
-      detached: true,
-      stdio: 'ignore'
-    });
+    const child = (options.spawn || cp.spawn)(
+      process.execPath,
+      [__filename, '--deferred-worker', payload],
+      {
+        cwd: plan.repoRoot,
+        detached: true,
+        stdio: 'ignore'
+      }
+    );
     child.unref();
     console.log(
       `[${TOOL_NAME}] Scheduled finished worktree cleanup after active processes leave: ${plan.worktreePath}`
@@ -186,11 +215,13 @@ function scheduleFinishedDetachedWorktreeCleanup(plan) {
 }
 
 async function runDeferredCleanupWorker(plan, options = {}) {
-  const attempts = options.attempts || Number.POSITIVE_INFINITY;
-  const intervalMs = options.intervalMs || 1000;
+  const attempts = options.attempts ?? Number.POSITIVE_INFINITY;
+  const intervalMs = options.intervalMs ?? 1000;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!fs.existsSync(plan.worktreePath)) return true;
-    if (!hasLiveProcessInWorktree(plan.worktreePath)) {
+    const probe = probeLiveProcessInWorktree(plan.worktreePath, options);
+    if (!probe.supported) return false;
+    if (!probe.active) {
       return cleanupFinishedDetachedWorktree(plan);
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -203,6 +234,7 @@ module.exports = {
   hasUnsafeWorktreeChanges,
   hasLiveProcessInWorktree,
   isManagedAgentWorktree,
+  probeLiveProcessInWorktree,
   prepareBranchFinishCleanup,
   runDeferredCleanupWorker,
   scheduleFinishedDetachedWorktreeCleanup
