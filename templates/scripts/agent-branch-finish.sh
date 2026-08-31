@@ -154,7 +154,7 @@ resolve_preflight_script() {
   fi
   if [[ "${PREFLIGHT_REQUIRED:-0}" -eq 1 ]]; then
     configured="${configured#./}"
-    if [[ -z "$configured" || "$configured" == ".." || "$configured" == ../*
+    if [[ -z "$configured" || "$configured" = /* || "$configured" == ".." || "$configured" == ../*
       || "$configured" == */../* || "$configured" == */.. ]]; then
       return 0
     fi
