@@ -10,6 +10,7 @@ DELETE_REMOTE_BRANCHES=0
 ONLY_DIRTY_WORKTREES=0
 INCLUDE_CLEAN_LINKED_WORKTREES=0
 INCLUDE_PR_MERGED=0
+PRESERVE_OPEN_PRS=0
 TARGET_BRANCH=""
 IDLE_MINUTES=0
 MAX_BRANCHES=0
@@ -21,6 +22,7 @@ GH_BIN="${GUARDEX_GH_BIN:-gh}"
 PR_MERGED_LOOKUP_DISABLED=0
 PR_MERGED_LOOKUP_LOADED=0
 declare -A MERGED_PR_BRANCHES=()
+OPEN_PR_LOOKUP_UNAVAILABLE=0
 WORKTREE_ROOT_RELS=(
   ".omx/agent-worktrees"
   ".omx/.tmp-worktrees"
@@ -67,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_PR_MERGED=1
       shift
       ;;
+    --preserve-open-prs)
+      PRESERVE_OPEN_PRS=1
+      shift
+      ;;
     --branch)
       TARGET_BRANCH="${2:-}"
       shift 2
@@ -82,7 +88,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[agent-worktree-prune] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
+      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--preserve-open-prs] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
       exit 1
       ;;
   esac
@@ -205,6 +211,28 @@ branch_has_merged_pr() {
   fi
   load_merged_pr_branches || return 1
   [[ -n "${MERGED_PR_BRANCHES[$branch]:-}" ]]
+}
+
+should_preserve_open_pr_branch() {
+  local branch="$1"
+  local open_branch=""
+  if [[ "$PRESERVE_OPEN_PRS" -ne 1 ]]; then
+    return 1
+  fi
+  OPEN_PR_LOOKUP_UNAVAILABLE=0
+  # This flag is used by unattended cleanup. If GitHub cannot prove the lane
+  # has no open PR, fail closed and preserve it; a later doctor run can retry.
+  if ! command -v "$GH_BIN" >/dev/null 2>&1; then
+    OPEN_PR_LOOKUP_UNAVAILABLE=1
+    return 0
+  fi
+  if ! open_branch="$(
+    "$GH_BIN" pr list --state open --head "$branch" --limit 1 --json headRefName --jq '.[0].headRefName // ""' 2>/dev/null
+  )"; then
+    OPEN_PR_LOOKUP_UNAVAILABLE=1
+    return 0
+  fi
+  [[ -n "$open_branch" ]]
 }
 
 if [[ "$BASE_BRANCH_EXPLICIT" -eq 1 && -z "$BASE_BRANCH" ]]; then
@@ -514,6 +542,7 @@ removed_worktrees=0
 removed_branches=0
 skipped_active=0
 skipped_dirty=0
+skipped_open_pr=0
 processed_branches=0
 skipped_limited=0
 
@@ -556,6 +585,15 @@ process_entry() {
   if has_live_process_in_worktree "$wt"; then
     skipped_active=$((skipped_active + 1))
     echo "[agent-worktree-prune] Skipping live process worktree: ${wt}"
+    return
+  fi
+  if [[ "$branch" == agent/* ]] && should_preserve_open_pr_branch "$branch"; then
+    skipped_open_pr=$((skipped_open_pr + 1))
+    if [[ "$OPEN_PR_LOOKUP_UNAVAILABLE" -eq 1 ]]; then
+      echo "[agent-worktree-prune] Skipping open-PR worktree because PR state is unavailable (fail closed): ${wt}"
+    else
+      echo "[agent-worktree-prune] Skipping open-PR worktree: ${wt}"
+    fi
     return
   fi
 
@@ -689,6 +727,15 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
     if [[ "$branch" != agent/* && "$branch" != work/* ]]; then
       continue
     fi
+    if [[ "$branch" == agent/* ]] && should_preserve_open_pr_branch "$branch"; then
+      skipped_open_pr=$((skipped_open_pr + 1))
+      if [[ "$OPEN_PR_LOOKUP_UNAVAILABLE" -eq 1 ]]; then
+        echo "[agent-worktree-prune] Skipping open-PR branch because PR state is unavailable (fail closed): ${branch}"
+      else
+        echo "[agent-worktree-prune] Skipping open-PR branch: ${branch}"
+      fi
+      continue
+    fi
     if ! branch_idle_gate "$branch" "" "stale-merged-branch"; then
       continue
     fi
@@ -726,7 +773,7 @@ fi
 
 run_cmd git -C "$repo_root" worktree prune
 
-echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_recent=${skipped_recent}, skipped_limited=${skipped_limited}"
+echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_open_pr=${skipped_open_pr}, skipped_recent=${skipped_recent}, skipped_limited=${skipped_limited}"
 if [[ "$relocated_foreign" -gt 0 || "$skipped_foreign" -gt 0 ]]; then
   echo "[agent-worktree-prune] Foreign routing: relocated=${relocated_foreign}, skipped=${skipped_foreign}"
 fi
