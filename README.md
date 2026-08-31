@@ -20,6 +20,7 @@
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#the-problem">Why</a> ·
+  <a href="#what-gitguardex-can-do">Capabilities</a> ·
   <a href="#daily-workflow">Workflow</a> ·
   <a href="#code-assist-review-gate">Code assist</a> ·
   <a href="#essential-commands">Commands</a>
@@ -56,19 +57,25 @@ Linux; use WSL on Windows.
 Parallel agents can edit the same files, overwrite tests, or commit directly to
 `main`. More agents can create more conflicts instead of more progress.
 
-### Solution
+### What GitGuardex can do
 
 ![Agent branch/worktree start protocol](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/workflow-branch-start.svg)
 
 GitGuardex gives every task an isolated lane:
 
-| Guard | Result |
+| Capability | Result |
 | --- | --- |
 | Separate `agent/*` branch + worktree | Agents do not share a working directory. |
-| Explicit file locks | Other lanes cannot overwrite claimed files. |
+| Shared file locks | Independent lanes and clones coordinate ownership before editing. |
 | Protected `main` / `dev` / `master` | Agent changes must go through a PR. |
 | Preflight + CI + optional AI review | Broken or risky changes stop before merge. |
-| Finish + cleanup | The PR merges and the temporary lane is removed. |
+| Safe finish + cleanup | The PR merges, then its temporary branch and worktree are removed. |
+| Fail-closed lane cleanup | Dirty, locked, open-PR, blocked, or uncertain lanes are preserved; idle clean worktrees can be closed without deleting their branches. ([#741](https://github.com/opencue/gitguardex/pull/741), [#744](https://github.com/opencue/gitguardex/pull/744), [#746](https://github.com/opencue/gitguardex/pull/746), [#752](https://github.com/opencue/gitguardex/pull/752)) |
+| Correct per-lane finish target | Explicit base branches are persisted and validated, and unattended finish uses the lane's recorded base instead of another checkout's base. ([#745](https://github.com/opencue/gitguardex/pull/745), [#750](https://github.com/opencue/gitguardex/pull/750), [#751](https://github.com/opencue/gitguardex/pull/751)) |
+| Billing-aware CI fallback | Checks that GitHub cannot start because of billing can be waived only by name, while a fresh repository preflight remains mandatory. ([#743](https://github.com/opencue/gitguardex/pull/743)) |
+| OpenSpec progress reconciliation | Conflicting `tasks.md` progress is merged deterministically and validated before finish continues. ([#753](https://github.com/opencue/gitguardex/pull/753)) |
+| Reusable successful preflight | A successful finish preflight is reused only while the source HEAD, base commit, command, and preflight script stay unchanged; billing-waiver preflights are never cached. ([#757](https://github.com/opencue/gitguardex/pull/757)) |
+| Workspace hygiene | Successful detached lanes are removed safely, stale VS Code worktree providers are avoided, and `gx branch finish --help` has no repository side effects. ([#742](https://github.com/opencue/gitguardex/pull/742), [#747](https://github.com/opencue/gitguardex/pull/747), [#748](https://github.com/opencue/gitguardex/pull/748), [#754](https://github.com/opencue/gitguardex/pull/754)) |
 
 ---
 
