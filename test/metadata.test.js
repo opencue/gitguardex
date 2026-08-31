@@ -179,7 +179,7 @@ test('package description stays aligned with about_description.txt', () => {
   assert.equal(pkg.description, aboutDescription);
 });
 
-test('README keeps the problem-solution visuals aligned', () => {
+test('README keeps the problem-capabilities visuals aligned', () => {
   const readme = fs.readFileSync(readmePath, 'utf8');
   assert.match(
     readme,
@@ -187,7 +187,7 @@ test('README keeps the problem-solution visuals aligned', () => {
   );
   assert.match(
     readme,
-    /### Solution\s+!\[Agent branch\/worktree start protocol\]\(https:\/\/raw\.githubusercontent\.com\/recodeee\/gitguardex\/main\/docs\/images\/workflow-branch-start\.svg\)/s,
+    /### What GitGuardex can do\s+!\[Agent branch\/worktree start protocol\]\(https:\/\/raw\.githubusercontent\.com\/recodeee\/gitguardex\/main\/docs\/images\/workflow-branch-start\.svg\)/s,
   );
 });
 
