@@ -1421,6 +1421,46 @@ exit 0
   assert.equal(branchWithoutWorktreeExists.status, 0, 'open PR branch without a worktree must remain available');
 });
 
+test('gx doctor preserves idle lanes when PR metadata lookup fails', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  const cleanWorktree = path.join(worktreeRoot, 'unknown-pr-state-worktree');
+  const branch = 'agent/claude/unknown-pr-state';
+
+  let result = runHumanCmd('git', ['worktree', 'add', '-b', branch, cleanWorktree, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(cleanWorktree, 'unknown-pr-state.txt', 'keep until GitHub recovers\n', 'unknown PR state');
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
+  exit 1
+fi
+exit 0
+`);
+  const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  result = runNodeWithEnv(
+    ['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      GUARDEX_PRUNE_NOW_EPOCH: String(fakeNowEpoch),
+      GUARDEX_SKIP_AUTO_FINISH_READY_BRANCHES: '1',
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(`${result.stdout}\n${result.stderr}`, /PR state is unavailable \(fail closed\)/);
+  assert.equal(fs.existsSync(cleanWorktree), true, 'unknown PR state must preserve the recovery worktree');
+  assert.equal(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
+    0,
+    'unknown PR state must preserve the recovery branch',
+  );
+});
+
 test('gx doctor prunes clean merged and closed PR lanes using each PR base branch', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);

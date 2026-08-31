@@ -694,7 +694,7 @@ process_entry() {
     remove_reason="detached-worktree"
   elif ! git -C "$repo_root" show-ref --verify --quiet "refs/heads/${branch}"; then
     remove_reason="missing-branch"
-  elif [[ "$branch" == agent/* || "$branch" == work/* ]]; then
+  elif [[ "$branch" == agent/* ]] || { [[ "$branch" == work/* ]] && is_managed_worktree_path "$wt"; }; then
     if [[ "$PRUNE_STALE_LANES" -eq 1 ]]; then
       remove_reason="$(stale_lane_removal_reason "$branch" || true)"
       case "$remove_reason" in
