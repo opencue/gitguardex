@@ -214,6 +214,12 @@ test('agents command starts review+cleanup bots for the target repo and stops th
   assert.equal(state.cleanup.idleMinutes, 12);
   assert.equal(isPidAlive(state.review.pid), true, 'review bot pid should be alive after start');
   assert.equal(isPidAlive(state.cleanup.pid), true, 'cleanup bot pid should be alive after start');
+  const cleanupLog = fs.readFileSync(state.cleanup.logPath, 'utf8');
+  assert.match(
+    cleanupLog,
+    / cleanup .*--watch .*--idle-minutes 12 --prune-clean-worktrees/,
+    'cleanup bot should close idle clean worktrees while leaving unmerged branch refs intact',
+  );
 
   result = runNode(['agents', 'stop', '--target', repoDir], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);

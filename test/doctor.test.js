@@ -1229,6 +1229,41 @@ test('gx doctor auto-prunes detached-HEAD agent worktrees under .omc/agent-workt
   );
 });
 
+test('gx doctor closes idle clean worktrees while preserving their unmerged branches', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  const cleanWorktree = path.join(worktreeRoot, 'idle-clean-agent-worktree');
+  const branch = 'agent/claude/idle-clean-demo';
+
+  let result = runHumanCmd('git', ['branch', branch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['worktree', 'add', cleanWorktree, branch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(cleanWorktree, 'completed.txt', 'committed work must remain reachable\n', 'completed agent work');
+
+  const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  result = runNodeWithEnv(
+    ['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'],
+    repoDir,
+    {
+      GUARDEX_PRUNE_NOW_EPOCH: String(fakeNowEpoch),
+      GUARDEX_SKIP_AUTO_FINISH_READY_BRANCHES: '1',
+    },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Removing worktree \(clean-agent-worktree\)/);
+  assert.equal(fs.existsSync(cleanWorktree), false, 'idle clean worktree should be removed');
+
+  const branchExists = runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir);
+  assert.equal(branchExists.status, 0, 'unmerged branch must remain after its worktree is closed');
+  const committedContent = runHumanCmd('git', ['show', `${branch}:completed.txt`], repoDir);
+  assert.equal(committedContent.status, 0, committedContent.stderr || committedContent.stdout);
+  assert.equal(committedContent.stdout, 'committed work must remain reachable\n');
+});
+
 
 test('gx doctor preserves dirty detached-HEAD agent worktrees', () => {
   const repoDir = initRepoOnBranch('main');
