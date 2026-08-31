@@ -1,5 +1,27 @@
 # Changelog
 
+## [8.3.0](https://github.com/opencue/gitguardex/compare/v8.2.0...v8.3.0) (2026-08-31)
+
+
+### Features
+
+* allow adaptive direct-main agent work ([#731](https://github.com/opencue/gitguardex/issues/731)) ([4e84233](https://github.com/opencue/gitguardex/commit/4e842332e8b77779c9c814b66580ee972a7e8f48))
+* **sync:** target agent branches by name ([#736](https://github.com/opencue/gitguardex/issues/736)) ([6bc587b](https://github.com/opencue/gitguardex/commit/6bc587b9504c09f0772697b27f11e1ad418a5072))
+
+
+### Bug Fixes
+
+* **branch:** persist explicit finish bases ([#750](https://github.com/opencue/gitguardex/issues/750)) ([1764b82](https://github.com/opencue/gitguardex/commit/1764b8242458ba7b44b7569d637a10b489d7058f))
+* **branch:** validate bases before metadata repair ([#751](https://github.com/opencue/gitguardex/issues/751)) ([0a48ab2](https://github.com/opencue/gitguardex/commit/0a48ab2dab917482324ef79f3de59683922acf27))
+* **cleanup:** close idle clean worktrees automatically ([#744](https://github.com/opencue/gitguardex/issues/744)) ([d5413b4](https://github.com/opencue/gitguardex/commit/d5413b48ddf0922df4328a0691c6310f6893406d))
+* **cleanup:** enforce watcher branch limits ([#738](https://github.com/opencue/gitguardex/issues/738)) ([d0ec96b](https://github.com/opencue/gitguardex/commit/d0ec96b490ea71181b5ff11f191ac2b5f08fada2))
+* **cleanup:** preserve clean worktrees by default ([#741](https://github.com/opencue/gitguardex/issues/741)) ([7568669](https://github.com/opencue/gitguardex/commit/75686690b6573f31056e77517bc8a7e0ca5623eb))
+* **cleanup:** prune merged work branches ([#739](https://github.com/opencue/gitguardex/issues/739)) ([b508382](https://github.com/opencue/gitguardex/commit/b5083826874d488436279443490367d04f1a1586))
+* **cleanup:** prune opted-in clean linked worktrees ([#737](https://github.com/opencue/gitguardex/issues/737)) ([0285778](https://github.com/opencue/gitguardex/commit/0285778610e9a1849205dd3371cbbc986ee939d9))
+* **prune:** preserve actively locked worktrees ([#752](https://github.com/opencue/gitguardex/issues/752)) ([c995c2b](https://github.com/opencue/gitguardex/commit/c995c2b9327bfe43d0d1cf7885a91e6f772a2083))
+* recognize sha256 null object ids ([#740](https://github.com/opencue/gitguardex/issues/740)) ([6c66fe1](https://github.com/opencue/gitguardex/commit/6c66fe15eab4e82eb3bc76d2d681cc2e66224bd1))
+* **vscode:** prevent stale worktree SCM providers ([#754](https://github.com/opencue/gitguardex/issues/754)) ([4710ce1](https://github.com/opencue/gitguardex/commit/4710ce1291934c33d2207e83c8efa7835e859288))
+
 ## [8.2.0](https://github.com/opencue/gitguardex/compare/v8.1.1...v8.2.0) (2026-08-28)
 
 
