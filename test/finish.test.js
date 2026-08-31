@@ -62,11 +62,13 @@ const {
 } = require('./helpers/install-test-helpers');
 const { createEventStream } = require('../src/finish/progress');
 const {
+  captureWorktreeIdentity,
   hasLiveProcessInWorktree,
   hasUnsafeWorktreeChanges,
   isManagedAgentWorktree,
   probeLiveProcessInWorktree,
   scheduleFinishedDetachedWorktreeCleanup,
+  worktreeIdentityMatches,
 } = require('../src/finish/post-branch-finish-cleanup');
 
 test('post-finish cleanup preserves ignored user data but permits generated agent directories', () => {
@@ -90,6 +92,24 @@ test('post-finish cleanup detects a process cwd inside the worktree', () => {
   fs.unlinkSync(path.join(procRoot, '101', 'cwd'));
   fs.symlinkSync(outsidePath, path.join(procRoot, '101', 'cwd'));
   assert.equal(hasLiveProcessInWorktree(worktreePath, procRoot), false);
+});
+
+test('post-finish cleanup fails closed when a process cwd cannot be inspected', () => {
+  const procRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-proc-denied-'));
+  const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-denied-worktree-'));
+  fs.mkdirSync(path.join(procRoot, '101'));
+  const denied = new Error('permission denied');
+  denied.code = 'EACCES';
+  assert.deepEqual(
+    probeLiveProcessInWorktree(worktreePath, {
+      procRoot,
+      readlink: () => {
+        throw denied;
+      },
+      runner: () => ({ status: 127, stdout: '' }),
+    }),
+    { supported: false, active: true },
+  );
 });
 
 test('post-finish cleanup uses lsof when proc cwd inspection is unavailable', () => {
@@ -118,12 +138,14 @@ test('post-finish cleanup uses lsof when proc cwd inspection is unavailable', ()
 test('post-finish cleanup does not spawn an unmonitorable deferred worker', () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-cleanup-repo-'));
   const worktreePath = fs.mkdtempSync(path.join(repoRoot, 'worktree-'));
+  const gitDir = fs.mkdtempSync(path.join(repoRoot, 'gitdir-'));
   let spawned = false;
   const scheduled = scheduleFinishedDetachedWorktreeCleanup(
     { repoRoot, worktreePath },
     {
       procRoot: '',
-      runner: () => ({ status: 127, stdout: '' }),
+      runner: (command) =>
+        command === 'git' ? { status: 0, stdout: gitDir } : { status: 127, stdout: '' },
       spawn: () => {
         spawned = true;
       },
@@ -131,6 +153,20 @@ test('post-finish cleanup does not spawn an unmonitorable deferred worker', () =
   );
   assert.equal(scheduled, false);
   assert.equal(spawned, false);
+});
+
+test('post-finish cleanup rejects a replacement created at the original worktree path', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-worktree-identity-'));
+  const worktreePath = path.join(parent, 'managed-worktree');
+  const gitDir = path.join(parent, 'gitdir');
+  fs.mkdirSync(worktreePath);
+  fs.mkdirSync(gitDir);
+  const runner = () => ({ status: 0, stdout: gitDir });
+  const plan = { worktreePath, worktreeIdentity: captureWorktreeIdentity(worktreePath, runner) };
+  assert.equal(worktreeIdentityMatches(plan, runner), true);
+  fs.rmSync(gitDir, { recursive: true });
+  fs.mkdirSync(gitDir);
+  assert.equal(worktreeIdentityMatches(plan, runner), false);
 });
 
 test('post-finish cleanup only targets GitGuardex-managed agent worktrees', () => {

@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const { cp, fs, path, TOOL_NAME } = require('../context');
 const { currentBranchName, listAgentWorktrees, resolveRepoRoot } = require('../git');
 const { extractTargetedArgs, run } = require('../core/runtime');
@@ -29,6 +30,48 @@ function pathContains(root, candidate) {
     relative === '' ||
     (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
   );
+}
+
+function captureWorktreeIdentity(worktreePath, runner = run) {
+  try {
+    const gitDirResult = runner('git', ['-C', worktreePath, 'rev-parse', '--absolute-git-dir'], {
+      cwd: worktreePath
+    });
+    if (gitDirResult.status !== 0 || !String(gitDirResult.stdout || '').trim()) return null;
+    const gitDir = path.resolve(String(gitDirResult.stdout).trim());
+    const markerPath = path.join(gitDir, 'gitguardex-finish-cleanup-id');
+    let token;
+    try {
+      token = crypto.randomUUID();
+      fs.writeFileSync(markerPath, `${token}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') return null;
+      token = fs.readFileSync(markerPath, 'utf8').trim();
+    }
+    return token ? { gitDir, token } : null;
+  } catch {
+    return null;
+  }
+}
+
+function worktreeIdentityMatches(plan, runner = run) {
+  if (!plan?.worktreeIdentity) return false;
+  try {
+    const gitDirResult = runner(
+      'git',
+      ['-C', plan.worktreePath, 'rev-parse', '--absolute-git-dir'],
+      { cwd: plan.worktreePath }
+    );
+    if (gitDirResult.status !== 0) return false;
+    const gitDir = path.resolve(String(gitDirResult.stdout || '').trim());
+    if (gitDir !== plan.worktreeIdentity.gitDir) return false;
+    return (
+      fs.readFileSync(path.join(gitDir, 'gitguardex-finish-cleanup-id'), 'utf8').trim() ===
+      plan.worktreeIdentity.token
+    );
+  } catch {
+    return false;
+  }
 }
 
 function resolveSharedRepoRoot(target) {
@@ -67,30 +110,40 @@ function hasUnsafeWorktreeChanges(output) {
 
 function probeLiveProcessInWorktree(worktreePath, options = {}) {
   const procRoot = options.procRoot ?? (process.platform === 'linux' ? '/proc' : '');
+  const readlink = options.readlink || fs.readlinkSync;
   const runner = options.runner || run;
+  let procScanIncomplete = false;
 
   if (procRoot && fs.existsSync(procRoot)) {
     try {
       for (const entry of fs.readdirSync(procRoot, { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+        const processDir = path.join(procRoot, entry.name);
         try {
-          const liveCwd = fs
-            .readlinkSync(path.join(procRoot, entry.name, 'cwd'))
-            .replace(/ \(deleted\)$/, '');
+          if (
+            typeof process.geteuid === 'function' &&
+            fs.statSync(processDir).uid !== process.geteuid()
+          ) {
+            continue;
+          }
+          const liveCwd = readlink(path.join(processDir, 'cwd')).replace(/ \(deleted\)$/, '');
           if (pathContains(worktreePath, liveCwd)) return { supported: true, active: true };
         } catch (error) {
           if (!['ENOENT', 'ESRCH'].includes(error.code)) {
-            return { supported: false, active: true };
+            procScanIncomplete = true;
           }
         }
       }
-      return { supported: true, active: false };
     } catch {
-      return { supported: false, active: true };
+      procScanIncomplete = true;
     }
+    if (!procScanIncomplete) return { supported: true, active: false };
   }
 
-  const lsof = runner('lsof', ['-a', '-d', 'cwd', '-Fn'], {
+  const lsofArgs = ['-a'];
+  if (typeof process.geteuid === 'function') lsofArgs.push('-u', String(process.geteuid()));
+  lsofArgs.push('-d', 'cwd', '-Fn');
+  const lsof = runner('lsof', lsofArgs, {
     cwd: path.dirname(worktreePath)
   });
   if (![0, 1].includes(lsof.status)) return { supported: false, active: true };
@@ -131,18 +184,20 @@ function prepareBranchFinishCleanup(argv, activeCwd) {
     ) {
       return null;
     }
-    return { repoRoot, worktreePath };
+    const worktreeIdentity = captureWorktreeIdentity(worktreePath);
+    return worktreeIdentity ? { repoRoot, worktreePath, worktreeIdentity } : null;
   } catch {
     return null;
   }
 }
 
 function cleanupFinishedDetachedWorktree(plan) {
-  if (!plan || !fs.existsSync(plan.worktreePath)) return false;
+  if (!plan || !worktreeIdentityMatches(plan)) return false;
 
   try {
     process.chdir(plan.repoRoot);
     if (hasLiveProcessInWorktree(plan.worktreePath)) return false;
+    if (!worktreeIdentityMatches(plan)) return false;
     const status = run(
       'git',
       ['-C', plan.worktreePath, 'status', '--porcelain=v1', '-z', '--ignored'],
@@ -159,6 +214,7 @@ function cleanupFinishedDetachedWorktree(plan) {
     ) {
       return false;
     }
+    if (!worktreeIdentityMatches(plan)) return false;
 
     const remove = run('git', ['-C', plan.repoRoot, 'worktree', 'remove', plan.worktreePath], {
       cwd: plan.repoRoot
@@ -186,6 +242,12 @@ function scheduleFinishedDetachedWorktreeCleanup(plan, options = {}) {
   if (!plan || !fs.existsSync(plan.worktreePath)) return false;
 
   try {
+    const runner = options.runner || run;
+    const worktreeIdentity =
+      plan.worktreeIdentity || captureWorktreeIdentity(plan.worktreePath, runner);
+    if (!worktreeIdentity) return false;
+    const cleanupPlan = { ...plan, worktreeIdentity };
+    if (!worktreeIdentityMatches(cleanupPlan, runner)) return false;
     const probe = probeLiveProcessInWorktree(plan.worktreePath, options);
     if (!probe.supported) {
       console.error(
@@ -193,7 +255,7 @@ function scheduleFinishedDetachedWorktreeCleanup(plan, options = {}) {
       );
       return false;
     }
-    const payload = Buffer.from(JSON.stringify(plan), 'utf8').toString('base64url');
+    const payload = Buffer.from(JSON.stringify(cleanupPlan), 'utf8').toString('base64url');
     const child = (options.spawn || cp.spawn)(
       process.execPath,
       [__filename, '--deferred-worker', payload],
@@ -221,6 +283,7 @@ async function runDeferredCleanupWorker(plan, options = {}) {
   const intervalMs = options.intervalMs ?? 1000;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!fs.existsSync(plan.worktreePath)) return true;
+    if (!worktreeIdentityMatches(plan, options.runner || run)) return false;
     const probe = probeLiveProcessInWorktree(plan.worktreePath, options);
     if (!probe.supported) return false;
     if (!probe.active) {
@@ -232,6 +295,7 @@ async function runDeferredCleanupWorker(plan, options = {}) {
 }
 
 module.exports = {
+  captureWorktreeIdentity,
   cleanupFinishedDetachedWorktree,
   hasUnsafeWorktreeChanges,
   hasLiveProcessInWorktree,
@@ -239,7 +303,8 @@ module.exports = {
   probeLiveProcessInWorktree,
   prepareBranchFinishCleanup,
   runDeferredCleanupWorker,
-  scheduleFinishedDetachedWorktreeCleanup
+  scheduleFinishedDetachedWorktreeCleanup,
+  worktreeIdentityMatches
 };
 
 if (require.main === module && process.argv[2] === '--deferred-worker') {
