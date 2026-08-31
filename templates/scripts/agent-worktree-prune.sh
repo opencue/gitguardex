@@ -695,6 +695,7 @@ process_entry() {
   local remove_reason=""
   local branch_delete_mode="safe"
   local branch_delete_label="merged"
+  local delete_remote_branch=1
 
   if is_temporary_worktree_path "$wt"; then
     remove_reason="temporary-worktree"
@@ -713,6 +714,9 @@ process_entry() {
         closed-pr:*)
           branch_delete_mode="force"
           branch_delete_label="closed PR"
+          # Retire closed lanes locally, but keep the remote ref as a recovery
+          # point so the PR can still be reopened without losing its head.
+          delete_remote_branch=0
           ;;
       esac
     elif git -C "$repo_root" merge-base --is-ancestor "$branch" "$BASE_BRANCH"; then
@@ -774,7 +778,7 @@ process_entry() {
       if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
         echo "[agent-worktree-prune] Deleted ${deleted_label} branch: ${branch}"
-        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 ]]; then
+        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
           if git -C "$repo_root" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
             run_cmd git -C "$repo_root" push origin --delete "$branch" >/dev/null 2>&1 || true
             echo "[agent-worktree-prune] Deleted ${deleted_label} remote branch: ${branch}"
@@ -871,9 +875,13 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
       fi
       delete_flag="-d"
       deleted_label="merged"
+      delete_remote_branch=1
       if [[ "$closed_by_pr" -eq 1 ]]; then
         delete_flag="-D"
         deleted_label="closed PR${pr_base:+ to ${pr_base}}"
+        # Match attached-worktree cleanup: local clutter is removed while the
+        # remote PR head remains available for recovery or reopening.
+        delete_remote_branch=0
       elif [[ "$merged_by_pr" -eq 1 && "$merged_by_ancestor" -eq 0 ]]; then
         delete_flag="-D"
         deleted_label="merged PR${pr_base:+ to ${pr_base}}"
@@ -881,7 +889,7 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
       if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
         echo "[agent-worktree-prune] Deleted stale ${deleted_label} branch: ${branch}"
-        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 ]]; then
+        if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
           if git -C "$repo_root" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
             run_cmd git -C "$repo_root" push origin --delete "$branch" >/dev/null 2>&1 || true
             echo "[agent-worktree-prune] Deleted stale ${deleted_label} remote branch: ${branch}"

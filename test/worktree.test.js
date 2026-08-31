@@ -87,6 +87,61 @@ test('worktree prune keeps merged agent worktrees/branches unless delete flags a
   assert.notEqual(branchAfterDelete.status, 0, 'merged agent branch should be removed when delete flag is set');
 });
 
+test('worktree prune retires closed PR lanes locally but preserves their remote recovery branch', () => {
+  const repoDir = initRepoOnBranch('main');
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+  attachOriginRemoteForBranch(repoDir, 'main');
+
+  const branch = 'work/closed-pr-recovery';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'closed-pr-recovery');
+  result = runHumanCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(worktreePath, 'closed.txt', 'closed lane\n', 'closed lane work');
+  const headSha = runHumanCmd('git', ['rev-parse', branch], repoDir).stdout.trim();
+  result = runHumanCmd('git', ['push', '-u', 'origin', branch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${branch}" "${headSha}" recodeee/gitguardex main CLOSED recodeee/gitguardex
+  exit 0
+fi
+exit 0
+`);
+  const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  result = runWorktreePrune(
+    [
+      '--idle-minutes',
+      '60',
+      '--prune-stale-lanes',
+      '--preserve-open-prs',
+      '--delete-branches',
+      '--delete-remote-branches',
+    ],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      GUARDEX_PRUNE_NOW_EPOCH: String(fakeNowEpoch),
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Removing worktree \(closed-pr:main\)/);
+  assert.equal(fs.existsSync(worktreePath), false, 'closed PR worktree should be removed');
+  assert.notEqual(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
+    0,
+    'closed PR local branch should be removed',
+  );
+  assert.equal(
+    runHumanCmd('git', ['ls-remote', '--exit-code', '--heads', 'origin', branch], repoDir).status,
+    0,
+    'closed PR remote branch should remain as a recovery point',
+  );
+});
+
 
 test('worktree prune preserves dirty agent worktrees unless --force-dirty is used', () => {
   const repoDir = initRepo();
