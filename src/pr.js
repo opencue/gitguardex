@@ -79,6 +79,25 @@ function isBillingBlockedCheckRun(repoRoot, check, runner = run) {
   const checkRunId = githubActionsJobId(check);
   if (!checkRunId) return false;
 
+  const jobResult = runner(GH_BIN, [
+    'api',
+    repoApiPath(repoRoot, `actions/jobs/${checkRunId}`, runner),
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
+  if (jobResult.status !== 0) return false;
+
+  let job;
+  try {
+    job = JSON.parse(String(jobResult.stdout || ''));
+  } catch (_error) {
+    return false;
+  }
+  if (String(job?.status || '').toLowerCase() !== 'completed'
+    || String(job?.conclusion || '').toLowerCase() !== 'failure'
+    || Number(job?.runner_id) !== 0
+    || String(job?.runner_name || '') !== ''
+    || !Array.isArray(job?.steps)
+    || job.steps.length !== 0) return false;
+
   const result = runner(GH_BIN, [
     'api',
     repoApiPath(repoRoot, `check-runs/${checkRunId}/annotations`, runner),

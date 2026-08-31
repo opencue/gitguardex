@@ -213,7 +213,10 @@ test('getPullRequestStatus waives only a GitHub check run with the exact billing
     message: billingMessage,
     raw_details: '',
   }];
-  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))}; exit 0; fi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
+  const job = {
+    status: 'completed', conclusion: 'failure', runner_id: 0, runner_name: '', steps: [],
+  };
+  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/456/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
   fs.chmodSync(fakeGh, 0o755);
 
   try {
@@ -237,7 +240,7 @@ test('getPullRequestStatus waives only a GitHub check run with the exact billing
   }
 });
 
-test('getPullRequestStatus fails closed when a failed check lacks the exact billing annotation', () => {
+test('getPullRequestStatus fails closed when workflow output spoofs the exact billing annotation', () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-negative-'));
   const fakeGh = path.join(fixtureRoot, 'gh');
   const response = [{
@@ -261,14 +264,21 @@ test('getPullRequestStatus fails closed when a failed check lacks the exact bill
   }];
   const billingMessage = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings";
   const spoofedUserAnnotation = [{
-    path: 'src/test.js',
-    start_line: 12,
+    path: '.github',
+    start_line: 1,
     annotation_level: 'failure',
-    title: 'test failure',
+    title: '',
     message: billingMessage,
-    raw_details: 'emitted by workflow code',
+    raw_details: '',
   }];
-  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then printf '%s\\n' ${JSON.stringify(JSON.stringify(spoofedUserAnnotation))}; exit 0; fi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
+  const startedJob = {
+    status: 'completed',
+    conclusion: 'failure',
+    runner_id: 7,
+    runner_name: 'GitHub Actions 7',
+    steps: [{ name: 'emit annotation', conclusion: 'failure' }],
+  };
+  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(startedJob))} ;;\n    */check-runs/456/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(spoofedUserAnnotation))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
   fs.chmodSync(fakeGh, 0o755);
 
   try {

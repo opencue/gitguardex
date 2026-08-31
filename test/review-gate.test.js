@@ -139,13 +139,31 @@ test('waitForGreenCi blocks on a non-mergeable mergeStateStatus (UNSTABLE/BLOCKE
   assert.equal(r.status, 'merge-blocked');
 });
 
-test('waitForGreenCi accepts UNSTABLE only when every non-success check has an audited billing waiver', () => {
+test('waitForGreenCi blocks UNSTABLE when a skipped check accompanies audited billing waivers', () => {
   const c = makeClock();
   const r = waitForGreenCi('repo', 'br', {
     ...c,
     getStatus: constStatus({
       checks: {
         failed: 0, cancelled: 0, pending: 0, success: 0, skipped: 1, waived: 2, other: 0, total: 3,
+      },
+      billingWaivedNames: ['build', 'review'],
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'UNSTABLE',
+    }),
+  });
+
+  assert.equal(r.status, 'merge-blocked');
+});
+
+test('waitForGreenCi accepts UNSTABLE when every non-success check has an audited billing waiver', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    getStatus: constStatus({
+      checks: {
+        failed: 0, cancelled: 0, pending: 0, success: 0, skipped: 0, waived: 2, other: 0, total: 2,
       },
       billingWaivedNames: ['build', 'review'],
       isDraft: false,

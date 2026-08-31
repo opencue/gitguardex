@@ -209,7 +209,8 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
       && failingCount === 0
       && count('pending') === 0
       && count('other') === 0
-      && count('success') + count('skipped') + waivedCount === count('total');
+      && count('skipped') === 0
+      && count('success') + waivedCount === count('total');
     // GitHub says this can't merge as-is. Some BLOCKED/UNSTABLE snapshots are
     // just "required checks are still pending" immediately after a draft PR is
     // promoted to ready, so wait for pending checks to settle before treating
