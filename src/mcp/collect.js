@@ -104,6 +104,51 @@ function listWorktrees(repoRoot) {
   return worktrees;
 }
 
+function knownBranchNames(repoRoot, worktrees) {
+  const names = new Set(worktrees.map((wt) => wt.branch).filter(Boolean));
+  const refs = git(repoRoot, ['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes']);
+  if (refs == null) return names;
+  for (const ref of refs.split('\n').filter(Boolean)) {
+    if (ref.startsWith('refs/heads/')) {
+      names.add(ref.slice('refs/heads/'.length));
+      continue;
+    }
+    if (!ref.startsWith('refs/remotes/')) continue;
+    const remoteAndBranch = ref.slice('refs/remotes/'.length);
+    const slash = remoteAndBranch.indexOf('/');
+    if (slash !== -1) names.add(remoteAndBranch.slice(slash + 1));
+  }
+  return names;
+}
+
+// `pane` survives in the lock entry after an agent lane exits. If the lane's
+// branch/ref is also gone, the pane's current checkout is the last local proof
+// of ownership. Unknown states fail closed; only a confirmed different branch
+// makes the entry orphaned.
+function paneStillOwnsBranch(mainRoot, pane, branch) {
+  if (!/^%\d+$/.test(String(pane || ''))) return null;
+  const result = cp.spawnSync(
+    'tmux',
+    ['display-message', '-p', '-t', pane, '#{pane_current_path}'],
+    { encoding: 'utf8', timeout: 3000, maxBuffer: 1024 * 1024 },
+  );
+  if (result.error) return null;
+  if (!result || result.status !== 0) return null;
+  const paneCwd = (result.stdout || '').trim();
+  if (!paneCwd || !fs.existsSync(paneCwd)) return null;
+  const paneRepoRoot = mainRepoRoot(paneCwd);
+  if (!paneRepoRoot || path.resolve(paneRepoRoot) !== path.resolve(mainRoot)) return null;
+  const paneBranch = git(paneCwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (!paneBranch || paneBranch === 'HEAD') return null;
+  return paneBranch === branch;
+}
+
+function isOrphanedLocalLock(mainRoot, entry, knownBranches) {
+  const branch = String((entry && entry.branch) || '');
+  if (!branch || knownBranches.has(branch)) return false;
+  return paneStillOwnsBranch(mainRoot, entry.pane, branch) === false;
+}
+
 function readLockMap(repoRoot) {
   const lockPath = path.join(repoRoot, LOCK_FILE_RELATIVE);
   let raw;
@@ -373,12 +418,16 @@ function whoOwnsMany(files, { cwd = process.cwd(), repoPath } = {}) {
     target.owners.push(owner);
   };
 
-  // Read each worktree lock map once for the whole requested batch.
-  for (const wt of listWorktrees(mainRoot)) {
+  // Read each worktree lock map once for the whole requested batch. A lock is
+  // ignored only when its branch/ref disappeared and its recorded pane is
+  // confirmed to be on another checkout; ambiguous ownership remains blocking.
+  const worktrees = listWorktrees(mainRoot);
+  const knownBranches = knownBranchNames(mainRoot, worktrees);
+  for (const wt of worktrees) {
     const map = readLockMap(wt.path);
     for (const target of targets) {
       const entry = map[target.rel] || map[target.file];
-      if (!entry) continue;
+      if (!entry || isOrphanedLocalLock(mainRoot, entry, knownBranches)) continue;
       addOwner(target, {
         branch: entry.branch,
         agent: entry.agent || parseAgentName(entry.branch),

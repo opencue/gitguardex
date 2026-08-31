@@ -1,4 +1,4 @@
-const test = require('node:test');
+const { test, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const cp = require('node:child_process');
 const fs = require('node:fs');
@@ -74,6 +74,54 @@ test('whoOwns aggregates locks across ALL worktrees (per-worktree lock files)', 
     const free = collect.whoOwns('README.md', { repoPath: main });
     assert.equal(free.owner, null, 'unclaimed file has no owner');
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('whoOwns ignores an orphaned lock after its pane moved off a deleted lane', () => {
+  const { root, main } = makeRepoWithLanes();
+  writeLock(main, {
+    '.vscode/settings.json': {
+      branch: 'agent/codex/deleted-lane',
+      claimed_at: '2026-06-05T12:00:00+00:00',
+      pane: '%22',
+    },
+  });
+
+  const spawnSync = cp.spawnSync;
+  const mockedSpawnSync = mock.method(cp, 'spawnSync', (command, args, options) => {
+    if (command === 'tmux') return { status: 0, stdout: `${main}\n`, stderr: '' };
+    return spawnSync(command, args, options);
+  });
+  try {
+    const result = collect.whoOwns('.vscode/settings.json', { repoPath: main });
+    assert.equal(result.owner, null, 'deleted lane must not remain a visible owner after its pane moved');
+  } finally {
+    mockedSpawnSync.mock.restore();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('whoOwns keeps an orphaned lock when tmux cannot inspect its pane', () => {
+  const { root, main } = makeRepoWithLanes();
+  writeLock(main, {
+    'shared.txt': {
+      branch: 'agent/codex/unresolved-lane',
+      claimed_at: '2026-06-05T12:00:00+00:00',
+      pane: '%22',
+    },
+  });
+
+  const spawnSync = cp.spawnSync;
+  const mockedSpawnSync = mock.method(cp, 'spawnSync', (command, args, options) => {
+    if (command === 'tmux') return { status: 1, stdout: '', stderr: 'pane unavailable' };
+    return spawnSync(command, args, options);
+  });
+  try {
+    const result = collect.whoOwns('shared.txt', { repoPath: main });
+    assert.equal(result.owner.branch, 'agent/codex/unresolved-lane');
+  } finally {
+    mockedSpawnSync.mock.restore();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

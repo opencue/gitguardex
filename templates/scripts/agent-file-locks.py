@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -337,12 +338,88 @@ def list_worktree_roots(repo_root: Path) -> list[Path]:
     return roots
 
 
+def known_branch_names(repo_root: Path) -> set[str]:
+    """Local and remote branch names plus branches attached to worktrees."""
+    names: set[str] = set()
+    worktrees = run_git(['worktree', 'list', '--porcelain'], cwd=repo_root)
+    for line in worktrees.splitlines():
+        if line.startswith('branch refs/heads/'):
+            names.add(line[len('branch refs/heads/'):].strip())
+
+    refs = run_git(
+        ['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes'],
+        cwd=repo_root,
+    )
+    for ref in refs.splitlines():
+        if ref.startswith('refs/heads/'):
+            names.add(ref[len('refs/heads/'):])
+            continue
+        if not ref.startswith('refs/remotes/'):
+            continue
+        remote_and_branch = ref[len('refs/remotes/'):]
+        _, separator, branch = remote_and_branch.partition('/')
+        if separator and branch:
+            names.add(branch)
+    return names
+
+
+def git_common_dir_identity(cwd: Path) -> Path:
+    top = Path(run_git(['rev-parse', '--show-toplevel'], cwd=cwd))
+    common = Path(run_git(['rev-parse', '--git-common-dir'], cwd=cwd))
+    return common.resolve() if common.is_absolute() else (top / common).resolve()
+
+
+def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | None:
+    """True/False when tmux proves pane ownership; None means fail closed."""
+    if not re.fullmatch(r'%\d+', pane) or shutil.which('tmux') is None:
+        return None
+    try:
+        result = subprocess.run(
+            ['tmux', 'display-message', '-p', '-t', pane, '#{pane_current_path}'],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    pane_cwd = Path(result.stdout.strip())
+    if not result.stdout.strip() or not pane_cwd.exists():
+        return None
+    try:
+        if git_common_dir_identity(pane_cwd) != git_common_dir_identity(repo_root):
+            return None
+        pane_branch = run_git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd=pane_cwd)
+    except LockError:
+        return None
+    if not pane_branch or pane_branch == 'HEAD':
+        return None
+    return pane_branch == branch
+
+
+def is_orphaned_local_lock(
+    repo_root: Path,
+    entry: dict[str, Any],
+    known_branches: set[str],
+) -> bool:
+    """Ignore only ownership disproved by both Git refs and live pane state."""
+    branch = str(entry.get('branch', ''))
+    if not branch or branch in known_branches:
+        return False
+    pane = str(entry.get('pane', ''))
+    return pane_still_owns_branch(repo_root, pane, branch) is False
+
+
 def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
     """Union of EVERY worktree's lock map: file path -> list of owner entries
     (one per worktree that claims it). Each worktree owns a separate lock file on
     disk, so a file's full ownership is only visible by reading them all. With a
     single worktree this is exactly that worktree's own locks (unchanged)."""
     merged: dict[str, list[dict[str, Any]]] = {}
+    known_branches = known_branch_names(repo_root)
     for root in list_worktree_roots(repo_root):
         try:
             state = load_state(root)
@@ -352,6 +429,8 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
                 'lock operation blocked'
             ) from exc
         for file_path, entry in state['locks'].items():
+            if is_orphaned_local_lock(repo_root, entry, known_branches):
+                continue
             merged.setdefault(file_path, []).append({**entry, '_worktree': str(root)})
     return merged
 
@@ -628,6 +707,7 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
     # a sibling worktree's claims would otherwise be invisible here.
     agent_filter = resolve_agent(args)
     roots = list_worktree_roots(repo_root)
+    known_branches = known_branch_names(repo_root)
 
     rows: list[tuple[str, str, str, str, bool, str]] = []
     for root in roots:
@@ -639,6 +719,8 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
                 'status is unavailable'
             ) from exc
         for file_path, entry in locks.items():
+            if is_orphaned_local_lock(repo_root, entry, known_branches):
+                continue
             branch = str(entry.get('branch', ''))
             if args.branch and branch != args.branch:
                 continue
