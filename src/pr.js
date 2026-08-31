@@ -120,7 +120,7 @@ function matchingCheckRunId(check, checkRuns) {
 
 function isBillingBlockedCheckRun(repoRoot, check, expectedCheckRunId, runner = run) {
   const jobId = githubActionsJobId(check);
-  if (!jobId || jobId !== String(expectedCheckRunId)) return false;
+  if (!jobId || !expectedCheckRunId) return false;
 
   const jobResult = runner(GH_BIN, [
     'api',
