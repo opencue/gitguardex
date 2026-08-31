@@ -28,6 +28,7 @@ required_symlinks=(
   scripts/agent-claude-stop-finish.sh
   scripts/agent-file-locks.py
   scripts/agent-preflight.sh
+  scripts/agent-reconcile-openspec-tasks.js
   scripts/agent-stalled-report.sh
   scripts/agent-worktree-prune.sh
   scripts/codex-agent.sh

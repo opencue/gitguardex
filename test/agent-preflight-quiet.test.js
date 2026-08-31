@@ -81,6 +81,14 @@ test('preflight strips Guardex runtime and bypass variables from verification co
     'ALLOW_PUSH_ON_PROTECTED_BRANCH',
     'GUARDEX_CLI_ENTRY',
     'GUARDEX_NODE_BIN',
+    'GUARDEX_FINISH_ACTIVE_CWD',
+    'GUARDEX_FINISH_CHECKLIST',
+    'GUARDEX_FINISH_GATE_DONE',
+    'GUARDEX_FINISH_REQUIRE_PREFLIGHT',
+    'GUARDEX_FINISH_EVENT_FILE',
+    'GUARDEX_FINISH_RUN_ID',
+    'GUARDEX_FINISH_EVENT_BRANCH',
+    'GUARDEX_FINISH_EVENT_BASE',
   ];
   const assertion = `node -e 'const keys=${JSON.stringify(keys)}; const leaked=keys.filter(key => process.env[key]); if (leaked.length) { console.error(leaked.join(",")); process.exit(1); }'`;
   const dir = makeNodeRepo(assertion);

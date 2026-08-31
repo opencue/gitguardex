@@ -1,0 +1,1 @@
+../templates/scripts/agent-reconcile-openspec-tasks.js
