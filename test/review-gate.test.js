@@ -220,11 +220,11 @@ test('waitForGreenCi fails closed when waived-check names do not account for the
       billingWaivedNames: ['build'],
       isDraft: false,
       mergeable: 'MERGEABLE',
-      mergeStateStatus: 'UNSTABLE',
+      mergeStateStatus: 'CLEAN',
     }),
   });
 
-  assert.equal(r.status, 'merge-blocked');
+  assert.equal(r.status, 'timeout');
 });
 
 test('waitForGreenCi will NOT pass an other-state check (ACTION_REQUIRED) without a GitHub verdict', () => {

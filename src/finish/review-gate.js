@@ -239,9 +239,11 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
         && count('success') + failingCount + waivedCount === count('total')
       : count('other') === 0
         && count('success') + waivedCount === count('total'));
-    const trusted = baselineBlockedByKnownChecks
+    const trusted = waiversAccountedFor && (
+      baselineBlockedByKnownChecks
       || unstableOnlyBecauseBillingChecksWereWaived
-      || (mss ? trustedStates.has(mss) : allAccountedFor);
+      || (mss ? trustedStates.has(mss) : allAccountedFor)
+    );
 
     if (settled && mergeable && hasChecks && trusted) {
       const result = { status: 'green', pr: snap };
