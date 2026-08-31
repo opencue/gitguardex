@@ -374,7 +374,7 @@ read_branch_activity_epoch() {
       | head -n 1 \
       | tr -d '[:space:]'
   )"
-  activity_epoch="$(printf '%s' "$reflog_selector" | sed -n -E 's/.*@\{([0-9]+)\}$/\1/p')"
+  activity_epoch="$(printf '%s' "$reflog_selector" | sed -n -E 's/.*@\{([0-9]+)([[:space:]]?[+-][0-9]{4})?\}$/\1/p')"
   if [[ -z "$activity_epoch" ]]; then
     activity_epoch="$(
       git -C "$repo_root" log -1 --format='%ct' "$branch" 2>/dev/null \
