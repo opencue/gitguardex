@@ -448,6 +448,14 @@ test('worktree prune preserves worktrees with active Guardex file locks', () => 
   assert.match(result.stderr, /Cannot safely inspect active locks:/);
   assert.equal(fs.existsSync(worktreePath), true, 'unreadable lock registry must fail closed');
 
+  for (const malformedState of ['{}\n', '{"locks": {"locked.txt": null}}\n']) {
+    fs.writeFileSync(lockFile, malformedState, 'utf8');
+    result = runWorktreePrune(['--delete-branches'], repoDir);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stderr, /Cannot safely inspect active locks:/);
+    assert.equal(fs.existsSync(worktreePath), true, 'malformed lock registry must fail closed');
+  }
+
   fs.writeFileSync(lockFile, '{"locks": {}}\n', 'utf8');
   result = runWorktreePrune(['--delete-branches'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);

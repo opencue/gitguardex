@@ -619,15 +619,22 @@ try:
             )
             raise SystemExit(10)
 
-        if not isinstance(state, dict) or not isinstance(state.get('locks', {}), dict):
+        locks = state.get('locks') if isinstance(state, dict) else None
+        if not isinstance(locks, dict):
             print(
                 f'[agent-worktree-prune] Cannot safely inspect active locks: {lock_file}',
                 file=sys.stderr,
             )
             raise SystemExit(10)
 
-        for entry in state.get('locks', {}).values():
-            if isinstance(entry, dict) and str(entry.get('branch', '')) == branch:
+        for entry in locks.values():
+            if not isinstance(entry, dict):
+                print(
+                    f'[agent-worktree-prune] Cannot safely inspect active locks: {lock_file}',
+                    file=sys.stderr,
+                )
+                raise SystemExit(10)
+            if str(entry.get('branch', '')) == branch:
                 raise SystemExit(10)
 
         print(f'[agent-worktree-prune] Removing worktree ({remove_reason}): {worktree}', flush=True)
