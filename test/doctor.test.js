@@ -1385,8 +1385,8 @@ test('gx doctor preserves idle agent and work lanes while their pull requests ar
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
-  printf '%s\t%s\t%s\t%s\t%s\n' "${branch}" recodeee main OPEN recodeee
-  printf '%s\t%s\t%s\t%s\t%s\n' "${branchWithoutWorktree}" recodeee ksskkfb03 OPEN recodeee
+  printf '%s\t%s\t%s\t%s\t%s\n' "${branch}" recodeee/gitguardex main OPEN recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\n' "${branchWithoutWorktree}" recodeee/gitguardex ksskkfb03 OPEN recodeee/gitguardex
   exit 0
 fi
 exit 0
@@ -1487,9 +1487,9 @@ test('gx doctor prunes clean merged and closed PR lanes using each PR base branc
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
-  printf '%s\t%s\t%s\t%s\t%s\n' "${mergedBranch}" recodeee ksskkfb03 MERGED recodeee
-  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" fork-owner ksskkfb03 MERGED recodeee
-  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" recodeee ksskkfb03 CLOSED recodeee
+  printf '%s\t%s\t%s\t%s\t%s\n' "${mergedBranch}" recodeee/gitguardex ksskkfb03 MERGED recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" recodeee/other-repo ksskkfb03 MERGED recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" recodeee/gitguardex ksskkfb03 CLOSED recodeee/gitguardex
   exit 0
 fi
 exit 0
