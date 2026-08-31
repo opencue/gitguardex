@@ -166,6 +166,8 @@ test('worktree prune preserves a remote branch advanced while merged PR cleanup 
   const mergedHeadSha = runHumanCmd('git', ['rev-parse', branch], repoDir).stdout.trim();
   result = runHumanCmd('git', ['push', '-u', 'origin', branch], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runLockTool(['release', '--branch', branch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const remoteWriter = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-remote-writer-'));
   result = runHumanCmd('git', ['clone', '--branch', branch, originPath, remoteWriter], repoDir);
@@ -217,6 +219,8 @@ test('worktree prune preserves local branches advanced after PR classification',
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(worktreePath, 'worktree.txt', 'classified worktree head\n', 'classified worktree head');
   const worktreeHeadSha = runHumanCmd('git', ['rev-parse', worktreeBranch], repoDir).stdout.trim();
+  result = runLockTool(['release', '--branch', worktreeBranch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const branchOnly = 'work/advanced-branch-only-during-prune';
   const branchOnlyPath = path.join(repoDir, '.omx', 'agent-worktrees', 'advanced-branch-only-during-prune');
@@ -282,6 +286,8 @@ test('worktree prune retires exact PR heads without open-PR preservation preload
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(worktreePath, 'worktree.txt', 'merged worktree head\n', 'merged worktree head');
   const worktreeHeadSha = runHumanCmd('git', ['rev-parse', worktreeBranch], repoDir).stdout.trim();
+  result = runLockTool(['release', '--branch', worktreeBranch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const branchOnly = 'work/exact-branch-only-pr-head';
   const branchOnlyPath = path.join(repoDir, '.omx', 'agent-worktrees', 'exact-branch-only-pr-head');
@@ -405,6 +411,136 @@ test('worktree prune skips managed worktree containing forwarded active cwd', ()
 
   const branchResult = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-active-cwd-prune'], repoDir);
   assert.equal(branchResult.status, 0, 'active cwd branch should remain');
+});
+
+
+test('worktree prune preserves worktrees with active Guardex file locks', () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  const branch = 'agent/test-active-lock-prune';
+  const previousBranch = 'agent/test-active-lock-prune-before-rename';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__test-active-lock-prune');
+  result = runCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runLockTool(['claim', '--branch', previousBranch, 'locked.txt'], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Skipping actively locked worktree:/);
+  assert.equal(fs.existsSync(worktreePath), true, 'a lock recorded before a branch rename should preserve the worktree');
+  assert.equal(
+    runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
+    0,
+    'actively locked attached branch should remain',
+  );
+
+  result = runLockTool(['release', '--branch', previousBranch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runLockTool(['claim', '--branch', branch, 'locked.txt'], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runCmd('git', ['checkout', '--detach'], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Skipping actively locked worktree:/);
+  assert.equal(fs.existsSync(worktreePath), true, 'actively locked worktree should remain');
+
+  result = runLockTool(['release', '--branch', branch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const lockFile = path.join(worktreePath, '.omx', 'state', 'agent-file-locks.json');
+  fs.writeFileSync(lockFile, Buffer.from([0xff]));
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stderr, /Cannot safely inspect active locks:/);
+  assert.equal(fs.existsSync(worktreePath), true, 'unreadable lock registry must fail closed');
+
+  for (const malformedState of ['{}\n', '{"locks": {"locked.txt": null}}\n']) {
+    fs.writeFileSync(lockFile, malformedState, 'utf8');
+    result = runWorktreePrune(['--delete-branches'], repoDir);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stderr, /Cannot safely inspect active locks:/);
+    assert.equal(fs.existsSync(worktreePath), true, 'malformed lock registry must fail closed');
+  }
+
+  fs.writeFileSync(lockFile, '{"locks": {}}\n', 'utf8');
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(worktreePath), false, 'unlocked merged worktree should be pruned');
+});
+
+
+test('worktree prune serializes removal with Guardex lock claims', async () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  const branch = 'agent/test-lock-serialized-prune';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__test-lock-serialized-prune');
+  result = runCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const sharedLock = path.join(repoDir, '.git', 'agent-file-locks.lock');
+  const readyFile = path.join(repoDir, '.git', 'prune-lock-holder-ready');
+  const holder = cp.spawn(
+    'python3',
+    [
+      '-c',
+      [
+        'import fcntl, pathlib, sys, time',
+        "with open(sys.argv[1], 'a+', encoding='utf-8') as handle:",
+        '    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)',
+        "    pathlib.Path(sys.argv[2]).write_text('ready')",
+        '    time.sleep(1.5)',
+      ].join('\n'),
+      sharedLock,
+      readyFile,
+    ],
+    { cwd: repoDir, stdio: 'ignore' },
+  );
+
+  const readyDeadline = Date.now() + 3000;
+  while (!fs.existsSync(readyFile) && Date.now() < readyDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(fs.existsSync(readyFile), true, 'lock holder should acquire the shared Guardex mutex');
+
+  let stdout = '';
+  let stderr = '';
+  const prune = cp.spawn(process.execPath, [cliPath, 'worktree', 'prune', '--delete-branches'], {
+    cwd: repoDir,
+    env: withGuardexHome(),
+  });
+  prune.stdout.setEncoding('utf8');
+  prune.stderr.setEncoding('utf8');
+  prune.stdout.on('data', (chunk) => { stdout += chunk; });
+  prune.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(prune.exitCode, null, 'prune should wait while a Guardex claim mutex is held');
+  assert.equal(fs.existsSync(worktreePath), true, 'worktree must remain while claim mutex is held');
+
+  const pruneStatus = await new Promise((resolve, reject) => {
+    prune.once('error', reject);
+    prune.once('close', resolve);
+  });
+  assert.equal(pruneStatus, 0, stderr || stdout);
+  const holderStatus = holder.exitCode !== null
+    ? holder.exitCode
+    : await new Promise((resolve, reject) => {
+      holder.once('error', reject);
+      holder.once('close', resolve);
+    });
+  assert.equal(holderStatus, 0, 'lock holder should release the shared Guardex mutex');
+  assert.equal(fs.existsSync(worktreePath), false, 'worktree should be pruned after mutex release');
 });
 
 

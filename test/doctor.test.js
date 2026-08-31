@@ -1334,6 +1334,8 @@ test('gx doctor prunes idle clean no-PR worktrees but preserves their recovery b
   result = runHumanCmd('git', ['worktree', 'add', cleanWorktree, branch], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(cleanWorktree, 'completed.txt', 'committed work must remain reachable\n', 'completed agent work');
+  result = runLockTool(['release', '--branch', branch], cleanWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
   const { fakePath: fakeGhPath } = createFakeGhScript(`
@@ -1487,6 +1489,10 @@ test('gx doctor prunes clean merged and closed PR lanes using each PR base branc
   result = runHumanCmd('git', ['worktree', 'add', '-b', closedBranch, closedWorktree, 'main'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(closedWorktree, 'closed-lane.txt', 'closed lane\n', 'closed lane work');
+  result = runLockTool(['release', '--branch', mergedBranch], mergedWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runLockTool(['release', '--branch', closedBranch], closedWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
   const mergedHeadSha = runHumanCmd('git', ['rev-parse', mergedBranch], repoDir).stdout.trim();
   const closedHeadSha = runHumanCmd('git', ['rev-parse', closedBranch], repoDir).stdout.trim();
   result = runHumanCmd('git', ['push', '-u', 'origin', mergedBranch], repoDir);
@@ -1565,6 +1571,10 @@ test('gx doctor never force-deletes reused lanes that advanced beyond historical
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(forkWorktree, 'fork.txt', 'same tip as closed fork PR\n', 'closed fork lane work');
   const forkPrHeadSha = runHumanCmd('git', ['rev-parse', forkBranch], repoDir).stdout.trim();
+  result = runLockTool(['release', '--branch', reusedBranch], reusedWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runLockTool(['release', '--branch', forkBranch], forkWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then

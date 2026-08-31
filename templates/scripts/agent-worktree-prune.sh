@@ -579,6 +579,79 @@ has_live_process_in_worktree() {
   return 1
 }
 
+remove_worktree_with_lock_guard() {
+  local worktree="$1"
+  local remove_reason="$2"
+  local lock_file="${worktree}/.omx/state/agent-file-locks.json"
+  local shared_lock="${repo_common_dir}/agent-file-locks.lock"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[agent-worktree-prune] Cannot safely lock active claims without python3: ${shared_lock}" >&2
+    return 10
+  fi
+
+  python3 - "$shared_lock" "$lock_file" "$repo_root" "$worktree" "$remove_reason" "$DRY_RUN" <<'PY'
+import json
+import subprocess
+import sys
+
+try:
+    import fcntl
+except ImportError:
+    print('[agent-worktree-prune] OS file locking is unavailable; prune blocked', file=sys.stderr)
+    raise SystemExit(10)
+
+shared_lock, lock_file, repo_root, worktree, remove_reason, dry_run = sys.argv[1:]
+try:
+    with open(shared_lock, 'a+', encoding='utf-8') as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+
+        try:
+            with open(lock_file, encoding='utf-8') as handle:
+                state = json.load(handle)
+        except FileNotFoundError:
+            state = {'locks': {}}
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            print(
+                f'[agent-worktree-prune] Cannot safely inspect active locks: {lock_file}',
+                file=sys.stderr,
+            )
+            raise SystemExit(10)
+
+        locks = state.get('locks') if isinstance(state, dict) else None
+        if not isinstance(locks, dict):
+            print(
+                f'[agent-worktree-prune] Cannot safely inspect active locks: {lock_file}',
+                file=sys.stderr,
+            )
+            raise SystemExit(10)
+
+        for entry in locks.values():
+            if not isinstance(entry, dict):
+                print(
+                    f'[agent-worktree-prune] Cannot safely inspect active locks: {lock_file}',
+                    file=sys.stderr,
+                )
+                raise SystemExit(10)
+            raise SystemExit(10)
+
+        print(f'[agent-worktree-prune] Removing worktree ({remove_reason}): {worktree}', flush=True)
+        command = ['git', '-C', repo_root, 'worktree', 'remove', worktree, '--force']
+        if dry_run == '1':
+            print(f"[agent-worktree-prune] [dry-run] {' '.join(command)}")
+            raise SystemExit(0)
+
+        result = subprocess.run(command, check=False)
+        raise SystemExit(0 if result.returncode == 0 else 1)
+except OSError:
+    print(
+        f'[agent-worktree-prune] Cannot safely acquire active lock guard: {shared_lock}',
+        file=sys.stderr,
+    )
+    raise SystemExit(10)
+PY
+}
+
 branch_idle_gate() {
   local branch="$1"
   local wt="$2"
@@ -806,9 +879,18 @@ process_entry() {
     return
   fi
 
-  echo "[agent-worktree-prune] Removing worktree (${remove_reason}): ${wt}"
-  run_cmd git -C "$repo_root" worktree remove "$wt" --force
-  removed_worktrees=$((removed_worktrees + 1))
+  local remove_status=0
+  if remove_worktree_with_lock_guard "$wt" "$remove_reason"; then
+    removed_worktrees=$((removed_worktrees + 1))
+  else
+    remove_status=$?
+    if [[ "$remove_status" -ne 10 ]]; then
+      exit "$remove_status"
+    fi
+    skipped_active=$((skipped_active + 1))
+    echo "[agent-worktree-prune] Skipping actively locked worktree: ${wt}"
+    return
+  fi
 
   if [[ -z "$branch" ]]; then
     return
