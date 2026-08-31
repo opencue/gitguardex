@@ -63,19 +63,44 @@ Parallel agents can edit the same files, overwrite tests, or commit directly to
 
 GitGuardex gives every task an isolated lane:
 
-| Capability | Result |
-| --- | --- |
-| Separate `agent/*` branch + worktree | Agents do not share a working directory. |
-| Shared file locks | Independent lanes and clones coordinate ownership before editing. |
-| Protected `main` / `dev` / `master` | Agent changes must go through a PR. |
-| Preflight + CI + optional AI review | Broken or risky changes stop before merge. |
-| Safe finish + cleanup | The PR merges, then its temporary branch and worktree are removed. |
-| Fail-closed lane cleanup | Dirty, locked, open-PR, blocked, or uncertain lanes are preserved; idle clean worktrees can be closed without deleting their branches. ([#741](https://github.com/opencue/gitguardex/pull/741), [#744](https://github.com/opencue/gitguardex/pull/744), [#746](https://github.com/opencue/gitguardex/pull/746), [#752](https://github.com/opencue/gitguardex/pull/752)) |
-| Correct per-lane finish target | Explicit base branches are persisted and validated, and unattended finish uses the lane's recorded base instead of another checkout's base. ([#745](https://github.com/opencue/gitguardex/pull/745), [#750](https://github.com/opencue/gitguardex/pull/750), [#751](https://github.com/opencue/gitguardex/pull/751)) |
-| Billing-aware CI fallback | Checks that GitHub cannot start because of billing can be waived only by name, while a fresh repository preflight remains mandatory. ([#743](https://github.com/opencue/gitguardex/pull/743)) |
-| OpenSpec progress reconciliation | Conflicting `tasks.md` progress is merged deterministically and validated before finish continues. ([#753](https://github.com/opencue/gitguardex/pull/753)) |
-| Reusable successful preflight | A successful finish preflight is reused only while the source HEAD, base commit, command, and preflight script stay unchanged; billing-waiver preflights are never cached. ([#757](https://github.com/opencue/gitguardex/pull/757)) |
-| Workspace hygiene | Successful detached lanes are removed safely, stale VS Code worktree providers are avoided, and `gx branch finish --help` has no repository side effects. ([#742](https://github.com/opencue/gitguardex/pull/742), [#747](https://github.com/opencue/gitguardex/pull/747), [#748](https://github.com/opencue/gitguardex/pull/748), [#754](https://github.com/opencue/gitguardex/pull/754)) |
+<p align="center">
+  <strong>Start lane → Claim files → Build → Verify → PR → Merge → Cleanup</strong>
+</p>
+
+#### 🔒 Isolate and coordinate
+
+- **Dedicated task lanes** — each `agent/*` branch gets its own worktree, so
+  agents never share a working directory.
+- **Shared file ownership** — independent lanes and clones coordinate claims
+  before editing.
+- **Protected base branches** — changes to `main`, `dev`, and `master` must go
+  through a PR.
+
+#### ✅ Ship with evidence
+
+- **Preflight, CI, and optional AI review** — broken or risky changes stop
+  before merge.
+- **Safe finish** — merge the PR, then remove its temporary branch and
+  worktree.
+- **Correct base targeting** — persist and validate each lane's base so an
+  unattended finish cannot use another checkout's target. ([#745](https://github.com/opencue/gitguardex/pull/745), [#750](https://github.com/opencue/gitguardex/pull/750), [#751](https://github.com/opencue/gitguardex/pull/751))
+- **Billing-aware CI fallback** — waive only named checks that GitHub could not
+  start because of billing, while keeping repository preflight mandatory.
+  ([#743](https://github.com/opencue/gitguardex/pull/743))
+- **OpenSpec progress reconciliation** — merge conflicting `tasks.md` progress
+  deterministically and validate it before continuing. ([#753](https://github.com/opencue/gitguardex/pull/753))
+- **Reusable successful preflight** — reuse proof only while the source HEAD,
+  base commit, command, and script stay unchanged; billing-waiver preflights
+  are never cached. ([#757](https://github.com/opencue/gitguardex/pull/757))
+
+#### 🧹 Recover without losing work
+
+- **Fail-closed cleanup** — preserve dirty, locked, open-PR, blocked, or
+  uncertain lanes; close idle clean worktrees without deleting their branches.
+  ([#741](https://github.com/opencue/gitguardex/pull/741), [#744](https://github.com/opencue/gitguardex/pull/744), [#746](https://github.com/opencue/gitguardex/pull/746), [#752](https://github.com/opencue/gitguardex/pull/752))
+- **Workspace hygiene** — safely remove successful detached lanes, avoid stale
+  VS Code worktree providers, and keep `gx branch finish --help` free of
+  repository side effects. ([#742](https://github.com/opencue/gitguardex/pull/742), [#747](https://github.com/opencue/gitguardex/pull/747), [#748](https://github.com/opencue/gitguardex/pull/748), [#754](https://github.com/opencue/gitguardex/pull/754))
 
 ---
 
