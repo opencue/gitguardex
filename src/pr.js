@@ -18,6 +18,8 @@ const {
 const { repoApiPath } = require('./github-api');
 const { FAILING_CONCLUSIONS, summarizeStatusCheckRollup } = require('./pr-checks');
 
+const BILLING_BLOCKED_JOB_MESSAGE = /^The job was not started because recent account payments have failed or your spending limit needs to be increased\. Please check the ['"]Billing & plans['"] section in your settings\.?$/i;
+
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -55,6 +57,49 @@ function ghJson(repoRoot, args) {
   } catch (error) {
     return { ok: false, data: null, error: `gh JSON parse: ${error.message}` };
   }
+}
+
+function githubActionsJobId(check) {
+  if (String(check?.__typename || '') !== 'CheckRun') return '';
+  if (!String(check?.name || '').trim()) return '';
+  const state = String(check?.conclusion || '').toUpperCase();
+  if (!FAILING_CONCLUSIONS.has(state)) return '';
+
+  try {
+    const url = new URL(String(check?.detailsUrl || ''));
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com') return '';
+    const match = url.pathname.match(/\/actions\/runs\/\d+\/job\/(\d+)(?:\/|$)/);
+    return match ? match[1] : '';
+  } catch (_error) {
+    return '';
+  }
+}
+
+function isBillingBlockedCheckRun(repoRoot, check, runner = run) {
+  const checkRunId = githubActionsJobId(check);
+  if (!checkRunId) return false;
+
+  const result = runner(GH_BIN, [
+    'api',
+    repoApiPath(repoRoot, `check-runs/${checkRunId}/annotations`, runner),
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
+  if (result.status !== 0) return false;
+
+  let annotations;
+  try {
+    annotations = JSON.parse(String(result.stdout || ''));
+  } catch (_error) {
+    return false;
+  }
+  if (!Array.isArray(annotations) || annotations.length !== 1) return false;
+
+  const [annotation] = annotations;
+  return annotation?.path === '.github'
+    && Number(annotation?.start_line) === 1
+    && String(annotation?.annotation_level || '').toLowerCase() === 'failure'
+    && String(annotation?.title || '') === ''
+    && String(annotation?.raw_details || '') === ''
+    && BILLING_BLOCKED_JOB_MESSAGE.test(String(annotation?.message || '').trim());
 }
 
 /**
@@ -249,7 +294,9 @@ function getPullRequestStatus(repoRoot, branch) {
   const pr = findOpenPrForBranch(repoRoot, branch);
   if (!pr) return null;
 
-  const rollup = summarizeStatusCheckRollup(pr.statusCheckRollup);
+  const rollup = summarizeStatusCheckRollup(pr.statusCheckRollup, {
+    isWaived: (check) => isBillingBlockedCheckRun(repoRoot, check),
+  });
 
   return {
     number: pr.number,
@@ -268,6 +315,7 @@ function getPullRequestStatus(repoRoot, branch) {
     base: pr.baseRefName,
     checks: rollup.summary,
     failedNames: rollup.failedNames,
+    billingWaivedNames: rollup.waivedNames,
     supersededChecks: rollup.supersededCount,
   };
 }
@@ -491,6 +539,8 @@ module.exports = {
   pushBranch,
   openPullRequest,
   getPullRequestStatus,
+  githubActionsJobId,
+  isBillingBlockedCheckRun,
   checkOutcomes,
   baselineFailures,
   enableAutoMerge,

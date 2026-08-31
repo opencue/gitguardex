@@ -21,6 +21,7 @@ AUTO_RESOLVE_SAFE_GLOBS_DEFAULT='.omc/**:.omx/state/**:.dev-ports.json:apps/logs
 AUTO_RESOLVE_SAFE_GLOBS_RAW="${GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS-$AUTO_RESOLVE_SAFE_GLOBS_DEFAULT}"
 PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
+PREFLIGHT_REQUIRED_RAW="${GUARDEX_FINISH_REQUIRE_PREFLIGHT:-false}"
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
 FINISH_CHECKLIST_RAW="${GUARDEX_FINISH_CHECKLIST:-false}"
 FINISH_GATE_DONE_RAW="${GUARDEX_FINISH_GATE_DONE:-false}"
@@ -171,12 +172,22 @@ resolve_preflight_script() {
 run_preflight() {
   local worktree="$1"
   if [[ "$PREFLIGHT_ENABLED" -ne 1 ]]; then
+    if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
+      finish_progress failed preflight "required because GitHub billing checks were waived"
+      echo "[agent-branch-finish] Billing-waived GitHub checks require local pre-flight; --no-preflight is not allowed." >&2
+      return 1
+    fi
     finish_progress skipped preflight "disabled by flag"
     return 0
   fi
   local script_path
   script_path="$(resolve_preflight_script "$worktree" "$PREFLIGHT_SCRIPT_RAW")"
   if [[ -z "$script_path" ]]; then
+    if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
+      finish_progress failed preflight "required executable script missing"
+      echo "[agent-branch-finish] Billing-waived GitHub checks require an executable local pre-flight script at ${PREFLIGHT_SCRIPT_RAW} (in ${worktree}); refusing push." >&2
+      return 1
+    fi
     finish_progress skipped preflight "no executable pre-flight script"
     echo "[agent-branch-finish] No executable pre-flight script at ${PREFLIGHT_SCRIPT_RAW} (in ${worktree}); skipping pre-flight." >&2
     return 0
@@ -281,6 +292,7 @@ WAIT_POLL_SECONDS="$(normalize_int "$WAIT_POLL_SECONDS_RAW" "10" "0")"
 PARENT_GITLINK_AUTO_COMMIT="$(normalize_bool "$PARENT_GITLINK_AUTO_COMMIT_RAW" "1")"
 FINISH_CHECKLIST="$(normalize_bool "$FINISH_CHECKLIST_RAW" "0")"
 FINISH_GATE_DONE="$(normalize_bool "$FINISH_GATE_DONE_RAW" "0")"
+PREFLIGHT_REQUIRED="$(normalize_bool "$PREFLIGHT_REQUIRED_RAW" "0")"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

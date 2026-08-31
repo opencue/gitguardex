@@ -179,6 +179,11 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // `NaN > 0` is false — which would wave a failing check straight through.
     const count = (key) => Number(c[key]) || 0;
     const failingCount = count('failed') + count('cancelled');
+    const waivedCount = count('waived');
+    const billingWaivedNames = Array.isArray(snap.billingWaivedNames)
+      ? snap.billingWaivedNames
+      : [];
+    const namedWaivers = waivedCount > 0 && billingWaivedNames.length === waivedCount;
     const settled = count('pending') === 0;
     const namedFailures = failedNames.length === failingCount;
     const novelFailures = failedNames.filter((name) => !baseline.has(name));
@@ -199,6 +204,12 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // base baseline and GitHub still says the branch is mergeable, that state is
     // the same "no new failures" verdict as UNSTABLE.
     const baselineBlockedByKnownChecks = mss === 'BLOCKED' && mergeable && onlyBaselineFailures;
+    const unstableOnlyBecauseBillingChecksWereWaived = mss === 'UNSTABLE'
+      && namedWaivers
+      && failingCount === 0
+      && count('pending') === 0
+      && count('other') === 0
+      && count('success') + count('skipped') + waivedCount === count('total');
     // GitHub says this can't merge as-is. Some BLOCKED/UNSTABLE snapshots are
     // just "required checks are still pending" immediately after a draft PR is
     // promoted to ready, so wait for pending checks to settle before treating
@@ -207,7 +218,9 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     if (mss && (mss === 'DIRTY' || mss === 'BEHIND')) {
       return { status: 'merge-blocked', pr: snap };
     }
-    if (mss && blockedStates.has(mss) && settled && !baselineBlockedByKnownChecks) {
+    if (mss && blockedStates.has(mss) && settled
+      && !baselineBlockedByKnownChecks
+      && !unstableOnlyBecauseBillingChecksWereWaived) {
       return { status: 'merge-blocked', pr: snap };
     }
 
@@ -219,12 +232,21 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // pre-existing: UNSTABLE joins the trusted verdicts, and the no-verdict
     // fallback accounts every check as success-or-cleared-failure. `other` must
     // still be zero either way — an ambiguous state is never a pass.
+    const billingCompanionSkipped = namedWaivers ? count('skipped') : 0;
     const allAccountedFor = baselineMode
-      ? count('other') === 0 && count('success') + failingCount === count('total')
-      : count('other') === 0 && count('success') === count('total');
-    const trusted = baselineBlockedByKnownChecks || (mss ? trustedStates.has(mss) : allAccountedFor);
+      ? count('other') === 0
+        && count('success') + billingCompanionSkipped + failingCount + waivedCount === count('total')
+      : count('other') === 0
+        && count('success') + billingCompanionSkipped + waivedCount === count('total');
+    const trusted = baselineBlockedByKnownChecks
+      || unstableOnlyBecauseBillingChecksWereWaived
+      || (mss ? trustedStates.has(mss) : allAccountedFor);
 
-    if (settled && mergeable && hasChecks && trusted) return { status: 'green', pr: snap };
+    if (settled && mergeable && hasChecks && trusted) {
+      const result = { status: 'green', pr: snap };
+      if (namedWaivers) result.billingWaivedNames = billingWaivedNames;
+      return result;
+    }
     if (settled && mergeable && !hasChecks && (mss ? MERGEABLE_STATES.has(mss) : true)) {
       if (!requireChecks) return { status: 'green', pr: snap };
       // No checks yet — give CI a grace window to create check runs before
@@ -588,6 +610,22 @@ function runReviewGate({
   }
 
   const mss = ci.pr && ci.pr.mergeStateStatus;
+  const billingChecksWaived = Array.isArray(ci.billingWaivedNames)
+    ? ci.billingWaivedNames
+    : [];
+  if (billingChecksWaived.length > 0) {
+    reportProgress(
+      progress,
+      'complete',
+      'ci',
+      `${billingChecksWaived.length} GitHub billing-blocked check(s) waived; local preflight required`,
+    );
+    gateLog(
+      `PR #${prNumber}: review clean; GitHub billing prevented [${billingChecksWaived.join(', ')}] from starting. `
+      + 'Proceeding only with mandatory repository preflight.',
+    );
+    return { prNumber, billingChecksWaived };
+  }
   reportProgress(progress, 'complete', 'ci', `green${mss ? `, mergeStateStatus=${mss}` : ''}`);
   gateLog(`PR #${prNumber}: review clean + CI green${mss ? ` + mergeStateStatus=${mss}` : ''} — proceeding to merge`);
   return { prNumber };

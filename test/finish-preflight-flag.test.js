@@ -14,6 +14,10 @@ const script = fs.readFileSync(
   path.resolve(__dirname, '..', 'templates', 'scripts', 'agent-branch-finish.sh'),
   'utf8',
 );
+const finishIndex = fs.readFileSync(
+  path.resolve(__dirname, '..', 'src', 'finish', 'index.js'),
+  'utf8',
+);
 
 function assertNormalizedAfterFlag(rawAssign, normalizeFragment, label) {
   const flagIdx = script.indexOf(rawAssign);
@@ -37,6 +41,25 @@ test('--no-preflight is honored: PREFLIGHT_ENABLED normalized after the parse lo
     'PREFLIGHT_ENABLED_RAW="false"',
     'PREFLIGHT_ENABLED="$(normalize_bool "$PREFLIGHT_ENABLED_RAW"',
     'preflight',
+  );
+});
+
+test('a billing waiver makes local preflight mandatory and fail-closed', () => {
+  assert.ok(
+    script.includes('GUARDEX_FINISH_REQUIRE_PREFLIGHT'),
+    'finish script must accept the gate signal that GitHub billing checks were waived',
+  );
+  assert.ok(
+    script.includes('Billing-waived GitHub checks require local pre-flight; --no-preflight is not allowed'),
+    'an explicit preflight bypass must fail when billing checks were waived',
+  );
+  assert.ok(
+    script.includes('Billing-waived GitHub checks require an executable local pre-flight script'),
+    'a missing repository preflight must fail when billing checks were waived',
+  );
+  assert.ok(
+    finishIndex.includes("GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.billingChecksWaived?.length > 0 ? '1' : '0'"),
+    'gx finish must propagate the waiver result to the shell preflight gate',
   );
 });
 
