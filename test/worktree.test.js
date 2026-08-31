@@ -166,6 +166,8 @@ test('worktree prune preserves a remote branch advanced while merged PR cleanup 
   const mergedHeadSha = runHumanCmd('git', ['rev-parse', branch], repoDir).stdout.trim();
   result = runHumanCmd('git', ['push', '-u', 'origin', branch], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runLockTool(['release', '--branch', branch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const remoteWriter = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-remote-writer-'));
   result = runHumanCmd('git', ['clone', '--branch', branch, originPath, remoteWriter], repoDir);
@@ -217,6 +219,8 @@ test('worktree prune preserves local branches advanced after PR classification',
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(worktreePath, 'worktree.txt', 'classified worktree head\n', 'classified worktree head');
   const worktreeHeadSha = runHumanCmd('git', ['rev-parse', worktreeBranch], repoDir).stdout.trim();
+  result = runLockTool(['release', '--branch', worktreeBranch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const branchOnly = 'work/advanced-branch-only-during-prune';
   const branchOnlyPath = path.join(repoDir, '.omx', 'agent-worktrees', 'advanced-branch-only-during-prune');
@@ -282,6 +286,8 @@ test('worktree prune retires exact PR heads without open-PR preservation preload
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(worktreePath, 'worktree.txt', 'merged worktree head\n', 'merged worktree head');
   const worktreeHeadSha = runHumanCmd('git', ['rev-parse', worktreeBranch], repoDir).stdout.trim();
+  result = runLockTool(['release', '--branch', worktreeBranch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const branchOnly = 'work/exact-branch-only-pr-head';
   const branchOnlyPath = path.join(repoDir, '.omx', 'agent-worktrees', 'exact-branch-only-pr-head');
@@ -405,6 +411,39 @@ test('worktree prune skips managed worktree containing forwarded active cwd', ()
 
   const branchResult = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-active-cwd-prune'], repoDir);
   assert.equal(branchResult.status, 0, 'active cwd branch should remain');
+});
+
+
+test('worktree prune preserves worktrees with active Guardex file locks', () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  const branch = 'agent/test-active-lock-prune';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__test-active-lock-prune');
+  result = runCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runLockTool(['claim', '--branch', branch, 'locked.txt'], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Skipping actively locked worktree:/);
+  assert.equal(fs.existsSync(worktreePath), true, 'actively locked worktree should remain');
+  assert.equal(
+    runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
+    0,
+    'actively locked branch should remain',
+  );
+
+  result = runLockTool(['release', '--branch', branch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(worktreePath), false, 'unlocked merged worktree should be pruned');
 });
 
 

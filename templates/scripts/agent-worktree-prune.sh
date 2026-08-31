@@ -579,6 +579,51 @@ has_live_process_in_worktree() {
   return 1
 }
 
+branch_has_active_file_locks() {
+  local branch="$1"
+  local worktree="$2"
+  local lock_file="${worktree}/.omx/state/agent-file-locks.json"
+  local inspect_status=0
+
+  [[ -n "$branch" && -f "$lock_file" ]] || return 1
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[agent-worktree-prune] Cannot safely inspect active locks without python3: ${lock_file}" >&2
+    return 0
+  fi
+
+  if python3 - "$lock_file" "$branch" <<'PY'
+import json
+import sys
+
+lock_file, branch = sys.argv[1:]
+try:
+    with open(lock_file, encoding='utf-8') as handle:
+        state = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(2)
+
+if not isinstance(state, dict) or not isinstance(state.get('locks', {}), dict):
+    raise SystemExit(2)
+
+for entry in state.get('locks', {}).values():
+    if isinstance(entry, dict) and str(entry.get('branch', '')) == branch:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+  then
+    return 0
+  else
+    inspect_status=$?
+    if [[ "$inspect_status" -ne 1 ]]; then
+      echo "[agent-worktree-prune] Cannot safely inspect active locks: ${lock_file}" >&2
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 branch_idle_gate() {
   local branch="$1"
   local wt="$2"
@@ -803,6 +848,12 @@ process_entry() {
 
   if ! reserve_branch_slot "$branch"; then
     echo "[agent-worktree-prune] Skipping branch limit worktree: ${branch} (${wt})"
+    return
+  fi
+
+  if branch_has_active_file_locks "$branch" "$wt"; then
+    skipped_active=$((skipped_active + 1))
+    echo "[agent-worktree-prune] Skipping actively locked worktree: ${wt}"
     return
   fi
 
