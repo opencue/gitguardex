@@ -742,6 +742,7 @@ process_entry() {
     remove_reason="missing-branch"
   elif [[ "$branch" == agent/* ]] || { [[ "$branch" == work/* ]] && is_managed_worktree_path "$wt"; }; then
     if [[ "$PRUNE_STALE_LANES" -eq 1 ]]; then
+      load_lane_pr_metadata || true
       remove_reason="$(stale_lane_removal_reason "$branch" || true)"
       case "$remove_reason" in
         merged-pr:*)
@@ -904,8 +905,9 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
     remote_delete_head=""
     expected_branch_head=""
     if [[ "$PRUNE_STALE_LANES" -eq 1 ]]; then
-      pr_state="$(lane_pr_state "$branch" || true)"
-      pr_base="$(lane_pr_base "$branch" || true)"
+      load_lane_pr_metadata || true
+      pr_state="${LANE_PR_STATES[$branch]:-}"
+      pr_base="${LANE_PR_BASES[$branch]:-}"
       if [[ "$pr_state" == "MERGED" ]]; then
         merged_by_pr=1
         expected_branch_head="${LANE_PR_HEAD_SHAS[$branch]:-}"

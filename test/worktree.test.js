@@ -270,6 +270,53 @@ fi
   }
 });
 
+test('worktree prune retires exact PR heads without open-PR preservation preloading metadata', () => {
+  const repoDir = initRepoOnBranch('main');
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  const worktreeBranch = 'agent/exact-worktree-pr-head';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'exact-worktree-pr-head');
+  result = runHumanCmd('git', ['worktree', 'add', '-b', worktreeBranch, worktreePath, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(worktreePath, 'worktree.txt', 'merged worktree head\n', 'merged worktree head');
+  const worktreeHeadSha = runHumanCmd('git', ['rev-parse', worktreeBranch], repoDir).stdout.trim();
+
+  const branchOnly = 'work/exact-branch-only-pr-head';
+  const branchOnlyPath = path.join(repoDir, '.omx', 'agent-worktrees', 'exact-branch-only-pr-head');
+  result = runHumanCmd('git', ['worktree', 'add', '-b', branchOnly, branchOnlyPath, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(branchOnlyPath, 'branch-only.txt', 'merged branch-only head\n', 'merged branch-only head');
+  const branchOnlyHeadSha = runHumanCmd('git', ['rev-parse', branchOnly], repoDir).stdout.trim();
+  result = runHumanCmd('git', ['worktree', 'remove', branchOnlyPath], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
+  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "${worktreeBranch}" "${worktreeHeadSha}" recodeee/gitguardex main MERGED recodeee/gitguardex
+  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "${branchOnly}" "${branchOnlyHeadSha}" recodeee/gitguardex main MERGED recodeee/gitguardex
+  exit 0
+fi
+exit 0
+`);
+  result = runWorktreePrune(
+    ['--prune-stale-lanes', '--delete-branches'],
+    repoDir,
+    { GUARDEX_GH_BIN: fakeGhPath },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(worktreePath), false, 'exact merged PR worktree should be removed');
+  for (const branch of [worktreeBranch, branchOnly]) {
+    assert.notEqual(
+      runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
+      0,
+      `exact merged PR branch should be removed: ${branch}`,
+    );
+  }
+});
+
 test('worktree prune preserves a closed PR lane when its remote recovery branch is missing', () => {
   const repoDir = initRepoOnBranch('main');
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
