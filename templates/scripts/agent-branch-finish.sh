@@ -555,14 +555,26 @@ try_reconcile_openspec_tasks_conflict() {
 
 validate_reconciled_openspec_tasks() {
   local worktree="$1"
+  local reconciled_paths="$2"
+  local conflict_path=""
+  local change_name=""
   if ! command -v openspec >/dev/null 2>&1; then
     echo "[agent-branch-finish] openspec CLI unavailable; deterministic tasks.md validation passed, spec validation skipped." >&2
     return 0
   fi
-  if ! (cd "$worktree" && openspec validate --changes --strict --no-interactive >/dev/null); then
-    echo "[agent-branch-finish] OpenSpec validation failed after tasks.md reconciliation; leaving the Git operation for manual repair." >&2
-    return 1
-  fi
+  while IFS= read -r conflict_path; do
+    [[ -z "$conflict_path" ]] && continue
+    if ! is_openspec_change_tasks_path "$conflict_path"; then
+      echo "[agent-branch-finish] Refusing to validate unexpected reconciled path: ${conflict_path}" >&2
+      return 1
+    fi
+    change_name="${conflict_path#openspec/changes/}"
+    change_name="${change_name%/tasks.md}"
+    if ! (cd "$worktree" && openspec validate "$change_name" --type change --strict --no-interactive >/dev/null); then
+      echo "[agent-branch-finish] OpenSpec validation failed for change '${change_name}' after tasks.md reconciliation; leaving the Git operation for manual repair." >&2
+      return 1
+    fi
+  done < <(printf '%s' "$reconciled_paths" | sort -u)
 }
 
 try_finish_rebase_with_openspec_tasks() {
@@ -590,7 +602,7 @@ try_finish_rebase_with_openspec_tasks() {
     while IFS= read -r conflict_path; do
       [[ -n "$conflict_path" ]] && run_guardex_cli locks claim --branch "$SOURCE_BRANCH" "$conflict_path" >/dev/null 2>&1 || true
     done <<< "$resolved_round"
-    validate_reconciled_openspec_tasks "$worktree" || return 1
+    validate_reconciled_openspec_tasks "$worktree" "$resolved_round" || return 1
 
     if ! GIT_EDITOR=true git -C "$worktree" rebase --continue >/dev/null 2>&1; then
       git_dir="$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null || true)"
@@ -1063,7 +1075,7 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRA
       while IFS= read -r resolved_path; do
         [[ -n "$resolved_path" ]] && run_guardex_cli locks claim --branch "$SOURCE_BRANCH" "$resolved_path" >/dev/null 2>&1 || true
       done <<< "$openspec_tasks_reconciled"
-      if ! validate_reconciled_openspec_tasks "$source_worktree" \
+      if ! validate_reconciled_openspec_tasks "$source_worktree" "$openspec_tasks_reconciled" \
         || ! git -C "$source_worktree" commit -m "Merge origin/${BASE_BRANCH} into ${SOURCE_BRANCH} (gx reconciled OpenSpec task progress)" >/dev/null 2>&1; then
         git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
         echo "[agent-branch-finish] Failed to validate or commit reconciled OpenSpec task progress." >&2
@@ -1129,7 +1141,7 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRA
       fi
       auto_resolve_commit_msg="Merge origin/${BASE_BRANCH} into ${SOURCE_BRANCH} (gx --auto-resolve=${AUTO_RESOLVE_MODE}; ${auto_resolve_summary})"
       if [[ -n "$openspec_tasks_reconciled" ]] \
-        && ! validate_reconciled_openspec_tasks "$source_worktree"; then
+        && ! validate_reconciled_openspec_tasks "$source_worktree" "$openspec_tasks_reconciled"; then
         git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
         echo "[agent-branch-finish] OpenSpec validation failed after task reconciliation." >&2
         exit 1

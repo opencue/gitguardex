@@ -107,8 +107,13 @@ test('branch finish enables reconciliation for both rebase and merge conflicts',
   assert.match(finishScript, /try_finish_rebase_with_openspec_tasks "\$source_worktree"/);
   assert.match(
     finishScript,
-    /openspec validate --changes --strict --no-interactive/,
-    'reconciled change tasks must be validated as changes rather than canonical specs'
+    /openspec validate "\$change_name" --type change --strict --no-interactive/,
+    'only the reconciled change must be validated'
+  );
+  assert.doesNotMatch(
+    finishScript,
+    /openspec validate --changes/,
+    'unrelated OpenSpec changes must not block reconciliation'
   );
   assert.match(
     finishScript,
