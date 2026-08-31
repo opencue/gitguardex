@@ -215,13 +215,13 @@ test('getPullRequestStatus waives only a GitHub check run with the exact billing
   }];
   const job = {
     status: 'completed', conclusion: 'failure', runner_id: 0, runner_name: '', steps: [],
-    check_run_url: 'https://api.github.com/repos/example/repo/check-runs/456',
+    check_run_url: 'https://api.github.com/repos/example/repo/check-runs/789',
   };
   const checkRuns = { total_count: 1, check_runs: [{
-    id: 456, name: 'build', details_url: response[0].statusCheckRollup[0].detailsUrl,
+    id: 789, name: 'build', details_url: response[0].statusCheckRollup[0].detailsUrl,
     status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' },
   }] };
-  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/456/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
+  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/789/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
   fs.chmodSync(fakeGh, 0o755);
 
   try {
