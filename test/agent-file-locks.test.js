@@ -258,6 +258,49 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.match(claim.stderr, new RegExp(liveBranch.replaceAll('/', '\\/')));
   });
 
+  test('claim fails closed when the pane branch cannot be inspected', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'shared.txt');
+    const stateDir = path.join(repoDir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({
+        locks: {
+          'shared.txt': {
+            branch: 'agent/codex/unresolved-lane',
+            claimed_at: '2026-06-05T12:00:00+00:00',
+            allow_delete: false,
+            agent: 'codex',
+            pane: '%22',
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    const fakeBin = path.join(repoDir, 'fake-bin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(
+      path.join(fakeBin, 'tmux'),
+      `#!/bin/sh\nprintf '%s\\n' '${repoDir}'\n`,
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(
+      path.join(fakeBin, 'git'),
+      `#!/bin/sh\nif [ "$1" = rev-parse ] && [ "$2" = --abbrev-ref ]; then exit 1; fi\nexec /usr/bin/git "$@"\n`,
+      { mode: 0o755 },
+    );
+    const currentBranch = runHumanCmd('git', ['branch', '--show-current'], repoDir).stdout.trim();
+
+    const claim = locksAt(
+      repoDir,
+      ['claim', '--branch', currentBranch, 'shared.txt'],
+      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+    );
+
+    assert.equal(claim.status, 1, 'uncertain Git state must preserve the existing lock');
+    assert.match(claim.stderr, /agent\/codex\/unresolved-lane/);
+  });
+
   test('a claim in one worktree blocks a claim AND a commit of the same file from a sibling worktree', () => {
     const repoDir = makeRepo(); // wt1
     writeFile(repoDir, 'shared.txt');

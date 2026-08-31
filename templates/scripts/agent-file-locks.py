@@ -394,7 +394,7 @@ def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | No
             return None
         pane_branch = run_git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd=pane_cwd)
     except LockError:
-        return False
+        return None
     if not pane_branch or pane_branch == 'HEAD':
         return None
     return pane_branch == branch
