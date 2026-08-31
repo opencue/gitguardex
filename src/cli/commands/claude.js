@@ -20,10 +20,19 @@ const SETTINGS_REL = '.claude/settings.json';
 const HOOKS_REL = '.claude/hooks';
 const COMMANDS_REL = '.claude/commands';
 const SKILLS_REL = '.claude/skills';
-// Repo-scoped MCP registration so any agent in the target repo can see the
-// cross-repo agent radar (`gx mcp`). Read-only server; opt out with --no-mcp.
+// Repo-scoped MCP registration for the gx radar and CodeGraph. Opt out with
+// --no-mcp when a repository manages its own MCP surface.
 const MCP_REL = '.mcp.json';
 const MCP_SERVER_KEY = SHORT_TOOL_NAME;
+const MCP_SERVER_SPECS = {
+  [MCP_SERVER_KEY]: { command: SHORT_TOOL_NAME, args: ['mcp', 'serve'] },
+  codegraph: { type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'] },
+};
+
+const MANAGED_AGENT_SKILLS = [
+  { name: 'gitguardex', source: ['skills', 'gitguardex'] },
+  { name: 'opensrc', source: ['templates', 'codex', 'skills', 'opensrc'] },
+];
 
 const MANAGED_HOOK_FILES = [
   'skill_guard.py',
@@ -255,19 +264,24 @@ function installSlashCommands(repoRoot, { dryRun }) {
   return results;
 }
 
-function installAgentSkill(repoRoot, { dryRun }) {
+function installAgentSkills(repoRoot, { dryRun }) {
   const packageRoot = findPackageRoot();
-  const srcDir = path.join(packageRoot, SKILLS_REL, 'gitguardex');
-  if (!fs.existsSync(srcDir)) return { status: 'source-missing' };
-  const destDir = path.join(repoRoot, SKILLS_REL, 'gitguardex');
-  if (!dryRun) fs.mkdirSync(destDir, { recursive: true });
   const results = [];
-  for (const entry of fs.readdirSync(srcDir)) {
-    const src = path.join(srcDir, entry);
-    const dest = path.join(destDir, entry);
-    if (fs.statSync(src).isDirectory()) continue;
-    const r = copyFileIfDifferent(src, dest, { dryRun });
-    results.push({ skill: `gitguardex/${entry}`, ...r });
+  for (const skill of MANAGED_AGENT_SKILLS) {
+    const srcDir = path.join(packageRoot, ...skill.source);
+    if (!fs.existsSync(srcDir)) {
+      results.push({ skill: skill.name, status: 'source-missing' });
+      continue;
+    }
+    const destDir = path.join(repoRoot, SKILLS_REL, skill.name);
+    if (!dryRun) fs.mkdirSync(destDir, { recursive: true });
+    for (const entry of fs.readdirSync(srcDir)) {
+      const src = path.join(srcDir, entry);
+      const dest = path.join(destDir, entry);
+      if (fs.statSync(src).isDirectory()) continue;
+      const result = copyFileIfDifferent(src, dest, { dryRun });
+      results.push({ skill: `${skill.name}/${entry}`, ...result });
+    }
   }
   return { status: 'ok', files: results };
 }
@@ -346,7 +360,7 @@ function describeStatus(s) {
 }
 
 function mcpServerSpec() {
-  return { command: SHORT_TOOL_NAME, args: ['mcp', 'serve'] };
+  return MCP_SERVER_SPECS[MCP_SERVER_KEY];
 }
 
 // Register the read-only `gx mcp` server in the target repo's .mcp.json so any
@@ -357,13 +371,14 @@ function installMcpServer(repoRoot, { dryRun }) {
   const fileExisted = fs.existsSync(filePath);
   const config = readJsonIfExists(filePath) || {};
   config.mcpServers = config.mcpServers || {};
-  const desired = mcpServerSpec();
-  const current = config.mcpServers[MCP_SERVER_KEY];
-  if (current && JSON.stringify(current) === JSON.stringify(desired)) {
+  const allCurrent = Object.entries(MCP_SERVER_SPECS).every(([key, desired]) =>
+    JSON.stringify(config.mcpServers[key]) === JSON.stringify(desired));
+  if (allCurrent) {
     return { status: 'unchanged', dest: filePath };
   }
-  const status = current ? 'updated' : fileExisted ? 'merged' : 'created';
-  config.mcpServers[MCP_SERVER_KEY] = desired;
+  const hasManagedServer = Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key]);
+  const status = hasManagedServer ? 'updated' : fileExisted ? 'merged' : 'created';
+  Object.assign(config.mcpServers, MCP_SERVER_SPECS);
   writeJson(filePath, config, { dryRun });
   return { status, dest: filePath };
 }
@@ -374,10 +389,13 @@ function installMcpServer(repoRoot, { dryRun }) {
 function uninstallMcpServer(repoRoot, { dryRun }) {
   const filePath = path.join(repoRoot, MCP_REL);
   const config = readJsonIfExists(filePath);
-  if (!config || !config.mcpServers || !config.mcpServers[MCP_SERVER_KEY]) {
+  if (!config || !config.mcpServers
+    || !Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key])) {
     return { status: 'absent', dest: filePath };
   }
-  delete config.mcpServers[MCP_SERVER_KEY];
+  for (const key of Object.keys(MCP_SERVER_SPECS)) {
+    delete config.mcpServers[key];
+  }
   const onlyOurs = Object.keys(config.mcpServers).length === 0 && Object.keys(config).length === 1;
   if (!dryRun) {
     if (onlyOurs) fs.unlinkSync(filePath);
@@ -394,7 +412,7 @@ function runInstall(rawArgs) {
   const settingsResult = installSettings(repoRoot, opts);
   const hookResults = installHooks(repoRoot, opts);
   const slashResults = installSlashCommands(repoRoot, opts);
-  const skillResult = installAgentSkill(repoRoot, opts);
+  const skillResult = installAgentSkills(repoRoot, opts);
   const mcpResult = opts.noMcp
     ? { status: 'skipped', dest: path.join(repoRoot, MCP_REL) }
     : installMcpServer(repoRoot, opts);
@@ -413,9 +431,7 @@ function runInstall(rawArgs) {
   summarize('hooks', hookResults, 'hook');
   summarize('slash commands', slashResults, 'command');
   if (skillResult.status === 'ok') {
-    summarize('skill: gitguardex', skillResult.files, 'skill');
-  } else if (skillResult.status === 'source-missing') {
-    logWarn('gitguardex skill source missing in package; skipped.');
+    summarize('agent skills', skillResult.files, 'skill');
   }
   logInfo(`mcp server (${MCP_REL}): ${mcpResult.status}`);
   logInfo(`CLAUDE.md symlink: ${symlinkResult.status}${symlinkResult.note ? ` (${symlinkResult.note})` : ''}`);
@@ -502,12 +518,14 @@ function runCheck(rawArgs) {
 
   // MCP registration check
   const mcpConfig = readJsonIfExists(path.join(repoRoot, MCP_REL));
-  const hasGxMcp = Boolean(mcpConfig && mcpConfig.mcpServers && mcpConfig.mcpServers[MCP_SERVER_KEY]);
-  if (!hasGxMcp) {
+  const missingMcpServers = Object.keys(MCP_SERVER_SPECS).filter(
+    (key) => !(mcpConfig && mcpConfig.mcpServers && mcpConfig.mcpServers[key]),
+  );
+  if (missingMcpServers.length > 0) {
     issues.push({
       severity: 'warning',
       kind: 'mcp-missing',
-      message: `${MCP_REL} does not register the '${MCP_SERVER_KEY}' MCP server (run '${SHORT_TOOL_NAME} claude install', or install --no-mcp to skip).`,
+      message: `${MCP_REL} does not register managed MCP server(s): ${missingMcpServers.join(', ')} (run '${SHORT_TOOL_NAME} claude install', or install --no-mcp to skip).`,
     });
   }
 
@@ -594,10 +612,10 @@ function runUninstall(rawArgs) {
     if (!opts.dryRun) writeJson(settingsPath, settings, { dryRun: false });
     removed.push(`${SETTINGS_REL} (managed entries pruned)`);
   }
-  // Remove the gx MCP server from .mcp.json (drop the file if it only held ours)
+  // Remove managed MCP servers from .mcp.json (drop the file if it only held ours)
   const mcpRemoval = uninstallMcpServer(repoRoot, opts);
   if (mcpRemoval.status !== 'absent') {
-    removed.push(`${MCP_REL} (${mcpRemoval.status === 'removed' ? 'removed' : `'${MCP_SERVER_KEY}' server pruned`})`);
+    removed.push(`${MCP_REL} (${mcpRemoval.status === 'removed' ? 'removed' : 'managed servers pruned'})`);
   }
 
   logOk(`Removed ${removed.length} item(s)${opts.dryRun ? ' (dry-run)' : ''}.`);
@@ -639,7 +657,7 @@ Subcommands:
 Flags:
   --target <path>   Operate in a different repo directory.
   --force           Overwrite existing managed entries instead of merging.
-  --no-mcp          Skip registering the gx MCP server in .mcp.json.
+  --no-mcp          Skip registering gx and CodeGraph MCP servers in .mcp.json.
   --dry-run         Report what would change without writing.
   --json            Emit JSON output.
   --yes / -y        Required for uninstall.
@@ -677,6 +695,7 @@ module.exports = {
   ensureSpeckitMarkers,
   installHooks,
   installSlashCommands,
+  installAgentSkills,
   installMcpServer,
   uninstallMcpServer,
   mcpServerSpec,
@@ -684,6 +703,8 @@ module.exports = {
   MANAGED_SLASH_COMMANDS,
   MCP_REL,
   MCP_SERVER_KEY,
+  MCP_SERVER_SPECS,
+  MANAGED_AGENT_SKILLS,
   TEMPLATE_DEFAULT_SETTINGS,
   EXPECTED_HOOK_MATCHERS,
 };

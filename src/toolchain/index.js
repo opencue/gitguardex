@@ -6,6 +6,7 @@ const {
   TOOL_NAME,
   SHORT_TOOL_NAME,
   OPENSPEC_PACKAGE,
+  CODEGRAPH_BIN,
   NPX_BIN,
   GUARDEX_HOME_DIR,
   GLOBAL_TOOLCHAIN_SERVICES,
@@ -565,6 +566,61 @@ function installGlobalToolchain(options) {
   return performCompanionInstall(missingPackages, missingLocalTools);
 }
 
+function backupGlobalAgentFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { status: 'absent', path: filePath };
+  }
+  const backupPath = `${filePath}.guardex.bak`;
+  if (fs.existsSync(backupPath)) {
+    return { status: 'unchanged', path: backupPath };
+  }
+  fs.copyFileSync(filePath, backupPath);
+  return { status: 'created', path: backupPath };
+}
+
+// CodeGraph owns the Codex TOML/AGENTS serialization. Guardex only invokes its
+// documented non-interactive installer after global companion approval, and
+// snapshots any existing user config before that external writer runs.
+function configureCodegraphForCodex(options = {}) {
+  if (options.dryRun) return { status: 'dry-run-skip' };
+  if (options.noGlobalInstall) return { status: 'skipped', reason: 'global-install-disabled' };
+
+  const codexDir = path.join(GUARDEX_HOME_DIR, '.codex');
+  if (!fs.existsSync(codexDir)) {
+    return { status: 'skipped', reason: 'codex-not-detected' };
+  }
+
+  const configPath = path.join(codexDir, 'config.toml');
+  const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  if (/^\s*\[mcp_servers\.codegraph\]\s*$/m.test(config)) {
+    return { status: 'already-configured', path: configPath };
+  }
+
+  const versionProbe = run(CODEGRAPH_BIN, ['--version'], {
+    env: { HOME: GUARDEX_HOME_DIR, USERPROFILE: GUARDEX_HOME_DIR },
+  });
+  if (versionProbe.status !== 0) {
+    return { status: 'skipped', reason: 'codegraph-unavailable' };
+  }
+
+  const backups = [
+    backupGlobalAgentFile(configPath),
+    backupGlobalAgentFile(path.join(codexDir, 'AGENTS.md')),
+  ];
+  const result = run(
+    CODEGRAPH_BIN,
+    ['install', '--target=codex', '--location=global', '--yes', '--no-permissions'],
+    {
+      stdio: 'inherit',
+      env: { HOME: GUARDEX_HOME_DIR, USERPROFILE: GUARDEX_HOME_DIR },
+    },
+  );
+  if (result.status !== 0) {
+    return { status: 'failed', reason: 'codegraph Codex MCP installer failed', backups };
+  }
+  return { status: 'configured', path: configPath, backups };
+}
+
 function performCompanionInstall(missingPackages, missingLocalTools) {
   const installed = [];
   if (missingPackages.length > 0) {
@@ -626,4 +682,5 @@ module.exports = {
   maybeOpenSpecUpdateBeforeStatus,
   installGlobalToolchain,
   performCompanionInstall,
+  configureCodegraphForCodex,
 };

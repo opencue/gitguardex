@@ -95,6 +95,17 @@ function setup(rawArgs) {
     }
   }
 
+  const globalApproval = toolchainModule.resolveGlobalInstallApproval(options);
+  if (globalApproval.approved
+    && ['installed', 'already-installed'].includes(globalInstallStatus.status)) {
+    const codegraphConfig = toolchainModule.configureCodegraphForCodex(options);
+    if (codegraphConfig.status === 'configured') {
+      console.log(`[${TOOL_NAME}] ✅ CodeGraph MCP configured for Codex (existing config backed up).`);
+    } else if (codegraphConfig.status === 'failed') {
+      console.log(`[${TOOL_NAME}] ⚠️ ${codegraphConfig.reason}.`);
+    }
+  }
+
   printRequiredSystemToolStatus();
 
   const topRepoRoot = resolveRepoRoot(options.target);

@@ -580,6 +580,7 @@ test('migrate removes legacy copied assets and installs user-level skills on req
   assert.equal(migratedPackage.scripts['agent:branch:start'], 'bash ./scripts/custom-branch-start.sh');
 
   assert.equal(fs.existsSync(path.join(guardexHomeDir, '.codex', 'skills', 'gitguardex', 'SKILL.md')), true);
+  assert.equal(fs.existsSync(path.join(guardexHomeDir, '.codex', 'skills', 'opensrc', 'SKILL.md')), true);
   assert.equal(fs.existsSync(path.join(guardexHomeDir, '.claude', 'commands', 'gitguardex.md')), true);
 
   assert.equal(fs.existsSync(path.join(repoDir, 'scripts', 'agent-branch-start.sh')), false);
@@ -1325,7 +1326,7 @@ test('setup skips global install when companion npm tools are already installed'
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
@@ -1347,6 +1348,51 @@ exit 1
   assert.match(result.stdout, /Already installed locally: cavekit, caveman/);
   assert.match(result.stdout, /already installed\. Skipping/);
   assert.equal(fs.existsSync(marker), false, 'global install should be skipped');
+});
+
+test('setup configures CodeGraph for Codex and backs up existing global config', () => {
+  const repoDir = initRepo();
+  const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
+  const codexDir = path.join(fakeHome, '.codex');
+  fs.mkdirSync(codexDir, { recursive: true });
+  fs.writeFileSync(path.join(codexDir, 'config.toml'), 'model = "test"\n');
+  fs.writeFileSync(path.join(codexDir, 'AGENTS.md'), '# existing\n');
+  const fakeNpm = createFakeNpmScript(`
+if [[ "$1" == "list" ]]; then
+  cat <<'JSON'
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+JSON
+  exit 0
+fi
+echo "unexpected npm args: $*" >&2
+exit 1
+`);
+  const codegraphMarker = path.join(repoDir, '.codegraph-install-called');
+  const fakeCodegraph = createFakeBin('codegraph', `
+if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
+echo "$@" > "${codegraphMarker}"
+cat > "$HOME/.codex/config.toml" <<'TOML'
+[mcp_servers.codegraph]
+command = "codegraph"
+args = ["serve", "--mcp"]
+TOML
+exit 0
+`).fakePath;
+
+  const result = runNodeWithEnv(['setup', '--target', repoDir, '--yes-global-install'], repoDir, {
+    GUARDEX_NPM_BIN: fakeNpm,
+    GUARDEX_CODEGRAPH_BIN: fakeCodegraph,
+    GUARDEX_HOME_DIR: fakeHome,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(
+    fs.readFileSync(codegraphMarker, 'utf8').trim(),
+    'install --target=codex --location=global --yes --no-permissions',
+  );
+  assert.equal(fs.readFileSync(path.join(codexDir, 'config.toml.guardex.bak'), 'utf8'), 'model = "test"\n');
+  assert.equal(fs.readFileSync(path.join(codexDir, 'AGENTS.md.guardex.bak'), 'utf8'), '# existing\n');
+  assert.match(result.stdout, /CodeGraph MCP configured for Codex/);
 });
 
 
@@ -1377,7 +1423,7 @@ exit 1
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(marker), true, 'global install should run for missing package');
   const args = fs.readFileSync(marker, 'utf8').trim();
-  assert.equal(args, 'i -g oh-my-claude-sisyphus @fission-ai/openspec colonyq @imdeadpool/codex-account-switcher');
+  assert.equal(args, 'i -g oh-my-claude-sisyphus @fission-ai/openspec @colbymchenry/codegraph opensrc colonyq @imdeadpool/codex-account-switcher');
 });
 
 
@@ -1419,7 +1465,7 @@ test('setup installs missing local companion tools with explicit approval', () =
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
@@ -1470,7 +1516,7 @@ test('setup warns when required system tool dependencies are missing', () => {
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi

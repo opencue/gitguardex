@@ -14,6 +14,8 @@ routing with `GUARDEX_WORKTREE_MODE=adaptive` in `.env` or
 - In strict `always` mode, work from an `agent/*` branch + worktree. **Never** edit the protected base directly.
 - In adaptive mode, bounded single-agent work may remain on the current checkout after the radar and ownership checks below pass.
 - Claim files before editing in isolated lanes. Confirm a path is in your claim before deleting it.
+- Use CodeGraph first for repository symbol, relationship, architecture, and impact lookup. If the project is not initialized, run `codegraph init -i` once and retry.
+- Use `opensrc path <package-or-owner/repo[@ref|#ref]>` before generic clone/download when inspecting dependency or external repository source.
 - Commit, push, and open/update a PR for completed work unless the user says keep-local.
 - Keep outputs and notes compact. Less word, same proof.
 

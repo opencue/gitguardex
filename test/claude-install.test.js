@@ -154,6 +154,18 @@ test('installSlashCommands copies the gx-*.md slash commands', () => {
   }
 });
 
+test('installAgentSkills installs gitguardex and opensrc skills', () => {
+  const repoRoot = makeRepo();
+  try {
+    const result = claudeModule.installAgentSkills(repoRoot, { dryRun: false });
+    assert.equal(result.status, 'ok');
+    assert.equal(fs.existsSync(path.join(repoRoot, '.claude/skills/gitguardex/SKILL.md')), true);
+    assert.equal(fs.existsSync(path.join(repoRoot, '.claude/skills/opensrc/SKILL.md')), true);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test('installSettings dry-run does not write the file', () => {
   const repoRoot = makeRepo();
   try {
@@ -179,12 +191,17 @@ test('mergeSettings --force ignores existing settings', () => {
   assert.ok(mergedNonForce.hooks.PreToolUse.some((g) => g.matcher === 'Other'));
 });
 
-test('installMcpServer registers the gx server in a fresh .mcp.json', () => {
+test('installMcpServer registers gx and CodeGraph in a fresh .mcp.json', () => {
   const repoRoot = makeRepo();
   const result = claudeModule.installMcpServer(repoRoot, { dryRun: false });
   assert.equal(result.status, 'created');
   const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
   assert.deepEqual(config.mcpServers[claudeModule.MCP_SERVER_KEY], { command: 'gx', args: ['mcp', 'serve'] });
+  assert.deepEqual(config.mcpServers.codegraph, {
+    type: 'stdio',
+    command: 'codegraph',
+    args: ['serve', '--mcp'],
+  });
 });
 
 test('installMcpServer merges into an existing .mcp.json without clobbering other servers', () => {
@@ -196,7 +213,7 @@ test('installMcpServer merges into an existing .mcp.json without clobbering othe
   const result = claudeModule.installMcpServer(repoRoot, { dryRun: false });
   assert.equal(result.status, 'merged');
   const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
-  assert.deepEqual(Object.keys(config.mcpServers).sort(), ['gx', 'other']);
+  assert.deepEqual(Object.keys(config.mcpServers).sort(), ['codegraph', 'gx', 'other']);
   assert.deepEqual(config.mcpServers.other, { command: 'x' }, 'existing server preserved');
 });
 

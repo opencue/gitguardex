@@ -19,6 +19,8 @@ if (!process.env.GUARDEX_NODE_BIN) {
 const LEGACY_NAMES = ['guardex', 'multiagent-safety'];
 const GLOBAL_INSTALL_COMMAND = `npm i -g ${packageJson.name}`;
 const OPENSPEC_PACKAGE = '@fission-ai/openspec';
+const CODEGRAPH_PACKAGE = '@colbymchenry/codegraph';
+const OPENSRC_PACKAGE = 'opensrc';
 const OMC_PACKAGE = 'oh-my-claude-sisyphus';
 const OMC_REPO_URL = 'https://github.com/Yeachan-Heo/oh-my-claudecode';
 // Colony was published under @imdeadpool/colony-cli historically; the new
@@ -39,6 +41,8 @@ const GLOBAL_TOOLCHAIN_SERVICES = [
     dependencyUrl: OMC_REPO_URL,
   },
   { name: OPENSPEC_PACKAGE, packageName: OPENSPEC_PACKAGE },
+  { name: 'codegraph', packageName: CODEGRAPH_PACKAGE },
+  { name: 'opensrc', packageName: OPENSRC_PACKAGE },
   { name: 'colony', packageName: COLONY_PACKAGE },
   {
     name: '@imdeadpool/codex-account-switcher',
@@ -102,6 +106,7 @@ const MAINTAINER_RELEASE_REPO = path.resolve(
 );
 const NPM_BIN = process.env.GUARDEX_NPM_BIN || 'npm';
 const OPENSPEC_BIN = process.env.GUARDEX_OPENSPEC_BIN || 'openspec';
+const CODEGRAPH_BIN = process.env.GUARDEX_CODEGRAPH_BIN || 'codegraph';
 const SCORECARD_BIN = process.env.GUARDEX_SCORECARD_BIN || 'scorecard';
 const GIT_PROTECTED_BRANCHES_KEY = 'multiagent.protectedBranches';
 const GIT_BASE_BRANCH_KEY = 'multiagent.baseBranch';
@@ -260,6 +265,10 @@ const USER_LEVEL_SKILL_ASSETS = [
   {
     source: path.join(TEMPLATE_ROOT, 'codex', 'skills', 'guardex-merge-skills-to-dev', 'SKILL.md'),
     destination: path.join('.codex', 'skills', 'guardex-merge-skills-to-dev', 'SKILL.md'),
+  },
+  {
+    source: path.join(TEMPLATE_ROOT, 'codex', 'skills', 'opensrc', 'SKILL.md'),
+    destination: path.join('.codex', 'skills', 'opensrc', 'SKILL.md'),
   },
   {
     source: path.join(TEMPLATE_ROOT, 'claude', 'commands', 'gitguardex.md'),
@@ -948,6 +957,8 @@ module.exports = {
   LEGACY_NAMES,
   GLOBAL_INSTALL_COMMAND,
   OPENSPEC_PACKAGE,
+  CODEGRAPH_PACKAGE,
+  OPENSRC_PACKAGE,
   OMC_PACKAGE,
   OMC_REPO_URL,
   COLONY_PACKAGE,
@@ -962,6 +973,7 @@ module.exports = {
   MAINTAINER_RELEASE_REPO,
   NPM_BIN,
   OPENSPEC_BIN,
+  CODEGRAPH_BIN,
   SCORECARD_BIN,
   GIT_PROTECTED_BRANCHES_KEY,
   GIT_BASE_BRANCH_KEY,
