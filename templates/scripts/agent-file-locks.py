@@ -400,37 +400,17 @@ def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | No
     return pane_branch == branch
 
 
-def _prune_orphaned_locks_locked(repo_root: Path) -> list[tuple[str, str, str]]:
-    """Remove proven orphaned locks while ``cross_worktree_lock`` is held.
-
-    Missing pane metadata, detached checkouts, and unavailable tmux state remain
-    authoritative so an uncertain cleanup can never steal an active file.
-    """
-    known_branches = known_branch_names(repo_root)
-    pruned: list[tuple[str, str, str]] = []
-    for root in list_worktree_roots(repo_root):
-        try:
-            state = load_state(root)
-        except LockError as exc:
-            raise LockError(
-                f'cannot safely inspect sibling lock registry in {root}; '
-                'lock operation blocked'
-            ) from exc
-        survivors: dict[str, dict[str, Any]] = {}
-        for file_path, entry in state['locks'].items():
-            branch = str(entry.get('branch', ''))
-            pane = str(entry.get('pane', ''))
-            if (
-                branch
-                and branch not in known_branches
-                and pane_still_owns_branch(repo_root, pane, branch) is False
-            ):
-                pruned.append((str(root), file_path, branch))
-                continue
-            survivors[file_path] = entry
-        if len(survivors) != len(state['locks']):
-            write_state(root, {**state, 'locks': survivors})
-    return pruned
+def is_orphaned_local_lock(
+    repo_root: Path,
+    entry: dict[str, Any],
+    known_branches: set[str],
+) -> bool:
+    """Ignore only ownership disproved by both Git refs and live pane state."""
+    branch = str(entry.get('branch', ''))
+    if not branch or branch in known_branches:
+        return False
+    pane = str(entry.get('pane', ''))
+    return pane_still_owns_branch(repo_root, pane, branch) is False
 
 
 def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
@@ -439,6 +419,7 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
     disk, so a file's full ownership is only visible by reading them all. With a
     single worktree this is exactly that worktree's own locks (unchanged)."""
     merged: dict[str, list[dict[str, Any]]] = {}
+    known_branches = known_branch_names(repo_root)
     for root in list_worktree_roots(repo_root):
         try:
             state = load_state(root)
@@ -448,6 +429,8 @@ def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
                 'lock operation blocked'
             ) from exc
         for file_path, entry in state['locks'].items():
+            if is_orphaned_local_lock(repo_root, entry, known_branches):
+                continue
             merged.setdefault(file_path, []).append({**entry, '_worktree': str(root)})
     return merged
 
@@ -724,6 +707,7 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
     # a sibling worktree's claims would otherwise be invisible here.
     agent_filter = resolve_agent(args)
     roots = list_worktree_roots(repo_root)
+    known_branches = known_branch_names(repo_root)
 
     rows: list[tuple[str, str, str, str, bool, str]] = []
     for root in roots:
@@ -735,6 +719,8 @@ def cmd_status(args: argparse.Namespace, repo_root: Path) -> int:
                 'status is unavailable'
             ) from exc
         for file_path, entry in locks.items():
+            if is_orphaned_local_lock(repo_root, entry, known_branches):
+                continue
             branch = str(entry.get('branch', ''))
             if args.branch and branch != args.branch:
                 continue
@@ -939,15 +925,6 @@ def main() -> int:
         if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate'}:
             with cross_worktree_lock(repo_root):
                 if args.command == 'claim':
-                    # Pruning and the following claim are one serialized
-                    # read-modify-write transaction. A sibling claim cannot be
-                    # inserted between the cleanup snapshot and its rewrite.
-                    pruned = _prune_orphaned_locks_locked(repo_root)
-                    if pruned:
-                        print(
-                            f'[agent-file-locks] Pruned {len(pruned)} orphaned '
-                            'lock(s) from completed lanes.'
-                        )
                     with adaptive_direct_owner_lock(repo_root) as adaptive_owner:
                         return cmd_claim(args, repo_root, adaptive_owner)
                 return dispatch_command(args, repo_root)

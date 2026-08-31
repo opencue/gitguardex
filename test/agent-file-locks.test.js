@@ -178,7 +178,7 @@ function locksAt(cwd, args, env = {}) {
 }
 
 defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
-  test('claim prunes a lock whose deleted lane pane has moved to another branch', () => {
+  test('claim ignores a lock whose deleted lane pane has moved to another branch', () => {
     const repoDir = makeRepo();
     writeFile(repoDir, '.vscode/settings.json');
     const stateDir = path.join(repoDir, '.omx', 'state');
@@ -213,7 +213,6 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     );
 
     assert.equal(claim.status, 0, claim.stderr || claim.stdout);
-    assert.match(claim.stdout, /pruned 1 orphaned lock/i);
     const locks = JSON.parse(fs.readFileSync(path.join(stateDir, 'agent-file-locks.json'), 'utf8')).locks;
     assert.equal(locks['.vscode/settings.json'].branch, currentBranch);
   });
@@ -482,7 +481,7 @@ defineSpawnSuite('agent-file-locks atomic claims (G3)', () => {
     );
   });
 
-  test('orphan pruning cannot erase a concurrent claim', async () => {
+  test('orphan reconciliation cannot erase a concurrent claim', async () => {
     const repoDir = makeRepo();
     writeFile(repoDir, 'first.txt');
     writeFile(repoDir, 'second.txt');
@@ -492,7 +491,7 @@ defineSpawnSuite('agent-file-locks atomic claims (G3)', () => {
       path.join(stateDir, 'agent-file-locks.json'),
       `${JSON.stringify({
         locks: {
-          'old.txt': {
+          'first.txt': {
             branch: 'agent/codex/deleted-lane',
             claimed_at: '2026-06-05T12:00:00+00:00',
             allow_delete: false,
@@ -519,7 +518,6 @@ defineSpawnSuite('agent-file-locks atomic claims (G3)', () => {
     for (const result of results) assert.equal(result.code, 0, result.err);
 
     const locks = readLocks(repoDir);
-    assert.equal(locks['old.txt'], undefined, 'the proven orphan is removed');
     assert.ok(locks['first.txt'], 'the first concurrent claim survives');
     assert.ok(locks['second.txt'], 'the second concurrent claim survives');
   });
