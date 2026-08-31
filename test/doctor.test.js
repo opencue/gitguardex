@@ -1337,7 +1337,7 @@ test('gx doctor prunes idle clean no-PR worktrees but preserves their recovery b
 
   const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
   const { fakePath: fakeGhPath } = createFakeGhScript(`
-if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
+if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
   exit 0
 fi
 exit 0
@@ -1384,9 +1384,9 @@ test('gx doctor preserves idle agent and work lanes while their pull requests ar
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
-if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
-  printf '%s\t%s\t%s\n' "${branch}" main OPEN
-  printf '%s\t%s\t%s\n' "${branchWithoutWorktree}" ksskkfb03 OPEN
+if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
+  printf '%s\t%s\t%s\t%s\t%s\n' "${branch}" recodeee main OPEN recodeee
+  printf '%s\t%s\t%s\t%s\t%s\n' "${branchWithoutWorktree}" recodeee ksskkfb03 OPEN recodeee
   exit 0
 fi
 exit 0
@@ -1435,7 +1435,7 @@ test('gx doctor preserves idle lanes when PR metadata lookup fails', () => {
   commitFile(cleanWorktree, 'unknown-pr-state.txt', 'keep until GitHub recovers\n', 'unknown PR state');
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
-if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
+if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
   exit 1
 fi
 exit 0
@@ -1486,9 +1486,10 @@ test('gx doctor prunes clean merged and closed PR lanes using each PR base branc
   commitFile(closedWorktree, 'closed-lane.txt', 'closed lane\n', 'closed lane work');
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
-if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --state all "* ]]; then
-  printf '%s\t%s\t%s\n' "${mergedBranch}" ksskkfb03 MERGED
-  printf '%s\t%s\t%s\n' "${closedBranch}" ksskkfb03 CLOSED
+if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
+  printf '%s\t%s\t%s\t%s\t%s\n' "${mergedBranch}" recodeee ksskkfb03 MERGED recodeee
+  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" fork-owner ksskkfb03 MERGED recodeee
+  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" recodeee ksskkfb03 CLOSED recodeee
   exit 0
 fi
 exit 0

@@ -235,19 +235,21 @@ load_lane_pr_metadata() {
 
   local rows=""
   if ! rows="$(
-    "$GH_BIN" pr list --state all --limit 1000 \
-      --json headRefName,baseRefName,state \
-      --jq '.[] | [.headRefName, .baseRefName, .state] | @tsv' 2>/dev/null
+    "$GH_BIN" api --paginate 'repos/{owner}/{repo}/pulls?state=all&per_page=100' \
+      --jq '.[] | [.head.ref, (.head.repo.owner.login // "-"), .base.ref, (if .merged_at then "MERGED" else (.state | ascii_upcase) end), .base.repo.owner.login] | @tsv' 2>/dev/null
   )"; then
     LANE_PR_LOOKUP_UNAVAILABLE=1
     return 1
   fi
 
   local head=""
+  local head_owner=""
   local base=""
   local state=""
+  local repo_owner=""
   local existing=""
-  while IFS=$'\t' read -r head base state; do
+  while IFS=$'\t' read -r head head_owner base state repo_owner; do
+    [[ "${head_owner,,}" == "${repo_owner,,}" ]] || continue
     [[ "$head" == agent/* || "$head" == work/* ]] || continue
     existing="${LANE_PR_STATES[$head]:-}"
     if [[ "$state" == "OPEN" || -z "$existing" || ( "$state" == "MERGED" && "$existing" == "CLOSED" ) ]]; then
