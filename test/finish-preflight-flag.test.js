@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const cp = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 // agent-branch-finish.sh parses --no-preflight/--preflight and
@@ -54,13 +56,66 @@ test('a billing waiver makes local preflight mandatory and fail-closed', () => {
     'an explicit preflight bypass must fail when billing checks were waived',
   );
   assert.ok(
-    script.includes('Billing-waived GitHub checks require an executable local pre-flight script'),
+    script.includes('Billing-waived GitHub checks require a pre-flight script'),
     'a missing repository preflight must fail when billing checks were waived',
   );
   assert.ok(
     finishIndex.includes("GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.billingChecksWaived?.length > 0 ? '1' : '0'"),
     'gx finish must propagate the waiver result to the shell preflight gate',
   );
+  assert.ok(
+    script.includes('git -C "$worktree" show "${start_ref}:${configured}"'),
+    'a mandatory preflight must load its implementation from the trusted base ref',
+  );
+  assert.ok(
+    script.indexOf('git -C "$worktree" show "${start_ref}:${configured}"')
+      < script.indexOf('local candidate="${worktree}/${configured}"'),
+    'mandatory preflight resolution must happen before the untrusted worktree fallback',
+  );
+});
+
+test('a mandatory relative preflight executes the trusted base version, not the PR version', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-trusted-preflight-'));
+  const preflightPath = path.join(repoDir, 'scripts', 'agent-preflight.sh');
+  fs.mkdirSync(path.dirname(preflightPath), { recursive: true });
+
+  try {
+    cp.execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.name', 'Guardex Test'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.email', 'guardex@example.test'], { cwd: repoDir });
+    fs.writeFileSync(preflightPath, "#!/usr/bin/env bash\nprintf '%s\\n' trusted-base\n", { mode: 0o755 });
+    cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh'], { cwd: repoDir });
+    cp.execFileSync('git', ['commit', '-m', 'trusted preflight'], {
+      cwd: repoDir,
+      env: {
+        ...process.env,
+        ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+        GUARDEX_ALLOW_CODEX_ON_NON_AGENT: '1',
+      },
+    });
+    fs.writeFileSync(preflightPath, "#!/usr/bin/env bash\nprintf '%s\\n' tampered-pr\n", { mode: 0o755 });
+
+    const functionStart = script.indexOf('resolve_preflight_script() {');
+    const functionEnd = script.indexOf('\n}\n\n# Run the pre-flight', functionStart) + 2;
+    assert.ok(functionStart >= 0 && functionEnd > functionStart, 'resolver function must be extractable');
+    const resolver = script.slice(functionStart, functionEnd);
+    const command = [
+      resolver,
+      'PREFLIGHT_REQUIRED=1',
+      'start_ref=main',
+      'resolved="$(resolve_preflight_script "$1" scripts/agent-preflight.sh)"',
+      '"$resolved"',
+      'rm -f -- "$resolved"',
+    ].join('\n');
+    const result = cp.spawnSync('bash', ['-c', command, 'trusted-preflight-test', repoDir], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'trusted-base\n');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
 });
 
 test('--no-auto-promote is honored: AUTO_PROMOTE_DRAFT normalized after the parse loop', () => {

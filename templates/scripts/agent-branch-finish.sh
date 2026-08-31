@@ -143,10 +143,8 @@ finish_progress() {
   finish_event "$stage" "$state" "$number" "$label" "$detail"
 }
 
-# Resolve the pre-flight script path against the source worktree. The
-# caller passes either the configured path (which may be relative) or
-# an empty string; we return the absolute path if it exists and is
-# executable, otherwise return empty.
+# Resolve the pre-flight script path. Required relative scripts are materialized
+# from the trusted base ref; optional relative scripts retain worktree behavior.
 resolve_preflight_script() {
   local worktree="$1"
   local configured="$2"
@@ -156,6 +154,17 @@ resolve_preflight_script() {
   if [[ "$configured" = /* ]]; then
     if [[ -x "$configured" ]]; then
       printf '%s' "$configured"
+    fi
+    return 0
+  fi
+  if [[ "${PREFLIGHT_REQUIRED:-0}" -eq 1 ]]; then
+    local trusted_script=""
+    trusted_script="$(mktemp "${TMPDIR:-/tmp}/guardex-preflight.XXXXXX")" || return 0
+    if git -C "$worktree" show "${start_ref}:${configured}" > "$trusted_script" 2>/dev/null; then
+      chmod 500 "$trusted_script"
+      printf '%s' "$trusted_script"
+    else
+      rm -f -- "$trusted_script"
     fi
     return 0
   fi
@@ -185,7 +194,7 @@ run_preflight() {
   if [[ -z "$script_path" ]]; then
     if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
       finish_progress failed preflight "required executable script missing"
-      echo "[agent-branch-finish] Billing-waived GitHub checks require an executable local pre-flight script at ${PREFLIGHT_SCRIPT_RAW} (in ${worktree}); refusing push." >&2
+      echo "[agent-branch-finish] Billing-waived GitHub checks require a pre-flight script at ${PREFLIGHT_SCRIPT_RAW} in trusted base ${start_ref}; refusing push." >&2
       return 1
     fi
     finish_progress skipped preflight "no executable pre-flight script"
@@ -194,7 +203,12 @@ run_preflight() {
   fi
   finish_progress running preflight "final verification before publish"
   echo "[agent-branch-finish] Running pre-flight: ${script_path}" >&2
-  if ( cd "$worktree" && "$script_path" ); then
+  local preflight_status=0
+  ( cd "$worktree" && "$script_path" ) || preflight_status=$?
+  if [[ "$PREFLIGHT_REQUIRED" -eq 1 && "$PREFLIGHT_SCRIPT_RAW" != /* ]]; then
+    rm -f -- "$script_path"
+  fi
+  if [[ "$preflight_status" -eq 0 ]]; then
     finish_progress complete preflight "passed"
     echo "[agent-branch-finish] Pre-flight passed." >&2
     return 0
