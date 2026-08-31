@@ -31,6 +31,22 @@ function pathContains(root, candidate) {
   );
 }
 
+function hasUnsafeWorktreeChanges(output) {
+  return String(output || '')
+    .split('\0')
+    .filter(Boolean)
+    .some((entry) => {
+      if (!entry.startsWith('!! ')) return true;
+      const ignoredPath = entry.slice(3).replace(/\/$/, '');
+      const segments = ignoredPath.split('/');
+      return !(
+        segments[0] === '.omx' ||
+        segments[0] === '.omc' ||
+        segments.includes('node_modules')
+      );
+    });
+}
+
 function prepareBranchFinishCleanup(argv, activeCwd) {
   if (argv[0] !== 'branch' || argv[1] !== 'finish') return null;
   const finishArgs = argv.slice(2);
@@ -57,15 +73,17 @@ function cleanupFinishedDetachedWorktree(plan) {
 
   try {
     process.chdir(plan.repoRoot);
-    const status = run('git', ['-C', plan.worktreePath, 'status', '--porcelain'], {
-      cwd: plan.repoRoot
-    });
+    const status = run(
+      'git',
+      ['-C', plan.worktreePath, 'status', '--porcelain=v1', '-z', '--ignored'],
+      { cwd: plan.repoRoot }
+    );
     const head = run('git', ['-C', plan.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: plan.repoRoot
     });
     if (
       status.status !== 0 ||
-      String(status.stdout || '').trim() ||
+      hasUnsafeWorktreeChanges(status.stdout) ||
       head.status !== 0 ||
       String(head.stdout || '').trim() !== 'HEAD'
     ) {
@@ -96,5 +114,6 @@ function cleanupFinishedDetachedWorktree(plan) {
 
 module.exports = {
   cleanupFinishedDetachedWorktree,
+  hasUnsafeWorktreeChanges,
   prepareBranchFinishCleanup
 };

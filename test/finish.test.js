@@ -61,6 +61,18 @@ const {
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
 const { createEventStream } = require('../src/finish/progress');
+const { hasUnsafeWorktreeChanges } = require('../src/finish/post-branch-finish-cleanup');
+
+test('post-finish cleanup preserves ignored user data but permits generated agent directories', () => {
+  assert.equal(hasUnsafeWorktreeChanges(''), false);
+  assert.equal(
+    hasUnsafeWorktreeChanges('!! .omx/\0!! node_modules/\0!! apps/web/node_modules/\0'),
+    false,
+  );
+  assert.equal(hasUnsafeWorktreeChanges('!! .env\0'), true);
+  assert.equal(hasUnsafeWorktreeChanges('?? notes.txt\0'), true);
+  assert.equal(hasUnsafeWorktreeChanges(' M src/index.js\0'), true);
+});
 
 test('finish progress rejects symbolic links in its state directory path', () => {
   for (const linkedComponent of ['.omx', 'state', 'finish-runs']) {
