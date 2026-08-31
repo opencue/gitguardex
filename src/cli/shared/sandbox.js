@@ -7,7 +7,6 @@ const {
   TOOL_NAME,
   SHORT_TOOL_NAME,
   LOCK_FILE_RELATIVE,
-  AGENT_WORKTREE_RELATIVE_DIRS,
   defaultAgentWorktreeRelativeDir,
 } = require('../../context');
 const {
@@ -41,7 +40,11 @@ const {
   run,
   runPackageAsset,
 } = require('../../core/runtime');
-const { printOperations } = require('../../scaffold');
+const {
+  buildParentWorkspaceView,
+  ensureParentWorkspaceView,
+  printOperations,
+} = require('../../scaffold');
 const {
   appendForceArgs,
   runInstallInternal,
@@ -50,56 +53,6 @@ const {
   printScanResult,
   printWorktreePruneSummary,
 } = require('./scaffolding');
-
-function normalizeWorkspacePath(relativePath) {
-  return String(relativePath || '.').replace(/\\/g, '/');
-}
-
-function buildParentWorkspaceView(repoRoot) {
-  const parentDir = path.dirname(repoRoot);
-  const workspaceFileName = `${path.basename(repoRoot)}-branches.code-workspace`;
-  const workspacePath = path.join(parentDir, workspaceFileName);
-  const repoRelativePath = normalizeWorkspacePath(path.relative(parentDir, repoRoot) || '.');
-
-  return {
-    workspacePath,
-    payload: {
-      folders: [
-        { path: repoRelativePath },
-        ...AGENT_WORKTREE_RELATIVE_DIRS.map((relativeDir) => ({
-          path: normalizeWorkspacePath(path.join(repoRelativePath === '.' ? '' : repoRelativePath, relativeDir)),
-        })),
-      ],
-      settings: {
-        'scm.alwaysShowRepositories': true,
-      },
-    },
-  };
-}
-
-function ensureParentWorkspaceView(repoRoot, dryRun) {
-  const { workspacePath, payload } = buildParentWorkspaceView(repoRoot);
-  const operationFile = path.relative(repoRoot, workspacePath) || path.basename(workspacePath);
-  const nextContent = `${JSON.stringify(payload, null, 2)}\n`;
-  const note = 'parent VS Code workspace view';
-
-  if (!fs.existsSync(workspacePath)) {
-    if (!dryRun) {
-      fs.writeFileSync(workspacePath, nextContent, 'utf8');
-    }
-    return { status: dryRun ? 'would-create' : 'created', file: operationFile, note };
-  }
-
-  const currentContent = fs.readFileSync(workspacePath, 'utf8');
-  if (currentContent === nextContent) {
-    return { status: 'unchanged', file: operationFile, note };
-  }
-
-  if (!dryRun) {
-    fs.writeFileSync(workspacePath, nextContent, 'utf8');
-  }
-  return { status: dryRun ? 'would-update' : 'updated', file: operationFile, note };
-}
 
 function hasGuardexBootstrapFiles(repoRoot) {
   const required = [
@@ -396,7 +349,6 @@ function runSetupInSandbox(options, blocked, repoLabel = '') {
 }
 
 module.exports = {
-  normalizeWorkspacePath,
   buildParentWorkspaceView,
   ensureParentWorkspaceView,
   hasGuardexBootstrapFiles,

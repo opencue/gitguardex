@@ -781,6 +781,9 @@ function buildParentWorkspaceView(repoRoot) {
         })),
       ],
       settings: {
+        'git.autoRepositoryDetection': 'subFolders',
+        'git.detectWorktrees': true,
+        'git.repositoryScanIgnoredFolders': [],
         'scm.alwaysShowRepositories': true,
       },
     },
