@@ -421,10 +421,26 @@ test('worktree prune preserves worktrees with active Guardex file locks', () => 
   seedCommit(repoDir);
 
   const branch = 'agent/test-active-lock-prune';
+  const previousBranch = 'agent/test-active-lock-prune-before-rename';
   const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__test-active-lock-prune');
   result = runCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'dev'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
+  result = runLockTool(['claim', '--branch', previousBranch, 'locked.txt'], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Skipping actively locked worktree:/);
+  assert.equal(fs.existsSync(worktreePath), true, 'a lock recorded before a branch rename should preserve the worktree');
+  assert.equal(
+    runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
+    0,
+    'actively locked attached branch should remain',
+  );
+
+  result = runLockTool(['release', '--branch', previousBranch], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
   result = runLockTool(['claim', '--branch', branch, 'locked.txt'], worktreePath);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
@@ -435,11 +451,6 @@ test('worktree prune preserves worktrees with active Guardex file locks', () => 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /Skipping actively locked worktree:/);
   assert.equal(fs.existsSync(worktreePath), true, 'actively locked worktree should remain');
-  assert.equal(
-    runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
-    0,
-    'actively locked branch should remain',
-  );
 
   result = runLockTool(['release', '--branch', branch], worktreePath);
   assert.equal(result.status, 0, result.stderr || result.stdout);
