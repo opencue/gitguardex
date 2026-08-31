@@ -290,6 +290,17 @@ classified_merged_pr_head() {
   printf '%s' "$classified_head"
 }
 
+closed_pr_has_remote_recovery() {
+  local branch="$1"
+  load_lane_pr_metadata || return 1
+  [[ "${LANE_PR_STATES[$branch]:-}" == "CLOSED" ]] || return 1
+  local classified_head="${LANE_PR_HEAD_SHAS[$branch]:-}"
+  local remote_head=""
+  [[ -n "$classified_head" ]] || return 1
+  remote_head="$(git -C "$repo_root" ls-remote --heads origin "refs/heads/${branch}" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  [[ "$remote_head" == "$classified_head" ]]
+}
+
 should_preserve_open_pr_branch() {
   local branch="$1"
   local open_branch=""
@@ -727,8 +738,8 @@ process_entry() {
         closed-pr:*)
           branch_delete_mode="force"
           branch_delete_label="closed PR"
-          # Retire closed lanes locally, but keep the remote ref as a recovery
-          # point so the PR can still be reopened without losing its head.
+          # Force-deletion is authorized only after closed_pr_has_remote_recovery
+          # verifies the exact PR head is still durable on origin.
           delete_remote_branch=0
           ;;
       esac
@@ -768,6 +779,11 @@ process_entry() {
     return
   fi
 
+  if [[ "$remove_reason" == closed-pr:* ]] && ! closed_pr_has_remote_recovery "$branch"; then
+    echo "[agent-worktree-prune] Skipping closed PR worktree without matching remote recovery branch: ${wt}" >&2
+    return
+  fi
+
   if ! reserve_branch_slot "$branch"; then
     echo "[agent-worktree-prune] Skipping branch limit worktree: ${branch} (${wt})"
     return
@@ -789,7 +805,7 @@ process_entry() {
         delete_flag="-D"
       fi
       if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
-        remote_delete_head="$(classified_merged_pr_head "$branch" || true)"
+        remote_delete_head="$(classified_merged_pr_head "$branch" || git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
       fi
       if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
@@ -897,15 +913,19 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
       if [[ "$closed_by_pr" -eq 1 ]]; then
         delete_flag="-D"
         deleted_label="closed PR${pr_base:+ to ${pr_base}}"
-        # Match attached-worktree cleanup: local clutter is removed while the
-        # remote PR head remains available for recovery or reopening.
+        # Match attached-worktree cleanup: force-delete only after verifying
+        # the exact remote PR head remains available for recovery.
         delete_remote_branch=0
       elif [[ "$merged_by_pr" -eq 1 && "$merged_by_ancestor" -eq 0 ]]; then
         delete_flag="-D"
         deleted_label="merged PR${pr_base:+ to ${pr_base}}"
       fi
+      if [[ "$closed_by_pr" -eq 1 ]] && ! closed_pr_has_remote_recovery "$branch"; then
+        echo "[agent-worktree-prune] Skipping closed PR branch without matching remote recovery branch: ${branch}" >&2
+        continue
+      fi
       if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
-        remote_delete_head="$(classified_merged_pr_head "$branch" || true)"
+        remote_delete_head="$(classified_merged_pr_head "$branch" || git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
       fi
       if run_cmd git -C "$repo_root" branch "$delete_flag" "$branch" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))

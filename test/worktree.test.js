@@ -68,11 +68,14 @@ test('worktree prune keeps merged agent worktrees/branches unless delete flags a
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   seedCommit(repoDir);
+  attachOriginRemoteForBranch(repoDir, 'dev');
 
   const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__test-prune');
   result = runCmd('git', ['worktree', 'add', '-b', 'agent/test-prune', worktreePath, 'dev'], repoDir);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.existsSync(worktreePath), true);
+  result = runHumanCmd('git', ['push', '-u', 'origin', 'agent/test-prune'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   result = runWorktreePrune([], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -80,11 +83,16 @@ test('worktree prune keeps merged agent worktrees/branches unless delete flags a
   const branchResult = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-prune'], repoDir);
   assert.equal(branchResult.status, 0, 'merged agent branch should remain by default');
 
-  result = runWorktreePrune(['--delete-branches'], repoDir);
+  result = runWorktreePrune(['--delete-branches', '--delete-remote-branches'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(worktreePath), false);
   const branchAfterDelete = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-prune'], repoDir);
   assert.notEqual(branchAfterDelete.status, 0, 'merged agent branch should be removed when delete flag is set');
+  assert.notEqual(
+    runHumanCmd('git', ['ls-remote', '--exit-code', '--heads', 'origin', 'agent/test-prune'], repoDir).status,
+    0,
+    'merged-by-ancestry remote branch should be removed when delete flag is set',
+  );
 });
 
 test('worktree prune retires closed PR lanes locally but preserves their remote recovery branch', () => {
@@ -133,7 +141,7 @@ exit 0
   assert.notEqual(
     runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
     0,
-    'closed PR local branch should be removed',
+    'closed PR local branch should be removed after its remote recovery ref is verified',
   );
   assert.equal(
     runHumanCmd('git', ['ls-remote', '--exit-code', '--heads', 'origin', branch], repoDir).status,
@@ -194,6 +202,51 @@ fi
   assert.match(result.stderr, /Preserved advanced remote branch: agent\/advanced-during-prune/);
   const remoteHead = runHumanCmd('git', ['ls-remote', '--heads', 'origin', branch], repoDir).stdout.trim().split(/\s+/)[0];
   assert.equal(remoteHead, advancedSha, 'newer remote commits should remain reachable');
+});
+
+test('worktree prune preserves a closed PR lane when its remote recovery branch is missing', () => {
+  const repoDir = initRepoOnBranch('main');
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+  attachOriginRemoteForBranch(repoDir, 'main');
+
+  const branch = 'work/closed-pr-without-remote';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'closed-pr-without-remote');
+  result = runHumanCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(worktreePath, 'closed.txt', 'closed lane\n', 'closed lane work');
+  const headSha = runHumanCmd('git', ['rev-parse', branch], repoDir).stdout.trim();
+  result = runHumanCmd('git', ['push', '-u', 'origin', branch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['push', 'origin', '--delete', branch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${branch}" "${headSha}" recodeee/gitguardex main CLOSED recodeee/gitguardex
+  exit 0
+fi
+exit 0
+`);
+  const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  result = runWorktreePrune(
+    ['--idle-minutes', '60', '--prune-stale-lanes', '--preserve-open-prs', '--delete-branches', '--delete-remote-branches'],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      GUARDEX_PRUNE_NOW_EPOCH: String(fakeNowEpoch),
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stderr, /Skipping closed PR worktree without matching remote recovery branch/);
+  assert.equal(fs.existsSync(worktreePath), true, 'closed PR worktree must remain when no remote recovery ref exists');
+  assert.equal(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir).status,
+    0,
+    'closed PR local branch must remain when no remote recovery ref exists',
+  );
 });
 
 

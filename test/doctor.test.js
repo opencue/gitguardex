@@ -1466,6 +1466,7 @@ exit 0
 test('gx doctor prunes clean merged and closed PR lanes using each PR base branch', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
+  attachOriginRemoteForBranch(repoDir, 'main');
   let result = runHumanCmd('git', ['branch', 'ksskkfb02'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   result = runHumanCmd('git', ['branch', 'ksskkfb03'], repoDir);
@@ -1488,8 +1489,15 @@ test('gx doctor prunes clean merged and closed PR lanes using each PR base branc
   commitFile(closedWorktree, 'closed-lane.txt', 'closed lane\n', 'closed lane work');
   const mergedHeadSha = runHumanCmd('git', ['rev-parse', mergedBranch], repoDir).stdout.trim();
   const closedHeadSha = runHumanCmd('git', ['rev-parse', closedBranch], repoDir).stdout.trim();
+  result = runHumanCmd('git', ['push', '-u', 'origin', mergedBranch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['push', '-u', 'origin', closedBranch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  exit 1
+fi
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${mergedBranch}" "${mergedHeadSha}" recodeee/gitguardex ksskkfb03 MERGED recodeee/gitguardex
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" "${closedHeadSha}" recodeee/gitguardex ksskkfb03 CLOSED recodeee/gitguardex
@@ -1522,7 +1530,7 @@ exit 0
   assert.notEqual(
     runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${closedBranch}`], repoDir).status,
     0,
-    'closed PR branch should be deleted after its clean inactive worktree is pruned',
+    'closed PR branch should be deleted after its remote recovery ref is verified',
   );
 });
 
