@@ -50,7 +50,6 @@ const {
 } = require('../sandbox');
 const { ensureOmxScaffold, configureHooks } = require('../scaffold');
 const { detectRecoverableAutoFinishConflict, printAutoFinishSummary, isTerseMode } = require('../output');
-const { autoCommitWorktreeForFinish } = require('../finish');
 const { runReviewGate } = require('../finish/review-gate');
 
 /**
@@ -980,49 +979,45 @@ function autoFinishReadyAgentBranches(repoRoot, options = {}) {
       continue;
     }
 
-    if (branch === baseBranch) {
+    const branchBase = readGitConfig(repoRoot, `branch.${branch}.guardexBase`) || baseBranch;
+    if (!branchBase || branchBase === 'HEAD' || branchBase.startsWith('agent/')) {
+      summary.skipped += 1;
+      summary.details.push(`[skip] ${branch}: recorded base is missing or invalid.`);
+      continue;
+    }
+
+    if (branch === branchBase) {
       summary.skipped += 1;
       summary.details.push(`[skip] ${branch}: source branch equals base branch.`);
       continue;
     }
 
+    const branchWorktree = branchWorktrees.get(branch) || '';
+    if (branchWorktree && hasSignificantWorkingTreeChanges(branchWorktree)) {
+      summary.skipped += 1;
+      summary.details.push(
+        `[skip] ${branch}: dirty worktree; refusing unattended auto-commit or sync (${branchWorktree}).`,
+      );
+      continue;
+    }
+
     let counts;
     try {
-      counts = aheadBehind(repoRoot, branch, baseBranch);
+      counts = aheadBehind(repoRoot, branch, branchBase);
     } catch (error) {
       summary.failed += 1;
       summary.details.push(`[fail] ${branch}: unable to compute ahead/behind (${error.message}).`);
       continue;
     }
 
-    const branchWorktree = branchWorktrees.get(branch) || '';
-    if (branchWorktree && hasSignificantWorkingTreeChanges(branchWorktree)) {
-      try {
-        const commitResult = autoCommitWorktreeForFinish(repoRoot, branchWorktree, branch, {});
-        if (commitResult.committed) {
-          counts = aheadBehind(repoRoot, branch, baseBranch);
-        }
-      } catch (error) {
-        summary.failed += 1;
-        summary.details.push(`[fail] ${branch}: auto-commit failed (${error.message}).`);
-        continue;
-      }
-    }
-
     if (counts.ahead <= 0) {
       summary.skipped += 1;
-      summary.details.push(`[skip] ${branch}: already merged into ${baseBranch}.`);
-      continue;
-    }
-
-    if (branchWorktree && hasSignificantWorkingTreeChanges(branchWorktree)) {
-      summary.skipped += 1;
-      summary.details.push(`[skip] ${branch}: dirty worktree after auto-commit (${branchWorktree}).`);
+      summary.details.push(`[skip] ${branch}: already merged into ${branchBase}.`);
       continue;
     }
 
     const gateOutcome = runAutoShipGateForBranch(
-      { autoShip, fallbackMode, repoRoot, branch, baseBranch },
+      { autoShip, fallbackMode, repoRoot, branch, baseBranch: branchBase },
       { runReviewGate: options.runReviewGate },
     );
     if (gateOutcome.skip) {
@@ -1036,7 +1031,7 @@ function autoFinishReadyAgentBranches(repoRoot, options = {}) {
       '--branch',
       branch,
       '--base',
-      baseBranch,
+      branchBase,
     ];
     if (fallbackMode === 'local') {
       finishArgs.push('--direct-only', '--no-push');

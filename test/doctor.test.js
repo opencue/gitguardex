@@ -625,6 +625,85 @@ exit 1
 });
 
 
+test('doctor auto-finish preserves each lane recorded base instead of forcing the protected checkout base', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+  attachOriginRemoteForBranch(repoDir, 'main');
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitAll(repoDir, 'apply gx setup', { allowProtectedBaseWrite: true });
+  result = runHumanCmd('git', ['push', 'origin', 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['branch', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['push', '-u', 'origin', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runBranchStart(['doctor-lane-base', 'planner', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const readyBranch = extractCreatedBranch(result.stdout);
+  const readyWorktree = extractCreatedWorktree(result.stdout);
+  const fileName = 'doctor-lane-base.txt';
+  fs.writeFileSync(path.join(readyWorktree, fileName), 'lane-specific base\n', 'utf8');
+  result = runHumanCmd('git', ['add', fileName], readyWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['commit', '--no-verify', '-m', 'lane-specific base change'], readyWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const ghLogPath = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-doctor-lane-base-')),
+    'gh.log',
+  );
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+echo "$*" >> "${ghLogPath}"
+if [[ "$1" == "--version" ]]; then
+  echo "gh version 2.0.0"
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "create" ]]; then
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ " $* " == *" --json body "* ]]; then
+    echo ""
+    exit 0
+  fi
+  if [[ " $* " == *" --json url "* ]]; then
+    echo "https://example.test/pr/doctor-lane-base"
+    exit 0
+  fi
+  if [[ " $* " == *" --json state,mergedAt,url "* ]]; then
+    printf "OPEN\\x1f\\x1f%s\\n" "https://example.test/pr/doctor-lane-base"
+    exit 0
+  fi
+fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+
+  result = runNodeWithEnv(['doctor', '--target', repoDir], repoDir, {
+    GUARDEX_GH_BIN: fakeGhPath,
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+  const ghCalls = fs.readFileSync(ghLogPath, 'utf8');
+  assert.match(
+    ghCalls,
+    new RegExp(`pr create --base dev --head ${escapeRegexLiteral(readyBranch)}(?: |$)`),
+    'doctor must finish the lane against branch.<name>.guardexBase',
+  );
+  assert.doesNotMatch(
+    ghCalls,
+    new RegExp(`pr create --base main --head ${escapeRegexLiteral(readyBranch)}(?: |$)`),
+    'the protected checkout branch must not override the lane base',
+  );
+});
+
+
 test('doctor auto-finish falls back to local direct merge when origin remote is missing', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
@@ -674,7 +753,7 @@ test('doctor auto-finish falls back to local direct merge when origin remote is 
 });
 
 
-test('doctor auto-commits a dirty agent worktree before local fallback merge', () => {
+test('doctor auto-finish skips dirty agent worktrees without committing or rebasing them', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
 
@@ -688,6 +767,8 @@ test('doctor auto-commits a dirty agent worktree before local fallback merge', (
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const readyBranch = extractCreatedBranch(result.stdout);
   const readyWorktree = extractCreatedWorktree(result.stdout);
+  const headBefore = runCmd('git', ['rev-parse', 'HEAD'], readyWorktree);
+  assert.equal(headBefore.status, 0, headBefore.stderr || headBefore.stdout);
 
   fs.writeFileSync(path.join(readyWorktree, fileName), 'uncommitted payload\n', 'utf8');
 
@@ -703,19 +784,29 @@ test('doctor auto-commits a dirty agent worktree before local fallback merge', (
   assert.match(combinedOutput, /origin remote missing; falling back to local direct merge/);
   assert.match(
     combinedOutput,
-    /Auto-finish sweep \(base=main\): attempted=1, completed=1, skipped=\d+, failed=0/,
+    /Auto-finish sweep \(base=main\): attempted=0, completed=0, skipped=\d+, failed=0/,
   );
   assert.match(
     combinedOutput,
-    new RegExp(`\\[done\\] ${escapeRegexLiteral(readyBranch)}: auto-finish completed\\.`),
+    new RegExp(`\\[skip\\] ${escapeRegexLiteral(readyBranch)}: dirty worktree; refusing unattended auto-commit`),
   );
 
   result = runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${readyBranch}`], repoDir);
-  assert.notEqual(result.status, 0, 'doctor local fallback should delete the merged agent branch');
-  assert.equal(fs.existsSync(readyWorktree), false, 'doctor local fallback should remove the agent worktree');
+  assert.equal(result.status, 0, 'doctor must keep the dirty agent branch');
+  assert.equal(fs.existsSync(readyWorktree), true, 'doctor must keep the dirty agent worktree');
+
+  const branchName = runCmd('git', ['branch', '--show-current'], readyWorktree);
+  assert.equal(branchName.status, 0, branchName.stderr || branchName.stdout);
+  assert.equal(branchName.stdout.trim(), readyBranch, 'doctor must not detach the dirty worktree');
+  const headAfter = runCmd('git', ['rev-parse', 'HEAD'], readyWorktree);
+  assert.equal(headAfter.status, 0, headAfter.stderr || headAfter.stdout);
+  assert.equal(headAfter.stdout.trim(), headBefore.stdout.trim(), 'doctor must not create an auto-finish commit');
+  const statusAfter = runCmd('git', ['status', '--short'], readyWorktree);
+  assert.equal(statusAfter.status, 0, statusAfter.stderr || statusAfter.stdout);
+  assert.match(statusAfter.stdout, new RegExp(`\\?\\? ${escapeRegexLiteral(fileName)}`));
 
   const mergedFile = path.join(repoDir, fileName);
-  assert.equal(fs.existsSync(mergedFile), true, 'auto-committed payload should land on the local base branch');
+  assert.equal(fs.existsSync(mergedFile), false, 'uncommitted payload must not land on the base branch');
 });
 
 
