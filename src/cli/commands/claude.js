@@ -665,7 +665,7 @@ function runUninstall(rawArgs) {
   }
   // Remove managed MCP servers from .mcp.json (drop the file if it only held ours)
   const mcpRemoval = uninstallMcpServer(repoRoot, opts);
-  if (mcpRemoval.status !== 'absent') {
+  if (mcpRemoval.status === 'removed' || mcpRemoval.status === 'pruned') {
     removed.push(`${MCP_REL} (${mcpRemoval.status === 'removed' ? 'removed' : 'managed servers pruned'})`);
   }
 

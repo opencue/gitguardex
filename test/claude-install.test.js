@@ -258,6 +258,23 @@ test('uninstallMcpServer preserves a managed server changed after installation',
   assert.equal(after.mcpServers.gx, undefined);
 });
 
+test('uninstallMcpServer reports preserved when every managed server changed after installation', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  config.mcpServers.gx = { command: '/user/gx' };
+  config.mcpServers.codegraph = { command: '/user/codegraph' };
+  fs.writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
+
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'preserved');
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(mcpPath, 'utf8')).mcpServers,
+    config.mcpServers,
+  );
+});
+
 test('uninstallMcpServer removes stale ownership state when .mcp.json is missing', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
