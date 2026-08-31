@@ -587,7 +587,7 @@ process_entry() {
     echo "[agent-worktree-prune] Skipping live process worktree: ${wt}"
     return
   fi
-  if [[ "$branch" == agent/* ]] && should_preserve_open_pr_branch "$branch"; then
+  if [[ "$branch" == agent/* || "$branch" == work/* ]] && should_preserve_open_pr_branch "$branch"; then
     skipped_open_pr=$((skipped_open_pr + 1))
     if [[ "$OPEN_PR_LOOKUP_UNAVAILABLE" -eq 1 ]]; then
       echo "[agent-worktree-prune] Skipping open-PR worktree because PR state is unavailable (fail closed): ${wt}"
@@ -727,7 +727,7 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
     if [[ "$branch" != agent/* && "$branch" != work/* ]]; then
       continue
     fi
-    if [[ "$branch" == agent/* ]] && should_preserve_open_pr_branch "$branch"; then
+    if [[ "$branch" == agent/* || "$branch" == work/* ]] && should_preserve_open_pr_branch "$branch"; then
       skipped_open_pr=$((skipped_open_pr + 1))
       if [[ "$OPEN_PR_LOOKUP_UNAVAILABLE" -eq 1 ]]; then
         echo "[agent-worktree-prune] Skipping open-PR branch because PR state is unavailable (fail closed): ${branch}"

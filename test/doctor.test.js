@@ -1359,18 +1359,21 @@ test('gx doctor preserves idle clean worktrees whose branches are still unmerged
   assert.equal(committedContent.stdout, 'committed work must remain reachable\n');
 });
 
-test('gx doctor preserves an idle lane while its pull request is still open', () => {
+test('gx doctor preserves idle work lanes while their pull requests are still open', () => {
   const repoDir = initRepoOnBranch('main');
   seedCommit(repoDir);
 
   const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
   fs.mkdirSync(worktreeRoot, { recursive: true });
-  const cleanWorktree = path.join(worktreeRoot, 'open-pr-agent-worktree');
-  const branch = 'agent/claude/open-pr-demo';
+  const cleanWorktree = path.join(worktreeRoot, 'open-pr-work-worktree');
+  const branch = 'work/open-pr-demo';
+  const branchWithoutWorktree = 'work/open-pr-branch-only';
 
   let result = runHumanCmd('git', ['branch', branch], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   result = runHumanCmd('git', ['worktree', 'add', cleanWorktree, branch], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runHumanCmd('git', ['branch', branchWithoutWorktree], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
@@ -1397,6 +1400,7 @@ exit 0
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(`${result.stdout}\n${result.stderr}`, /Skipping open-PR worktree/);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Skipping open-PR branch/);
   assert.equal(
     fs.existsSync(cleanWorktree),
     true,
@@ -1404,6 +1408,12 @@ exit 0
   );
   const branchExists = runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repoDir);
   assert.equal(branchExists.status, 0, 'open PR branch must remain available for conflict recovery');
+  const branchWithoutWorktreeExists = runHumanCmd(
+    'git',
+    ['show-ref', '--verify', '--quiet', `refs/heads/${branchWithoutWorktree}`],
+    repoDir,
+  );
+  assert.equal(branchWithoutWorktreeExists.status, 0, 'open PR branch without a worktree must remain available');
 });
 
 
