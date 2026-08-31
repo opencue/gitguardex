@@ -52,12 +52,122 @@ function extractPreflightFunctions() {
   return script.slice(functionStart, functionEnd);
 }
 
+function commitAll(repoDir, message) {
+  cp.execFileSync('git', ['add', '.'], { cwd: repoDir });
+  cp.execFileSync('git', ['commit', '-m', message], {
+    cwd: repoDir,
+    env: {
+      ...process.env,
+      ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+      GUARDEX_ALLOW_CODEX_ON_NON_AGENT: '1',
+    },
+  });
+}
+
 test('--no-preflight is honored: PREFLIGHT_ENABLED normalized after the parse loop', () => {
   assertNormalizedAfterFlag(
     'PREFLIGHT_ENABLED_RAW="false"',
     'PREFLIGHT_ENABLED="$(normalize_bool "$PREFLIGHT_ENABLED_RAW"',
     'preflight',
   );
+});
+
+test('successful preflight is reused only while source and base commits are unchanged', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-preflight-cache-'));
+  const counterPath = path.join(os.tmpdir(), `guardex-preflight-counter-${process.pid}-${Date.now()}`);
+  const preflightPath = path.join(repoDir, 'scripts', 'agent-preflight.sh');
+
+  try {
+    cp.execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.name', 'Guardex Test'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.email', 'guardex@example.test'], { cwd: repoDir });
+    fs.mkdirSync(path.dirname(preflightPath), { recursive: true });
+    fs.writeFileSync(
+      preflightPath,
+      '#!/usr/bin/env bash\nif [[ "${1:-}" == "--guardex-capabilities" ]]; then printf "%s\\n" guardex-target-worktree-v1; exit 0; fi\ncount=0\n[[ -f "$PREFLIGHT_COUNTER" ]] && count="$(cat "$PREFLIGHT_COUNTER")"\nprintf "%s\\n" "$((count + 1))" > "$PREFLIGHT_COUNTER"\n',
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(repoDir, 'base.txt'), 'base\n');
+    commitAll(repoDir, 'base');
+    cp.execFileSync('git', ['switch', '-c', 'agent/cache-test'], {
+      cwd: repoDir,
+      env: { ...process.env, GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH: '1' },
+    });
+    fs.writeFileSync(path.join(repoDir, 'change.txt'), 'one\n');
+    commitAll(repoDir, 'agent change');
+
+    const command = [
+      extractPreflightFunctions(),
+      'finish_progress() { :; }',
+      'PREFLIGHT_ENABLED=1',
+      'PREFLIGHT_REQUIRED=0',
+      'PREFLIGHT_CACHE_ENABLED=1',
+      'PREFLIGHT_SCRIPT_RAW=scripts/agent-preflight.sh',
+      'SOURCE_BRANCH=agent/cache-test',
+      'start_ref=main',
+      'run_preflight "$1"',
+      'run_preflight "$1"',
+    ].join('\n');
+    const first = cp.spawnSync('bash', ['-c', command, 'preflight-cache-test', repoDir], {
+      encoding: 'utf8',
+      env: { ...process.env, PREFLIGHT_COUNTER: counterPath },
+    });
+
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(fs.readFileSync(counterPath, 'utf8'), '1\n');
+    assert.match(first.stderr, /cached successful result/i);
+
+    fs.writeFileSync(path.join(repoDir, 'change.txt'), 'two\n');
+    commitAll(repoDir, 'agent change two');
+    const afterSourceChange = cp.spawnSync(
+      'bash',
+      ['-c', command.replace('run_preflight "$1"\nrun_preflight "$1"', 'run_preflight "$1"'), 'preflight-cache-test', repoDir],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, PREFLIGHT_COUNTER: counterPath },
+      },
+    );
+
+    assert.equal(afterSourceChange.status, 0, afterSourceChange.stderr);
+    assert.equal(fs.readFileSync(counterPath, 'utf8'), '2\n');
+
+    const mainParent = cp.execFileSync('git', ['rev-parse', 'main'], { cwd: repoDir, encoding: 'utf8' }).trim();
+    const mainTree = cp.execFileSync('git', ['rev-parse', 'main^{tree}'], { cwd: repoDir, encoding: 'utf8' }).trim();
+    const advancedMain = cp.execFileSync(
+      'git',
+      ['commit-tree', mainTree, '-p', mainParent, '-m', 'advance base'],
+      { cwd: repoDir, encoding: 'utf8' },
+    ).trim();
+    cp.execFileSync('git', ['update-ref', 'refs/heads/main', advancedMain], { cwd: repoDir });
+    const afterBaseChange = cp.spawnSync(
+      'bash',
+      ['-c', command.replace('run_preflight "$1"\nrun_preflight "$1"', 'run_preflight "$1"'), 'preflight-cache-test', repoDir],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, PREFLIGHT_COUNTER: counterPath },
+      },
+    );
+
+    assert.equal(afterBaseChange.status, 0, afterBaseChange.stderr);
+    assert.equal(fs.readFileSync(counterPath, 'utf8'), '3\n');
+
+    const mandatoryCommand = command.replace('PREFLIGHT_REQUIRED=0', 'PREFLIGHT_REQUIRED=1');
+    const mandatory = cp.spawnSync(
+      'bash',
+      ['-c', mandatoryCommand, 'mandatory-preflight-cache-test', repoDir],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, PREFLIGHT_COUNTER: counterPath },
+      },
+    );
+
+    assert.equal(mandatory.status, 0, mandatory.stderr);
+    assert.equal(fs.readFileSync(counterPath, 'utf8'), '5\n');
+    assert.doesNotMatch(mandatory.stderr, /cached successful result/i);
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(counterPath, { force: true });
+  }
 });
 
 test('a billing waiver makes local preflight mandatory and fail-closed', () => {

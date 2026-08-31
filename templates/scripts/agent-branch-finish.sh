@@ -25,6 +25,7 @@ OPENSPEC_TASKS_RECONCILER="${GUARDEX_FINISH_OPENSPEC_TASKS_RECONCILER:-${FINISH_
 PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
 PREFLIGHT_REQUIRED_RAW="${GUARDEX_FINISH_REQUIRE_PREFLIGHT:-false}"
+PREFLIGHT_CACHE_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT_CACHE:-true}"
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
 FINISH_CHECKLIST_RAW="${GUARDEX_FINISH_CHECKLIST:-false}"
 FINISH_GATE_DONE_RAW="${GUARDEX_FINISH_GATE_DONE:-false}"
@@ -188,6 +189,71 @@ resolve_preflight_script() {
   fi
 }
 
+# Bind a reusable success receipt to every input that can change the result.
+# The receipt is per source branch and is overwritten when HEAD, the base ref,
+# or the configured preflight script changes. Mandatory billing-waiver
+# preflights deliberately bypass this cache and always execute fail-closed.
+preflight_cache_fingerprint() {
+  local worktree="$1"
+  local script_path="$2"
+  local source_sha=""
+  local base_sha=""
+  local script_sha=""
+
+  source_sha="$(git -C "$worktree" rev-parse 'HEAD^{commit}' 2>/dev/null || true)"
+  base_sha="$(git -C "$worktree" rev-parse "${start_ref}^{commit}" 2>/dev/null || true)"
+  script_sha="$(git -C "$worktree" hash-object --no-filters "$script_path" 2>/dev/null || true)"
+  if [[ -z "$source_sha" || -z "$base_sha" || -z "$script_sha" ]]; then
+    return 0
+  fi
+
+  printf 'guardex-preflight-cache-v1\n%s\n%s\n%s\n%s\n' \
+    "$source_sha" "$base_sha" "$PREFLIGHT_SCRIPT_RAW" "$script_sha" \
+    | git -C "$worktree" hash-object --stdin 2>/dev/null || true
+}
+
+preflight_cache_receipt_path() {
+  local worktree="$1"
+  local common_git_dir=""
+  local branch_name=""
+  local branch_key=""
+
+  common_git_dir="$(git -C "$worktree" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -z "$common_git_dir" ]]; then
+    return 0
+  fi
+  if [[ "$common_git_dir" != /* ]]; then
+    common_git_dir="${worktree}/${common_git_dir}"
+  fi
+  branch_name="${SOURCE_BRANCH:-$(git -C "$worktree" symbolic-ref --quiet --short HEAD 2>/dev/null || true)}"
+  if [[ -z "$branch_name" ]]; then
+    return 0
+  fi
+  branch_key="$(printf '%s' "$branch_name" | git -C "$worktree" hash-object --stdin 2>/dev/null || true)"
+  if [[ -z "$branch_key" ]]; then
+    return 0
+  fi
+
+  printf '%s/guardex/preflight-cache/%s.receipt' "$common_git_dir" "$branch_key"
+}
+
+write_preflight_cache_receipt() {
+  local receipt_path="$1"
+  local fingerprint="$2"
+  local receipt_dir=""
+  local temporary_receipt=""
+
+  [[ -n "$receipt_path" && -n "$fingerprint" ]] || return 0
+  receipt_dir="$(dirname "$receipt_path")"
+  mkdir -p "$receipt_dir" 2>/dev/null || return 0
+  temporary_receipt="${receipt_path}.$$"
+  if printf '%s\n' "$fingerprint" > "$temporary_receipt" 2>/dev/null; then
+    mv -f "$temporary_receipt" "$receipt_path" 2>/dev/null || rm -f "$temporary_receipt"
+  else
+    rm -f "$temporary_receipt"
+  fi
+}
+
 # Run the pre-flight verification gate in the agent worktree before
 # any push happens. Returns 0 on success or when no gate is
 # configured; returns non-zero (and prints a hint) on failure, which
@@ -239,6 +305,24 @@ run_preflight() {
       return 1
     fi
   fi
+  local cache_fingerprint=""
+  local cache_receipt_path=""
+  local cached_fingerprint=""
+  if [[ "${PREFLIGHT_CACHE_ENABLED:-1}" -eq 1 && "$PREFLIGHT_REQUIRED" -ne 1 ]]; then
+    cache_fingerprint="$(preflight_cache_fingerprint "$worktree" "$script_path")"
+    cache_receipt_path="$(preflight_cache_receipt_path "$worktree")"
+    if [[ -n "$cache_fingerprint" && -n "$cache_receipt_path" && -f "$cache_receipt_path" ]]; then
+      cached_fingerprint="$(head -n 1 "$cache_receipt_path" 2>/dev/null || true)"
+      if [[ "$cached_fingerprint" == "$cache_fingerprint" ]]; then
+        if [[ -n "$trusted_tree" ]]; then
+          rm -rf -- "$trusted_tree"
+        fi
+        finish_progress complete preflight "cached pass"
+        echo "[agent-branch-finish] Pre-flight unchanged; reusing cached successful result." >&2
+        return 0
+      fi
+    fi
+  fi
   local preflight_status=0
   if [[ -n "$trusted_tree" ]]; then
     ( cd "$preflight_cwd" && "$script_path" --guardex-target-worktree "$worktree" ) || preflight_status=$?
@@ -249,6 +333,7 @@ run_preflight() {
     rm -rf -- "$trusted_tree"
   fi
   if [[ "$preflight_status" -eq 0 ]]; then
+    write_preflight_cache_receipt "$cache_receipt_path" "$cache_fingerprint"
     finish_progress complete preflight "passed"
     echo "[agent-branch-finish] Pre-flight passed." >&2
     return 0
@@ -475,6 +560,7 @@ done
 # silently ignored the flags, leaving --no-preflight inert. Flags that set the
 # normalized var directly in-loop (--cleanup, --wait-for-merge, ...) are unaffected.
 PREFLIGHT_ENABLED="$(normalize_bool "$PREFLIGHT_ENABLED_RAW" "1")"
+PREFLIGHT_CACHE_ENABLED="$(normalize_bool "$PREFLIGHT_CACHE_ENABLED_RAW" "1")"
 AUTO_PROMOTE_DRAFT="$(normalize_bool "$AUTO_PROMOTE_DRAFT_RAW" "1")"
 
 if [[ "$CLEANUP_AFTER_MERGE" -eq 1 && "$DELETE_REMOTE_BRANCH_EXPLICIT" -eq 0 ]]; then
