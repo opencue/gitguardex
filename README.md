@@ -222,6 +222,13 @@ finds the last published GitHub release, and writes one grouped GitHub release b
 <details>
 <summary><strong>v8.x</strong></summary>
 
+### v8.3.0
+- Added adaptive direct-main agent work and branch-targeted `gx sync`.
+- Made worktree cleanup safer by preserving active or locked lanes while pruning
+  only eligible merged or opted-in clean lanes.
+- Persisted and validated explicit finish bases, recognized SHA-256 null object
+  IDs, and prevented stale VS Code worktree providers.
+
 ### v8.2.0
 - Reduced agent preflight and finish token overhead.
 - Preserved dirty worktrees during stale-worktree cleanup and exposed
