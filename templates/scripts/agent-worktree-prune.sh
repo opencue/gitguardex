@@ -236,23 +236,29 @@ load_lane_pr_metadata() {
   local rows=""
   if ! rows="$(
     "$GH_BIN" api --paginate 'repos/{owner}/{repo}/pulls?state=all&per_page=100' \
-      --jq '.[] | [.head.ref, (.head.repo.full_name // "-"), .base.ref, (if .merged_at then "MERGED" else (.state | ascii_upcase) end), .base.repo.full_name] | @tsv' 2>/dev/null
+      --jq '.[] | [.head.ref, .head.sha, (.head.repo.full_name // "-"), .base.ref, (if .merged_at then "MERGED" else (.state | ascii_upcase) end), .base.repo.full_name] | @tsv' 2>/dev/null
   )"; then
     LANE_PR_LOOKUP_UNAVAILABLE=1
     return 1
   fi
 
   local head=""
+  local head_sha=""
   local head_repo=""
   local base=""
   local state=""
   local base_repo=""
+  local local_tip=""
   local existing=""
-  while IFS=$'\t' read -r head head_repo base state base_repo; do
-    [[ "${head_repo,,}" == "${base_repo,,}" ]] || continue
+  while IFS=$'\t' read -r head head_sha head_repo base state base_repo; do
     [[ "$head" == agent/* || "$head" == work/* ]] || continue
+    local_tip="$(git -C "$repo_root" rev-parse --verify "refs/heads/${head}^{commit}" 2>/dev/null || true)"
     existing="${LANE_PR_STATES[$head]:-}"
-    if [[ "$state" == "OPEN" || -z "$existing" || ( "$state" == "MERGED" && "$existing" == "CLOSED" ) ]]; then
+    if [[ "$state" == "OPEN" ]]; then
+      LANE_PR_STATES["$head"]="$state"
+      LANE_PR_BASES["$head"]="$base"
+    elif [[ -n "$local_tip" && "$head_sha" == "$local_tip" && "$existing" != "OPEN" ]] && \
+      { [[ -z "$existing" ]] || [[ "$state" == "MERGED" && "$existing" == "CLOSED" ]]; }; then
       LANE_PR_STATES["$head"]="$state"
       LANE_PR_BASES["$head"]="$base"
     fi

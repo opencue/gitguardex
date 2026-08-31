@@ -1382,11 +1382,13 @@ test('gx doctor preserves idle agent and work lanes while their pull requests ar
   assert.equal(result.status, 0, result.stderr || result.stdout);
   result = runHumanCmd('git', ['branch', branchWithoutWorktree], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  const openPrHeadSha = runHumanCmd('git', ['rev-parse', branch], repoDir).stdout.trim();
+  const branchOnlyOpenPrHeadSha = runHumanCmd('git', ['rev-parse', branchWithoutWorktree], repoDir).stdout.trim();
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
-  printf '%s\t%s\t%s\t%s\t%s\n' "${branch}" recodeee/gitguardex main OPEN recodeee/gitguardex
-  printf '%s\t%s\t%s\t%s\t%s\n' "${branchWithoutWorktree}" recodeee/gitguardex ksskkfb03 OPEN recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${branch}" "${openPrHeadSha}" recodeee/gitguardex main OPEN recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${branchWithoutWorktree}" "${branchOnlyOpenPrHeadSha}" contributor/gitguardex-fork ksskkfb03 OPEN recodeee/gitguardex
   exit 0
 fi
 exit 0
@@ -1484,12 +1486,13 @@ test('gx doctor prunes clean merged and closed PR lanes using each PR base branc
   result = runHumanCmd('git', ['worktree', 'add', '-b', closedBranch, closedWorktree, 'main'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   commitFile(closedWorktree, 'closed-lane.txt', 'closed lane\n', 'closed lane work');
+  const mergedHeadSha = runHumanCmd('git', ['rev-parse', mergedBranch], repoDir).stdout.trim();
+  const closedHeadSha = runHumanCmd('git', ['rev-parse', closedBranch], repoDir).stdout.trim();
 
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
-  printf '%s\t%s\t%s\t%s\t%s\n' "${mergedBranch}" recodeee/gitguardex ksskkfb03 MERGED recodeee/gitguardex
-  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" recodeee/other-repo ksskkfb03 MERGED recodeee/gitguardex
-  printf '%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" recodeee/gitguardex ksskkfb03 CLOSED recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${mergedBranch}" "${mergedHeadSha}" recodeee/gitguardex ksskkfb03 MERGED recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${closedBranch}" "${closedHeadSha}" recodeee/gitguardex ksskkfb03 CLOSED recodeee/gitguardex
   exit 0
 fi
 exit 0
@@ -1520,6 +1523,66 @@ exit 0
     runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${closedBranch}`], repoDir).status,
     0,
     'closed PR branch should be deleted after its clean inactive worktree is pruned',
+  );
+});
+
+test('gx doctor never force-deletes reused lanes that advanced beyond historical PR heads', () => {
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  const worktreeRoot = path.join(repoDir, '.omc', 'agent-worktrees');
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  const reusedBranch = 'agent/claude/reused-after-merge';
+  const reusedWorktree = path.join(worktreeRoot, 'reused-after-merge-worktree');
+  const advancedBranch = 'work/advanced-after-close';
+  const advancedWorktree = path.join(worktreeRoot, 'advanced-after-close-worktree');
+
+  let result = runHumanCmd('git', ['worktree', 'add', '-b', reusedBranch, reusedWorktree, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(reusedWorktree, 'historical.txt', 'historical merged work\n', 'historical merged work');
+  const mergedPrHeadSha = runHumanCmd('git', ['rev-parse', reusedBranch], repoDir).stdout.trim();
+  commitFile(reusedWorktree, 'reused.txt', 'new work on reused branch\n', 'new reused branch work');
+
+  result = runHumanCmd('git', ['worktree', 'add', '-b', advancedBranch, advancedWorktree, 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  commitFile(advancedWorktree, 'closed.txt', 'historical closed work\n', 'historical closed work');
+  const closedPrHeadSha = runHumanCmd('git', ['rev-parse', advancedBranch], repoDir).stdout.trim();
+  commitFile(advancedWorktree, 'advanced.txt', 'work added after close\n', 'advanced closed branch work');
+  result = runHumanCmd('git', ['worktree', 'remove', advancedWorktree], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "api" && "$2" == "--paginate" && "$3" == 'repos/{owner}/{repo}/pulls?state=all&per_page=100' ]]; then
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${reusedBranch}" "${mergedPrHeadSha}" recodeee/gitguardex main MERGED recodeee/gitguardex
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${advancedBranch}" "${closedPrHeadSha}" recodeee/gitguardex main CLOSED recodeee/gitguardex
+  exit 0
+fi
+exit 0
+`);
+  const fakeNowEpoch = Math.floor(Date.now() / 1000) + (2 * 60 * 60);
+  result = runNodeWithEnv(
+    ['doctor', '--target', repoDir, '--skip-agents', '--no-global-install'],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: fakeGhPath,
+      GUARDEX_PRUNE_NOW_EPOCH: String(fakeNowEpoch),
+      GUARDEX_SKIP_AUTO_FINISH_READY_BRANCHES: '1',
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert.match(combined, /Removing worktree \(stale-no-pr-worktree\)/);
+  assert.equal(fs.existsSync(reusedWorktree), false, 'stale reused worktree should be removed');
+  assert.equal(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${reusedBranch}`], repoDir).status,
+    0,
+    'reused branch must be preserved',
+  );
+  assert.equal(
+    runHumanCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${advancedBranch}`], repoDir).status,
+    0,
+    'advanced branch without a worktree must be preserved',
   );
 });
 
