@@ -148,6 +148,27 @@ test('agent-branch-start reuses the current agent worktree instead of cloning it
   );
 });
 
+test('agent-branch-start repairs missing base metadata when reusing with an explicit base', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+
+  let result = runBranchStart(['--tier', 'T1', 'base metadata repair', 'bot'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const branch = extractCreatedBranch(result.stdout);
+  const worktree = extractCreatedWorktree(result.stdout);
+
+  result = runCmd('git', ['config', '--unset', `branch.${branch}.guardexBase`], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runBranchStart(['--tier', 'T1', '--base', 'dev', 'continue base metadata repair', 'bot'], worktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, new RegExp(`Reusing existing branch: ${escapeRegexLiteral(branch)}`));
+  assert.match(result.stdout, /--base dev --via-pr/);
+
+  const storedBase = runCmd('git', ['config', '--get', `branch.${branch}.guardexBase`], repoDir);
+  assert.equal(storedBase.status, 0, storedBase.stderr || storedBase.stdout);
+  assert.equal(storedBase.stdout.trim(), 'dev');
+});
+
 test('agent-branch-start reuses a single dirty matching managed worktree from the protected checkout', () => {
   const { repoDir } = createBootstrappedRepo({ committed: true });
 
