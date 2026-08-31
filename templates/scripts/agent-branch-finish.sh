@@ -559,7 +559,7 @@ validate_reconciled_openspec_tasks() {
     echo "[agent-branch-finish] openspec CLI unavailable; deterministic tasks.md validation passed, spec validation skipped." >&2
     return 0
   fi
-  if ! (cd "$worktree" && openspec validate --specs >/dev/null); then
+  if ! (cd "$worktree" && openspec validate --changes --strict --no-interactive >/dev/null); then
     echo "[agent-branch-finish] OpenSpec validation failed after tasks.md reconciliation; leaving the Git operation for manual repair." >&2
     return 1
   fi
