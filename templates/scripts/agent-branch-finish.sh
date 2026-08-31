@@ -168,8 +168,11 @@ resolve_preflight_script() {
     trusted_tree="$(mktemp -d "${TMPDIR:-/tmp}/guardex-preflight.XXXXXX")" || return 0
     if git -C "$worktree" archive "$start_ref" 2>/dev/null | tar -x -C "$trusted_tree" 2>/dev/null; then
       local trusted_script="${trusted_tree}/${configured}"
-      if [[ -x "$trusted_script" ]] \
-        && grep -Fq 'GUARDEX_PREFLIGHT_TARGET_WORKTREE' "$trusted_script"; then
+      local trusted_script_real=""
+      trusted_script_real="$(realpath -e -- "$trusted_script" 2>/dev/null || true)"
+      if [[ -n "$trusted_script_real" && "$trusted_script_real" == "$trusted_tree/"* && -x "$trusted_script_real" ]] \
+        && grep -Fq 'GUARDEX_PREFLIGHT_TARGET_WORKTREE' "$trusted_script_real"; then
+        trusted_script="$trusted_script_real"
         printf '%s' "$trusted_script"
         return 0
       fi

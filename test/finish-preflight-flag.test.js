@@ -38,6 +38,13 @@ function assertNormalizedAfterFlag(rawAssign, normalizeFragment, label) {
   );
 }
 
+function extractPreflightResolver() {
+  const functionStart = script.indexOf('resolve_preflight_script() {');
+  const functionEnd = script.indexOf('\n}\n\n# Run the pre-flight', functionStart) + 2;
+  assert.ok(functionStart >= 0 && functionEnd > functionStart, 'resolver function must be extractable');
+  return script.slice(functionStart, functionEnd);
+}
+
 test('--no-preflight is honored: PREFLIGHT_ENABLED normalized after the parse loop', () => {
   assertNormalizedAfterFlag(
     'PREFLIGHT_ENABLED_RAW="false"',
@@ -77,7 +84,7 @@ test('a billing waiver makes local preflight mandatory and fail-closed', () => {
     'a mandatory preflight must execute from its trusted tree while receiving the target worktree explicitly',
   );
   assert.ok(
-    script.includes("grep -Fq 'GUARDEX_PREFLIGHT_TARGET_WORKTREE' \"$trusted_script\""),
+    script.includes("grep -Fq 'GUARDEX_PREFLIGHT_TARGET_WORKTREE' \"$trusted_script_real\""),
     'a mandatory preflight must fail closed unless the trusted base script opts into the target-worktree contract',
   );
 });
@@ -113,10 +120,7 @@ test('a mandatory relative preflight executes the trusted base script and its re
     fs.writeFileSync(helperPath, "printf '%s\\n' tampered-helper\n");
     fs.writeFileSync(markerPath, 'pr-target\n');
 
-    const functionStart = script.indexOf('resolve_preflight_script() {');
-    const functionEnd = script.indexOf('\n}\n\n# Run the pre-flight', functionStart) + 2;
-    assert.ok(functionStart >= 0 && functionEnd > functionStart, 'resolver function must be extractable');
-    const resolver = script.slice(functionStart, functionEnd);
+    const resolver = extractPreflightResolver();
     const command = [
       resolver,
       'PREFLIGHT_REQUIRED=1',
@@ -134,6 +138,51 @@ test('a mandatory relative preflight executes the trusted base script and its re
     assert.equal(result.stdout, 'trusted-helper\npr-target\n');
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('a mandatory preflight rejects a trusted-base symlink that escapes the archive', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-preflight-symlink-repo-'));
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-preflight-symlink-outside-'));
+  const outsideScript = path.join(outsideDir, 'agent-preflight.sh');
+  const preflightPath = path.join(repoDir, 'scripts', 'agent-preflight.sh');
+  fs.mkdirSync(path.dirname(preflightPath), { recursive: true });
+
+  try {
+    fs.writeFileSync(
+      outsideScript,
+      '#!/usr/bin/env bash\n# GUARDEX_PREFLIGHT_TARGET_WORKTREE\nprintf escaped\n',
+      { mode: 0o755 },
+    );
+    fs.symlinkSync(outsideScript, preflightPath);
+    cp.execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.name', 'Guardex Test'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.email', 'guardex@example.test'], { cwd: repoDir });
+    cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh'], { cwd: repoDir });
+    cp.execFileSync('git', ['commit', '-m', 'escaping preflight symlink'], {
+      cwd: repoDir,
+      env: {
+        ...process.env,
+        ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+        GUARDEX_ALLOW_CODEX_ON_NON_AGENT: '1',
+      },
+    });
+
+    const command = [
+      extractPreflightResolver(),
+      'PREFLIGHT_REQUIRED=1',
+      'start_ref=main',
+      'resolve_preflight_script "$1" scripts/agent-preflight.sh',
+    ].join('\n');
+    const result = cp.spawnSync('bash', ['-c', command, 'preflight-symlink-test', repoDir], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '', 'an escaping symlink must not resolve to an executable preflight');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(outsideDir, { recursive: true, force: true });
   }
 });
 
