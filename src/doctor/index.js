@@ -1098,10 +1098,13 @@ function pruneStaleAgentWorktrees(repoRoot, options = {}) {
 
   const args = [
     '--idle-minutes', String(idleMinutes),
-    // This calls the low-level prune asset directly; its clean-worktree mode is
-    // named --only-dirty-worktrees. The public cleanup command translates
-    // --prune-clean-worktrees to this asset flag.
-    '--only-dirty-worktrees',
+    // Doctor is an unattended repair command, not an explicit request to
+    // discard a lane. Limit its sweep to worktrees that are already merged or
+    // structurally stale. A clean but unmerged lane may be the only convenient
+    // recovery point after a blocked/conflicting PR, so pruning it here makes a
+    // failed finish destructive. Operators can still opt into that behavior
+    // explicitly with `gx cleanup --prune-clean-worktrees`.
+    '--preserve-open-prs',
     '--delete-branches',
     '--delete-remote-branches',
     '--include-pr-merged',
