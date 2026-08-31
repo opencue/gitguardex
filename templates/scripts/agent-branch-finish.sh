@@ -211,15 +211,24 @@ run_preflight() {
   fi
   finish_progress running preflight "final verification before publish"
   echo "[agent-branch-finish] Running pre-flight: ${script_path}" >&2
-  local preflight_status=0
-  ( cd "$worktree" && "$script_path" ) || preflight_status=$?
+  local preflight_cwd="$worktree"
+  local trusted_tree=""
   if [[ "$PREFLIGHT_REQUIRED" -eq 1 && "$PREFLIGHT_SCRIPT_RAW" != /* ]]; then
     local relative_configured="${PREFLIGHT_SCRIPT_RAW#./}"
     local trusted_prefix="${TMPDIR:-/tmp}/guardex-preflight."
-    if [[ "$script_path" == "$trusted_prefix"*"/$relative_configured" ]]; then
-      local trusted_tree_length=$((${#script_path} - ${#relative_configured} - 1))
-      rm -rf -- "${script_path:0:$trusted_tree_length}"
+    if [[ "$script_path" != "$trusted_prefix"*"/$relative_configured" ]]; then
+      finish_progress failed preflight "trusted execution tree missing"
+      echo "[agent-branch-finish] Mandatory pre-flight did not resolve inside its trusted base archive; refusing push." >&2
+      return 1
     fi
+    local trusted_tree_length=$((${#script_path} - ${#relative_configured} - 1))
+    trusted_tree="${script_path:0:$trusted_tree_length}"
+    preflight_cwd="$trusted_tree"
+  fi
+  local preflight_status=0
+  ( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" ) || preflight_status=$?
+  if [[ -n "$trusted_tree" ]]; then
+    rm -rf -- "$trusted_tree"
   fi
   if [[ "$preflight_status" -eq 0 ]]; then
     finish_progress complete preflight "passed"

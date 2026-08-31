@@ -72,25 +72,31 @@ test('a billing waiver makes local preflight mandatory and fail-closed', () => {
       < script.indexOf('local candidate="${worktree}/${configured}"'),
     'mandatory preflight resolution must happen before the untrusted worktree fallback',
   );
+  assert.ok(
+    script.includes('( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" )'),
+    'a mandatory preflight must execute from its trusted tree while receiving the target worktree explicitly',
+  );
 });
 
 test('a mandatory relative preflight executes the trusted base script and its relative helpers', () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-trusted-preflight-'));
   const preflightPath = path.join(repoDir, 'scripts', 'agent-preflight.sh');
   const helperPath = path.join(repoDir, 'scripts', 'preflight-helper.sh');
+  const markerPath = path.join(repoDir, 'preflight-marker');
   fs.mkdirSync(path.dirname(preflightPath), { recursive: true });
 
   try {
     cp.execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir });
     cp.execFileSync('git', ['config', 'user.name', 'Guardex Test'], { cwd: repoDir });
     cp.execFileSync('git', ['config', 'user.email', 'guardex@example.test'], { cwd: repoDir });
-    fs.writeFileSync(helperPath, "printf '%s\\n' trusted-base\n");
+    fs.writeFileSync(helperPath, "printf '%s\\n' trusted-helper\n");
+    fs.writeFileSync(markerPath, 'trusted-cwd\n');
     fs.writeFileSync(
       preflightPath,
-      '#!/usr/bin/env bash\nsource "$(dirname "${BASH_SOURCE[0]}")/preflight-helper.sh"\n',
+      '#!/usr/bin/env bash\nsource "$(dirname "${BASH_SOURCE[0]}")/preflight-helper.sh"\ncat ./preflight-marker\nprintf "target=%s\\n" "$GUARDEX_PREFLIGHT_TARGET_WORKTREE"\n',
       { mode: 0o755 },
     );
-    cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh', 'scripts/preflight-helper.sh'], { cwd: repoDir });
+    cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh', 'scripts/preflight-helper.sh', 'preflight-marker'], { cwd: repoDir });
     cp.execFileSync('git', ['commit', '-m', 'trusted preflight'], {
       cwd: repoDir,
       env: {
@@ -101,6 +107,7 @@ test('a mandatory relative preflight executes the trusted base script and its re
     });
     fs.writeFileSync(preflightPath, "#!/usr/bin/env bash\nprintf '%s\\n' tampered-script\n", { mode: 0o755 });
     fs.writeFileSync(helperPath, "printf '%s\\n' tampered-helper\n");
+    fs.writeFileSync(markerPath, 'tampered-cwd\n');
 
     const functionStart = script.indexOf('resolve_preflight_script() {');
     const functionEnd = script.indexOf('\n}\n\n# Run the pre-flight', functionStart) + 2;
@@ -111,15 +118,16 @@ test('a mandatory relative preflight executes the trusted base script and its re
       'PREFLIGHT_REQUIRED=1',
       'start_ref=main',
       'resolved="$(resolve_preflight_script "$1" scripts/agent-preflight.sh)"',
-      '"$resolved"',
-      'rm -rf -- "${resolved%/scripts/agent-preflight.sh}"',
+      'trusted_tree="${resolved%/scripts/agent-preflight.sh}"',
+      '( cd "$trusted_tree" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$1" "$resolved" )',
+      'rm -rf -- "$trusted_tree"',
     ].join('\n');
     const result = cp.spawnSync('bash', ['-c', command, 'trusted-preflight-test', repoDir], {
       encoding: 'utf8',
     });
 
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, 'trusted-base\n');
+    assert.equal(result.stdout, `trusted-helper\ntrusted-cwd\ntarget=${repoDir}\n`);
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
   }
