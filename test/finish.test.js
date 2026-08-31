@@ -1178,7 +1178,7 @@ exit 1
 });
 
 
-test('agent-branch-finish cleanup preserves forwarded active agent cwd when base branch is checked out elsewhere', () => {
+test('branch finish removes its clean detached worktree after the finish worker exits', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
   attachOriginRemote(repoDir);
@@ -1255,10 +1255,13 @@ exit 1
   assert.notEqual(result.status, 0, 'agent branch should be deleted locally');
   result = runCmd('git', ['ls-remote', '--heads', 'origin', 'agent/test-active-worktree-cleanup'], repoDir);
   assert.equal(result.stdout.trim(), '', 'agent branch should be deleted on origin');
-  assert.equal(fs.existsSync(agentWorktreePath), true, 'active cwd worktree should remain until manual prune');
-  result = runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], agentWorktreePath);
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.equal(result.stdout.trim(), 'HEAD', 'active worktree should detach before local branch deletion');
+  assert.match(finish.stdout, /Removed finished detached worktree after finish worker exit:/);
+  assert.equal(fs.existsSync(agentWorktreePath), false, 'successful cleanup should remove the detached worktree');
+  assert.doesNotMatch(
+    runCmd('git', ['worktree', 'list', '--porcelain'], repoDir).stdout,
+    new RegExp(escapeRegexLiteral(agentWorktreePath)),
+    'successful cleanup should remove the worktree registration',
+  );
 });
 
 
