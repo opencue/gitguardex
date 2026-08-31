@@ -78,6 +78,34 @@ test('whoOwns aggregates locks across ALL worktrees (per-worktree lock files)', 
   }
 });
 
+test('whoOwns ignores an orphaned lock after its pane moved off a deleted lane', () => {
+  const { root, main } = makeRepoWithLanes();
+  const fakeBin = path.join(root, 'bin');
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(
+    path.join(fakeBin, 'tmux'),
+    `#!/bin/sh\nprintf '%s\\n' '${main}'\n`,
+    { mode: 0o755 },
+  );
+  writeLock(main, {
+    '.vscode/settings.json': {
+      branch: 'agent/codex/deleted-lane',
+      claimed_at: '2026-06-05T12:00:00+00:00',
+      pane: '%22',
+    },
+  });
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${fakeBin}${path.delimiter}${previousPath}`;
+  try {
+    const result = collect.whoOwns('.vscode/settings.json', { repoPath: main });
+    assert.equal(result.owner, null, 'deleted lane must not remain a visible owner after its pane moved');
+  } finally {
+    process.env.PATH = previousPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('whoOwnsMany resolves a file batch and editContext returns one compact pre-edit snapshot', () => {
   const { root, wtA } = makeRepoWithLanes();
   try {

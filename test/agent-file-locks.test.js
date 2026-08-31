@@ -178,6 +178,86 @@ function locksAt(cwd, args, env = {}) {
 }
 
 defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
+  test('claim prunes a lock whose deleted lane pane has moved to another branch', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, '.vscode/settings.json');
+    const stateDir = path.join(repoDir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({
+        locks: {
+          '.vscode/settings.json': {
+            branch: 'agent/codex/deleted-lane',
+            claimed_at: '2026-06-05T12:00:00+00:00',
+            allow_delete: false,
+            agent: 'codex',
+            pane: '%22',
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    const fakeBin = path.join(repoDir, 'fake-bin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(
+      path.join(fakeBin, 'tmux'),
+      `#!/bin/sh\nprintf '%s\\n' '${repoDir}'\n`,
+      { mode: 0o755 },
+    );
+
+    const currentBranch = runHumanCmd('git', ['branch', '--show-current'], repoDir).stdout.trim();
+    const claim = locksAt(
+      repoDir,
+      ['claim', '--branch', currentBranch, '.vscode/settings.json'],
+      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+    );
+
+    assert.equal(claim.status, 0, claim.stderr || claim.stdout);
+    assert.match(claim.stdout, /pruned 1 orphaned lock/i);
+    const locks = JSON.parse(fs.readFileSync(path.join(stateDir, 'agent-file-locks.json'), 'utf8')).locks;
+    assert.equal(locks['.vscode/settings.json'].branch, currentBranch);
+  });
+
+  test('claim keeps blocking when the recorded branch still exists', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'shared.txt');
+    const liveBranch = 'agent/codex/live-lane';
+    assert.equal(runHumanCmd('git', ['branch', liveBranch], repoDir).status, 0);
+    const stateDir = path.join(repoDir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({
+        locks: {
+          'shared.txt': {
+            branch: liveBranch,
+            claimed_at: '2026-06-05T12:00:00+00:00',
+            allow_delete: false,
+            agent: 'codex',
+            pane: '%22',
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    const fakeBin = path.join(repoDir, 'fake-bin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(
+      path.join(fakeBin, 'tmux'),
+      `#!/bin/sh\nprintf '%s\\n' '${repoDir}'\n`,
+      { mode: 0o755 },
+    );
+    const currentBranch = runHumanCmd('git', ['branch', '--show-current'], repoDir).stdout.trim();
+
+    const claim = locksAt(
+      repoDir,
+      ['claim', '--branch', currentBranch, 'shared.txt'],
+      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+    );
+
+    assert.equal(claim.status, 1, 'an existing branch remains authoritative even if its pane moved');
+    assert.match(claim.stderr, new RegExp(liveBranch.replaceAll('/', '\\/')));
+  });
+
   test('a claim in one worktree blocks a claim AND a commit of the same file from a sibling worktree', () => {
     const repoDir = makeRepo(); // wt1
     writeFile(repoDir, 'shared.txt');

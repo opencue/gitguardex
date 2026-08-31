@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -337,6 +338,101 @@ def list_worktree_roots(repo_root: Path) -> list[Path]:
     return roots
 
 
+def known_branch_names(repo_root: Path) -> set[str]:
+    """Local and remote branch names plus branches attached to worktrees."""
+    names: set[str] = set()
+    worktrees = run_git(['worktree', 'list', '--porcelain'], cwd=repo_root)
+    for line in worktrees.splitlines():
+        if line.startswith('branch refs/heads/'):
+            names.add(line[len('branch refs/heads/'):].strip())
+
+    refs = run_git(
+        ['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes'],
+        cwd=repo_root,
+    )
+    for ref in refs.splitlines():
+        if ref.startswith('refs/heads/'):
+            names.add(ref[len('refs/heads/'):])
+            continue
+        if not ref.startswith('refs/remotes/'):
+            continue
+        remote_and_branch = ref[len('refs/remotes/'):]
+        _, separator, branch = remote_and_branch.partition('/')
+        if separator and branch:
+            names.add(branch)
+    return names
+
+
+def git_common_dir_identity(cwd: Path) -> Path:
+    top = Path(run_git(['rev-parse', '--show-toplevel'], cwd=cwd))
+    common = Path(run_git(['rev-parse', '--git-common-dir'], cwd=cwd))
+    return common.resolve() if common.is_absolute() else (top / common).resolve()
+
+
+def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | None:
+    """True/False when tmux proves pane ownership; None means fail closed."""
+    if not re.fullmatch(r'%\d+', pane) or shutil.which('tmux') is None:
+        return None
+    try:
+        result = subprocess.run(
+            ['tmux', 'display-message', '-p', '-t', pane, '#{pane_current_path}'],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return False
+    pane_cwd = Path(result.stdout.strip())
+    if not result.stdout.strip() or not pane_cwd.exists():
+        return False
+    try:
+        if git_common_dir_identity(pane_cwd) != git_common_dir_identity(repo_root):
+            return None
+        pane_branch = run_git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd=pane_cwd)
+    except LockError:
+        return False
+    if not pane_branch or pane_branch == 'HEAD':
+        return None
+    return pane_branch == branch
+
+
+def prune_orphaned_locks(repo_root: Path) -> list[tuple[str, str, str]]:
+    """Remove locks whose branch vanished and whose pane moved elsewhere.
+
+    Missing pane metadata, detached checkouts, and unavailable tmux state remain
+    authoritative so an uncertain cleanup can never steal an active file.
+    """
+    known_branches = known_branch_names(repo_root)
+    pruned: list[tuple[str, str, str]] = []
+    for root in list_worktree_roots(repo_root):
+        try:
+            state = load_state(root)
+        except LockError as exc:
+            raise LockError(
+                f'cannot safely inspect sibling lock registry in {root}; '
+                'lock operation blocked'
+            ) from exc
+        survivors: dict[str, dict[str, Any]] = {}
+        for file_path, entry in state['locks'].items():
+            branch = str(entry.get('branch', ''))
+            pane = str(entry.get('pane', ''))
+            if (
+                branch
+                and branch not in known_branches
+                and pane_still_owns_branch(repo_root, pane, branch) is False
+            ):
+                pruned.append((str(root), file_path, branch))
+                continue
+            survivors[file_path] = entry
+        if len(survivors) != len(state['locks']):
+            write_state(root, {**state, 'locks': survivors})
+    return pruned
+
+
 def load_all_locks(repo_root: Path) -> dict[str, list[dict[str, Any]]]:
     """Union of EVERY worktree's lock map: file path -> list of owner entries
     (one per worktree that claims it). Each worktree owns a separate lock file on
@@ -452,6 +548,9 @@ def adaptive_direct_owner_lock(repo_root: Path):
 
 
 def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) -> int:
+    pruned = prune_orphaned_locks(repo_root)
+    if pruned:
+        print(f'[agent-file-locks] Pruned {len(pruned)} orphaned lock(s) from completed lanes.')
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
 
