@@ -570,8 +570,9 @@ function finish(rawArgs, defaults = {}) {
       // Opt-in merge gate (--gate-review / gx ship): enforce a clean AI review +
       // green CI + GitHub-mergeable verdict BEFORE the shell merge runs. Throws on
       // failure, which the catch below turns into a finish failure (no merge).
+      let gateResult;
       if (options.mergeMode === 'pr' && options.gateReview) {
-        runReviewGate({
+        gateResult = runReviewGate({
           repoRoot, worktreePath, branch, baseBranch, options, progress,
         });
       } else {
@@ -602,6 +603,7 @@ function finish(rawArgs, defaults = {}) {
           GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
           GUARDEX_FINISH_CHECKLIST: '1',
           GUARDEX_FINISH_GATE_DONE: options.gateReview ? '1' : '0',
+          GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.billingChecksWaived?.length > 0 ? '1' : '0',
           ...progress.eventEnv,
         },
       });

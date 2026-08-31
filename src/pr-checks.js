@@ -90,19 +90,28 @@ function latestStatusChecks(value) {
   };
 }
 
-function summarizeStatusCheckRollup(value) {
+function summarizeStatusCheckRollup(value, { isWaived = () => false } = {}) {
   const { checks, superseded } = latestStatusChecks(value);
   const failedNames = [];
+  const waivedNames = [];
+  let waivedCount = 0;
   const summary = checks.reduce(
     (acc, check) => {
       const state = String(check?.conclusion || check?.state || check?.status || '').toUpperCase();
-      if (state === 'SUCCESS') acc.success += 1;
+      const failing = FAILING_CONCLUSIONS.has(state);
+      const waived = failing && isWaived(check);
+      if (waived) {
+        const name = checkName(check);
+        if (name) waivedNames.push(name);
+        waivedCount += 1;
+      } else if (state === 'SUCCESS') acc.success += 1;
+      else if (state === 'SKIPPED') acc.skipped = (acc.skipped || 0) + 1;
       else if (state === 'CANCELLED') acc.cancelled += 1;
-      else if (FAILING_CONCLUSIONS.has(state)) acc.failed += 1;
+      else if (failing) acc.failed += 1;
       else if (state === 'PENDING' || state === 'IN_PROGRESS' || state === 'QUEUED') acc.pending += 1;
       else acc.other += 1;
 
-      if (FAILING_CONCLUSIONS.has(state)) {
+      if (failing && !waived) {
         const name = checkName(check);
         if (name) failedNames.push(name);
       }
@@ -110,8 +119,14 @@ function summarizeStatusCheckRollup(value) {
     },
     { success: 0, failed: 0, pending: 0, cancelled: 0, other: 0, total: checks.length },
   );
+  if (waivedCount > 0) summary.waived = waivedCount;
 
-  return { summary, failedNames, supersededCount: superseded.length };
+  return {
+    summary,
+    failedNames,
+    waivedNames,
+    supersededCount: superseded.length,
+  };
 }
 
 module.exports = {

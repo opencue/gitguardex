@@ -21,6 +21,7 @@ AUTO_RESOLVE_SAFE_GLOBS_DEFAULT='.omc/**:.omx/state/**:.dev-ports.json:apps/logs
 AUTO_RESOLVE_SAFE_GLOBS_RAW="${GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS-$AUTO_RESOLVE_SAFE_GLOBS_DEFAULT}"
 PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
+PREFLIGHT_REQUIRED_RAW="${GUARDEX_FINISH_REQUIRE_PREFLIGHT:-false}"
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
 FINISH_CHECKLIST_RAW="${GUARDEX_FINISH_CHECKLIST:-false}"
 FINISH_GATE_DONE_RAW="${GUARDEX_FINISH_GATE_DONE:-false}"
@@ -142,15 +143,35 @@ finish_progress() {
   finish_event "$stage" "$state" "$number" "$label" "$detail"
 }
 
-# Resolve the pre-flight script path against the source worktree. The
-# caller passes either the configured path (which may be relative) or
-# an empty string; we return the absolute path if it exists and is
-# executable, otherwise return empty.
+# Resolve the pre-flight script path. Required relative scripts run from a
+# temporary archive of the trusted base ref so script-relative helpers are also
+# trusted; optional relative scripts retain worktree behavior.
 resolve_preflight_script() {
   local worktree="$1"
   local configured="$2"
   if [[ -z "$configured" ]]; then
     configured="scripts/agent-preflight.sh"
+  fi
+  if [[ "${PREFLIGHT_REQUIRED:-0}" -eq 1 ]]; then
+    configured="${configured#./}"
+    if [[ -z "$configured" || "$configured" = /* || "$configured" == ".." || "$configured" == ../*
+      || "$configured" == */../* || "$configured" == */.. ]]; then
+      return 0
+    fi
+    local trusted_tree=""
+    trusted_tree="$(mktemp -d "${TMPDIR:-/tmp}/guardex-preflight.XXXXXX")" || return 0
+    if git -C "$worktree" archive "$start_ref" 2>/dev/null | tar -x -C "$trusted_tree" 2>/dev/null; then
+      local trusted_script="${trusted_tree}/${configured}"
+      local trusted_script_real=""
+      trusted_script_real="$(realpath -e -- "$trusted_script" 2>/dev/null || true)"
+      if [[ -n "$trusted_script_real" && "$trusted_script_real" == "$trusted_tree/"* && -x "$trusted_script_real" ]]; then
+        trusted_script="$trusted_script_real"
+        printf '%s' "$trusted_script"
+        return 0
+      fi
+    fi
+    rm -rf -- "$trusted_tree"
+    return 0
   fi
   if [[ "$configured" = /* ]]; then
     if [[ -x "$configured" ]]; then
@@ -171,19 +192,60 @@ resolve_preflight_script() {
 run_preflight() {
   local worktree="$1"
   if [[ "$PREFLIGHT_ENABLED" -ne 1 ]]; then
+    if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
+      finish_progress failed preflight "required because GitHub billing checks were waived"
+      echo "[agent-branch-finish] Billing-waived GitHub checks require local pre-flight; --no-preflight is not allowed." >&2
+      return 1
+    fi
     finish_progress skipped preflight "disabled by flag"
     return 0
   fi
   local script_path
   script_path="$(resolve_preflight_script "$worktree" "$PREFLIGHT_SCRIPT_RAW")"
   if [[ -z "$script_path" ]]; then
+    if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
+      finish_progress failed preflight "required executable script missing"
+      echo "[agent-branch-finish] Billing-waived GitHub checks require a target-aware pre-flight script at ${PREFLIGHT_SCRIPT_RAW} in trusted base ${start_ref}; refusing push." >&2
+      return 1
+    fi
     finish_progress skipped preflight "no executable pre-flight script"
     echo "[agent-branch-finish] No executable pre-flight script at ${PREFLIGHT_SCRIPT_RAW} (in ${worktree}); skipping pre-flight." >&2
     return 0
   fi
   finish_progress running preflight "final verification before publish"
   echo "[agent-branch-finish] Running pre-flight: ${script_path}" >&2
-  if ( cd "$worktree" && "$script_path" ); then
+  local preflight_cwd="$worktree"
+  local trusted_tree=""
+  if [[ "$PREFLIGHT_REQUIRED" -eq 1 && "$PREFLIGHT_SCRIPT_RAW" != /* ]]; then
+    local relative_configured="${PREFLIGHT_SCRIPT_RAW#./}"
+    local trusted_prefix="${TMPDIR:-/tmp}/guardex-preflight."
+    if [[ "$script_path" != "$trusted_prefix"*"/$relative_configured" ]]; then
+      finish_progress failed preflight "trusted execution tree missing"
+      echo "[agent-branch-finish] Mandatory pre-flight did not resolve inside its trusted base archive; refusing push." >&2
+      return 1
+    fi
+    local trusted_tree_length=$((${#script_path} - ${#relative_configured} - 1))
+    trusted_tree="${script_path:0:$trusted_tree_length}"
+    preflight_cwd="$trusted_tree"
+    local capabilities=""
+    capabilities="$(cd "$preflight_cwd" && "$script_path" --guardex-capabilities 2>/dev/null || true)"
+    if [[ "$capabilities" != "guardex-target-worktree-v1" ]]; then
+      rm -rf -- "$trusted_tree"
+      finish_progress failed preflight "trusted script does not support the target-worktree protocol"
+      echo "[agent-branch-finish] Mandatory pre-flight must implement guardex-target-worktree-v1; refusing push." >&2
+      return 1
+    fi
+  fi
+  local preflight_status=0
+  if [[ -n "$trusted_tree" ]]; then
+    ( cd "$preflight_cwd" && "$script_path" --guardex-target-worktree "$worktree" ) || preflight_status=$?
+  else
+    ( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" ) || preflight_status=$?
+  fi
+  if [[ -n "$trusted_tree" ]]; then
+    rm -rf -- "$trusted_tree"
+  fi
+  if [[ "$preflight_status" -eq 0 ]]; then
     finish_progress complete preflight "passed"
     echo "[agent-branch-finish] Pre-flight passed." >&2
     return 0
@@ -281,6 +343,7 @@ WAIT_POLL_SECONDS="$(normalize_int "$WAIT_POLL_SECONDS_RAW" "10" "0")"
 PARENT_GITLINK_AUTO_COMMIT="$(normalize_bool "$PARENT_GITLINK_AUTO_COMMIT_RAW" "1")"
 FINISH_CHECKLIST="$(normalize_bool "$FINISH_CHECKLIST_RAW" "0")"
 FINISH_GATE_DONE="$(normalize_bool "$FINISH_GATE_DONE_RAW" "0")"
+PREFLIGHT_REQUIRED="$(normalize_bool "$PREFLIGHT_REQUIRED_RAW" "0")"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

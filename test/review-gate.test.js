@@ -139,6 +139,94 @@ test('waitForGreenCi blocks on a non-mergeable mergeStateStatus (UNSTABLE/BLOCKE
   assert.equal(r.status, 'merge-blocked');
 });
 
+test('waitForGreenCi blocks UNSTABLE when a skipped check accompanies audited billing waivers', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    getStatus: constStatus({
+      checks: {
+        failed: 0, cancelled: 0, pending: 0, success: 0, skipped: 1, waived: 2, other: 0, total: 3,
+      },
+      billingWaivedNames: ['build', 'review'],
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'UNSTABLE',
+    }),
+  });
+
+  assert.equal(r.status, 'merge-blocked');
+});
+
+test('waitForGreenCi times out without a GitHub verdict when a skipped check accompanies billing waivers', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    pollSeconds: 60,
+    timeoutSeconds: 120,
+    getStatus: constStatus({
+      checks: {
+        failed: 0, cancelled: 0, pending: 0, success: 0, skipped: 1, waived: 2, other: 0, total: 3,
+      },
+      billingWaivedNames: ['build', 'review'],
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+    }),
+  });
+
+  assert.equal(r.status, 'timeout');
+});
+
+test('waitForGreenCi accepts UNSTABLE when every non-success check has an audited billing waiver', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    getStatus: constStatus({
+      checks: {
+        failed: 0, cancelled: 0, pending: 0, success: 0, skipped: 0, waived: 2, other: 0, total: 2,
+      },
+      billingWaivedNames: ['build', 'review'],
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'UNSTABLE',
+    }),
+  });
+
+  assert.equal(r.status, 'green');
+  assert.deepEqual(r.billingWaivedNames, ['build', 'review']);
+});
+
+test('waitForGreenCi does not let billing waivers override BLOCKED branch protection', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    getStatus: constStatus({
+      checks: { failed: 0, cancelled: 0, pending: 0, success: 0, waived: 1, other: 0, total: 1 },
+      billingWaivedNames: ['build'],
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'BLOCKED',
+    }),
+  });
+
+  assert.equal(r.status, 'merge-blocked');
+});
+
+test('waitForGreenCi fails closed when waived-check names do not account for the waived count', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    getStatus: constStatus({
+      checks: { failed: 0, cancelled: 0, pending: 0, success: 0, waived: 2, other: 0, total: 2 },
+      billingWaivedNames: ['build'],
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+    }),
+  });
+
+  assert.equal(r.status, 'timeout');
+});
+
 test('waitForGreenCi will NOT pass an other-state check (ACTION_REQUIRED) without a GitHub verdict', () => {
   const c = makeClock();
   const r = waitForGreenCi('repo', 'br', {
@@ -317,6 +405,21 @@ test('runReviewGate resolves outdated GitGuardex threads after a clean review', 
 
   assert.deepEqual(runReviewGate(gateArgs, deps), { prNumber: 42 });
   assert.deepEqual(calls, [{ prNumber: 42, findings: [advisory] }]);
+});
+
+test('runReviewGate reports billing-waived checks so callers can require local preflight', () => {
+  const deps = gateDeps({
+    waitForGreenCi: () => ({
+      status: 'green',
+      pr: { mergeStateStatus: 'UNSTABLE' },
+      billingWaivedNames: ['build', 'review'],
+    }),
+  });
+
+  assert.deepEqual(runReviewGate(gateArgs, deps), {
+    prNumber: 42,
+    billingChecksWaived: ['build', 'review'],
+  });
 });
 
 test('runReviewGate fails CLOSED when the AI review provider throws', () => {

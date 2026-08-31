@@ -129,7 +129,7 @@ test('getPullRequestStatus ignores cancelled workflow runs superseded by a newer
     reviewDecision: '',
     title: 'test',
     headRefName: 'agent/test/lane',
-    headRefOid: 'abc123',
+    headRefOid: 'abc1234',
     baseRefName: 'main',
     statusCheckRollup: [
       {
@@ -175,6 +175,198 @@ test('getPullRequestStatus ignores cancelled workflow runs superseded by a newer
     });
     assert.deepEqual(status.failedNames, []);
     assert.equal(status.supersededChecks, 1);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('getPullRequestStatus waives only a GitHub check run with the exact billing-blocked annotation', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-'));
+  const fakeGh = path.join(fixtureRoot, 'gh');
+  const response = [{
+    number: 223,
+    url: 'https://example.test/pr/223',
+    state: 'OPEN',
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'UNSTABLE',
+    reviewDecision: '',
+    title: 'test',
+    headRefName: 'agent/test/lane',
+    headRefOid: 'abc1234',
+    baseRefName: 'main',
+    statusCheckRollup: [{
+      __typename: 'CheckRun',
+      name: 'build',
+      workflowName: 'CI',
+      status: 'COMPLETED',
+      conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/example/repo/actions/runs/123/job/456',
+    }],
+  }];
+  const billingMessage = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings";
+  const annotations = [{
+    path: '.github',
+    start_line: 1,
+    annotation_level: 'failure',
+    title: '',
+    message: billingMessage,
+    raw_details: '',
+  }];
+  const job = {
+    status: 'completed', conclusion: 'failure', runner_id: 0, runner_name: '', steps: [],
+    check_run_url: 'https://api.github.com/repos/example/repo/check-runs/789',
+  };
+  const checkRuns = { total_count: 1, check_runs: [{
+    id: 789, name: 'build', details_url: response[0].statusCheckRollup[0].detailsUrl,
+    status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' },
+  }] };
+  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/789/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
+  fs.chmodSync(fakeGh, 0o755);
+
+  try {
+    const script = [
+      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+      "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
+    ].join('\n');
+    const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
+      encoding: 'utf8',
+      env: { ...process.env, GUARDEX_GH_BIN: fakeGh },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.checks.failed, 0);
+    assert.equal(status.checks.waived, 1);
+    assert.deepEqual(status.failedNames, []);
+    assert.deepEqual(status.billingWaivedNames, ['build']);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('getPullRequestStatus fails closed when workflow output spoofs the exact billing annotation', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-negative-'));
+  const fakeGh = path.join(fixtureRoot, 'gh');
+  const response = [{
+    number: 224,
+    url: 'https://example.test/pr/224',
+    state: 'OPEN',
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'UNSTABLE',
+    headRefName: 'agent/test/lane',
+    headRefOid: 'def4567',
+    baseRefName: 'main',
+    statusCheckRollup: [{
+      __typename: 'CheckRun',
+      name: 'build',
+      workflowName: 'CI',
+      status: 'COMPLETED',
+      conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/example/repo/actions/runs/123/job/456',
+    }],
+  }];
+  const billingMessage = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings";
+  const spoofedUserAnnotation = [{
+    path: '.github',
+    start_line: 1,
+    annotation_level: 'failure',
+    title: '',
+    message: billingMessage,
+    raw_details: '',
+  }];
+  const startedJob = {
+    status: 'completed',
+    conclusion: 'failure',
+    runner_id: 7,
+    runner_name: 'GitHub Actions 7',
+    steps: [{ name: 'emit annotation', conclusion: 'failure' }],
+  };
+  const checkRuns = { total_count: 1, check_runs: [{
+    id: 456, name: 'build', details_url: response[0].statusCheckRollup[0].detailsUrl,
+    status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' },
+  }] };
+  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/def4567/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(startedJob))} ;;\n    */check-runs/456/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(spoofedUserAnnotation))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
+  fs.chmodSync(fakeGh, 0o755);
+
+  try {
+    const script = [
+      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+      "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
+    ].join('\n');
+    const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
+      encoding: 'utf8',
+      env: { ...process.env, GUARDEX_GH_BIN: fakeGh },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const status = JSON.parse(result.stdout);
+    assert.equal(status.checks.failed, 1);
+    assert.equal(status.checks.waived, undefined);
+    assert.deepEqual(status.failedNames, ['build']);
+    assert.deepEqual(status.billingWaivedNames, []);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('getPullRequestStatus fails closed when billing job evidence is incomplete or unrelated', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-incomplete-'));
+  const fakeGh = path.join(fixtureRoot, 'gh');
+  const response = [{
+    number: 225,
+    url: 'https://example.test/pr/225',
+    state: 'OPEN',
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'UNSTABLE',
+    headRefName: 'agent/test/lane',
+    headRefOid: 'abc7890',
+    baseRefName: 'main',
+    statusCheckRollup: [{
+      __typename: 'CheckRun',
+      name: 'build',
+      workflowName: 'CI',
+      status: 'COMPLETED',
+      conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/example/repo/actions/runs/123/job/456',
+    }],
+  }];
+  const invalidEvidence = [{ job: {
+    status: 'completed', conclusion: 'failure', runner_id: null, runner_name: '', steps: [],
+    check_run_url: 'https://api.github.com/repos/example/repo/check-runs/456',
+  }, checkRunId: 456 }, { job: {
+    status: 'completed', conclusion: 'failure', runner_id: 0, runner_name: '', steps: [],
+  }, checkRunId: 456 }, { job: {
+    status: 'completed', conclusion: 'failure', runner_id: 0, runner_name: '', steps: [],
+    check_run_url: 'https://api.github.com/repos/example/repo/check-runs/456',
+  }, checkRunId: 999 }];
+
+  try {
+    for (const { job, checkRunId } of invalidEvidence) {
+      const checkRuns = { total_count: 1, check_runs: [{
+        id: checkRunId, name: 'build', details_url: response[0].statusCheckRollup[0].detailsUrl,
+        status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' },
+      }] };
+      fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc7890/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
+      fs.chmodSync(fakeGh, 0o755);
+
+      const script = [
+        `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+        "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
+      ].join('\n');
+      const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
+        encoding: 'utf8',
+        env: { ...process.env, GUARDEX_GH_BIN: fakeGh },
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      const status = JSON.parse(result.stdout);
+      assert.equal(status.checks.failed, 1);
+      assert.equal(status.checks.waived, undefined);
+      assert.deepEqual(status.billingWaivedNames, []);
+    }
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

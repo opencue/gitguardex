@@ -15,7 +15,7 @@ const path = require('node:path');
 
 const repoRoot = path.resolve(__dirname, '..');
 
-function loadBranchWithStubs({ gateThrows = false } = {}) {
+function loadBranchWithStubs({ gateThrows = false, gateResult } = {}) {
   const calls = {
     finish: [],
     gate: [],
@@ -60,6 +60,7 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
     runReviewGate: (opts) => {
       calls.gate.push(opts);
       if (gateThrows) throw new Error('AI review found a CRITICAL finding');
+      return gateResult;
     },
   });
   stub('src/finish/index.js', {
@@ -110,6 +111,16 @@ test('branch finish --gate-review runs the gate and keeps the flag out of the sh
   assert.ok(!argv.includes('--gate-review'), 'agent-branch-finish.sh cannot parse --gate-review');
   assert.ok(argv.includes('--auto-resolve=safe'), 'unrelated flags must still reach the script');
   assert.deepEqual(argv, ['--branch', 'agent/claude/x', '--base', 'dev', '--via-pr', '--auto-resolve=safe']);
+});
+
+test('branch finish requires repository preflight when GitHub billing checks were waived', () => {
+  const { branch, calls } = loadBranchWithStubs({
+    gateResult: { prNumber: 42, billingChecksWaived: ['build'] },
+  });
+
+  branch(['finish', '--branch', 'agent/claude/x', '--base', 'main', '--via-pr', '--gate-review']);
+
+  assert.equal(calls.script[0].options.env.GUARDEX_FINISH_REQUIRE_PREFLIGHT, '1');
 });
 
 test('branch finish --gate-review fails closed: a throwing gate blocks the merge', () => {

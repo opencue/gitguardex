@@ -11,6 +11,7 @@ function check({
   createdAt,
   startedAt,
   completedAt,
+  detailsUrl,
 } = {}) {
   return {
     __typename: 'CheckRun',
@@ -21,6 +22,7 @@ function check({
     createdAt,
     startedAt,
     completedAt,
+    detailsUrl,
   };
 }
 
@@ -276,4 +278,51 @@ test('summarizeStatusCheckRollup classifies action-required checks as failed', (
   assert.equal(result.summary.failed, 1);
   assert.equal(result.summary.other, 0);
   assert.deepEqual(result.failedNames, ['test (node 20)']);
+});
+
+test('summarizeStatusCheckRollup separately accounts for an explicitly waived failed check', () => {
+  const billingBlocked = check({
+    name: 'build',
+    conclusion: 'FAILURE',
+    detailsUrl: 'https://github.com/example/repo/actions/runs/123/job/456',
+  });
+
+  const result = summarizeStatusCheckRollup([billingBlocked], {
+    isWaived: (candidate) => candidate === billingBlocked,
+  });
+
+  assert.deepEqual(result.summary, {
+    success: 0,
+    failed: 0,
+    pending: 0,
+    cancelled: 0,
+    other: 0,
+    total: 1,
+    waived: 1,
+  });
+  assert.deepEqual(result.failedNames, []);
+  assert.deepEqual(result.waivedNames, ['build']);
+});
+
+test('summarizeStatusCheckRollup never waives a successful or pending check', () => {
+  const result = summarizeStatusCheckRollup([
+    check({ name: 'green', conclusion: 'SUCCESS' }),
+    check({ name: 'pending', status: 'IN_PROGRESS', conclusion: '' }),
+  ], { isWaived: () => true });
+
+  assert.equal(result.summary.success, 1);
+  assert.equal(result.summary.pending, 1);
+  assert.equal(result.summary.waived, undefined);
+  assert.deepEqual(result.waivedNames, []);
+});
+
+test('summarizeStatusCheckRollup accounts for skipped checks without treating unknown states as safe', () => {
+  const result = summarizeStatusCheckRollup([
+    check({ name: 'matrix placeholder', conclusion: 'SKIPPED' }),
+    check({ name: 'unknown', conclusion: 'MYSTERY' }),
+  ]);
+
+  assert.equal(result.summary.skipped, 1);
+  assert.equal(result.summary.other, 1);
+  assert.equal(result.summary.total, 2);
 });
