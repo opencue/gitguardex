@@ -11,6 +11,7 @@ MERGE_MODE="auto"
 GH_BIN="${GUARDEX_GH_BIN:-gh}"
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
+FINISH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CLEANUP_AFTER_MERGE_RAW="${GUARDEX_FINISH_CLEANUP:-true}"
 WAIT_FOR_MERGE_RAW="${GUARDEX_FINISH_WAIT_FOR_MERGE:-true}"
 WAIT_TIMEOUT_SECONDS_RAW="${GUARDEX_FINISH_WAIT_TIMEOUT_SECONDS:-1800}"
@@ -19,6 +20,8 @@ PARENT_GITLINK_AUTO_COMMIT_RAW="${GUARDEX_FINISH_PARENT_GITLINK_AUTO_COMMIT:-tru
 AUTO_RESOLVE_MODE_RAW="${GUARDEX_FINISH_AUTO_RESOLVE:-none}"
 AUTO_RESOLVE_SAFE_GLOBS_DEFAULT='.omc/**:.omx/state/**:.dev-ports.json:apps/logs/**:.codex/settings.local.json:.claude/settings.local.json:.codex/state/**:.claude/state/**'
 AUTO_RESOLVE_SAFE_GLOBS_RAW="${GUARDEX_FINISH_AUTO_RESOLVE_SAFE_GLOBS-$AUTO_RESOLVE_SAFE_GLOBS_DEFAULT}"
+RECONCILE_OPENSPEC_TASKS_RAW="${GUARDEX_FINISH_RECONCILE_OPENSPEC_TASKS:-true}"
+OPENSPEC_TASKS_RECONCILER="${GUARDEX_FINISH_OPENSPEC_TASKS_RECONCILER:-${FINISH_SCRIPT_DIR}/agent-reconcile-openspec-tasks.js}"
 PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
 PREFLIGHT_REQUIRED_RAW="${GUARDEX_FINISH_REQUIRE_PREFLIGHT:-false}"
@@ -344,6 +347,7 @@ PARENT_GITLINK_AUTO_COMMIT="$(normalize_bool "$PARENT_GITLINK_AUTO_COMMIT_RAW" "
 FINISH_CHECKLIST="$(normalize_bool "$FINISH_CHECKLIST_RAW" "0")"
 FINISH_GATE_DONE="$(normalize_bool "$FINISH_GATE_DONE_RAW" "0")"
 PREFLIGHT_REQUIRED="$(normalize_bool "$PREFLIGHT_REQUIRED_RAW" "0")"
+RECONCILE_OPENSPEC_TASKS="$(normalize_bool "$RECONCILE_OPENSPEC_TASKS_RAW" "1")"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -530,6 +534,77 @@ path_matches_auto_resolve_safe_glob() {
     fi
   done
   return 1
+}
+
+is_openspec_change_tasks_path() {
+  local conflict_path="$1"
+  [[ "$conflict_path" =~ ^openspec/changes/[^/]+/tasks\.md$ ]]
+}
+
+try_reconcile_openspec_tasks_conflict() {
+  local worktree="$1"
+  local conflict_path="$2"
+  [[ "$RECONCILE_OPENSPEC_TASKS" -eq 1 ]] || return 1
+  is_openspec_change_tasks_path "$conflict_path" || return 1
+  if [[ ! -f "$OPENSPEC_TASKS_RECONCILER" ]]; then
+    echo "[agent-branch-finish] OpenSpec tasks reconciler missing: ${OPENSPEC_TASKS_RECONCILER}" >&2
+    return 1
+  fi
+  "$NODE_BIN" "$OPENSPEC_TASKS_RECONCILER" "$worktree" "$conflict_path" >/dev/null
+}
+
+validate_reconciled_openspec_tasks() {
+  local worktree="$1"
+  if ! command -v openspec >/dev/null 2>&1; then
+    echo "[agent-branch-finish] openspec CLI unavailable; deterministic tasks.md validation passed, spec validation skipped." >&2
+    return 0
+  fi
+  if ! (cd "$worktree" && openspec validate --specs >/dev/null); then
+    echo "[agent-branch-finish] OpenSpec validation failed after tasks.md reconciliation; leaving the Git operation for manual repair." >&2
+    return 1
+  fi
+}
+
+try_finish_rebase_with_openspec_tasks() {
+  local worktree="$1"
+  local git_dir=""
+  local conflict_files=""
+  local conflict_path=""
+  local resolved_paths=""
+  local resolved_round=""
+
+  git_dir="$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  while [[ -n "$git_dir" && ( -e "${git_dir}/rebase-merge" || -e "${git_dir}/rebase-apply" ) ]]; do
+    conflict_files="$(git -C "$worktree" diff --name-only --diff-filter=U || true)"
+    [[ -n "$conflict_files" ]] || return 1
+    resolved_round=""
+    while IFS= read -r conflict_path; do
+      [[ -z "$conflict_path" ]] && continue
+      if ! try_reconcile_openspec_tasks_conflict "$worktree" "$conflict_path"; then
+        return 1
+      fi
+      resolved_round+="${conflict_path}"$'\n'
+      resolved_paths+="${conflict_path}"$'\n'
+    done <<< "$conflict_files"
+
+    while IFS= read -r conflict_path; do
+      [[ -n "$conflict_path" ]] && run_guardex_cli locks claim --branch "$SOURCE_BRANCH" "$conflict_path" >/dev/null 2>&1 || true
+    done <<< "$resolved_round"
+    validate_reconciled_openspec_tasks "$worktree" || return 1
+
+    if ! GIT_EDITOR=true git -C "$worktree" rebase --continue >/dev/null 2>&1; then
+      git_dir="$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null || true)"
+      if [[ -e "${git_dir}/rebase-merge" || -e "${git_dir}/rebase-apply" ]]; then
+        continue
+      fi
+      return 1
+    fi
+    git_dir="$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  done
+
+  [[ -n "$resolved_paths" ]] || return 1
+  echo "[agent-sync-guard] Automatically reconciled OpenSpec task progress during rebase:" >&2
+  printf '%s' "$resolved_paths" | sort -u | sed 's/^/  - /' >&2
 }
 
 # Resolve a conflicting submodule pointer if and only if one side is a strict
@@ -937,23 +1012,31 @@ if [[ "$should_require_sync" -eq 1 ]] && git -C "$repo_root" show-ref --verify -
     echo "[agent-sync-guard] Branch '${SOURCE_BRANCH}' is behind origin/${BASE_BRANCH} by ${behind_count} commit(s)." >&2
     echo "[agent-sync-guard] Auto-syncing '${SOURCE_BRANCH}' onto origin/${BASE_BRANCH} before finish..." >&2
     if ! git -C "$source_worktree" rebase "origin/${BASE_BRANCH}"; then
-      git_dir="$(git -C "$source_worktree" rev-parse --git-dir)"
-      rebase_active=0
-      if [[ -e "${git_dir}/rebase-merge" || -e "${git_dir}/rebase-apply" ]]; then
-        rebase_active=1
+      rebase_reconciled=0
+      if try_finish_rebase_with_openspec_tasks "$source_worktree"; then
+        rebase_reconciled=1
       fi
-
-      echo "[agent-sync-guard] Auto-sync failed while rebasing '${SOURCE_BRANCH}' onto origin/${BASE_BRANCH}." >&2
-      if [[ "$rebase_active" -eq 1 ]]; then
-        if [[ "$created_source_probe" -eq 1 ]]; then
-          echo "[agent-sync-guard] Temporary source-probe worktree will be cleaned up on exit." >&2
-          echo "[agent-sync-guard] Reattach '${SOURCE_BRANCH}' in a regular worktree, then rebase it onto origin/${BASE_BRANCH} manually." >&2
-        else
-          echo "[agent-sync-guard] Resolve conflicts, then run: git -C \"$source_worktree\" rebase --continue" >&2
-          echo "[agent-sync-guard] Or abort: git -C \"$source_worktree\" rebase --abort" >&2
+      if [[ "$rebase_reconciled" -eq 1 ]]; then
+        echo "[agent-sync-guard] Auto-sync completed after safe OpenSpec tasks.md reconciliation." >&2
+      else
+        git_dir="$(git -C "$source_worktree" rev-parse --absolute-git-dir)"
+        rebase_active=0
+        if [[ -e "${git_dir}/rebase-merge" || -e "${git_dir}/rebase-apply" ]]; then
+          rebase_active=1
         fi
+
+        echo "[agent-sync-guard] Auto-sync failed while rebasing '${SOURCE_BRANCH}' onto origin/${BASE_BRANCH}." >&2
+        if [[ "$rebase_active" -eq 1 ]]; then
+          if [[ "$created_source_probe" -eq 1 ]]; then
+            echo "[agent-sync-guard] Temporary source-probe worktree will be cleaned up on exit." >&2
+            echo "[agent-sync-guard] Reattach '${SOURCE_BRANCH}' in a regular worktree, then rebase it onto origin/${BASE_BRANCH} manually." >&2
+          else
+            echo "[agent-sync-guard] Resolve conflicts, then run: git -C \"$source_worktree\" rebase --continue" >&2
+            echo "[agent-sync-guard] Or abort: git -C \"$source_worktree\" rebase --abort" >&2
+          fi
+        fi
+        exit 1
       fi
-      exit 1
     fi
 
     behind_after="$(git -C "$repo_root" rev-list --left-right --count "${SOURCE_BRANCH}...origin/${BASE_BRANCH}" 2>/dev/null | awk '{print $2}')"
@@ -967,8 +1050,28 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRA
 
   if ! git -C "$source_worktree" merge --no-commit --no-ff "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
     conflict_files="$(git -C "$source_worktree" diff --name-only --diff-filter=U || true)"
+    openspec_tasks_reconciled=""
+    while IFS= read -r conflict_path; do
+      [[ -z "$conflict_path" ]] && continue
+      if try_reconcile_openspec_tasks_conflict "$source_worktree" "$conflict_path"; then
+        openspec_tasks_reconciled+="${conflict_path}"$'\n'
+      fi
+    done <<< "$conflict_files"
+    conflict_files="$(git -C "$source_worktree" diff --name-only --diff-filter=U || true)"
 
-    if [[ "$AUTO_RESOLVE_MODE" != "none" && -n "$conflict_files" ]]; then
+    if [[ -z "$conflict_files" && -n "$openspec_tasks_reconciled" ]]; then
+      while IFS= read -r resolved_path; do
+        [[ -n "$resolved_path" ]] && run_guardex_cli locks claim --branch "$SOURCE_BRANCH" "$resolved_path" >/dev/null 2>&1 || true
+      done <<< "$openspec_tasks_reconciled"
+      if ! validate_reconciled_openspec_tasks "$source_worktree" \
+        || ! git -C "$source_worktree" commit -m "Merge origin/${BASE_BRANCH} into ${SOURCE_BRANCH} (gx reconciled OpenSpec task progress)" >/dev/null 2>&1; then
+        git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
+        echo "[agent-branch-finish] Failed to validate or commit reconciled OpenSpec task progress." >&2
+        exit 1
+      fi
+      echo "[agent-branch-finish] Automatically reconciled OpenSpec task progress:" >&2
+      printf '%s' "$openspec_tasks_reconciled" | sort -u | sed 's/^/  - /' >&2
+    elif [[ "$AUTO_RESOLVE_MODE" != "none" && -n "$conflict_files" ]]; then
       auto_resolve_unresolved=""
       auto_resolve_resolved_state=""
       auto_resolve_resolved_submodules=""
@@ -1013,11 +1116,24 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRA
         [[ -z "$resolved_entry" ]] && continue
         auto_resolve_claim_paths+=("${resolved_entry%@*}")
       done <<< "$auto_resolve_resolved_submodules"
+      while IFS= read -r resolved_path; do
+        [[ -n "$resolved_path" ]] && auto_resolve_claim_paths+=("$resolved_path")
+      done <<< "$openspec_tasks_reconciled"
       if [[ "${#auto_resolve_claim_paths[@]}" -gt 0 ]]; then
         run_guardex_cli locks claim --branch "$SOURCE_BRANCH" "${auto_resolve_claim_paths[@]}" >/dev/null 2>&1 || true
       fi
 
-      auto_resolve_commit_msg="Merge origin/${BASE_BRANCH} into ${SOURCE_BRANCH} (gx --auto-resolve=${AUTO_RESOLVE_MODE}; state files -> base, submodule pointers fast-forwarded)"
+      auto_resolve_summary="state files -> base, submodule pointers fast-forwarded"
+      if [[ -n "$openspec_tasks_reconciled" ]]; then
+        auto_resolve_summary="OpenSpec task progress reconciled, ${auto_resolve_summary}"
+      fi
+      auto_resolve_commit_msg="Merge origin/${BASE_BRANCH} into ${SOURCE_BRANCH} (gx --auto-resolve=${AUTO_RESOLVE_MODE}; ${auto_resolve_summary})"
+      if [[ -n "$openspec_tasks_reconciled" ]] \
+        && ! validate_reconciled_openspec_tasks "$source_worktree"; then
+        git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
+        echo "[agent-branch-finish] OpenSpec validation failed after task reconciliation." >&2
+        exit 1
+      fi
       if ! git -C "$source_worktree" commit -m "$auto_resolve_commit_msg" >/dev/null 2>&1; then
         git -C "$source_worktree" merge --abort >/dev/null 2>&1 || true
         echo "[agent-branch-finish] --auto-resolve=${AUTO_RESOLVE_MODE}: failed to commit resolved merge (pre-commit hook may have rejected it; verify file locks)." >&2
@@ -1028,7 +1144,9 @@ if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRA
       submod_count=0
       [[ -n "$auto_resolve_resolved_state" ]] && state_count="$(printf '%s' "$auto_resolve_resolved_state" | grep -c '^[^[:space:]]')"
       [[ -n "$auto_resolve_resolved_submodules" ]] && submod_count="$(printf '%s' "$auto_resolve_resolved_submodules" | grep -c '^[^[:space:]]')"
-      echo "[agent-branch-finish] --auto-resolve=${AUTO_RESOLVE_MODE}: resolved ${state_count} state-file conflict(s), ${submod_count} submodule pointer conflict(s)." >&2
+      tasks_count=0
+      [[ -n "$openspec_tasks_reconciled" ]] && tasks_count="$(printf '%s' "$openspec_tasks_reconciled" | grep -c '^[^[:space:]]')"
+      echo "[agent-branch-finish] --auto-resolve=${AUTO_RESOLVE_MODE}: resolved ${tasks_count} OpenSpec tasks conflict(s), ${state_count} state-file conflict(s), ${submod_count} submodule pointer conflict(s)." >&2
       if [[ -n "$auto_resolve_resolved_state" ]]; then
         echo "[agent-branch-finish] State files (resolved to base):" >&2
         while IFS= read -r resolved_path; do
