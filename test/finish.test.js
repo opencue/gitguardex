@@ -86,6 +86,7 @@ test('cleanup --help prints command usage without running cleanup', () => {
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /USAGE:\s+gx cleanup \[options\]/);
+  assert.match(result.stdout, /--prune-clean-worktrees/);
   assert.match(result.stdout, /--include-clean-linked-worktrees/);
   assert.match(result.stdout, /--include-pr-merged/);
   assert.match(result.stdout, /--watch/);
@@ -1588,7 +1589,7 @@ test('cleanup command removes merged agent branch/worktree and remote ref', () =
 });
 
 
-test('cleanup command keeps unmerged agent branch refs but removes clean agent worktrees', () => {
+test('cleanup preserves clean unmerged worktrees by default and prunes them only on explicit request', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
 
@@ -1607,7 +1608,22 @@ test('cleanup command keeps unmerged agent branch refs but removes clean agent w
 
   result = runNode(['cleanup', '--target', repoDir, '--branch', 'agent/test-cleanup-keep-branch', '--keep-remote'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.equal(fs.existsSync(worktreePath), false, 'cleanup should remove clean worktree by default');
+  assert.equal(fs.existsSync(worktreePath), true, 'cleanup should preserve clean unmerged worktrees by default');
+
+  result = runNode(
+    [
+      'cleanup',
+      '--target',
+      repoDir,
+      '--branch',
+      'agent/test-cleanup-keep-branch',
+      '--keep-remote',
+      '--prune-clean-worktrees',
+    ],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(worktreePath), false, 'explicit clean-worktree pruning should remove it');
 
   const localBranch = runCmd('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/test-cleanup-keep-branch'], repoDir);
   assert.equal(localBranch.status, 0, 'cleanup should keep unmerged local branch');

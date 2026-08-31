@@ -223,7 +223,8 @@ OPTIONS
   --dry-run                Print actions without changing branches or worktrees
   --force-dirty            Allow cleanup of dirty worktrees
   --keep-remote            Keep remote agent branches
-  --keep-clean-worktrees   Keep clean worktrees instead of pruning them
+  --prune-clean-worktrees  Explicitly prune clean, unmerged agent worktrees
+  --keep-clean-worktrees   Preserve clean, unmerged agent worktrees (default)
   --include-clean-linked-worktrees
                            Also prune clean linked worktrees outside managed agent directories
   --include-pr-merged      Treat branches from merged PRs as merged

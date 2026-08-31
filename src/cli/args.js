@@ -960,7 +960,7 @@ function parseCleanupArgs(rawArgs) {
     dryRun: false,
     forceDirty: false,
     keepRemote: false,
-    keepCleanWorktrees: false,
+    keepCleanWorktrees: true,
     includeCleanLinkedWorktrees: false,
     includePrMerged: false,
     idleMinutes: 0,
@@ -1013,6 +1013,10 @@ function parseCleanupArgs(rawArgs) {
     }
     if (arg === '--keep-clean-worktrees') {
       options.keepCleanWorktrees = true;
+      continue;
+    }
+    if (arg === '--prune-clean-worktrees') {
+      options.keepCleanWorktrees = false;
       continue;
     }
     if (arg === '--include-clean-linked-worktrees') {

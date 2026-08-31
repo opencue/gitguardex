@@ -363,4 +363,32 @@ test('worktree prune --idle-minutes preserves recent branch activity and prunes 
   assert.equal(fs.existsSync(worktreePath), false, 'idle branch should be pruned after threshold is exceeded');
 });
 
+test('worktree prune measures new branch activity from the reflog event instead of the inherited commit date', () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  fs.writeFileSync(path.join(repoDir, 'old-base.txt'), 'old base\n', 'utf8');
+  result = runCmd('git', ['add', 'old-base.txt'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['commit', '-m', 'old base'], repoDir, {
+    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+    GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__recent-old-base');
+  result = runCmd('git', ['worktree', 'add', '-b', 'agent/recent-old-base', worktreePath, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(
+    ['--delete-branches', '--idle-minutes', '10'],
+    repoDir,
+    { GUARDEX_PRUNE_NOW_EPOCH: String(Math.floor(Date.now() / 1000)) },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Skipping recent branch/);
+  assert.equal(fs.existsSync(worktreePath), true, 'a newly created worktree must survive the idle gate');
+});
+
 });
