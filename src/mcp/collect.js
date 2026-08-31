@@ -135,7 +135,7 @@ function paneStillOwnsBranch(mainRoot, pane, branch) {
   if (result.error) return null;
   if (!result || result.status !== 0) return null;
   const paneCwd = (result.stdout || '').trim();
-  if (!paneCwd || !fs.existsSync(paneCwd)) return false;
+  if (!paneCwd || !fs.existsSync(paneCwd)) return null;
   const paneRepoRoot = mainRepoRoot(paneCwd);
   if (!paneRepoRoot || path.resolve(paneRepoRoot) !== path.resolve(mainRoot)) return null;
   const paneBranch = git(paneCwd, ['rev-parse', '--abbrev-ref', 'HEAD']);

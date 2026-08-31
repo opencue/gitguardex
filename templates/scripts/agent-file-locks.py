@@ -388,7 +388,7 @@ def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | No
         return None
     pane_cwd = Path(result.stdout.strip())
     if not result.stdout.strip() or not pane_cwd.exists():
-        return False
+        return None
     try:
         if git_common_dir_identity(pane_cwd) != git_common_dir_identity(repo_root):
             return None
