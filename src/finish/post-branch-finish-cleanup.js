@@ -186,7 +186,7 @@ function scheduleFinishedDetachedWorktreeCleanup(plan) {
 }
 
 async function runDeferredCleanupWorker(plan, options = {}) {
-  const attempts = options.attempts || 120;
+  const attempts = options.attempts || Number.POSITIVE_INFINITY;
   const intervalMs = options.intervalMs || 1000;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!fs.existsSync(plan.worktreePath)) return true;
