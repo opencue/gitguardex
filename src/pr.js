@@ -75,6 +75,17 @@ function githubActionsJobId(check) {
   }
 }
 
+function githubCheckRunAnnotationsPath(job) {
+  try {
+    const url = new URL(String(job?.check_run_url || ''));
+    if (url.protocol !== 'https:' || url.hostname !== 'api.github.com') return '';
+    const match = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/(check-runs\/\d+)\/?$/);
+    return match ? `${match[1]}/annotations` : '';
+  } catch (_error) {
+    return '';
+  }
+}
+
 function isBillingBlockedCheckRun(repoRoot, check, runner = run) {
   const checkRunId = githubActionsJobId(check);
   if (!checkRunId) return false;
@@ -93,14 +104,17 @@ function isBillingBlockedCheckRun(repoRoot, check, runner = run) {
   }
   if (String(job?.status || '').toLowerCase() !== 'completed'
     || String(job?.conclusion || '').toLowerCase() !== 'failure'
-    || Number(job?.runner_id) !== 0
+    || job?.runner_id !== 0
     || String(job?.runner_name || '') !== ''
     || !Array.isArray(job?.steps)
     || job.steps.length !== 0) return false;
 
+  const annotationsPath = githubCheckRunAnnotationsPath(job);
+  if (!annotationsPath) return false;
+
   const result = runner(GH_BIN, [
     'api',
-    repoApiPath(repoRoot, `${new URL(job.check_run_url).pathname.replace(/^\/repos\/[^/]+\/[^/]+\//, '')}/annotations`, runner),
+    repoApiPath(repoRoot, annotationsPath, runner),
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
   if (result.status !== 0) return false;
 

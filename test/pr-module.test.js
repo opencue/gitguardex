@@ -302,3 +302,57 @@ test('getPullRequestStatus fails closed when workflow output spoofs the exact bi
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });
+
+test('getPullRequestStatus fails closed when billing job evidence is incomplete', () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-incomplete-'));
+  const fakeGh = path.join(fixtureRoot, 'gh');
+  const response = [{
+    number: 225,
+    url: 'https://example.test/pr/225',
+    state: 'OPEN',
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'UNSTABLE',
+    headRefName: 'agent/test/lane',
+    headRefOid: 'ghi789',
+    baseRefName: 'main',
+    statusCheckRollup: [{
+      __typename: 'CheckRun',
+      name: 'build',
+      workflowName: 'CI',
+      status: 'COMPLETED',
+      conclusion: 'FAILURE',
+      detailsUrl: 'https://github.com/example/repo/actions/runs/123/job/456',
+    }],
+  }];
+  const incompleteJobs = [{
+    status: 'completed', conclusion: 'failure', runner_id: null, runner_name: '', steps: [],
+    check_run_url: 'https://api.github.com/repos/example/repo/check-runs/789',
+  }, {
+    status: 'completed', conclusion: 'failure', runner_id: 0, runner_name: '', steps: [],
+  }];
+
+  try {
+    for (const job of incompleteJobs) {
+      fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
+      fs.chmodSync(fakeGh, 0o755);
+
+      const script = [
+        `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+        "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
+      ].join('\n');
+      const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
+        encoding: 'utf8',
+        env: { ...process.env, GUARDEX_GH_BIN: fakeGh },
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      const status = JSON.parse(result.stdout);
+      assert.equal(status.checks.failed, 1);
+      assert.equal(status.checks.waived, undefined);
+      assert.deepEqual(status.billingWaivedNames, []);
+    }
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
