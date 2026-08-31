@@ -1277,6 +1277,23 @@ test('setup prevents worktree SCM discovery and merges repo-scan ignores into VS
   ]);
 });
 
+test('setup preserves an explicitly disabled VS Code repository detector', () => {
+  const repoDir = initRepo();
+  const vscodeDir = path.join(repoDir, '.vscode');
+  fs.mkdirSync(vscodeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(vscodeDir, 'settings.json'),
+    '{\n  "git.autoRepositoryDetection": false\n}\n',
+    'utf8',
+  );
+
+  const result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const settings = JSON.parse(fs.readFileSync(path.join(vscodeDir, 'settings.json'), 'utf8'));
+  assert.equal(settings['git.autoRepositoryDetection'], false);
+});
+
 
 test('setup --no-gitignore skips creating managed gitignore block', () => {
   const repoDir = initRepo();
