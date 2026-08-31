@@ -382,7 +382,7 @@ def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | No
             text=True,
             timeout=3,
         )
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
@@ -400,8 +400,8 @@ def pane_still_owns_branch(repo_root: Path, pane: str, branch: str) -> bool | No
     return pane_branch == branch
 
 
-def prune_orphaned_locks(repo_root: Path) -> list[tuple[str, str, str]]:
-    """Remove locks whose branch vanished and whose pane moved elsewhere.
+def _prune_orphaned_locks_locked(repo_root: Path) -> list[tuple[str, str, str]]:
+    """Remove proven orphaned locks while ``cross_worktree_lock`` is held.
 
     Missing pane metadata, detached checkouts, and unavailable tmux state remain
     authoritative so an uncertain cleanup can never steal an active file.
@@ -548,9 +548,6 @@ def adaptive_direct_owner_lock(repo_root: Path):
 
 
 def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) -> int:
-    pruned = prune_orphaned_locks(repo_root)
-    if pruned:
-        print(f'[agent-file-locks] Pruned {len(pruned)} orphaned lock(s) from completed lanes.')
     state = load_state(repo_root)
     locks: dict[str, dict[str, Any]] = state['locks']
 
@@ -942,6 +939,15 @@ def main() -> int:
         if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate'}:
             with cross_worktree_lock(repo_root):
                 if args.command == 'claim':
+                    # Pruning and the following claim are one serialized
+                    # read-modify-write transaction. A sibling claim cannot be
+                    # inserted between the cleanup snapshot and its rewrite.
+                    pruned = _prune_orphaned_locks_locked(repo_root)
+                    if pruned:
+                        print(
+                            f'[agent-file-locks] Pruned {len(pruned)} orphaned '
+                            'lock(s) from completed lanes.'
+                        )
                     with adaptive_direct_owner_lock(repo_root) as adaptive_owner:
                         return cmd_claim(args, repo_root, adaptive_owner)
                 return dispatch_command(args, repo_root)

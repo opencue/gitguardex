@@ -301,6 +301,40 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.match(claim.stderr, /agent\/codex\/unresolved-lane/);
   });
 
+  test('claim fails closed when tmux cannot inspect the recorded pane', () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'shared.txt');
+    const stateDir = path.join(repoDir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({
+        locks: {
+          'shared.txt': {
+            branch: 'agent/codex/unresolved-lane',
+            claimed_at: '2026-06-05T12:00:00+00:00',
+            allow_delete: false,
+            agent: 'codex',
+            pane: '%22',
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    const fakeBin = path.join(repoDir, 'fake-bin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(path.join(fakeBin, 'tmux'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const currentBranch = runHumanCmd('git', ['branch', '--show-current'], repoDir).stdout.trim();
+
+    const claim = locksAt(
+      repoDir,
+      ['claim', '--branch', currentBranch, 'shared.txt'],
+      { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+    );
+
+    assert.equal(claim.status, 1, 'unknown tmux state must preserve the existing lock');
+    assert.match(claim.stderr, /agent\/codex\/unresolved-lane/);
+  });
+
   test('a claim in one worktree blocks a claim AND a commit of the same file from a sibling worktree', () => {
     const repoDir = makeRepo(); // wt1
     writeFile(repoDir, 'shared.txt');
@@ -410,12 +444,15 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
   });
 });
 
-function claimAsync(cwd, branch, file, agent) {
+function claimAsync(cwd, branch, file, agent, env = {}) {
   const args = ['claim', '--branch', branch];
   if (agent) args.push('--agent', agent);
   args.push(file);
   return new Promise((resolve) => {
-    const child = cp.spawn('python3', [LOCK_PY, ...args], { cwd });
+    const child = cp.spawn('python3', [LOCK_PY, ...args], {
+      cwd,
+      env: { ...process.env, ...env },
+    });
     let err = '';
     child.stderr.on('data', (d) => { err += d; });
     child.on('close', (code) => resolve({ code, err }));
@@ -443,6 +480,48 @@ defineSpawnSuite('agent-file-locks atomic claims (G3)', () => {
       N,
       `all ${N} concurrent claims must survive the shared lock, got ${Object.keys(locks).length}`,
     );
+  });
+
+  test('orphan pruning cannot erase a concurrent claim', async () => {
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'first.txt');
+    writeFile(repoDir, 'second.txt');
+    const stateDir = path.join(repoDir, '.omx', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({
+        locks: {
+          'old.txt': {
+            branch: 'agent/codex/deleted-lane',
+            claimed_at: '2026-06-05T12:00:00+00:00',
+            allow_delete: false,
+            agent: 'codex',
+            pane: '%22',
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    const fakeBin = path.join(repoDir, 'fake-bin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(
+      path.join(fakeBin, 'tmux'),
+      `#!/bin/sh\nsleep 0.1\nprintf '%s\\n' '${repoDir}'\n`,
+      { mode: 0o755 },
+    );
+    const branch = runHumanCmd('git', ['branch', '--show-current'], repoDir).stdout.trim();
+    const env = { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` };
+
+    const results = await Promise.all([
+      claimAsync(repoDir, branch, 'first.txt', undefined, env),
+      claimAsync(repoDir, branch, 'second.txt', undefined, env),
+    ]);
+    for (const result of results) assert.equal(result.code, 0, result.err);
+
+    const locks = readLocks(repoDir);
+    assert.equal(locks['old.txt'], undefined, 'the proven orphan is removed');
+    assert.ok(locks['first.txt'], 'the first concurrent claim survives');
+    assert.ok(locks['second.txt'], 'the second concurrent claim survives');
   });
 
   test('concurrent claims of the SAME file by different agents: exactly one wins', async () => {
