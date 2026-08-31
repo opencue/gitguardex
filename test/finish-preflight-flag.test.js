@@ -45,6 +45,13 @@ function extractPreflightResolver() {
   return script.slice(functionStart, functionEnd);
 }
 
+function extractPreflightFunctions() {
+  const functionStart = script.indexOf('resolve_preflight_script() {');
+  const functionEnd = script.indexOf('\n}\n\n# Persisted merge hold', functionStart) + 2;
+  assert.ok(functionStart >= 0 && functionEnd > functionStart, 'preflight functions must be extractable');
+  return script.slice(functionStart, functionEnd);
+}
+
 test('--no-preflight is honored: PREFLIGHT_ENABLED normalized after the parse loop', () => {
   assertNormalizedAfterFlag(
     'PREFLIGHT_ENABLED_RAW="false"',
@@ -83,10 +90,9 @@ test('a billing waiver makes local preflight mandatory and fail-closed', () => {
     script.includes('( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" )'),
     'a mandatory preflight must execute from its trusted tree while receiving the target worktree explicitly',
   );
-  assert.ok(
-    script.includes("grep -Eq '^[[:space:]]*[^#][^#]*\\$\\{?GUARDEX_PREFLIGHT_TARGET_WORKTREE([^[:alnum:]_]|$)' \"$trusted_script_real\""),
-    'a mandatory preflight must fail closed unless the trusted base script opts into the target-worktree contract',
-  );
+  assert.ok(script.includes('"$script_path" --guardex-capabilities'));
+  assert.ok(script.includes('"$capabilities" != "guardex-target-worktree-v1"'));
+  assert.ok(script.includes('"$script_path" --guardex-target-worktree "$worktree"'));
 });
 
 test('a mandatory relative preflight executes the trusted base script and its relative helpers', () => {
@@ -104,7 +110,7 @@ test('a mandatory relative preflight executes the trusted base script and its re
     fs.writeFileSync(markerPath, 'base-target\n');
     fs.writeFileSync(
       preflightPath,
-      '#!/usr/bin/env bash\nsource "$(dirname "${BASH_SOURCE[0]}")/preflight-helper.sh"\ncd "$GUARDEX_PREFLIGHT_TARGET_WORKTREE"\ncat ./preflight-marker\n',
+      '#!/usr/bin/env bash\nif [[ "${1:-}" == "--guardex-capabilities" ]]; then printf "%s\\n" guardex-target-worktree-v1; exit 0; fi\n[[ "${1:-}" == "--guardex-target-worktree" && "$#" -eq 2 ]] || exit 2\nsource "$(dirname "${BASH_SOURCE[0]}")/preflight-helper.sh"\ncd "$2"\ncat ./preflight-marker\n',
       { mode: 0o755 },
     );
     cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh', 'scripts/preflight-helper.sh', 'preflight-marker'], { cwd: repoDir });
@@ -120,15 +126,14 @@ test('a mandatory relative preflight executes the trusted base script and its re
     fs.writeFileSync(helperPath, "printf '%s\\n' tampered-helper\n");
     fs.writeFileSync(markerPath, 'pr-target\n');
 
-    const resolver = extractPreflightResolver();
     const command = [
-      resolver,
+      extractPreflightFunctions(),
+      'finish_progress() { :; }',
+      'PREFLIGHT_ENABLED=1',
       'PREFLIGHT_REQUIRED=1',
+      'PREFLIGHT_SCRIPT_RAW=scripts/agent-preflight.sh',
       'start_ref=main',
-      'resolved="$(resolve_preflight_script "$1" scripts/agent-preflight.sh)"',
-      'trusted_tree="${resolved%/scripts/agent-preflight.sh}"',
-      '( cd "$trusted_tree" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$1" "$resolved" )',
-      'rm -rf -- "$trusted_tree"',
+      'run_preflight "$1"',
     ].join('\n');
     const result = cp.spawnSync('bash', ['-c', command, 'trusted-preflight-test', repoDir], {
       encoding: 'utf8',
@@ -136,6 +141,51 @@ test('a mandatory relative preflight executes the trusted base script and its re
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, 'trusted-helper\npr-target\n');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('a mandatory preflight rejects a script that only mentions the target variable', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-preflight-no-protocol-'));
+  const preflightPath = path.join(repoDir, 'scripts', 'agent-preflight.sh');
+  fs.mkdirSync(path.dirname(preflightPath), { recursive: true });
+
+  try {
+    cp.execFileSync('git', ['init', '-b', 'main'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.name', 'Guardex Test'], { cwd: repoDir });
+    cp.execFileSync('git', ['config', 'user.email', 'guardex@example.test'], { cwd: repoDir });
+    fs.writeFileSync(
+      preflightPath,
+      '#!/usr/bin/env bash\n# GUARDEX_PREFLIGHT_TARGET_WORKTREE\nprintf "%s\\n" GUARDEX_PREFLIGHT_TARGET_WORKTREE\n',
+      { mode: 0o755 },
+    );
+    cp.execFileSync('git', ['add', 'scripts/agent-preflight.sh'], { cwd: repoDir });
+    cp.execFileSync('git', ['commit', '-m', 'legacy preflight'], {
+      cwd: repoDir,
+      env: {
+        ...process.env,
+        ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+        GUARDEX_ALLOW_CODEX_ON_NON_AGENT: '1',
+      },
+    });
+
+    const command = [
+      extractPreflightFunctions(),
+      'finish_progress() { :; }',
+      'PREFLIGHT_ENABLED=1',
+      'PREFLIGHT_REQUIRED=1',
+      'PREFLIGHT_SCRIPT_RAW=scripts/agent-preflight.sh',
+      'start_ref=main',
+      'run_preflight "$1"',
+    ].join('\n');
+    const result = cp.spawnSync('bash', ['-c', command, 'preflight-protocol-test', repoDir], {
+      encoding: 'utf8',
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must implement guardex-target-worktree-v1/);
+    assert.equal(result.stdout, '');
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
   }

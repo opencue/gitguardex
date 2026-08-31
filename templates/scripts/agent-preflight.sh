@@ -20,6 +20,17 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [[ "${1:-}" == "--guardex-capabilities" ]]; then
+  printf '%s\n' 'guardex-target-worktree-v1'
+  exit 0
+fi
+if [[ "${1:-}" == "--guardex-target-worktree" ]]; then
+  if [[ "$#" -ne 2 || -z "$2" ]]; then
+    echo "[agent-preflight] --guardex-target-worktree requires exactly one path." >&2
+    exit 1
+  fi
+  GUARDEX_PREFLIGHT_TARGET_WORKTREE="$2"
+fi
 if [[ -n "${GUARDEX_PREFLIGHT_TARGET_WORKTREE:-}" ]]; then
   repo_root="$(cd "$GUARDEX_PREFLIGHT_TARGET_WORKTREE" 2>/dev/null && pwd -P)" || {
     echo "[agent-preflight] Invalid GUARDEX_PREFLIGHT_TARGET_WORKTREE." >&2

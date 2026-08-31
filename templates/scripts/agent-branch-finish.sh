@@ -170,8 +170,7 @@ resolve_preflight_script() {
       local trusted_script="${trusted_tree}/${configured}"
       local trusted_script_real=""
       trusted_script_real="$(realpath -e -- "$trusted_script" 2>/dev/null || true)"
-      if [[ -n "$trusted_script_real" && "$trusted_script_real" == "$trusted_tree/"* && -x "$trusted_script_real" ]] \
-        && grep -Eq '^[[:space:]]*[^#][^#]*\$\{?GUARDEX_PREFLIGHT_TARGET_WORKTREE([^[:alnum:]_]|$)' "$trusted_script_real"; then
+      if [[ -n "$trusted_script_real" && "$trusted_script_real" == "$trusted_tree/"* && -x "$trusted_script_real" ]]; then
         trusted_script="$trusted_script_real"
         printf '%s' "$trusted_script"
         return 0
@@ -228,9 +227,21 @@ run_preflight() {
     local trusted_tree_length=$((${#script_path} - ${#relative_configured} - 1))
     trusted_tree="${script_path:0:$trusted_tree_length}"
     preflight_cwd="$trusted_tree"
+    local capabilities=""
+    capabilities="$(cd "$preflight_cwd" && "$script_path" --guardex-capabilities 2>/dev/null || true)"
+    if [[ "$capabilities" != "guardex-target-worktree-v1" ]]; then
+      rm -rf -- "$trusted_tree"
+      finish_progress failed preflight "trusted script does not support the target-worktree protocol"
+      echo "[agent-branch-finish] Mandatory pre-flight must implement guardex-target-worktree-v1; refusing push." >&2
+      return 1
+    fi
   fi
   local preflight_status=0
-  ( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" ) || preflight_status=$?
+  if [[ -n "$trusted_tree" ]]; then
+    ( cd "$preflight_cwd" && "$script_path" --guardex-target-worktree "$worktree" ) || preflight_status=$?
+  else
+    ( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" ) || preflight_status=$?
+  fi
   if [[ -n "$trusted_tree" ]]; then
     rm -rf -- "$trusted_tree"
   fi
