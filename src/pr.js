@@ -75,24 +75,56 @@ function githubActionsJobId(check) {
   }
 }
 
-function githubCheckRunAnnotationsPath(job) {
+function githubCheckRunAnnotationsPath(job, expectedCheckRunId) {
   try {
     const url = new URL(String(job?.check_run_url || ''));
     if (url.protocol !== 'https:' || url.hostname !== 'api.github.com') return '';
-    const match = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/(check-runs\/\d+)\/?$/);
-    return match ? `${match[1]}/annotations` : '';
+    const match = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/check-runs\/(\d+)\/?$/);
+    return match && match[1] === String(expectedCheckRunId)
+      ? `check-runs/${match[1]}/annotations`
+      : '';
   } catch (_error) {
     return '';
   }
 }
 
-function isBillingBlockedCheckRun(repoRoot, check, runner = run) {
-  const checkRunId = githubActionsJobId(check);
-  if (!checkRunId) return false;
+function commitCheckRuns(repoRoot, headSha, runner = run) {
+  const sha = String(headSha || '').trim();
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) return [];
+
+  const result = runner(GH_BIN, [
+    'api',
+    repoApiPath(repoRoot, `commits/${sha}/check-runs?per_page=100`, runner),
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
+  if (result.status !== 0) return [];
+
+  try {
+    const payload = JSON.parse(String(result.stdout || ''));
+    const checkRuns = Array.isArray(payload?.check_runs) ? payload.check_runs : [];
+    return Number(payload?.total_count) === checkRuns.length ? checkRuns : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function matchingCheckRunId(check, checkRuns) {
+  const matches = checkRuns.filter((candidate) => String(candidate?.app?.slug || '') === 'github-actions'
+    && String(candidate?.name || '') === String(check?.name || '')
+    && String(candidate?.details_url || '') === String(check?.detailsUrl || '')
+    && String(candidate?.status || '').toUpperCase() === String(check?.status || '').toUpperCase()
+    && String(candidate?.conclusion || '').toUpperCase() === String(check?.conclusion || '').toUpperCase());
+  if (matches.length !== 1) return '';
+  const id = String(matches[0]?.id || '');
+  return /^\d+$/.test(id) ? id : '';
+}
+
+function isBillingBlockedCheckRun(repoRoot, check, expectedCheckRunId, runner = run) {
+  const jobId = githubActionsJobId(check);
+  if (!jobId || jobId !== String(expectedCheckRunId)) return false;
 
   const jobResult = runner(GH_BIN, [
     'api',
-    repoApiPath(repoRoot, `actions/jobs/${checkRunId}`, runner),
+    repoApiPath(repoRoot, `actions/jobs/${jobId}`, runner),
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
   if (jobResult.status !== 0) return false;
 
@@ -109,7 +141,7 @@ function isBillingBlockedCheckRun(repoRoot, check, runner = run) {
     || !Array.isArray(job?.steps)
     || job.steps.length !== 0) return false;
 
-  const annotationsPath = githubCheckRunAnnotationsPath(job);
+  const annotationsPath = githubCheckRunAnnotationsPath(job, expectedCheckRunId);
   if (!annotationsPath) return false;
 
   const result = runner(GH_BIN, [
@@ -327,8 +359,14 @@ function getPullRequestStatus(repoRoot, branch) {
   const pr = findOpenPrForBranch(repoRoot, branch);
   if (!pr) return null;
 
+  let checkRuns;
+  const expectedCheckRunId = (check) => {
+    if (!checkRuns) checkRuns = commitCheckRuns(repoRoot, pr.headRefOid);
+    return matchingCheckRunId(check, checkRuns);
+  };
+
   const rollup = summarizeStatusCheckRollup(pr.statusCheckRollup, {
-    isWaived: (check) => isBillingBlockedCheckRun(repoRoot, check),
+    isWaived: (check) => isBillingBlockedCheckRun(repoRoot, check, expectedCheckRunId(check)),
   });
 
   return {
