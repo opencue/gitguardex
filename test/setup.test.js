@@ -1241,7 +1241,7 @@ test('setup appends managed gitignore block without clobbering existing entries'
   assert.equal(blockStarts.length, 1, 'managed gitignore block should be unique');
 });
 
-test('setup merges Guardex repo-scan ignores into tracked VS Code workspace settings', () => {
+test('setup prevents worktree SCM discovery and merges repo-scan ignores into VS Code settings', () => {
   const repoDir = initRepo();
   const vscodeDir = path.join(repoDir, '.vscode');
   fs.mkdirSync(vscodeDir, { recursive: true });
@@ -1250,6 +1250,7 @@ test('setup merges Guardex repo-scan ignores into tracked VS Code workspace sett
     '{\n'
       + '  // keep custom workspace settings\n'
       + '  "editor.formatOnSave": true,\n'
+      + '  "git.autoRepositoryDetection": true,\n'
       + '  "git.repositoryScanIgnoredFolders": [\n'
       + '    "custom-folder",\n'
       + '  ],\n'
@@ -1262,6 +1263,7 @@ test('setup merges Guardex repo-scan ignores into tracked VS Code workspace sett
 
   const settings = JSON.parse(fs.readFileSync(path.join(vscodeDir, 'settings.json'), 'utf8'));
   assert.equal(settings['editor.formatOnSave'], true);
+  assert.equal(settings['git.autoRepositoryDetection'], 'subFolders');
   assert.deepEqual(settings['git.repositoryScanIgnoredFolders'], [
     'custom-folder',
     '.omx/agent-worktrees',
@@ -1273,6 +1275,23 @@ test('setup merges Guardex repo-scan ignores into tracked VS Code workspace sett
     '.omc/.tmp-worktrees',
     '**/.omc/.tmp-worktrees',
   ]);
+});
+
+test('setup preserves an explicitly disabled VS Code repository detector', () => {
+  const repoDir = initRepo();
+  const vscodeDir = path.join(repoDir, '.vscode');
+  fs.mkdirSync(vscodeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(vscodeDir, 'settings.json'),
+    '{\n  "git.autoRepositoryDetection": false\n}\n',
+    'utf8',
+  );
+
+  const result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const settings = JSON.parse(fs.readFileSync(path.join(vscodeDir, 'settings.json'), 'utf8'));
+  assert.equal(settings['git.autoRepositoryDetection'], false);
 });
 
 

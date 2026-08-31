@@ -716,6 +716,12 @@ function buildRepoVscodeSettings(existingSettings = {}) {
     ? existingSettings[REPO_SCAN_IGNORED_FOLDERS_SETTING]
     : [];
 
+  // Keep normal subfolder discovery, but do not auto-register a worktree just
+  // because one of its files was opened in the primary workspace. Otherwise
+  // pruning it can leave a stale, endlessly syncing SCM provider behind.
+  if (existingSettings['git.autoRepositoryDetection'] !== false) {
+    nextSettings['git.autoRepositoryDetection'] = 'subFolders';
+  }
   nextSettings[REPO_SCAN_IGNORED_FOLDERS_SETTING] = uniqueStringList([
     ...existingIgnoredFolders,
     ...MANAGED_REPO_SCAN_IGNORED_FOLDERS,
