@@ -100,7 +100,7 @@ function isBillingBlockedCheckRun(repoRoot, check, runner = run) {
 
   const result = runner(GH_BIN, [
     'api',
-    repoApiPath(repoRoot, `check-runs/${checkRunId}/annotations`, runner),
+    repoApiPath(repoRoot, `${new URL(job.check_run_url).pathname.replace(/^\/repos\/[^/]+\/[^/]+\//, '')}/annotations`, runner),
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
   if (result.status !== 0) return false;
 
