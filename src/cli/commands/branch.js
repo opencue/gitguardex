@@ -26,6 +26,48 @@ const { locks } = require('../shared-locks');
 
 const REVIEW_PROVIDERS = ['codex', 'claude'];
 
+function printBranchFinishHelp() {
+  console.log(`USAGE: ${SHORT_TOOL_NAME} branch finish [options]
+
+Finish an agent branch by committing pending work, publishing it, opening or
+updating a PR, enforcing optional gates, merging, and cleaning up.
+
+TARGET
+  --target <path>             Target repository (default: current directory)
+  --branch <branch>           Agent branch to finish (default: current branch)
+  --base <branch>             Destination branch
+
+PUBLISH AND MERGE
+  --via-pr                    Finish through a pull request
+  --direct-only               Finish by direct merge only
+  --no-push                   Do not push the branch
+  --wait-for-merge            Wait until the PR is merged
+  --cleanup                   Remove the finished worktree and branch
+  --keep-remote-branch        Preserve the remote branch after merge
+
+VERIFICATION
+  --gate-review               Require AI review and green CI before merge
+  --gate-autofix              Repair blocking review findings and review again
+  --gate-autofix-rounds <n>   Limit repair rounds to 1-5 (default: 1)
+  --gate-baseline             Ignore failures already present on the base branch
+  --review-provider <name>    Review provider: codex|claude
+  --review-model <name>       Model used by the review provider
+  --review-timeout-ms <n>     Positive review timeout in milliseconds
+  --no-preflight              Skip the repository preflight script
+  --preflight                 Run the repository preflight script
+
+COMMIT
+  --no-auto-commit            Refuse to auto-commit pending work
+  --commit-message <message>  Message for the automatic finish commit
+
+  -h, --help                  Show this help without touching the repository`);
+}
+
+function isBranchFinishHelpRequest(args) {
+  return args.some((arg) => arg === '--help' || arg === '-h')
+    || (args.length === 1 && args[0] === 'help');
+}
+
 // Review-gate and auto-commit options are gx-level flags.
 // agent-branch-finish.sh does not parse them (it exits 1 on the unknown
 // argument), and its --via-pr path merges the moment the PR opens, so the shell
@@ -206,6 +248,13 @@ function branch(rawArgs) {
     return;
   }
   if (subcommand === 'finish') {
+    // Help is a read-only control path. Handle it before target resolution,
+    // worktree discovery, progress initialization, or the automatic commit.
+    if (isBranchFinishHelpRequest(rest)) {
+      printBranchFinishHelp();
+      process.exitCode = 0;
+      return;
+    }
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
     const {

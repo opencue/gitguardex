@@ -16,7 +16,13 @@ const path = require('node:path');
 const repoRoot = path.resolve(__dirname, '..');
 
 function loadBranchWithStubs({ gateThrows = false } = {}) {
-  const calls = { finish: [], gate: [], script: [] };
+  const calls = {
+    finish: [],
+    gate: [],
+    script: [],
+    repoResolution: [],
+    autoCommit: [],
+  };
 
   const stub = (relPath, exports) => {
     const resolved = require.resolve(path.join(repoRoot, relPath));
@@ -27,10 +33,19 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
   // per-branch `branch.<name>.guardexBase`, otherwise the repo default.
   const perBranchBase = { 'agent/claude/on-dev': 'dev' };
   stub('src/git/index.js', {
-    resolveRepoRoot: () => '/fake/repo',
+    resolveRepoRoot: () => {
+      calls.repoResolution.push('root');
+      return '/fake/repo';
+    },
     resolveFinishBaseBranch: (_root, branch, base) => base || perBranchBase[branch] || 'main',
-    currentBranchName: () => 'agent/claude/from-head',
-    listAgentWorktrees: () => [],
+    currentBranchName: () => {
+      calls.repoResolution.push('branch');
+      return 'agent/claude/from-head';
+    },
+    listAgentWorktrees: () => {
+      calls.repoResolution.push('worktrees');
+      return [];
+    },
   });
   stub('src/core/runtime.js', {
     run: () => {},
@@ -47,6 +62,12 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
       if (gateThrows) throw new Error('AI review found a CRITICAL finding');
     },
   });
+  stub('src/finish/index.js', {
+    autoCommitWorktreeForFinish: (...args) => {
+      calls.autoCommit.push(args);
+      return { changed: false, committed: false };
+    },
+  });
   stub('src/cli/commands/finish.js', {
     finish: (args) => calls.finish.push(args),
     merge: () => {},
@@ -56,6 +77,25 @@ function loadBranchWithStubs({ gateThrows = false } = {}) {
   const { branch, ship } = require(path.join(repoRoot, 'src/cli/commands/branch.js'));
   return { branch, ship, calls };
 }
+
+test('branch finish --help prints usage before resolving or mutating the repository', () => {
+  const { branch, calls } = loadBranchWithStubs();
+  const output = [];
+  const originalLog = console.log;
+  console.log = (...args) => output.push(args.join(' '));
+
+  try {
+    branch(['finish', '--help']);
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.match(output.join('\n'), /USAGE:\s+gx branch finish \[options\]/);
+  assert.deepEqual(calls.repoResolution, [], 'help must return before repository discovery');
+  assert.deepEqual(calls.autoCommit, [], 'help must never auto-commit pending work');
+  assert.deepEqual(calls.gate, [], 'help must never start review');
+  assert.deepEqual(calls.script, [], 'help must never invoke the finish shell script');
+});
 
 test('branch finish --gate-review runs the gate and keeps the flag out of the shell argv', () => {
   const { branch, calls } = loadBranchWithStubs();
