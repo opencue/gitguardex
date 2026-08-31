@@ -258,6 +258,32 @@ test('uninstallMcpServer preserves a managed server changed after installation',
   assert.equal(after.mcpServers.gx, undefined);
 });
 
+test('uninstallMcpServer removes stale ownership state when .mcp.json is missing', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const statePath = claudeModule.resolveMcpStatePath(repoRoot);
+  fs.unlinkSync(path.join(repoRoot, claudeModule.MCP_REL));
+
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+  assert.equal(result.status, 'absent');
+  assert.equal(fs.existsSync(statePath), false);
+});
+
+test('installMcpServer replaces stale ownership state when .mcp.json is missing', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const statePath = claudeModule.resolveMcpStatePath(repoRoot);
+  fs.unlinkSync(path.join(repoRoot, claudeModule.MCP_REL));
+  fs.writeFileSync(statePath, `${JSON.stringify({
+    version: 1,
+    servers: { codegraph: { hadPrevious: true, previous: { command: '/stale' } } },
+  }, null, 2)}\n`);
+
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  assert.deepEqual(state.servers.codegraph, { hadPrevious: false });
+});
+
 test('missingManagedMcpServers rejects truthy but incorrect definitions', () => {
   const missing = claudeModule.missingManagedMcpServers({
     mcpServers: {

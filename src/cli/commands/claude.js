@@ -397,7 +397,10 @@ function installMcpServer(repoRoot, { dryRun }) {
   }
 
   const hadManagedServer = Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key]);
-  const state = readJsonIfExists(statePath) || { version: 1, servers: {} };
+  // A missing .mcp.json means any surviving ownership state is stale. Start a
+  // fresh record instead of restoring definitions from an earlier config.
+  const state = (fileExisted ? readJsonIfExists(statePath) : null)
+    || { version: 1, servers: {} };
   state.servers = state.servers || {};
   for (const key of missingServers) {
     if (!Object.prototype.hasOwnProperty.call(state.servers, key)) {
@@ -423,7 +426,11 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   const statePath = resolveMcpStatePath(repoRoot);
   const config = readJsonIfExists(filePath);
   const state = readJsonIfExists(statePath);
-  if (!config || !config.mcpServers || !state || !state.servers) {
+  if (!state || !state.servers) {
+    return { status: 'absent', dest: filePath };
+  }
+  if (!config || !config.mcpServers) {
+    if (!dryRun) fs.unlinkSync(statePath);
     return { status: 'absent', dest: filePath };
   }
 
