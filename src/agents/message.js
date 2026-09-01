@@ -328,7 +328,10 @@ function findSession(sessions, options = {}) {
     return sessions.find((session) => session.id === options.sessionId) || null;
   }
   if (options.branch) {
-    return sessions.find((session) => session.branch === options.branch) || null;
+    const matches = sessions.filter(
+      (session) => session.branch === options.branch && session.status === 'active'
+    );
+    return matches.length === 1 ? matches[0] : null;
   }
   return null;
 }

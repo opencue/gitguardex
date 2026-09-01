@@ -310,6 +310,58 @@ test('sendAgentMessage refuses a target without verified idle state before probi
   assert.equal(probed, false);
 });
 
+test('sendAgentMessage branch targeting ignores historical sessions and requires one active match', () => {
+  const active = session({ id: 'active-target' });
+  const historical = session({ id: 'historical-target', status: 'stopped' });
+  const source = session({
+    id: 'source-session',
+    branch: 'agent/codex/source',
+    worktreePath: '/repo/source',
+    activity: 'working',
+    tmux: { backend: 'tmux', target: '%6' }
+  });
+
+  const result = sendAgentMessage(
+    '/repo',
+    {
+      branch: active.branch,
+      sourceSessionId: source.id,
+      message: 'please continue'
+    },
+    {
+      listAgentSessions: () => [historical, active, source],
+      verifySourceCaller: () => ({ ok: true }),
+      acquireDeliveryLock: () => () => {},
+      inspectAgentPane: () => ({
+        ok: true,
+        paneId: '%7',
+        panePid: 100,
+        agentPid: 200,
+        observed: 'codex'
+      }),
+      inspectAgentComposer: () => ({ ok: true }),
+      pasteEnvelope: () => ({ ok: true })
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.targetSessionId, active.id);
+
+  const ambiguous = sendAgentMessage(
+    '/repo',
+    {
+      branch: active.branch,
+      sourceSessionId: source.id,
+      message: 'please continue'
+    },
+    {
+      listAgentSessions: () => [active, session({ id: 'second-active-target' }), source]
+    }
+  );
+  assert.equal(ambiguous.ok, false);
+  assert.equal(ambiguous.kind, 'target-not-found');
+});
+
 test('sendAgentMessage delivers only after source, target, pane, and post-write identity checks pass', () => {
   const target = session();
   const source = session({
