@@ -578,6 +578,20 @@ function backupGlobalAgentFile(filePath) {
   return { status: 'created', path: backupPath };
 }
 
+function hasConfiguredCodegraphMcp(config) {
+  const lines = config.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === '[mcp_servers.codegraph]');
+  if (start < 0) return false;
+  const nextSection = lines.findIndex((line, index) => (
+    index > start && /^\s*\[\[?.+\]\]?\s*$/.test(line)
+  ));
+  const section = lines.slice(start + 1, nextSection < 0 ? undefined : nextSection);
+  return section.some((line) => /^\s*command\s*=\s*["']codegraph["']\s*$/.test(line))
+    && section.some((line) => (
+      /^\s*args\s*=\s*\[\s*["']serve["']\s*,\s*["']--mcp["']\s*\]\s*$/.test(line)
+    ));
+}
+
 // CodeGraph owns the Codex TOML/AGENTS serialization. Guardex only invokes its
 // documented non-interactive installer after global companion approval, and
 // snapshots any existing user config before that external writer runs.
@@ -593,7 +607,7 @@ function configureCodegraphForCodex(options = {}) {
   const configPath = path.join(codexDir, 'config.toml');
   const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   const agentsPath = path.join(codexDir, 'AGENTS.md');
-  if (/^\s*\[mcp_servers\.codegraph\]\s*$/m.test(config)
+  if (hasConfiguredCodegraphMcp(config)
     && fs.existsSync(agentsPath)) {
     return { status: 'already-configured', path: configPath };
   }
