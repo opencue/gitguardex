@@ -486,7 +486,15 @@ function installMcpServer(repoRoot, { dryRun, linkConfig = replaceMcpConfigLink 
       hadPrevious,
       ...(hadPrevious ? { previous: deepClone(config.mcpServers[key]) } : {}),
     };
-    if (!isLegacyGx) config.mcpServers[key] = deepClone(desired);
+    if (!isLegacyGx) {
+      const current = config.mcpServers[key];
+      config.mcpServers[key] = {
+        ...(current && typeof current === 'object' && !Array.isArray(current)
+          ? deepClone(current)
+          : {}),
+        ...deepClone(desired),
+      };
+    }
   }
 
   const status = hadManagedServer ? 'updated' : fileExisted ? 'merged' : 'created';
@@ -543,7 +551,17 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   let changed = false;
   for (const [key, ownership] of Object.entries(state.servers)) {
     const desired = MCP_SERVER_SPECS[key];
-    if (!desired || !mcpSpecsMatch(config.mcpServers[key], desired)) continue;
+    if (!desired) continue;
+    const installed = {
+      ...(ownership.hadPrevious
+        && ownership.previous
+        && typeof ownership.previous === 'object'
+        && !Array.isArray(ownership.previous)
+        ? ownership.previous
+        : {}),
+      ...desired,
+    };
+    if (!mcpSpecsMatch(config.mcpServers[key], installed)) continue;
     if (ownership.hadPrevious) {
       config.mcpServers[key] = deepClone(ownership.previous);
     } else {

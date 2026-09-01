@@ -246,7 +246,12 @@ test('installMcpServer is idempotent on a second run', () => {
 
 test('installMcpServer records and uninstall restores pre-existing managed server definitions', () => {
   const repoRoot = makeRepo();
-  const customCodegraph = { command: '/custom/codegraph', args: ['mcp'] };
+  const customCodegraph = {
+    command: '/custom/codegraph',
+    args: ['mcp'],
+    cwd: '/custom/worktree',
+    env: { CODEGRAPH_LOG: 'debug' },
+  };
   fs.writeFileSync(
     path.join(repoRoot, claudeModule.MCP_REL),
     `${JSON.stringify({ mcpServers: { codegraph: customCodegraph } }, null, 2)}\n`,
@@ -255,6 +260,12 @@ test('installMcpServer records and uninstall restores pre-existing managed serve
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
   const statePath = claudeModule.resolveMcpStatePath(repoRoot);
   const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  assert.deepEqual(JSON.parse(fs.readFileSync(mcpPath, 'utf8')).mcpServers.codegraph, {
+    ...customCodegraph,
+    type: 'stdio',
+    command: 'codegraph',
+    args: ['serve', '--mcp'],
+  });
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   const configLinkPath = claudeModule.resolveMcpConfigLinkPath(statePath, mcpPath, state.configLink);
   assert.equal(fs.existsSync(statePath), true);
