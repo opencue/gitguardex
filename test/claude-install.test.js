@@ -338,6 +338,28 @@ test('installMcpServer discards ownership after .mcp.json is recreated unchanged
   assert.equal(fs.readFileSync(mcpPath, 'utf8'), managedConfig);
 });
 
+test('installMcpServer replaces ownership after .mcp.json is recreated with drift', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const replacement = {
+    mcpServers: {
+      gx: { command: 'gx', args: ['mcp', 'serve'] },
+      codegraph: { command: '/user/codegraph' },
+    },
+  };
+  const recreatedPath = `${mcpPath}.recreated`;
+  fs.writeFileSync(recreatedPath, `${JSON.stringify(replacement, null, 2)}\n`);
+  fs.unlinkSync(mcpPath);
+  fs.renameSync(recreatedPath, mcpPath);
+
+  assert.equal(claudeModule.installMcpServer(repoRoot, { dryRun: false }).status, 'updated');
+  assert.equal(claudeModule.uninstallMcpServer(repoRoot, { dryRun: false }).status, 'pruned');
+
+  const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  assert.deepEqual(after.mcpServers, replacement.mcpServers);
+});
+
 test('missingManagedMcpServers rejects truthy but incorrect definitions', () => {
   const missing = claudeModule.missingManagedMcpServers({
     mcpServers: {

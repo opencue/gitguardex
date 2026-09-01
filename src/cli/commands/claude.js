@@ -421,7 +421,9 @@ function installMcpServer(repoRoot, { dryRun }) {
   const hadManagedServer = Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key]);
   // A missing .mcp.json means any surviving ownership state is stale. Start a
   // fresh record instead of restoring definitions from an earlier config.
-  const state = (fileExisted ? existingState : null)
+  const state = (fileExisted && existingState && mcpStateMatchesConfig(existingState, filePath)
+    ? existingState
+    : null)
     || { version: 1, servers: {} };
   state.servers = state.servers || {};
   for (const key of missingServers) {
