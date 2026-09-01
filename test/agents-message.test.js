@@ -155,10 +155,11 @@ test('inspectAgentComposer accepts only a verified empty backend prompt', () => 
     }),
     { ok: false, kind: 'target-composer-not-empty', observed: 'unsent draft' }
   );
-  assert.deepEqual(
-    inspectAgentComposer(session({ agent: 'gemini' }), '%7', { runTmux }),
-    { ok: false, kind: 'target-not-paste-aware', observed: 'gemini' }
-  );
+  assert.deepEqual(inspectAgentComposer(session({ agent: 'gemini' }), '%7', { runTmux }), {
+    ok: false,
+    kind: 'target-not-paste-aware',
+    observed: 'gemini'
+  });
 });
 
 test('verifySourceCaller requires the sender process to descend from the claimed agent', () => {

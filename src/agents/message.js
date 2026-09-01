@@ -164,7 +164,11 @@ function inspectAgentPane(session, deps = {}) {
 function inspectAgentComposer(session, target, deps = {}) {
   const prompt = COMPOSER_PROMPTS[oneLine(session?.agent)];
   if (!prompt) {
-    return { ok: false, kind: 'target-not-paste-aware', observed: oneLine(session?.agent) || 'unknown' };
+    return {
+      ok: false,
+      kind: 'target-not-paste-aware',
+      observed: oneLine(session?.agent) || 'unknown'
+    };
   }
   const runTmux = deps.runTmux || tmuxCommand.runTmux;
   const result = runTmux(['capture-pane', '-p', '-t', target], { stdio: 'pipe' });
