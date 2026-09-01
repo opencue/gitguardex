@@ -234,13 +234,16 @@ test('installMcpServer records and uninstall restores pre-existing managed serve
 
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
   const statePath = claudeModule.resolveMcpStatePath(repoRoot);
+  const configLinkPath = claudeModule.resolveMcpConfigLinkPath(statePath);
   assert.equal(fs.existsSync(statePath), true);
+  assert.equal(fs.statSync(configLinkPath).ino, fs.statSync(path.join(repoRoot, claudeModule.MCP_REL)).ino);
 
   const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
   assert.equal(result.status, 'pruned');
   const config = JSON.parse(fs.readFileSync(path.join(repoRoot, claudeModule.MCP_REL), 'utf8'));
   assert.deepEqual(config.mcpServers, { codegraph: customCodegraph });
   assert.equal(fs.existsSync(statePath), false);
+  assert.equal(fs.existsSync(configLinkPath), false);
 });
 
 test('uninstallMcpServer preserves a managed server changed after installation', () => {
@@ -392,20 +395,6 @@ test('installMcpServer retains ownership after an unrelated MCP edit', () => {
 
   const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
   assert.deepEqual(after.mcpServers, { other: { command: '/user/other' } });
-});
-
-test('MCP config identity uses birth time when the filesystem provides it', () => {
-  assert.deepEqual(
-    claudeModule.mcpConfigIdentityFromStat({ dev: 1, ino: 2, birthtimeMs: 3, ctimeMs: 4 }),
-    { device: '1', inode: '2', birthtimeMs: '3', fallbackCtimeMs: null },
-  );
-});
-
-test('MCP config identity falls back to change time without a usable birth time', () => {
-  assert.deepEqual(
-    claudeModule.mcpConfigIdentityFromStat({ dev: 1, ino: 2, birthtimeMs: 0, ctimeMs: 4 }),
-    { device: '1', inode: '2', birthtimeMs: null, fallbackCtimeMs: '4' },
-  );
 });
 
 test('missingManagedMcpServers rejects truthy but incorrect definitions', () => {

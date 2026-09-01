@@ -1489,17 +1489,17 @@ exit 0
   assert.match(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'), /command = "codegraph"/);
 });
 
-test('setup accepts equivalent multiline CodeGraph TOML without rewriting it', () => {
+test('setup accepts equivalent multiline CodeGraph TOML with quoted keys without rewriting it', () => {
   const repoDir = initRepo();
   const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
   const codexDir = path.join(fakeHome, '.codex');
   fs.mkdirSync(codexDir, { recursive: true });
   const config = `["mcp_servers".'codegraph'] # managed MCP
-args = [
+"args" = [
   'serve', # command
   '--mcp',
 ]
-command = 'codegraph'
+'command' = 'codegraph'
 `;
   fs.writeFileSync(path.join(codexDir, 'config.toml'), config);
   fs.writeFileSync(

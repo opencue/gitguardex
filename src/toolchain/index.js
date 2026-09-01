@@ -673,7 +673,9 @@ function readCodegraphMcpConfig(config) {
     if (arrayDepth > 0) continue;
     const separator = pending.indexOf('=');
     if (separator > 0) {
-      assignments.set(pending.slice(0, separator).trim(), pending.slice(separator + 1).trim());
+      const rawKey = pending.slice(0, separator).trim();
+      const parsedKey = parseTomlString(rawKey);
+      assignments.set(parsedKey === null ? rawKey : parsedKey, pending.slice(separator + 1).trim());
     }
     pending = '';
   }
