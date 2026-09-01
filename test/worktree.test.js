@@ -476,6 +476,26 @@ test('worktree prune preserves worktrees with active Guardex file locks', () => 
   assert.equal(fs.existsSync(worktreePath), false, 'unlocked merged worktree should be pruned');
 });
 
+test('worktree prune releases self-owned locks when retiring a terminal managed lane', () => {
+  const repoDir = initRepo();
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  seedCommit(repoDir);
+
+  const branch = 'agent/test-self-lock-prune';
+  const worktreePath = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__test-self-lock-prune');
+  result = runCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runLockTool(['claim', '--branch', branch, 'locked.txt'], worktreePath);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runWorktreePrune(['--delete-branches'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Releasing 1 self-owned lock while removing terminal worktree/);
+  assert.equal(fs.existsSync(worktreePath), false, 'self-owned locks must not strand a terminal worktree');
+});
+
 
 test('worktree prune serializes removal with Guardex lock claims', async () => {
   const repoDir = initRepo();

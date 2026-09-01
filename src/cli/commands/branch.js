@@ -239,12 +239,53 @@ function isLinkedAgentWorktree(worktreePath) {
   }
 }
 
+function isReadOnlyBranchStart(args) {
+  return args.some((arg) => ['--help', '-h', 'help', '--print-name-only'].includes(arg));
+}
+
+function recoverStaleManagedWorktrees(repoRoot) {
+  const idleMinutes = process.env.GUARDEX_BRANCH_START_CLEANUP_IDLE_MINUTES || '15';
+  const result = runPackageAsset(
+    'worktreePrune',
+    [
+      '--prune-stale-lanes',
+      '--preserve-open-prs',
+      '--delete-branches',
+      '--idle-minutes',
+      idleMinutes,
+    ],
+    {
+      cwd: repoRoot,
+      timeout: 30_000,
+      env: { GUARDEX_PRUNE_ACTIVE_CWD: process.cwd() },
+    },
+  );
+
+  if (result.status !== 0) {
+    process.stderr.write(
+      `[${TOOL_NAME} branch start] Stale worktree recovery failed safely; continuing without cleanup.\n`,
+    );
+    return;
+  }
+
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  const removedWorktrees = Number(output.match(/removed_worktrees=(\d+)/)?.[1] || 0);
+  if (removedWorktrees > 0) {
+    const suffix = removedWorktrees === 1 ? '' : 's';
+    process.stdout.write(
+      `[${TOOL_NAME} branch start] Recovered ${removedWorktrees} stale managed worktree${suffix} before branch start.\n`,
+    );
+  }
+}
+
 function branch(rawArgs) {
   const activeCwd = process.cwd();
   const [subcommand, ...rest] = rawArgs;
   if (subcommand === 'start') {
     const { target, passthrough } = extractTargetedArgs(rest);
-    invokePackageAsset('branchStart', passthrough, { cwd: resolveRepoRoot(target) });
+    const repoRoot = resolveRepoRoot(target);
+    if (!isReadOnlyBranchStart(passthrough)) recoverStaleManagedWorktrees(repoRoot);
+    invokePackageAsset('branchStart', passthrough, { cwd: repoRoot });
     return;
   }
   if (subcommand === 'finish') {
