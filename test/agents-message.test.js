@@ -41,6 +41,20 @@ test('acquireDeliveryLock excludes a concurrent sender until release', (t) => {
   reacquired();
 });
 
+test('acquireDeliveryLock replaces an invalid stale lock', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-message-lock-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+
+  acquireDeliveryLock(repoRoot, 'target-session');
+  const lockDirectory = path.join(repoRoot, '.guardex', 'agents', 'message-locks');
+  const lockPath = path.join(lockDirectory, fs.readdirSync(lockDirectory)[0]);
+  fs.writeFileSync(lockPath, '', 'utf8');
+
+  const recovered = acquireDeliveryLock(repoRoot, 'target-session');
+  assert.equal(typeof recovered, 'function');
+  recovered();
+});
+
 test('buildEnvelope keeps multiline content but strips terminal controls and header newlines', () => {
   const envelope = buildEnvelope({
     nonce: 'fixed-nonce',
@@ -288,6 +302,7 @@ test('sendAgentMessage delivers only after source, target, pane, and post-write 
     { ok: true, paneId: '%7', panePid: 100, agentPid: 200, observed: 'codex' }
   ];
   const pasted = [];
+  let composerChecks = 0;
 
   const result = sendAgentMessage(
     '/repo',
@@ -301,7 +316,10 @@ test('sendAgentMessage delivers only after source, target, pane, and post-write 
       verifySourceCaller: () => ({ ok: true }),
       acquireDeliveryLock: () => () => {},
       inspectAgentPane: () => probes.shift(),
-      inspectAgentComposer: () => ({ ok: true }),
+      inspectAgentComposer: () => {
+        composerChecks += 1;
+        return { ok: true };
+      },
       pasteEnvelope(pane, envelope) {
         pasted.push({ pane, envelope });
         return { ok: true };
@@ -315,6 +333,7 @@ test('sendAgentMessage delivers only after source, target, pane, and post-write 
   assert.equal(result.receipt, 'unverified');
   assert.equal(result.targetSessionId, target.id);
   assert.equal(pasted.length, 1);
+  assert.equal(composerChecks, 2);
   assert.equal(pasted[0].pane, '%7');
   assert.match(pasted[0].envelope, /^--- GITGUARDEX MESSAGE fixed ---/);
   assert.match(

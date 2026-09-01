@@ -8,10 +8,22 @@ const { TOOL_NAME } = require('../context');
 const { run } = require('../core/runtime');
 const tmuxCommand = require('../tmux/command');
 const { getAgentDefinition } = require('./registry');
-const { listAgentSessions } = require('./sessions');
+const { agentStateDir, listAgentSessions } = require('./sessions');
 
 const MAX_MESSAGE_BYTES = 64 * 1024;
+const SAFE_MESSAGE_ID = /^[a-zA-Z0-9_-]{8,128}$/;
 const SAFE_PANE_ID = /^%\d+$/;
+const QUEUEABLE_FAILURES = new Set([
+  'target-busy',
+  'target-not-tmux',
+  'target-not-tmux-pane',
+  'target-pane-unreadable',
+  'target-not-agent-pane',
+  'target-not-paste-aware',
+  'target-composer-not-empty',
+  'target-composer-unverified',
+  'delivery-failed'
+]);
 const COMPOSER_PROMPTS = {
   codex: /^\s*›(.*)$/u,
   claude: /^\s*❯(.*)$/u
@@ -32,6 +44,31 @@ function sanitizeBody(value) {
 
 function newNonce() {
   return crypto.randomBytes(9).toString('base64url');
+}
+
+function writeJsonAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600
+  });
+  fs.renameSync(tempPath, filePath);
+}
+
+function queueDir(repoRoot, targetSessionId) {
+  const digest = crypto.createHash('sha256').update(String(targetSessionId)).digest('hex');
+  return path.join(agentStateDir(repoRoot), 'message-queue', digest);
+}
+
+function queueFilePath(repoRoot, targetSessionId, messageId) {
+  if (!SAFE_MESSAGE_ID.test(String(messageId || ''))) {
+    throw new Error('Invalid queued message id.');
+  }
+  return path.join(queueDir(repoRoot, targetSessionId), `${messageId}.json`);
 }
 
 function buildEnvelope(parts = {}) {
@@ -216,7 +253,12 @@ function acquireDeliveryLock(repoRoot, sessionId) {
       let ownerPid = 0;
       try {
         ownerPid = Number.parseInt(fs.readFileSync(lockPath, 'utf8'), 10);
-        if (ownerPid > 0) process.kill(ownerPid, 0);
+        if (!Number.isInteger(ownerPid) || ownerPid <= 0) {
+          const invalidOwner = new Error('invalid lock owner');
+          invalidOwner.code = 'ESRCH';
+          throw invalidOwner;
+        }
+        process.kill(ownerPid, 0);
         return null;
       } catch (ownerError) {
         if (ownerError.code === 'EPERM') return null;
@@ -347,6 +389,136 @@ function verifySourceCaller(source, deps = {}) {
   return { ok: false, kind: 'source-caller-unverified', observed: 'caller is not owned by source' };
 }
 
+function authenticateSourceAndTarget(repoRoot, options = {}, deps = {}) {
+  const list = deps.listAgentSessions || listAgentSessions;
+  const sessions = list(repoRoot);
+  const target = findSession(sessions, options);
+  if (!target) return refusal('target-not-found', 'target session was not found in this repository');
+  const source = findSourceSession(sessions, options);
+  if (!source) {
+    return refusal('source-not-found', 'run from a registered agent worktree or pass --from-session');
+  }
+  if (source.id === target.id) return refusal('self-send', 'an agent cannot send a message to itself');
+  if (source.status !== 'active') {
+    return refusal('source-gone', `source session status is ${source.status || 'unknown'}`);
+  }
+  if (target.status !== 'active') {
+    return refusal('target-gone', `target session status is ${target.status || 'unknown'}`);
+  }
+  const verifyCaller = deps.verifySourceCaller || verifySourceCaller;
+  const caller = verifyCaller(source, deps);
+  if (!caller.ok) {
+    return refusal(
+      caller.kind || 'source-caller-unverified',
+      `source identity refused: ${caller.observed || 'caller provenance is unknown'}`
+    );
+  }
+  return { ok: true, source, target };
+}
+
+function queueAgentMessage(repoRoot, options = {}, deps = {}) {
+  const body = sanitizeBody(options.message);
+  if (!body.trim()) return refusal('empty-message', 'message must not be empty');
+  if (Buffer.byteLength(body, 'utf8') > MAX_MESSAGE_BYTES) {
+    return refusal('message-too-large', `message exceeds ${MAX_MESSAGE_BYTES} bytes`);
+  }
+  const authenticated = authenticateSourceAndTarget(repoRoot, options, deps);
+  if (!authenticated.ok) return authenticated;
+  const messageId = (deps.messageId || newNonce)();
+  const record = {
+    schemaVersion: 1,
+    id: messageId,
+    sourceSessionId: authenticated.source.id,
+    sourceBranch: authenticated.source.branch || '',
+    targetSessionId: authenticated.target.id,
+    body,
+    createdAt: new Date().toISOString(),
+    liveFailureKind: oneLine(options.liveFailureKind)
+  };
+  const filePath = queueFilePath(repoRoot, authenticated.target.id, messageId);
+  (deps.writeQueuedMessage || writeJsonAtomic)(filePath, record);
+  return {
+    ok: true,
+    kind: 'queued',
+    messageId,
+    sourceSessionId: authenticated.source.id,
+    targetSessionId: authenticated.target.id,
+    liveFailureKind: record.liveFailureKind
+  };
+}
+
+function sendOrQueueAgentMessage(repoRoot, options = {}, deps = {}) {
+  const live = sendAgentMessage(repoRoot, options, deps);
+  if (live.ok || !QUEUEABLE_FAILURES.has(live.kind) || options.queue === false) return live;
+  return queueAgentMessage(
+    repoRoot,
+    { ...options, liveFailureKind: live.kind },
+    deps
+  );
+}
+
+function inboxSession(repoRoot, options = {}, deps = {}) {
+  const list = deps.listAgentSessions || listAgentSessions;
+  const sessions = list(repoRoot);
+  const target = options.sessionId
+    ? findSession(sessions, { sessionId: options.sessionId })
+    : findSourceSession(sessions, options);
+  if (!target) return refusal('target-not-found', 'target session was not found in this repository');
+  if (target.status !== 'active') {
+    return refusal('target-gone', `target session status is ${target.status || 'unknown'}`);
+  }
+  const verifyCaller = deps.verifySourceCaller || verifySourceCaller;
+  const caller = verifyCaller(target, deps);
+  if (!caller.ok) {
+    return refusal(
+      caller.kind || 'target-caller-unverified',
+      `target identity refused: ${caller.observed || 'caller provenance is unknown'}`
+    );
+  }
+  return { ok: true, target };
+}
+
+function readAgentInbox(repoRoot, options = {}, deps = {}) {
+  const authenticated = inboxSession(repoRoot, options, deps);
+  if (!authenticated.ok) return authenticated;
+  const dir = queueDir(repoRoot, authenticated.target.id);
+  if (!fs.existsSync(dir)) {
+    return { ok: true, kind: 'inbox', targetSessionId: authenticated.target.id, messages: [] };
+  }
+  const messages = fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && SAFE_MESSAGE_ID.test(entry.name.replace(/\.json$/, '')))
+    .map((entry) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf8'));
+      } catch (_error) {
+        return null;
+      }
+    })
+    .filter((record) => record && record.schemaVersion === 1 && record.targetSessionId === authenticated.target.id)
+    .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
+  return { ok: true, kind: 'inbox', targetSessionId: authenticated.target.id, messages };
+}
+
+function acknowledgeAgentMessage(repoRoot, options = {}, deps = {}) {
+  const authenticated = inboxSession(repoRoot, options, deps);
+  if (!authenticated.ok) return authenticated;
+  let filePath;
+  try {
+    filePath = queueFilePath(repoRoot, authenticated.target.id, options.messageId);
+  } catch (error) {
+    return refusal('message-not-found', error.message);
+  }
+  if (!fs.existsSync(filePath)) return refusal('message-not-found', 'queued message was not found');
+  fs.unlinkSync(filePath);
+  return {
+    ok: true,
+    kind: 'acknowledged',
+    messageId: options.messageId,
+    targetSessionId: authenticated.target.id
+  };
+}
+
 function sendAgentMessage(repoRoot, options = {}, deps = {}) {
   const body = sanitizeBody(options.message);
   if (!body.trim()) return refusal('empty-message', 'message must not be empty');
@@ -454,6 +626,14 @@ function sendAgentMessage(repoRoot, options = {}, deps = {}) {
       body
     });
     const paste = deps.pasteEnvelope || pasteEnvelope;
+    const composerBeforeWrite = inspectComposer(current, before.paneId, deps);
+    if (!composerBeforeWrite.ok) {
+      return refusal(
+        composerBeforeWrite.kind,
+        `target composer refused: ${composerBeforeWrite.observed || 'unknown'}`,
+        composerBeforeWrite.kind === 'target-pane-unreadable'
+      );
+    }
     const written = paste(before.paneId, envelope, deps);
     if (!written.ok)
       return refusal('delivery-failed', written.detail || 'tmux delivery failed', true);
