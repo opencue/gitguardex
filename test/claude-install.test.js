@@ -258,6 +258,24 @@ test('uninstallMcpServer preserves a managed server changed after installation',
   assert.equal(after.mcpServers.gx, undefined);
 });
 
+test('reinstallMcpServer refreshes ownership after a user changes a managed server', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  const customCodegraph = { command: '/new/user/codegraph' };
+  config.mcpServers.codegraph = customCodegraph;
+  fs.writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
+
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+
+  assert.equal(result.status, 'pruned');
+  const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  assert.deepEqual(after.mcpServers.codegraph, customCodegraph);
+  assert.equal(after.mcpServers.gx, undefined);
+});
+
 test('uninstallMcpServer reports preserved when every managed server changed after installation', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: false });

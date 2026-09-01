@@ -403,13 +403,11 @@ function installMcpServer(repoRoot, { dryRun }) {
     || { version: 1, servers: {} };
   state.servers = state.servers || {};
   for (const key of missingServers) {
-    if (!Object.prototype.hasOwnProperty.call(state.servers, key)) {
-      const hadPrevious = Object.prototype.hasOwnProperty.call(config.mcpServers, key);
-      state.servers[key] = {
-        hadPrevious,
-        ...(hadPrevious ? { previous: deepClone(config.mcpServers[key]) } : {}),
-      };
-    }
+    const hadPrevious = Object.prototype.hasOwnProperty.call(config.mcpServers, key);
+    state.servers[key] = {
+      hadPrevious,
+      ...(hadPrevious ? { previous: deepClone(config.mcpServers[key]) } : {}),
+    };
     config.mcpServers[key] = deepClone(MCP_SERVER_SPECS[key]);
   }
 
