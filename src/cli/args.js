@@ -461,7 +461,7 @@ function parseAgentsArgs(rawArgs) {
     }
     if (arg === '--message' || arg === '--text') {
       const next = rest[index + 1];
-      if (!next) {
+      if (!next || next.startsWith('-')) {
         throw new Error('--message requires text');
       }
       options.message = next;

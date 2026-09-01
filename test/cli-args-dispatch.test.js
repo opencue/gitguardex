@@ -259,6 +259,10 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
     /gx agents send requires --message/,
   );
   assert.throws(
+    () => parseAgentsArgs(['send', '--session', 'target-session', '--message', '--json']),
+    /--message requires text/,
+  );
+  assert.throws(
     () => parseAgentsArgs(['send', '--message', 'hello']),
     /gx agents send requires --session or --branch/,
   );
