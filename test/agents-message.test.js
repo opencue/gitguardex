@@ -22,12 +22,12 @@ function session(overrides = {}) {
   };
 }
 
-test('buildEnvelope keeps multiline content but strips terminal escapes and header newlines', () => {
+test('buildEnvelope keeps multiline content but strips terminal controls and header newlines', () => {
   const envelope = buildEnvelope({
     nonce: 'fixed-nonce',
     sourceId: 'source\nforged',
     sourceTitle: 'source\rtitle',
-    body: 'first\n\u001b[31msecond'
+    body: 'first\n\u0003\u001b[31msec\tond'
   });
 
   assert.equal(
@@ -106,6 +106,11 @@ test('pasteEnvelope sends the payload over stdin in one tmux command list', () =
     '#{pane_in_mode}',
     'send-keys -t %7 -X cancel',
     ';',
+    'send-keys',
+    '-t',
+    '%7',
+    'C-u',
+    ';',
     'paste-buffer',
     '-d',
     '-p',
@@ -166,6 +171,35 @@ test('sendAgentMessage rejects an unverified --from-session identity', () => {
     detail: 'source identity refused: caller is not owned by source'
   });
   assert.equal(probedTarget, false);
+});
+
+test('sendAgentMessage discovers its source session from a worktree subdirectory', () => {
+  const target = session();
+  const source = session({
+    id: 'source-session',
+    branch: 'agent/codex/source',
+    worktreePath: '/repo/source',
+    tmux: { backend: 'tmux', target: '%6' }
+  });
+  const probes = [
+    { ok: true, paneId: '%7', panePid: 100, agentPid: 200, observed: 'codex' },
+    { ok: true, paneId: '%7', panePid: 100, agentPid: 200, observed: 'codex' }
+  ];
+
+  const result = sendAgentMessage(
+    '/repo',
+    { sessionId: target.id, cwd: '/repo/source/nested', message: 'please continue' },
+    {
+      listAgentSessions: () => [target, source],
+      verifySourceCaller: () => ({ ok: true }),
+      inspectAgentPane: () => probes.shift(),
+      pasteEnvelope: () => ({ ok: true }),
+      nonce: () => 'fixed'
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.sourceSessionId, source.id);
 });
 
 test('sendAgentMessage refuses a target without verified idle state before probing tmux', () => {

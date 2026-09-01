@@ -21,8 +21,8 @@ function oneLine(value) {
 
 function sanitizeBody(value) {
   return String(value === undefined || value === null ? '' : value)
-    .replace(/[\u0000\u001b]/g, '')
-    .replace(/\r\n?/g, '\n');
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '');
 }
 
 function newNonce() {
@@ -177,6 +177,11 @@ function pasteEnvelope(target, envelope, deps = {}) {
       '#{pane_in_mode}',
       `send-keys -t ${target} -X cancel`,
       ';',
+      'send-keys',
+      '-t',
+      target,
+      'C-u',
+      ';',
       'paste-buffer',
       '-d',
       '-p',
@@ -223,7 +228,11 @@ function findSourceSession(sessions, options = {}) {
   return (
     sessions.find((session) => {
       if (!session.worktreePath) return false;
-      return path.resolve(session.worktreePath) === cwd;
+      const relative = path.relative(path.resolve(session.worktreePath), cwd);
+      return (
+        relative === '' ||
+        (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+      );
     }) || null
   );
 }
