@@ -645,19 +645,27 @@ function parseTomlStringArray(value) {
   return items;
 }
 
-function readCodegraphMcpConfig(config) {
-  const lines = config.split(/\r?\n/);
+function findCodegraphMcpSection(lines) {
   const start = lines.findIndex((line) => (
     /^\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:codegraph|"codegraph"|'codegraph')\s*\]$/
       .test(stripTomlComment(line).trim())
   ));
   if (start < 0) return null;
+  const next = lines.findIndex((line, index) => (
+    index > start && /^\[\[?.+\]\]?$/.test(stripTomlComment(line).trim())
+  ));
+  return { start, end: next < 0 ? lines.length : next };
+}
+
+function readCodegraphMcpConfig(config) {
+  const lines = config.split(/\r?\n/);
+  const section = findCodegraphMcpSection(lines);
+  if (!section) return null;
   const assignments = new Map();
   let pending = '';
   let arrayDepth = 0;
-  for (const rawLine of lines.slice(start + 1)) {
+  for (const rawLine of lines.slice(section.start + 1, section.end)) {
     const line = stripTomlComment(rawLine).trim();
-    if (!pending && /^\[\[?.+\]\]?$/.test(line)) break;
     if (!line) continue;
     pending = pending ? `${pending} ${line}` : line;
     arrayDepth += [...line].filter((char) => char === '[').length;
@@ -679,6 +687,26 @@ function hasConfiguredCodegraphMcp(config) {
   const parsed = readCodegraphMcpConfig(config);
   return parsed?.command === 'codegraph'
     && JSON.stringify(parsed.args) === JSON.stringify(['serve', '--mcp']);
+}
+
+function normalizePreservedText(content) {
+  return content.split(/\r?\n/).map((line) => line.trimEnd()).join('\n').trim();
+}
+
+function withoutCodegraphMcp(config) {
+  const lines = config.split(/\r?\n/);
+  const section = findCodegraphMcpSection(lines);
+  if (section) lines.splice(section.start, section.end - section.start);
+  return normalizePreservedText(lines.join('\n'));
+}
+
+function withoutCodegraphInstructions(content) {
+  const start = content.indexOf('<!-- CODEGRAPH_START -->');
+  if (start < 0) return normalizePreservedText(content);
+  const endMarker = '<!-- CODEGRAPH_END -->';
+  const end = content.indexOf(endMarker, start);
+  if (end < 0) return normalizePreservedText(content);
+  return normalizePreservedText(`${content.slice(0, start)}${content.slice(end + endMarker.length)}`);
 }
 
 function hasCodegraphInstructions(filePath) {
@@ -710,6 +738,7 @@ function configureCodegraphForCodex(options = {}) {
   const configPath = path.join(codexDir, 'config.toml');
   const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   const agentsPath = path.join(codexDir, 'AGENTS.md');
+  const agents = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, 'utf8') : '';
   if (hasConfiguredCodegraphMcp(config)
     && hasCodegraphInstructions(agentsPath)) {
     return { status: 'already-configured', path: configPath };
@@ -739,10 +768,12 @@ function configureCodegraphForCodex(options = {}) {
     restoreCodegraphBackups(backups, targets);
     return { status: 'failed', reason: 'codegraph Codex MCP installer failed', backups };
   }
-  const configured = fs.existsSync(configPath)
-    && fs.readFileSync(configPath, 'utf8').includes(config)
-    && hasConfiguredCodegraphMcp(fs.readFileSync(configPath, 'utf8'))
-    && hasCodegraphInstructions(agentsPath);
+  const installedConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  const installedAgents = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, 'utf8') : '';
+  const configured = hasConfiguredCodegraphMcp(installedConfig)
+    && hasCodegraphInstructions(agentsPath)
+    && withoutCodegraphMcp(installedConfig) === withoutCodegraphMcp(config)
+    && withoutCodegraphInstructions(installedAgents) === withoutCodegraphInstructions(agents);
   if (!configured) {
     restoreCodegraphBackups(backups, targets);
     return {

@@ -1551,7 +1551,7 @@ exit 1
 `);
   const fakeCodegraph = createFakeBin('codegraph', `
 if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
-cat > "$HOME/.codex/config.toml" <<'TOML'
+cat >> "$HOME/.codex/config.toml" <<'TOML'
 [mcp_servers.codegraph]
 command = "codegraph"
 args = ["serve", "--mcp"]
@@ -1576,6 +1576,7 @@ exit 0
   assert.equal(backups.length, 1);
   assert.equal(fs.readFileSync(path.join(codexDir, backups[0]), 'utf8'), 'model = "current"\n');
   assert.equal(fs.readFileSync(path.join(codexDir, 'config.toml.guardex.bak'), 'utf8'), 'model = "old"\n');
+  assert.match(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'), /model = "current"/);
 });
 
 test('setup restores Codex files when CodeGraph configuration fails', () => {
