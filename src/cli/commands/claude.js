@@ -383,6 +383,23 @@ function resolveMcpStatePath(repoRoot) {
   return path.join(gitDir, 'guardex', 'claude-mcp-state.json');
 }
 
+function readMcpConfigIdentity(filePath) {
+  const stat = fs.statSync(filePath);
+  return {
+    device: String(stat.dev),
+    inode: String(stat.ino),
+    birthtimeMs: String(stat.birthtimeMs),
+  };
+}
+
+function mcpStateMatchesConfig(state, filePath) {
+  return Boolean(
+    state?.configFile
+    && fs.existsSync(filePath)
+    && isDeepStrictEqual(state.configFile, readMcpConfigIdentity(filePath)),
+  );
+}
+
 // Register the read-only `gx mcp` server in the target repo's .mcp.json so any
 // agent there can call list_agents / who_owns / my_context. Merges into an
 // existing .mcp.json without disturbing other servers; idempotent.
@@ -392,15 +409,19 @@ function installMcpServer(repoRoot, { dryRun }) {
   const fileExisted = fs.existsSync(filePath);
   const config = readJsonIfExists(filePath) || {};
   config.mcpServers = config.mcpServers || {};
+  const existingState = readJsonIfExists(statePath);
   const missingServers = missingManagedMcpServers(config);
   if (missingServers.length === 0) {
+    if (existingState && !mcpStateMatchesConfig(existingState, filePath) && !dryRun) {
+      fs.unlinkSync(statePath);
+    }
     return { status: 'unchanged', dest: filePath };
   }
 
   const hadManagedServer = Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key]);
   // A missing .mcp.json means any surviving ownership state is stale. Start a
   // fresh record instead of restoring definitions from an earlier config.
-  const state = (fileExisted ? readJsonIfExists(statePath) : null)
+  const state = (fileExisted ? existingState : null)
     || { version: 1, servers: {} };
   state.servers = state.servers || {};
   for (const key of missingServers) {
@@ -413,8 +434,11 @@ function installMcpServer(repoRoot, { dryRun }) {
   }
 
   const status = hadManagedServer ? 'updated' : fileExisted ? 'merged' : 'created';
-  writeJson(statePath, state, { dryRun });
-  writeJson(filePath, config, { dryRun });
+  if (!dryRun) {
+    writeJson(filePath, config, { dryRun: false });
+    state.configFile = readMcpConfigIdentity(filePath);
+    writeJson(statePath, state, { dryRun: false });
+  }
   return { status, dest: filePath, state: statePath };
 }
 
@@ -431,6 +455,10 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   if (!config || !config.mcpServers) {
     if (!dryRun) fs.unlinkSync(statePath);
     return { status: 'absent', dest: filePath };
+  }
+  if (!mcpStateMatchesConfig(state, filePath)) {
+    if (!dryRun) fs.unlinkSync(statePath);
+    return { status: 'preserved', dest: filePath };
   }
 
   let changed = false;

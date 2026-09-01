@@ -616,6 +616,11 @@ function configureCodegraphForCodex(options = {}) {
     },
   );
   if (result.status !== 0) {
+    const targets = [configPath, path.join(codexDir, 'AGENTS.md')];
+    backups.forEach((backup, index) => {
+      if (backup.status === 'created') fs.copyFileSync(backup.path, targets[index]);
+      else if (fs.existsSync(targets[index])) fs.unlinkSync(targets[index]);
+    });
     return { status: 'failed', reason: 'codegraph Codex MCP installer failed', backups };
   }
   return { status: 'configured', path: configPath, backups };
