@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.5.0](https://github.com/opencue/gitguardex/compare/v8.4.0...v8.5.0) (2026-09-01)
+
+
+### Features
+
+* **toolchain:** wire CodeGraph and OpenSrc by default ([#762](https://github.com/opencue/gitguardex/issues/762)) ([9125fb3](https://github.com/opencue/gitguardex/commit/9125fb356c950e34459dba6501817b9ab0a7f0da))
+
 ## [8.4.0](https://github.com/opencue/gitguardex/compare/v8.3.0...v8.4.0) (2026-09-01)
 
 
