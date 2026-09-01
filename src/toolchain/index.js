@@ -6,6 +6,7 @@ const {
   TOOL_NAME,
   SHORT_TOOL_NAME,
   OPENSPEC_PACKAGE,
+  CODEGRAPH_BIN,
   NPX_BIN,
   GUARDEX_HOME_DIR,
   GLOBAL_TOOLCHAIN_SERVICES,
@@ -565,6 +566,319 @@ function installGlobalToolchain(options) {
   return performCompanionInstall(missingPackages, missingLocalTools);
 }
 
+function backupGlobalAgentFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { status: 'absent', path: filePath };
+  }
+  const defaultBackupPath = `${filePath}.guardex.bak`;
+  const backupPath = fs.existsSync(defaultBackupPath)
+    ? `${filePath}.guardex.${Date.now()}.bak`
+    : defaultBackupPath;
+  fs.copyFileSync(filePath, backupPath);
+  return { status: 'created', path: backupPath };
+}
+
+function stripTomlComment(line) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = quote === char ? null : quote || char;
+      continue;
+    }
+    if (!quote && char === '#') return line.slice(0, index);
+  }
+  return line;
+}
+
+function countTomlSyntaxCharacter(line, target) {
+  let quote = null;
+  let escaped = false;
+  let count = 0;
+  for (const char of line) {
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = quote === char ? null : quote || char;
+      continue;
+    }
+    if (!quote && char === target) count += 1;
+  }
+  return count;
+}
+
+function parseTomlString(value) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return trimmed.slice(1, -1);
+  return null;
+}
+
+function parseTomlStringArray(value) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return null;
+  const items = [];
+  let index = 1;
+  while (index < trimmed.length - 1) {
+    while (/\s/.test(trimmed[index])) index += 1;
+    if (trimmed[index] === ']') break;
+    const quote = trimmed[index];
+    if (quote !== '"' && quote !== "'") return null;
+    const start = index;
+    index += 1;
+    let escaped = false;
+    while (index < trimmed.length - 1) {
+      const char = trimmed[index];
+      if (quote === '"' && escaped) escaped = false;
+      else if (quote === '"' && char === '\\') escaped = true;
+      else if (char === quote) break;
+      index += 1;
+    }
+    if (trimmed[index] !== quote) return null;
+    const parsed = parseTomlString(trimmed.slice(start, index + 1));
+    if (parsed === null) return null;
+    items.push(parsed);
+    index += 1;
+    while (/\s/.test(trimmed[index])) index += 1;
+    if (trimmed[index] === ',') index += 1;
+    else if (trimmed[index] !== ']') return null;
+  }
+  return items;
+}
+
+function withoutTomlMultilineStringLines(lines) {
+  let delimiter = null;
+  return lines.map((line) => {
+    let quote = null;
+    let escaped = false;
+    let containsMultilineString = Boolean(delimiter);
+    for (let index = 0; index < line.length; index += 1) {
+      if (delimiter) {
+        if (line.slice(index, index + 3) !== delimiter) continue;
+        if (delimiter === '"""') {
+          let backslashes = 0;
+          for (let offset = index - 1; offset >= 0 && line[offset] === '\\'; offset -= 1) {
+            backslashes += 1;
+          }
+          if (backslashes % 2 === 1) continue;
+        }
+        delimiter = null;
+        index += 2;
+        continue;
+      }
+      const char = line[index];
+      if (quote === '"' && escaped) {
+        escaped = false;
+        continue;
+      }
+      if (quote === '"' && char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (!quote && char === '#') break;
+      const candidate = line.slice(index, index + 3);
+      if (!quote && (candidate === '"""' || candidate === "'''")) {
+        delimiter = candidate;
+        containsMultilineString = true;
+        index += 2;
+        continue;
+      }
+      if (char === '"' || char === "'") quote = quote === char ? null : quote || char;
+    }
+    return containsMultilineString ? '' : line;
+  });
+}
+
+function findCodegraphMcpSection(lines) {
+  const syntaxLines = withoutTomlMultilineStringLines(lines);
+  const key = '(?:mcp_servers|"mcp_servers"|\'mcp_servers\')';
+  const codegraph = '(?:codegraph|"codegraph"|\'codegraph\')';
+  const headerPattern = new RegExp(`^\\[\\s*${key}\\s*\\.\\s*${codegraph}\\s*\\]$`);
+  const assignmentPattern = new RegExp(`^${key}\\s*\\.\\s*${codegraph}\\s*=`);
+  const parentHeaderPattern = new RegExp(`^\\[\\s*${key}\\s*\\]$`);
+  const childAssignmentPattern = new RegExp(`^${codegraph}\\s*=`);
+  for (let start = 0; start < syntaxLines.length; start += 1) {
+    const normalized = stripTomlComment(syntaxLines[start]).trim();
+    if (assignmentPattern.test(normalized)) return { start, end: start + 1, inline: true };
+    if (headerPattern.test(normalized)) {
+      const next = syntaxLines.findIndex((line, index) => (
+        index > start && /^\[\[?.+\]\]?$/.test(stripTomlComment(line).trim())
+      ));
+      return { start, end: next < 0 ? lines.length : next, inline: false };
+    }
+    if (!parentHeaderPattern.test(normalized)) continue;
+    for (let index = start + 1; index < syntaxLines.length; index += 1) {
+      const candidate = stripTomlComment(syntaxLines[index]).trim();
+      if (/^\[\[?.+\]\]?$/.test(candidate)) break;
+      if (childAssignmentPattern.test(candidate)) return { start: index, end: index + 1, inline: true };
+    }
+  }
+  return null;
+}
+
+function readCodegraphMcpConfig(config) {
+  const lines = config.split(/\r?\n/);
+  const section = findCodegraphMcpSection(lines);
+  if (!section) return null;
+  const assignments = new Map();
+  if (section.inline) {
+    const assignment = stripTomlComment(lines[section.start]).trim();
+    const value = assignment.slice(assignment.indexOf('=') + 1).trim();
+    if (!value.startsWith('{') || !value.endsWith('}')) return null;
+    const body = value.slice(1, -1);
+    const command = body.match(/(?:^|,)\s*(?:command|"command"|'command')\s*=\s*("(?:\\.|[^"\\])*"|'[^']*')\s*(?=,|$)/);
+    const args = body.match(/(?:^|,)\s*(?:args|"args"|'args')\s*=\s*(\[[^\]]*\])\s*(?=,|$)/);
+    return {
+      command: parseTomlString(command?.[1] || ''),
+      args: parseTomlStringArray(args?.[1] || ''),
+    };
+  }
+  let pending = '';
+  let arrayDepth = 0;
+  for (const rawLine of lines.slice(section.start + 1, section.end)) {
+    const line = stripTomlComment(rawLine).trim();
+    if (!line) continue;
+    pending = pending ? `${pending} ${line}` : line;
+    arrayDepth += countTomlSyntaxCharacter(line, '[');
+    arrayDepth -= countTomlSyntaxCharacter(line, ']');
+    if (arrayDepth > 0) continue;
+    const separator = pending.indexOf('=');
+    if (separator > 0) {
+      const rawKey = pending.slice(0, separator).trim();
+      const parsedKey = parseTomlString(rawKey);
+      assignments.set(parsedKey === null ? rawKey : parsedKey, pending.slice(separator + 1).trim());
+    }
+    pending = '';
+  }
+  return {
+    command: parseTomlString(assignments.get('command') || ''),
+    args: parseTomlStringArray(assignments.get('args') || ''),
+  };
+}
+
+function hasConfiguredCodegraphMcp(config) {
+  const parsed = readCodegraphMcpConfig(config);
+  return parsed?.command === 'codegraph'
+    && JSON.stringify(parsed.args) === JSON.stringify(['serve', '--mcp']);
+}
+
+function normalizePreservedText(content) {
+  return content.split(/\r?\n/).map((line) => line.trimEnd()).join('\n').trim();
+}
+
+function withoutCodegraphMcp(config) {
+  const lines = config.split(/\r?\n/);
+  const section = findCodegraphMcpSection(lines);
+  if (section) lines.splice(section.start, section.end - section.start);
+  return normalizePreservedText(lines.join('\n'));
+}
+
+function withoutCodegraphInstructions(content) {
+  const start = content.indexOf('<!-- CODEGRAPH_START -->');
+  if (start < 0) return normalizePreservedText(content);
+  const endMarker = '<!-- CODEGRAPH_END -->';
+  const end = content.indexOf(endMarker, start);
+  if (end < 0) return normalizePreservedText(content);
+  return normalizePreservedText(`${content.slice(0, start)}${content.slice(end + endMarker.length)}`);
+}
+
+function hasCodegraphInstructions(filePath) {
+  if (!fs.existsSync(filePath)) return false;
+  const content = fs.readFileSync(filePath, 'utf8');
+  const start = content.indexOf('<!-- CODEGRAPH_START -->');
+  return start >= 0 && content.indexOf('<!-- CODEGRAPH_END -->', start) > start;
+}
+
+function restoreCodegraphBackups(backups, targets) {
+  backups.forEach((backup, index) => {
+    if (backup.status === 'created') fs.copyFileSync(backup.path, targets[index]);
+    else if (fs.existsSync(targets[index])) fs.unlinkSync(targets[index]);
+  });
+}
+
+// CodeGraph owns the Codex TOML/AGENTS serialization. Guardex only invokes its
+// documented non-interactive installer after global companion approval, and
+// snapshots any existing user config before that external writer runs.
+function configureCodegraphForCodex(options = {}) {
+  if (options.dryRun) return { status: 'dry-run-skip' };
+  if (options.noGlobalInstall) return { status: 'skipped', reason: 'global-install-disabled' };
+
+  const codexDir = path.join(GUARDEX_HOME_DIR, '.codex');
+  if (!fs.existsSync(codexDir)) {
+    return { status: 'skipped', reason: 'codex-not-detected' };
+  }
+
+  const configPath = path.join(codexDir, 'config.toml');
+  const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  const agentsPath = path.join(codexDir, 'AGENTS.md');
+  const agents = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, 'utf8') : '';
+  if (hasConfiguredCodegraphMcp(config)
+    && hasCodegraphInstructions(agentsPath)) {
+    return { status: 'already-configured', path: configPath };
+  }
+
+  const versionProbe = run(CODEGRAPH_BIN, ['--version'], {
+    env: { HOME: GUARDEX_HOME_DIR, USERPROFILE: GUARDEX_HOME_DIR },
+  });
+  if (versionProbe.status !== 0) {
+    return { status: 'skipped', reason: 'codegraph-unavailable' };
+  }
+
+  const backups = [
+    backupGlobalAgentFile(configPath),
+    backupGlobalAgentFile(agentsPath),
+  ];
+  const result = run(
+    CODEGRAPH_BIN,
+    ['install', '--target=codex', '--location=global', '--yes', '--no-permissions'],
+    {
+      stdio: 'inherit',
+      env: { HOME: GUARDEX_HOME_DIR, USERPROFILE: GUARDEX_HOME_DIR },
+    },
+  );
+  const targets = [configPath, agentsPath];
+  if (result.status !== 0) {
+    restoreCodegraphBackups(backups, targets);
+    return { status: 'failed', reason: 'codegraph Codex MCP installer failed', backups };
+  }
+  const installedConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  const installedAgents = fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath, 'utf8') : '';
+  const configured = hasConfiguredCodegraphMcp(installedConfig)
+    && hasCodegraphInstructions(agentsPath)
+    && withoutCodegraphMcp(installedConfig) === withoutCodegraphMcp(config)
+    && withoutCodegraphInstructions(installedAgents) === withoutCodegraphInstructions(agents);
+  if (!configured) {
+    restoreCodegraphBackups(backups, targets);
+    return {
+      status: 'failed',
+      reason: 'codegraph Codex MCP installer produced an incomplete configuration',
+      backups,
+    };
+  }
+  return { status: 'configured', path: configPath, backups };
+}
+
 function performCompanionInstall(missingPackages, missingLocalTools) {
   const installed = [];
   if (missingPackages.length > 0) {
@@ -626,4 +940,5 @@ module.exports = {
   maybeOpenSpecUpdateBeforeStatus,
   installGlobalToolchain,
   performCompanionInstall,
+  configureCodegraphForCodex,
 };

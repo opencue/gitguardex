@@ -13,17 +13,27 @@
 
 const fs = require('fs');
 const path = require('path');
+const { isDeepStrictEqual } = require('util');
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
-const { resolveRepoRoot } = require('../../git');
+const { gitRun, resolveRepoRoot } = require('../../git');
 
 const SETTINGS_REL = '.claude/settings.json';
 const HOOKS_REL = '.claude/hooks';
 const COMMANDS_REL = '.claude/commands';
 const SKILLS_REL = '.claude/skills';
-// Repo-scoped MCP registration so any agent in the target repo can see the
-// cross-repo agent radar (`gx mcp`). Read-only server; opt out with --no-mcp.
+// Repo-scoped MCP registration for the gx radar and CodeGraph. Opt out with
+// --no-mcp when a repository manages its own MCP surface.
 const MCP_REL = '.mcp.json';
 const MCP_SERVER_KEY = SHORT_TOOL_NAME;
+const MCP_SERVER_SPECS = {
+  [MCP_SERVER_KEY]: { command: SHORT_TOOL_NAME, args: ['mcp', 'serve'] },
+  codegraph: { type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'] },
+};
+
+const MANAGED_AGENT_SKILLS = [
+  { name: 'gitguardex', source: ['.claude', 'skills', 'gitguardex'] },
+  { name: 'opensrc', source: ['templates', 'codex', 'skills', 'opensrc'] },
+];
 
 const MANAGED_HOOK_FILES = [
   'skill_guard.py',
@@ -255,19 +265,24 @@ function installSlashCommands(repoRoot, { dryRun }) {
   return results;
 }
 
-function installAgentSkill(repoRoot, { dryRun }) {
+function installAgentSkills(repoRoot, { dryRun }) {
   const packageRoot = findPackageRoot();
-  const srcDir = path.join(packageRoot, SKILLS_REL, 'gitguardex');
-  if (!fs.existsSync(srcDir)) return { status: 'source-missing' };
-  const destDir = path.join(repoRoot, SKILLS_REL, 'gitguardex');
-  if (!dryRun) fs.mkdirSync(destDir, { recursive: true });
   const results = [];
-  for (const entry of fs.readdirSync(srcDir)) {
-    const src = path.join(srcDir, entry);
-    const dest = path.join(destDir, entry);
-    if (fs.statSync(src).isDirectory()) continue;
-    const r = copyFileIfDifferent(src, dest, { dryRun });
-    results.push({ skill: `gitguardex/${entry}`, ...r });
+  for (const skill of MANAGED_AGENT_SKILLS) {
+    const srcDir = path.join(packageRoot, ...skill.source);
+    if (!fs.existsSync(srcDir)) {
+      results.push({ skill: skill.name, status: 'source-missing' });
+      continue;
+    }
+    const destDir = path.join(repoRoot, SKILLS_REL, skill.name);
+    if (!dryRun) fs.mkdirSync(destDir, { recursive: true });
+    for (const entry of fs.readdirSync(srcDir)) {
+      const src = path.join(srcDir, entry);
+      const dest = path.join(destDir, entry);
+      if (fs.statSync(src).isDirectory()) continue;
+      const result = copyFileIfDifferent(src, dest, { dryRun });
+      results.push({ skill: `${skill.name}/${entry}`, ...result });
+    }
   }
   return { status: 'ok', files: results };
 }
@@ -346,44 +361,245 @@ function describeStatus(s) {
 }
 
 function mcpServerSpec() {
-  return { command: SHORT_TOOL_NAME, args: ['mcp', 'serve'] };
+  return MCP_SERVER_SPECS[MCP_SERVER_KEY];
+}
+
+function mcpSpecsMatch(actual, desired) {
+  return isDeepStrictEqual(actual, desired);
+}
+
+function conflictingMcpTransportFields(actual, desired) {
+  const desiredType = desired.type || (desired.command ? 'stdio' : null);
+  const conflicts = [];
+  if (Object.prototype.hasOwnProperty.call(actual, 'type') && actual.type !== desiredType) {
+    conflicts.push('type');
+  }
+  if (desiredType === 'stdio') {
+    for (const key of ['url', 'headers']) {
+      if (Object.prototype.hasOwnProperty.call(actual, key)) conflicts.push(key);
+    }
+  }
+  return conflicts;
+}
+
+function mcpSpecCompatible(actual, desired) {
+  return Boolean(
+    actual
+    && typeof actual === 'object'
+    && !Array.isArray(actual)
+    && conflictingMcpTransportFields(actual, desired).length === 0
+    && Object.entries(desired).every(([key, value]) => isDeepStrictEqual(actual[key], value)),
+  );
+}
+
+function missingManagedMcpServers(config) {
+  return Object.entries(MCP_SERVER_SPECS)
+    .filter(([key, desired]) => !mcpSpecCompatible(config?.mcpServers?.[key], desired))
+    .map(([key]) => key);
+}
+
+function resolveMcpStatePath(repoRoot) {
+  const result = gitRun(repoRoot, ['rev-parse', '--git-dir'], { allowFailure: true });
+  if (result.status !== 0 || !result.stdout.trim()) {
+    throw new Error(`Unable to resolve git metadata directory for ${repoRoot}`);
+  }
+  const gitDir = path.resolve(repoRoot, result.stdout.trim());
+  return path.join(gitDir, 'guardex', 'claude-mcp-state.json');
+}
+
+function resolveMcpConfigLinkPath(statePath, filePath, location = 'git') {
+  if (location === 'worktree') {
+    return path.join(path.dirname(filePath), '.omx', 'state', 'claude-mcp-config-link');
+  }
+  return `${statePath}.config-link`;
+}
+
+function removeMcpOwnershipState(statePath, filePath) {
+  const managedPaths = [
+    statePath,
+    resolveMcpConfigLinkPath(statePath, filePath, 'git'),
+    resolveMcpConfigLinkPath(statePath, filePath, 'worktree'),
+  ];
+  for (const managedPath of managedPaths) {
+    if (fs.existsSync(managedPath)) fs.unlinkSync(managedPath);
+  }
+}
+
+function replaceMcpConfigLink(filePath, statePath) {
+  for (const location of ['git', 'worktree']) {
+    const linkPath = resolveMcpConfigLinkPath(statePath, filePath, location);
+    const temporaryPath = `${linkPath}.tmp-${process.pid}`;
+    try {
+      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+      fs.linkSync(filePath, temporaryPath);
+      fs.renameSync(temporaryPath, linkPath);
+      const otherLocation = location === 'git' ? 'worktree' : 'git';
+      const otherPath = resolveMcpConfigLinkPath(statePath, filePath, otherLocation);
+      if (fs.existsSync(otherPath)) fs.unlinkSync(otherPath);
+      return location;
+    } catch {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    }
+  }
+  return null;
+}
+
+function mcpStateMatchesConfig(state, filePath, statePath) {
+  const linkPath = resolveMcpConfigLinkPath(statePath, filePath, state?.configLink);
+  if (state?.version !== 2 || !['git', 'worktree'].includes(state.configLink)
+    || !fs.existsSync(filePath) || !fs.existsSync(linkPath)) return false;
+  const configStat = fs.statSync(filePath);
+  const linkStat = fs.statSync(linkPath);
+  return Boolean(
+    configStat.dev === linkStat.dev
+    && configStat.ino === linkStat.ino,
+  );
 }
 
 // Register the read-only `gx mcp` server in the target repo's .mcp.json so any
 // agent there can call list_agents / who_owns / my_context. Merges into an
 // existing .mcp.json without disturbing other servers; idempotent.
-function installMcpServer(repoRoot, { dryRun }) {
+function installMcpServer(repoRoot, { dryRun, linkConfig = replaceMcpConfigLink }) {
   const filePath = path.join(repoRoot, MCP_REL);
+  const statePath = resolveMcpStatePath(repoRoot);
   const fileExisted = fs.existsSync(filePath);
-  const config = readJsonIfExists(filePath) || {};
-  config.mcpServers = config.mcpServers || {};
-  const desired = mcpServerSpec();
-  const current = config.mcpServers[MCP_SERVER_KEY];
-  if (current && JSON.stringify(current) === JSON.stringify(desired)) {
+  const originalContents = fileExisted ? fs.readFileSync(filePath) : null;
+  const config = fileExisted ? readJsonIfExists(filePath) : {};
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error(`${MCP_REL} must contain a JSON object`);
+  }
+  if (config.mcpServers == null) config.mcpServers = {};
+  else if (typeof config.mcpServers !== 'object' || Array.isArray(config.mcpServers)) {
+    throw new Error(`${MCP_REL} has a non-object mcpServers value`);
+  }
+  const existingState = readJsonIfExists(statePath);
+  const missingServers = missingManagedMcpServers(config);
+  if (missingServers.length === 0) {
+    if (!dryRun && (!existingState || !mcpStateMatchesConfig(existingState, filePath, statePath))) {
+      removeMcpOwnershipState(statePath, filePath);
+      writeJson(statePath, { version: 2, configLink: null, servers: {} }, { dryRun: false });
+    }
     return { status: 'unchanged', dest: filePath };
   }
-  const status = current ? 'updated' : fileExisted ? 'merged' : 'created';
-  config.mcpServers[MCP_SERVER_KEY] = desired;
-  writeJson(filePath, config, { dryRun });
-  return { status, dest: filePath };
+
+  const hadManagedServer = Object.keys(MCP_SERVER_SPECS).some((key) => config.mcpServers[key]);
+  // A missing .mcp.json means any surviving ownership state is stale. Start a
+  // fresh record instead of restoring definitions from an earlier config.
+  const state = (fileExisted && existingState && mcpStateMatchesConfig(existingState, filePath, statePath)
+    ? existingState
+    : null)
+    || { version: 2, configLink: null, servers: {} };
+  state.servers = state.servers || {};
+  for (const [key, desired] of Object.entries(MCP_SERVER_SPECS)) {
+    const isLegacyGx = key === MCP_SERVER_KEY
+      && !existingState
+      && !state.servers[key]
+      && mcpSpecsMatch(config.mcpServers[key], desired);
+    if (!missingServers.includes(key) && !isLegacyGx) continue;
+    const hadPrevious = !isLegacyGx && Object.prototype.hasOwnProperty.call(config.mcpServers, key);
+    state.servers[key] = {
+      hadPrevious,
+      ...(hadPrevious ? { previous: deepClone(config.mcpServers[key]) } : {}),
+    };
+    if (!isLegacyGx) {
+      const current = config.mcpServers[key];
+      const compatibleFields = current && typeof current === 'object' && !Array.isArray(current)
+        ? deepClone(current)
+        : {};
+      for (const field of conflictingMcpTransportFields(compatibleFields, desired)) {
+        delete compatibleFields[field];
+      }
+      config.mcpServers[key] = {
+        ...compatibleFields,
+        ...deepClone(desired),
+      };
+    }
+  }
+
+  const status = hadManagedServer ? 'updated' : fileExisted ? 'merged' : 'created';
+  if (!dryRun) {
+    writeJson(filePath, config, { dryRun: false });
+    state.version = 2;
+    const configLink = linkConfig(filePath, statePath);
+    if (configLink) {
+      state.configLink = configLink;
+      writeJson(statePath, state, { dryRun: false });
+    } else {
+      if (fileExisted) fs.writeFileSync(filePath, originalContents);
+      else fs.unlinkSync(filePath);
+      if (!existingState || !mcpStateMatchesConfig(existingState, filePath, statePath)) {
+        removeMcpOwnershipState(statePath, filePath);
+      }
+      return { status: 'ownership-unavailable', dest: filePath };
+    }
+  }
+  return { status, dest: filePath, state: statePath };
 }
 
-// Inverse of installMcpServer: drop the gx server. Removes the whole .mcp.json
-// only when it held nothing but our server (no other servers AND no other
-// top-level keys); otherwise prunes just the gx entry and preserves the rest.
+// Restore the MCP values captured by installMcpServer. A server without a
+// matching ownership record is user-owned and must never be removed.
 function uninstallMcpServer(repoRoot, { dryRun }) {
   const filePath = path.join(repoRoot, MCP_REL);
+  const statePath = resolveMcpStatePath(repoRoot);
   const config = readJsonIfExists(filePath);
-  if (!config || !config.mcpServers || !config.mcpServers[MCP_SERVER_KEY]) {
+  const state = readJsonIfExists(statePath);
+  if (!state || !state.servers) {
+    const legacyGx = config?.mcpServers?.[MCP_SERVER_KEY];
+    if (!mcpSpecsMatch(legacyGx, MCP_SERVER_SPECS[MCP_SERVER_KEY])) {
+      if (!dryRun) removeMcpOwnershipState(statePath, filePath);
+      return { status: 'absent', dest: filePath };
+    }
+    delete config.mcpServers[MCP_SERVER_KEY];
+    const removeConfig = Object.keys(config.mcpServers).length === 0 && Object.keys(config).length === 1;
+    if (!dryRun) {
+      if (removeConfig) fs.unlinkSync(filePath);
+      else writeJson(filePath, config, { dryRun: false });
+      removeMcpOwnershipState(statePath, filePath);
+    }
+    return { status: removeConfig ? 'removed' : 'pruned', dest: filePath };
+  }
+  if (!config || !config.mcpServers) {
+    if (!dryRun) removeMcpOwnershipState(statePath, filePath);
     return { status: 'absent', dest: filePath };
   }
-  delete config.mcpServers[MCP_SERVER_KEY];
-  const onlyOurs = Object.keys(config.mcpServers).length === 0 && Object.keys(config).length === 1;
-  if (!dryRun) {
-    if (onlyOurs) fs.unlinkSync(filePath);
-    else writeJson(filePath, config, { dryRun: false });
+  if (!mcpStateMatchesConfig(state, filePath, statePath)) {
+    if (!dryRun) removeMcpOwnershipState(statePath, filePath);
+    return { status: 'preserved', dest: filePath };
   }
-  return { status: onlyOurs ? 'removed' : 'pruned', dest: filePath };
+
+  let changed = false;
+  for (const [key, ownership] of Object.entries(state.servers)) {
+    const desired = MCP_SERVER_SPECS[key];
+    if (!desired) continue;
+    const previous = ownership.hadPrevious
+      && ownership.previous
+      && typeof ownership.previous === 'object'
+      && !Array.isArray(ownership.previous)
+      ? deepClone(ownership.previous)
+      : {};
+    for (const field of conflictingMcpTransportFields(previous, desired)) {
+      delete previous[field];
+    }
+    const installed = { ...previous, ...desired };
+    if (!mcpSpecsMatch(config.mcpServers[key], installed)) continue;
+    if (ownership.hadPrevious) {
+      config.mcpServers[key] = deepClone(ownership.previous);
+    } else {
+      delete config.mcpServers[key];
+    }
+    changed = true;
+  }
+
+  const removeConfig = changed
+    && Object.keys(config.mcpServers).length === 0
+    && Object.keys(config).length === 1;
+  if (!dryRun) {
+    if (removeConfig) fs.unlinkSync(filePath);
+    else if (changed) writeJson(filePath, config, { dryRun: false });
+    removeMcpOwnershipState(statePath, filePath);
+  }
+  return { status: removeConfig ? 'removed' : changed ? 'pruned' : 'preserved', dest: filePath };
 }
 
 function runInstall(rawArgs) {
@@ -394,7 +610,7 @@ function runInstall(rawArgs) {
   const settingsResult = installSettings(repoRoot, opts);
   const hookResults = installHooks(repoRoot, opts);
   const slashResults = installSlashCommands(repoRoot, opts);
-  const skillResult = installAgentSkill(repoRoot, opts);
+  const skillResult = installAgentSkills(repoRoot, opts);
   const mcpResult = opts.noMcp
     ? { status: 'skipped', dest: path.join(repoRoot, MCP_REL) }
     : installMcpServer(repoRoot, opts);
@@ -413,9 +629,7 @@ function runInstall(rawArgs) {
   summarize('hooks', hookResults, 'hook');
   summarize('slash commands', slashResults, 'command');
   if (skillResult.status === 'ok') {
-    summarize('skill: gitguardex', skillResult.files, 'skill');
-  } else if (skillResult.status === 'source-missing') {
-    logWarn('gitguardex skill source missing in package; skipped.');
+    summarize('agent skills', skillResult.files, 'skill');
   }
   logInfo(`mcp server (${MCP_REL}): ${mcpResult.status}`);
   logInfo(`CLAUDE.md symlink: ${symlinkResult.status}${symlinkResult.note ? ` (${symlinkResult.note})` : ''}`);
@@ -502,12 +716,12 @@ function runCheck(rawArgs) {
 
   // MCP registration check
   const mcpConfig = readJsonIfExists(path.join(repoRoot, MCP_REL));
-  const hasGxMcp = Boolean(mcpConfig && mcpConfig.mcpServers && mcpConfig.mcpServers[MCP_SERVER_KEY]);
-  if (!hasGxMcp) {
+  const missingMcpServers = missingManagedMcpServers(mcpConfig);
+  if (missingMcpServers.length > 0) {
     issues.push({
       severity: 'warning',
       kind: 'mcp-missing',
-      message: `${MCP_REL} does not register the '${MCP_SERVER_KEY}' MCP server (run '${SHORT_TOOL_NAME} claude install', or install --no-mcp to skip).`,
+      message: `${MCP_REL} does not register managed MCP server(s): ${missingMcpServers.join(', ')} (run '${SHORT_TOOL_NAME} claude install', or install --no-mcp to skip).`,
     });
   }
 
@@ -594,10 +808,10 @@ function runUninstall(rawArgs) {
     if (!opts.dryRun) writeJson(settingsPath, settings, { dryRun: false });
     removed.push(`${SETTINGS_REL} (managed entries pruned)`);
   }
-  // Remove the gx MCP server from .mcp.json (drop the file if it only held ours)
+  // Remove managed MCP servers from .mcp.json (drop the file if it only held ours)
   const mcpRemoval = uninstallMcpServer(repoRoot, opts);
-  if (mcpRemoval.status !== 'absent') {
-    removed.push(`${MCP_REL} (${mcpRemoval.status === 'removed' ? 'removed' : `'${MCP_SERVER_KEY}' server pruned`})`);
+  if (mcpRemoval.status === 'removed' || mcpRemoval.status === 'pruned') {
+    removed.push(`${MCP_REL} (${mcpRemoval.status === 'removed' ? 'removed' : 'managed servers pruned'})`);
   }
 
   logOk(`Removed ${removed.length} item(s)${opts.dryRun ? ' (dry-run)' : ''}.`);
@@ -639,7 +853,7 @@ Subcommands:
 Flags:
   --target <path>   Operate in a different repo directory.
   --force           Overwrite existing managed entries instead of merging.
-  --no-mcp          Skip registering the gx MCP server in .mcp.json.
+  --no-mcp          Skip registering gx and CodeGraph MCP servers in .mcp.json.
   --dry-run         Report what would change without writing.
   --json            Emit JSON output.
   --yes / -y        Required for uninstall.
@@ -677,6 +891,7 @@ module.exports = {
   ensureSpeckitMarkers,
   installHooks,
   installSlashCommands,
+  installAgentSkills,
   installMcpServer,
   uninstallMcpServer,
   mcpServerSpec,
@@ -684,6 +899,11 @@ module.exports = {
   MANAGED_SLASH_COMMANDS,
   MCP_REL,
   MCP_SERVER_KEY,
+  MCP_SERVER_SPECS,
+  missingManagedMcpServers,
+  resolveMcpConfigLinkPath,
+  resolveMcpStatePath,
+  MANAGED_AGENT_SKILLS,
   TEMPLATE_DEFAULT_SETTINGS,
   EXPECTED_HOOK_MATCHERS,
 };

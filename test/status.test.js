@@ -549,6 +549,8 @@ test('status --json returns cli, services, and repo summary', () => {
   const colonyService = parsed.services.find((service) => service.name === 'colony');
   assert.ok(colonyService, 'colony service should be included');
   assert.equal(colonyService.packageName, 'colonyq');
+  assert.equal(parsed.services.find((service) => service.name === 'codegraph')?.packageName, '@colbymchenry/codegraph');
+  assert.equal(parsed.services.find((service) => service.name === 'opensrc')?.packageName, 'opensrc');
   assert.ok(parsed.services.some((service) => service.name === 'cavekit'));
   assert.ok(parsed.services.some((service) => service.name === 'caveman'));
   assert.equal(parsed.repo.inGitRepo, true);
@@ -563,7 +565,7 @@ test('status warns when oh-my-claudecode dependency is inactive', () => {
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
@@ -591,7 +593,7 @@ test('compact status summarizes inactive optional companions without dependency 
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
@@ -617,7 +619,7 @@ test('status detects local cavekit and caveman companion installs', () => {
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
-{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
 JSON
   exit 0
 fi
