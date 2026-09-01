@@ -31,7 +31,7 @@ const MCP_SERVER_SPECS = {
 };
 
 const MANAGED_AGENT_SKILLS = [
-  { name: 'gitguardex', source: ['skills', 'gitguardex'] },
+  { name: 'gitguardex', source: ['.claude', 'skills', 'gitguardex'] },
   { name: 'opensrc', source: ['templates', 'codex', 'skills', 'opensrc'] },
 ];
 
