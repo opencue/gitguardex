@@ -647,7 +647,10 @@ function parseTomlStringArray(value) {
 
 function readCodegraphMcpConfig(config) {
   const lines = config.split(/\r?\n/);
-  const start = lines.findIndex((line) => stripTomlComment(line).trim() === '[mcp_servers.codegraph]');
+  const start = lines.findIndex((line) => (
+    /^\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:codegraph|"codegraph"|'codegraph')\s*\]$/
+      .test(stripTomlComment(line).trim())
+  ));
   if (start < 0) return null;
   const assignments = new Map();
   let pending = '';

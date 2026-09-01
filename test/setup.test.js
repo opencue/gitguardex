@@ -1493,7 +1493,7 @@ test('setup accepts equivalent multiline CodeGraph TOML without rewriting it', (
   const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
   const codexDir = path.join(fakeHome, '.codex');
   fs.mkdirSync(codexDir, { recursive: true });
-  const config = `[mcp_servers.codegraph] # managed MCP
+  const config = `["mcp_servers".'codegraph'] # managed MCP
 args = [
   'serve', # command
   '--mcp',
