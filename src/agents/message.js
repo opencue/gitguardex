@@ -242,6 +242,32 @@ function samePane(before, after) {
   );
 }
 
+function verifySourceCaller(source, deps = {}) {
+  const inspect = deps.inspectAgentPane || inspectAgentPane;
+  const observed = inspect(source, deps);
+  if (!observed.ok) return observed;
+
+  const runProcess = deps.runProcess || run;
+  const processResult = runProcess('ps', ['-e', '-o', 'pid=,ppid='], { stdio: 'pipe' });
+  if (processResult?.error || processResult?.status !== 0) {
+    return { ok: false, kind: 'source-caller-unverified', observed: 'process tree unavailable' };
+  }
+
+  const parents = new Map();
+  for (const rawLine of String(processResult.stdout || '').split('\n')) {
+    const match = rawLine.trim().match(/^(\d+)\s+(\d+)$/);
+    if (match) parents.set(Number.parseInt(match[1], 10), Number.parseInt(match[2], 10));
+  }
+  let pid = Number.isInteger(deps.callerPid) ? deps.callerPid : process.pid;
+  const visited = new Set();
+  while (pid > 0 && !visited.has(pid)) {
+    if (pid === observed.agentPid) return { ok: true };
+    visited.add(pid);
+    pid = parents.get(pid) || 0;
+  }
+  return { ok: false, kind: 'source-caller-unverified', observed: 'caller is not owned by source' };
+}
+
 function sendAgentMessage(repoRoot, options = {}, deps = {}) {
   const body = sanitizeBody(options.message);
   if (!body.trim()) return refusal('empty-message', 'message must not be empty');
@@ -275,6 +301,15 @@ function sendAgentMessage(repoRoot, options = {}, deps = {}) {
   }
   const backend = oneLine(target.tmux?.backend || 'tmux');
   if (backend !== 'tmux') return refusal('target-not-tmux', `target backend is ${backend}`);
+
+  const verifyCaller = deps.verifySourceCaller || verifySourceCaller;
+  const caller = verifyCaller(source, deps);
+  if (!caller.ok) {
+    return refusal(
+      caller.kind || 'source-caller-unverified',
+      `source identity refused: ${caller.observed || 'caller provenance is unknown'}`
+    );
+  }
 
   const inspect = deps.inspectAgentPane || inspectAgentPane;
   const before = inspect(target, deps);
@@ -338,5 +373,6 @@ module.exports = {
   pasteEnvelope,
   renderSendResult,
   sendAgentMessage,
+  verifySourceCaller,
   runSendCommand
 };

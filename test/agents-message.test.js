@@ -5,7 +5,8 @@ const {
   buildEnvelope,
   inspectAgentPane,
   pasteEnvelope,
-  sendAgentMessage
+  sendAgentMessage,
+  verifySourceCaller
 } = require('../src/agents/message');
 
 function session(overrides = {}) {
@@ -121,6 +122,52 @@ test('pasteEnvelope sends the payload over stdin in one tmux command list', () =
   ]);
 });
 
+test('verifySourceCaller requires the sender process to descend from the claimed agent', () => {
+  const source = session({ id: 'source-session', tmux: { backend: 'tmux', target: '%6' } });
+  const common = {
+    callerPid: 400,
+    inspectAgentPane: () => ({ ok: true, paneId: '%6', panePid: 100, agentPid: 200 }),
+    runProcess: () => ({ status: 0, stdout: '100 1\n200 100\n300 200\n400 300\n500 1\n' })
+  };
+
+  assert.deepEqual(verifySourceCaller(source, common), { ok: true });
+  assert.deepEqual(verifySourceCaller(source, { ...common, callerPid: 500 }), {
+    ok: false,
+    kind: 'source-caller-unverified',
+    observed: 'caller is not owned by source'
+  });
+});
+
+test('sendAgentMessage rejects an unverified --from-session identity', () => {
+  const target = session();
+  const source = session({ id: 'source-session', worktreePath: '/repo/source' });
+  let probedTarget = false;
+  const result = sendAgentMessage(
+    '/repo',
+    { sessionId: target.id, sourceSessionId: source.id, message: 'please continue' },
+    {
+      listAgentSessions: () => [target, source],
+      verifySourceCaller: () => ({
+        ok: false,
+        kind: 'source-caller-unverified',
+        observed: 'caller is not owned by source'
+      }),
+      inspectAgentPane: () => {
+        probedTarget = true;
+        return { ok: true };
+      }
+    }
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'source-caller-unverified',
+    retryable: false,
+    detail: 'source identity refused: caller is not owned by source'
+  });
+  assert.equal(probedTarget, false);
+});
+
 test('sendAgentMessage refuses a target without verified idle state before probing tmux', () => {
   let probed = false;
   const result = sendAgentMessage(
@@ -180,6 +227,7 @@ test('sendAgentMessage delivers only after source, target, pane, and post-write 
     },
     {
       listAgentSessions: () => [target, source],
+      verifySourceCaller: () => ({ ok: true }),
       inspectAgentPane: () => probes.shift(),
       pasteEnvelope(pane, envelope) {
         pasted.push({ pane, envelope });
@@ -224,6 +272,7 @@ test('sendAgentMessage reports when the target pane was replaced during delivery
     },
     {
       listAgentSessions: () => [target, source],
+      verifySourceCaller: () => ({ ok: true }),
       inspectAgentPane: () => probes.shift(),
       pasteEnvelope: () => ({ ok: true }),
       nonce: () => 'fixed'
