@@ -678,6 +678,13 @@ function hasConfiguredCodegraphMcp(config) {
     && JSON.stringify(parsed.args) === JSON.stringify(['serve', '--mcp']);
 }
 
+function hasCodegraphInstructions(filePath) {
+  if (!fs.existsSync(filePath)) return false;
+  const content = fs.readFileSync(filePath, 'utf8');
+  const start = content.indexOf('<!-- CODEGRAPH_START -->');
+  return start >= 0 && content.indexOf('<!-- CODEGRAPH_END -->', start) > start;
+}
+
 function restoreCodegraphBackups(backups, targets) {
   backups.forEach((backup, index) => {
     if (backup.status === 'created') fs.copyFileSync(backup.path, targets[index]);
@@ -701,7 +708,7 @@ function configureCodegraphForCodex(options = {}) {
   const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   const agentsPath = path.join(codexDir, 'AGENTS.md');
   if (hasConfiguredCodegraphMcp(config)
-    && fs.existsSync(agentsPath)) {
+    && hasCodegraphInstructions(agentsPath)) {
     return { status: 'already-configured', path: configPath };
   }
 
@@ -731,7 +738,7 @@ function configureCodegraphForCodex(options = {}) {
   }
   const configured = fs.existsSync(configPath)
     && hasConfiguredCodegraphMcp(fs.readFileSync(configPath, 'utf8'))
-    && fs.existsSync(agentsPath);
+    && hasCodegraphInstructions(agentsPath);
   if (!configured) {
     restoreCodegraphBackups(backups, targets);
     return {

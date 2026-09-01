@@ -1376,6 +1376,11 @@ cat > "$HOME/.codex/config.toml" <<'TOML'
 command = "codegraph"
 args = ["serve", "--mcp"]
 TOML
+cat >> "$HOME/.codex/AGENTS.md" <<'MARKER'
+<!-- CODEGRAPH_START -->
+## CodeGraph
+<!-- CODEGRAPH_END -->
+MARKER
 exit 0
 `).fakePath;
 
@@ -1395,7 +1400,7 @@ exit 0
   assert.match(result.stdout, /CodeGraph MCP configured for Codex/);
 });
 
-test('setup repairs a CodeGraph Codex install missing global AGENTS.md', () => {
+test('setup repairs a CodeGraph Codex install missing its AGENTS.md marker', () => {
   const repoDir = initRepo();
   const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
   const codexDir = path.join(fakeHome, '.codex');
@@ -1404,6 +1409,7 @@ test('setup repairs a CodeGraph Codex install missing global AGENTS.md', () => {
     path.join(codexDir, 'config.toml'),
     '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp"]\n',
   );
+  fs.writeFileSync(path.join(codexDir, 'AGENTS.md'), '# user instructions\n');
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
@@ -1417,7 +1423,11 @@ exit 1
   const fakeCodegraph = createFakeBin('codegraph', `
 if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
 echo "$@" > "${codegraphMarker}"
-printf '# CodeGraph\n' > "$HOME/.codex/AGENTS.md"
+cat >> "$HOME/.codex/AGENTS.md" <<'MARKER'
+<!-- CODEGRAPH_START -->
+## CodeGraph
+<!-- CODEGRAPH_END -->
+MARKER
 exit 0
 `).fakePath;
 
@@ -1429,7 +1439,9 @@ exit 0
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(codegraphMarker), true);
-  assert.equal(fs.readFileSync(path.join(codexDir, 'AGENTS.md'), 'utf8'), '# CodeGraph\n');
+  const agents = fs.readFileSync(path.join(codexDir, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /# user instructions/);
+  assert.match(agents, /CODEGRAPH_START/);
 });
 
 test('setup repairs a malformed CodeGraph MCP definition', () => {
@@ -1457,6 +1469,11 @@ cat > "$HOME/.codex/config.toml" <<'TOML'
 command = "codegraph"
 args = ["serve", "--mcp"]
 TOML
+cat >> "$HOME/.codex/AGENTS.md" <<'MARKER'
+<!-- CODEGRAPH_START -->
+## CodeGraph
+<!-- CODEGRAPH_END -->
+MARKER
 exit 0
 `).fakePath;
 
@@ -1484,7 +1501,10 @@ args = [
 command = 'codegraph'
 `;
   fs.writeFileSync(path.join(codexDir, 'config.toml'), config);
-  fs.writeFileSync(path.join(codexDir, 'AGENTS.md'), '# CodeGraph\n');
+  fs.writeFileSync(
+    path.join(codexDir, 'AGENTS.md'),
+    '<!-- CODEGRAPH_START -->\n## CodeGraph\n<!-- CODEGRAPH_END -->\n',
+  );
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
@@ -1535,7 +1555,11 @@ cat > "$HOME/.codex/config.toml" <<'TOML'
 command = "codegraph"
 args = ["serve", "--mcp"]
 TOML
-printf '# CodeGraph\n' > "$HOME/.codex/AGENTS.md"
+cat > "$HOME/.codex/AGENTS.md" <<'MARKER'
+<!-- CODEGRAPH_START -->
+## CodeGraph
+<!-- CODEGRAPH_END -->
+MARKER
 exit 0
 `).fakePath;
 

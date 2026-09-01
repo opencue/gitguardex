@@ -368,9 +368,17 @@ function mcpSpecsMatch(actual, desired) {
   return isDeepStrictEqual(actual, desired);
 }
 
+function mcpSpecCompatible(actual, desired) {
+  return Boolean(
+    actual
+    && typeof actual === 'object'
+    && Object.entries(desired).every(([key, value]) => isDeepStrictEqual(actual[key], value)),
+  );
+}
+
 function missingManagedMcpServers(config) {
   return Object.entries(MCP_SERVER_SPECS)
-    .filter(([key, desired]) => !mcpSpecsMatch(config?.mcpServers?.[key], desired))
+    .filter(([key, desired]) => !mcpSpecCompatible(config?.mcpServers?.[key], desired))
     .map(([key]) => key);
 }
 
