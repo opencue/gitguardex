@@ -1400,7 +1400,10 @@ test('setup repairs a CodeGraph Codex install missing global AGENTS.md', () => {
   const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
   const codexDir = path.join(fakeHome, '.codex');
   fs.mkdirSync(codexDir, { recursive: true });
-  fs.writeFileSync(path.join(codexDir, 'config.toml'), '[mcp_servers.codegraph]\ncommand = "codegraph"\n');
+  fs.writeFileSync(
+    path.join(codexDir, 'config.toml'),
+    '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp"]\n',
+  );
   const fakeNpm = createFakeNpmScript(`
 if [[ "$1" == "list" ]]; then
   cat <<'JSON'
@@ -1468,6 +1471,47 @@ exit 0
   assert.match(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'), /command = "codegraph"/);
 });
 
+test('setup accepts equivalent multiline CodeGraph TOML without rewriting it', () => {
+  const repoDir = initRepo();
+  const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
+  const codexDir = path.join(fakeHome, '.codex');
+  fs.mkdirSync(codexDir, { recursive: true });
+  const config = `[mcp_servers.codegraph] # managed MCP
+args = [
+  'serve', # command
+  '--mcp',
+]
+command = 'codegraph'
+`;
+  fs.writeFileSync(path.join(codexDir, 'config.toml'), config);
+  fs.writeFileSync(path.join(codexDir, 'AGENTS.md'), '# CodeGraph\n');
+  const fakeNpm = createFakeNpmScript(`
+if [[ "$1" == "list" ]]; then
+  cat <<'JSON'
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+JSON
+  exit 0
+fi
+exit 1
+`);
+  const codegraphMarker = path.join(repoDir, '.codegraph-unexpected-call');
+  const fakeCodegraph = createFakeBin('codegraph', `
+if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
+touch "${codegraphMarker}"
+exit 0
+`).fakePath;
+
+  const result = runNodeWithEnv(['setup', '--target', repoDir, '--yes-global-install'], repoDir, {
+    GUARDEX_NPM_BIN: fakeNpm,
+    GUARDEX_CODEGRAPH_BIN: fakeCodegraph,
+    GUARDEX_HOME_DIR: fakeHome,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(codegraphMarker), false);
+  assert.equal(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'), config);
+});
+
 test('setup creates a fresh CodeGraph backup when an earlier backup already exists', () => {
   const repoDir = initRepo();
   const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
@@ -1486,6 +1530,12 @@ exit 1
 `);
   const fakeCodegraph = createFakeBin('codegraph', `
 if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
+cat > "$HOME/.codex/config.toml" <<'TOML'
+[mcp_servers.codegraph]
+command = "codegraph"
+args = ["serve", "--mcp"]
+TOML
+printf '# CodeGraph\n' > "$HOME/.codex/AGENTS.md"
 exit 0
 `).fakePath;
 
@@ -1535,6 +1585,39 @@ exit 1
   assert.equal(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'), 'model = "original"\n');
   assert.equal(fs.existsSync(path.join(codexDir, 'AGENTS.md')), false);
   assert.match(result.stdout, /codegraph Codex MCP installer failed/);
+});
+
+test('setup restores Codex files when CodeGraph reports success without completing setup', () => {
+  const repoDir = initRepo();
+  const fakeHome = createGuardexCompanionHome({ cavekit: true, caveman: true });
+  const codexDir = path.join(fakeHome, '.codex');
+  fs.mkdirSync(codexDir, { recursive: true });
+  fs.writeFileSync(path.join(codexDir, 'config.toml'), 'model = "original"\n');
+  const fakeNpm = createFakeNpmScript(`
+if [[ "$1" == "list" ]]; then
+  cat <<'JSON'
+{"dependencies":{"oh-my-codex":{"version":"1.0.0"},"oh-my-claude-sisyphus":{"version":"1.0.0"},"@fission-ai/openspec":{"version":"1.0.0"},"@colbymchenry/codegraph":{"version":"1.0.0"},"opensrc":{"version":"1.0.0"},"colonyq":{"version":"1.0.0"},"@imdeadpool/codex-account-switcher":{"version":"1.0.0"}}}
+JSON
+  exit 0
+fi
+exit 1
+`);
+  const fakeCodegraph = createFakeBin('codegraph', `
+if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
+printf 'partial\n' > "$HOME/.codex/AGENTS.md"
+exit 0
+`).fakePath;
+
+  const result = runNodeWithEnv(['setup', '--target', repoDir, '--yes-global-install'], repoDir, {
+    GUARDEX_NPM_BIN: fakeNpm,
+    GUARDEX_CODEGRAPH_BIN: fakeCodegraph,
+    GUARDEX_HOME_DIR: fakeHome,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'), 'model = "original"\n');
+  assert.equal(fs.existsSync(path.join(codexDir, 'AGENTS.md')), false);
+  assert.match(result.stdout, /incomplete configuration/);
 });
 
 

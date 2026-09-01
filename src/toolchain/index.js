@@ -578,18 +578,111 @@ function backupGlobalAgentFile(filePath) {
   return { status: 'created', path: backupPath };
 }
 
-function hasConfiguredCodegraphMcp(config) {
+function stripTomlComment(line) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = quote === char ? null : quote || char;
+      continue;
+    }
+    if (!quote && char === '#') return line.slice(0, index);
+  }
+  return line;
+}
+
+function parseTomlString(value) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) return trimmed.slice(1, -1);
+  return null;
+}
+
+function parseTomlStringArray(value) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return null;
+  const items = [];
+  let index = 1;
+  while (index < trimmed.length - 1) {
+    while (/\s/.test(trimmed[index])) index += 1;
+    if (trimmed[index] === ']') break;
+    const quote = trimmed[index];
+    if (quote !== '"' && quote !== "'") return null;
+    const start = index;
+    index += 1;
+    let escaped = false;
+    while (index < trimmed.length - 1) {
+      const char = trimmed[index];
+      if (quote === '"' && escaped) escaped = false;
+      else if (quote === '"' && char === '\\') escaped = true;
+      else if (char === quote) break;
+      index += 1;
+    }
+    if (trimmed[index] !== quote) return null;
+    const parsed = parseTomlString(trimmed.slice(start, index + 1));
+    if (parsed === null) return null;
+    items.push(parsed);
+    index += 1;
+    while (/\s/.test(trimmed[index])) index += 1;
+    if (trimmed[index] === ',') index += 1;
+    else if (trimmed[index] !== ']') return null;
+  }
+  return items;
+}
+
+function readCodegraphMcpConfig(config) {
   const lines = config.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim() === '[mcp_servers.codegraph]');
-  if (start < 0) return false;
-  const nextSection = lines.findIndex((line, index) => (
-    index > start && /^\s*\[\[?.+\]\]?\s*$/.test(line)
-  ));
-  const section = lines.slice(start + 1, nextSection < 0 ? undefined : nextSection);
-  return section.some((line) => /^\s*command\s*=\s*["']codegraph["']\s*$/.test(line))
-    && section.some((line) => (
-      /^\s*args\s*=\s*\[\s*["']serve["']\s*,\s*["']--mcp["']\s*\]\s*$/.test(line)
-    ));
+  const start = lines.findIndex((line) => stripTomlComment(line).trim() === '[mcp_servers.codegraph]');
+  if (start < 0) return null;
+  const assignments = new Map();
+  let pending = '';
+  let arrayDepth = 0;
+  for (const rawLine of lines.slice(start + 1)) {
+    const line = stripTomlComment(rawLine).trim();
+    if (!pending && /^\[\[?.+\]\]?$/.test(line)) break;
+    if (!line) continue;
+    pending = pending ? `${pending} ${line}` : line;
+    arrayDepth += [...line].filter((char) => char === '[').length;
+    arrayDepth -= [...line].filter((char) => char === ']').length;
+    if (arrayDepth > 0) continue;
+    const separator = pending.indexOf('=');
+    if (separator > 0) {
+      assignments.set(pending.slice(0, separator).trim(), pending.slice(separator + 1).trim());
+    }
+    pending = '';
+  }
+  return {
+    command: parseTomlString(assignments.get('command') || ''),
+    args: parseTomlStringArray(assignments.get('args') || ''),
+  };
+}
+
+function hasConfiguredCodegraphMcp(config) {
+  const parsed = readCodegraphMcpConfig(config);
+  return parsed?.command === 'codegraph'
+    && JSON.stringify(parsed.args) === JSON.stringify(['serve', '--mcp']);
+}
+
+function restoreCodegraphBackups(backups, targets) {
+  backups.forEach((backup, index) => {
+    if (backup.status === 'created') fs.copyFileSync(backup.path, targets[index]);
+    else if (fs.existsSync(targets[index])) fs.unlinkSync(targets[index]);
+  });
 }
 
 // CodeGraph owns the Codex TOML/AGENTS serialization. Guardex only invokes its
@@ -631,13 +724,21 @@ function configureCodegraphForCodex(options = {}) {
       env: { HOME: GUARDEX_HOME_DIR, USERPROFILE: GUARDEX_HOME_DIR },
     },
   );
+  const targets = [configPath, agentsPath];
   if (result.status !== 0) {
-    const targets = [configPath, agentsPath];
-    backups.forEach((backup, index) => {
-      if (backup.status === 'created') fs.copyFileSync(backup.path, targets[index]);
-      else if (fs.existsSync(targets[index])) fs.unlinkSync(targets[index]);
-    });
+    restoreCodegraphBackups(backups, targets);
     return { status: 'failed', reason: 'codegraph Codex MCP installer failed', backups };
+  }
+  const configured = fs.existsSync(configPath)
+    && hasConfiguredCodegraphMcp(fs.readFileSync(configPath, 'utf8'))
+    && fs.existsSync(agentsPath);
+  if (!configured) {
+    restoreCodegraphBackups(backups, targets);
+    return {
+      status: 'failed',
+      reason: 'codegraph Codex MCP installer produced an incomplete configuration',
+      backups,
+    };
   }
   return { status: 'configured', path: configPath, backups };
 }
