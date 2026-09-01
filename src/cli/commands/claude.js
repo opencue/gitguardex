@@ -391,13 +391,19 @@ function resolveMcpStatePath(repoRoot) {
   return path.join(gitDir, 'guardex', 'claude-mcp-state.json');
 }
 
-function readMcpConfigIdentity(filePath) {
-  const stat = fs.statSync(filePath);
+function mcpConfigIdentityFromStat(stat) {
+  const birthtimeMs = Number(stat.birthtimeMs);
+  const hasReliableBirthtime = Number.isFinite(birthtimeMs) && birthtimeMs > 0;
   return {
     device: String(stat.dev),
     inode: String(stat.ino),
-    birthtimeMs: String(stat.birthtimeMs),
+    birthtimeMs: hasReliableBirthtime ? String(birthtimeMs) : null,
+    fallbackCtimeMs: hasReliableBirthtime ? null : String(stat.ctimeMs),
   };
+}
+
+function readMcpConfigIdentity(filePath) {
+  return mcpConfigIdentityFromStat(fs.statSync(filePath));
 }
 
 function mcpStateMatchesConfig(state, filePath) {
@@ -793,6 +799,7 @@ module.exports = {
   MCP_SERVER_KEY,
   MCP_SERVER_SPECS,
   missingManagedMcpServers,
+  mcpConfigIdentityFromStat,
   resolveMcpStatePath,
   MANAGED_AGENT_SKILLS,
   TEMPLATE_DEFAULT_SETTINGS,

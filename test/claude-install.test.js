@@ -394,6 +394,20 @@ test('installMcpServer retains ownership after an unrelated MCP edit', () => {
   assert.deepEqual(after.mcpServers, { other: { command: '/user/other' } });
 });
 
+test('MCP config identity uses birth time when the filesystem provides it', () => {
+  assert.deepEqual(
+    claudeModule.mcpConfigIdentityFromStat({ dev: 1, ino: 2, birthtimeMs: 3, ctimeMs: 4 }),
+    { device: '1', inode: '2', birthtimeMs: '3', fallbackCtimeMs: null },
+  );
+});
+
+test('MCP config identity falls back to change time without a usable birth time', () => {
+  assert.deepEqual(
+    claudeModule.mcpConfigIdentityFromStat({ dev: 1, ino: 2, birthtimeMs: 0, ctimeMs: 4 }),
+    { device: '1', inode: '2', birthtimeMs: null, fallbackCtimeMs: '4' },
+  );
+});
+
 test('missingManagedMcpServers rejects truthy but incorrect definitions', () => {
   const missing = claudeModule.missingManagedMcpServers({
     mcpServers: {
