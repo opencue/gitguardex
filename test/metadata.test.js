@@ -187,7 +187,7 @@ test('README keeps the problem-capabilities visuals aligned', () => {
   );
   assert.match(
     readme,
-    /### What GitGuardex can do\s+!\[Agent branch\/worktree start protocol\]\(https:\/\/raw\.githubusercontent\.com\/recodeee\/gitguardex\/main\/docs\/images\/workflow-branch-start\.svg\)/s,
+    /### What GitGuardex can do\s+<p align="center">\s+<img alt="GitGuardex capability map: isolated lanes, evidence-driven shipping, and safe cleanup" src="https:\/\/raw\.githubusercontent\.com\/opencue\/gitguardex\/main\/docs\/images\/capabilities-dark\.svg"/s,
   );
 });
 

@@ -582,6 +582,7 @@ has_live_process_in_worktree() {
 remove_worktree_with_lock_guard() {
   local worktree="$1"
   local remove_reason="$2"
+  local branch="$3"
   local lock_file="${worktree}/.omx/state/agent-file-locks.json"
   local shared_lock="${repo_common_dir}/agent-file-locks.lock"
 
@@ -590,7 +591,7 @@ remove_worktree_with_lock_guard() {
     return 10
   fi
 
-  python3 - "$shared_lock" "$lock_file" "$repo_root" "$worktree" "$remove_reason" "$DRY_RUN" <<'PY'
+  python3 - "$shared_lock" "$lock_file" "$repo_root" "$worktree" "$remove_reason" "$branch" "$DRY_RUN" <<'PY'
 import json
 import subprocess
 import sys
@@ -601,7 +602,7 @@ except ImportError:
     print('[agent-worktree-prune] OS file locking is unavailable; prune blocked', file=sys.stderr)
     raise SystemExit(10)
 
-shared_lock, lock_file, repo_root, worktree, remove_reason, dry_run = sys.argv[1:]
+shared_lock, lock_file, repo_root, worktree, remove_reason, branch, dry_run = sys.argv[1:]
 try:
     with open(shared_lock, 'a+', encoding='utf-8') as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
@@ -633,7 +634,16 @@ try:
                     file=sys.stderr,
                 )
                 raise SystemExit(10)
-            raise SystemExit(10)
+            if not branch.startswith(('agent/', 'work/')) or entry.get('branch') != branch:
+                raise SystemExit(10)
+
+        if locks:
+            label = 'lock' if len(locks) == 1 else 'locks'
+            print(
+                f'[agent-worktree-prune] Releasing {len(locks)} self-owned {label} '
+                f'while removing terminal worktree: {worktree}',
+                flush=True,
+            )
 
         print(f'[agent-worktree-prune] Removing worktree ({remove_reason}): {worktree}', flush=True)
         command = ['git', '-C', repo_root, 'worktree', 'remove', worktree, '--force']
@@ -880,7 +890,7 @@ process_entry() {
   fi
 
   local remove_status=0
-  if remove_worktree_with_lock_guard "$wt" "$remove_reason"; then
+  if remove_worktree_with_lock_guard "$wt" "$remove_reason" "$branch"; then
     removed_worktrees=$((removed_worktrees + 1))
   else
     remove_status=$?

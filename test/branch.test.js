@@ -148,6 +148,29 @@ test('agent-branch-start reuses the current agent worktree instead of cloning it
   );
 });
 
+test('agent-branch-start recovers clean detached managed worktrees before creating another lane', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  const staleWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__stale-detached-lane');
+
+  let result = runCmd(
+    'git',
+    ['worktree', 'add', '-b', 'agent/stale-detached-lane', staleWorktree, 'dev'],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['checkout', '--detach'], staleWorktree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  result = runBranchStart(
+    ['--tier', 'T1', '--no-transfer', 'recover stale lane', 'bot'],
+    repoDir,
+    { GUARDEX_BRANCH_START_CLEANUP_IDLE_MINUTES: '0' },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Recovered 1 stale managed worktree before branch start/);
+  assert.equal(fs.existsSync(staleWorktree), false, 'detached managed worktree should be removed');
+});
+
 test('agent-branch-start repairs missing base metadata when reusing with an explicit base', () => {
   const { repoDir } = createBootstrappedRepo({ committed: true });
 
