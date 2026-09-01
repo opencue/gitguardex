@@ -252,10 +252,10 @@ test('uninstallMcpServer preserves a managed server changed after installation',
   fs.writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
 
   const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
-  assert.equal(result.status, 'preserved');
+  assert.equal(result.status, 'pruned');
   const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
   assert.deepEqual(after.mcpServers.codegraph, { command: '/new/user/codegraph' });
-  assert.deepEqual(after.mcpServers.gx, { command: 'gx', args: ['mcp', 'serve'] });
+  assert.equal(after.mcpServers.gx, undefined);
 });
 
 test('reinstallMcpServer refreshes ownership after a user changes a managed server', () => {
@@ -273,7 +273,7 @@ test('reinstallMcpServer refreshes ownership after a user changes a managed serv
   assert.equal(result.status, 'pruned');
   const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
   assert.deepEqual(after.mcpServers.codegraph, customCodegraph);
-  assert.deepEqual(after.mcpServers.gx, { command: 'gx', args: ['mcp', 'serve'] });
+  assert.equal(after.mcpServers.gx, undefined);
 });
 
 test('uninstallMcpServer reports preserved when every managed server changed after installation', () => {
@@ -360,7 +360,7 @@ test('installMcpServer replaces ownership after .mcp.json is recreated with drif
   assert.deepEqual(after.mcpServers, replacement.mcpServers);
 });
 
-test('installMcpServer replaces ownership after .mcp.json is rewritten in place', () => {
+test('installMcpServer refreshes changed managed ownership after an in-place rewrite', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
   const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
@@ -376,7 +376,22 @@ test('installMcpServer replaces ownership after .mcp.json is rewritten in place'
   assert.equal(claudeModule.uninstallMcpServer(repoRoot, { dryRun: false }).status, 'pruned');
 
   const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
-  assert.deepEqual(after.mcpServers, replacement.mcpServers);
+  assert.deepEqual(after.mcpServers, { codegraph: replacement.mcpServers.codegraph });
+});
+
+test('installMcpServer retains ownership after an unrelated MCP edit', () => {
+  const repoRoot = makeRepo();
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  config.mcpServers.other = { command: '/user/other' };
+  fs.writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
+
+  assert.equal(claudeModule.installMcpServer(repoRoot, { dryRun: false }).status, 'unchanged');
+  assert.equal(claudeModule.uninstallMcpServer(repoRoot, { dryRun: false }).status, 'pruned');
+
+  const after = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+  assert.deepEqual(after.mcpServers, { other: { command: '/user/other' } });
 });
 
 test('missingManagedMcpServers rejects truthy but incorrect definitions', () => {

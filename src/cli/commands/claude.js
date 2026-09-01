@@ -13,7 +13,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { isDeepStrictEqual } = require('util');
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
 const { gitRun, resolveRepoRoot } = require('../../git');
@@ -398,7 +397,6 @@ function readMcpConfigIdentity(filePath) {
     device: String(stat.dev),
     inode: String(stat.ino),
     birthtimeMs: String(stat.birthtimeMs),
-    contentSha256: crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex'),
   };
 }
 
