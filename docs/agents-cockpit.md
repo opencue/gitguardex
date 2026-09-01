@@ -185,8 +185,9 @@ gx agents send \
   --message "Re-run the focused auth test and report the result."
 ```
 
-Run the command from a registered source-agent worktree, or pass
-`--from-session <id>`. GitGuardex only sends to an active session whose
+Run the command from a registered source-agent worktree. Agent-spawned commands
+may pass `--from-session <id>`; GitGuardex verifies that the caller descends
+from that session's live agent process. It only sends to an active session whose
 activity is `done`, whose backend is tmux, and whose recorded pane still has
 the expected agent process in the foreground. The message is wrapped in a
 nonce-stamped outer envelope and pasted through a named tmux buffer. A
