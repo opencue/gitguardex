@@ -217,6 +217,26 @@ test('installMcpServer merges into an existing .mcp.json without clobbering othe
   assert.deepEqual(config.mcpServers.other, { command: 'x' }, 'existing server preserved');
 });
 
+for (const [name, config, message] of [
+  ['non-object root', [], /must contain a JSON object/],
+  ['string mcpServers', { mcpServers: 'invalid' }, /non-object mcpServers value/],
+  ['array mcpServers', { mcpServers: [] }, /non-object mcpServers value/],
+]) {
+  test(`installMcpServer rejects ${name} without modifying .mcp.json`, () => {
+    const repoRoot = makeRepo();
+    const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+    const original = `${JSON.stringify(config, null, 2)}\n`;
+    fs.writeFileSync(mcpPath, original);
+
+    assert.throws(
+      () => claudeModule.installMcpServer(repoRoot, { dryRun: false }),
+      message,
+    );
+    assert.equal(fs.readFileSync(mcpPath, 'utf8'), original);
+    assert.equal(fs.existsSync(claudeModule.resolveMcpStatePath(repoRoot)), false);
+  });
+}
+
 test('installMcpServer is idempotent on a second run', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: false });

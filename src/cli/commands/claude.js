@@ -450,7 +450,13 @@ function installMcpServer(repoRoot, { dryRun, linkConfig = replaceMcpConfigLink 
   const fileExisted = fs.existsSync(filePath);
   const originalContents = fileExisted ? fs.readFileSync(filePath) : null;
   const config = readJsonIfExists(filePath) || {};
-  config.mcpServers = config.mcpServers || {};
+  if (typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error(`${MCP_REL} must contain a JSON object`);
+  }
+  if (config.mcpServers == null) config.mcpServers = {};
+  else if (typeof config.mcpServers !== 'object' || Array.isArray(config.mcpServers)) {
+    throw new Error(`${MCP_REL} has a non-object mcpServers value`);
+  }
   const existingState = readJsonIfExists(statePath);
   const missingServers = missingManagedMcpServers(config);
   if (missingServers.length === 0) {
