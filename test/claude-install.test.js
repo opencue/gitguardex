@@ -234,9 +234,11 @@ test('installMcpServer records and uninstall restores pre-existing managed serve
 
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
   const statePath = claudeModule.resolveMcpStatePath(repoRoot);
-  const configLinkPath = claudeModule.resolveMcpConfigLinkPath(statePath);
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  const configLinkPath = claudeModule.resolveMcpConfigLinkPath(statePath, mcpPath, state.configLink);
   assert.equal(fs.existsSync(statePath), true);
-  assert.equal(fs.statSync(configLinkPath).ino, fs.statSync(path.join(repoRoot, claudeModule.MCP_REL)).ino);
+  assert.equal(fs.statSync(configLinkPath).ino, fs.statSync(mcpPath).ino);
 
   const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
   assert.equal(result.status, 'pruned');
@@ -324,6 +326,36 @@ test('uninstallMcpServer preserves a custom legacy gx server without ownership s
 
   assert.equal(result.status, 'absent');
   assert.deepEqual(JSON.parse(fs.readFileSync(mcpPath, 'utf8')), config);
+});
+
+test('installMcpServer adopts an exact legacy gx server when adding CodeGraph', () => {
+  const repoRoot = makeRepo();
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  fs.writeFileSync(mcpPath, `${JSON.stringify({
+    mcpServers: { gx: { command: 'gx', args: ['mcp', 'serve'] } },
+  }, null, 2)}\n`);
+
+  assert.equal(claudeModule.installMcpServer(repoRoot, { dryRun: false }).status, 'updated');
+  assert.equal(claudeModule.uninstallMcpServer(repoRoot, { dryRun: false }).status, 'removed');
+  assert.equal(fs.existsSync(mcpPath), false);
+});
+
+test('installMcpServer rolls back when no ownership hard link can be created', () => {
+  const repoRoot = makeRepo();
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const original = `${JSON.stringify({
+    mcpServers: { other: { command: '/user/other' } },
+  }, null, 2)}\n`;
+  fs.writeFileSync(mcpPath, original);
+
+  const result = claudeModule.installMcpServer(repoRoot, {
+    dryRun: false,
+    linkConfig: () => null,
+  });
+
+  assert.equal(result.status, 'ownership-unavailable');
+  assert.equal(fs.readFileSync(mcpPath, 'utf8'), original);
+  assert.equal(fs.existsSync(claudeModule.resolveMcpStatePath(repoRoot)), false);
 });
 
 test('uninstallMcpServer removes stale ownership state when .mcp.json is missing', () => {

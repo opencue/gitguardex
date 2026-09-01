@@ -391,31 +391,47 @@ function resolveMcpStatePath(repoRoot) {
   return path.join(gitDir, 'guardex', 'claude-mcp-state.json');
 }
 
-function resolveMcpConfigLinkPath(statePath) {
+function resolveMcpConfigLinkPath(statePath, filePath, location = 'git') {
+  if (location === 'worktree') {
+    return path.join(path.dirname(filePath), '.omx', 'state', 'claude-mcp-config-link');
+  }
   return `${statePath}.config-link`;
 }
 
-function removeMcpOwnershipState(statePath) {
-  for (const filePath of [statePath, resolveMcpConfigLinkPath(statePath)]) {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+function removeMcpOwnershipState(statePath, filePath) {
+  const managedPaths = [
+    statePath,
+    resolveMcpConfigLinkPath(statePath, filePath, 'git'),
+    resolveMcpConfigLinkPath(statePath, filePath, 'worktree'),
+  ];
+  for (const managedPath of managedPaths) {
+    if (fs.existsSync(managedPath)) fs.unlinkSync(managedPath);
   }
 }
 
 function replaceMcpConfigLink(filePath, statePath) {
-  const linkPath = resolveMcpConfigLinkPath(statePath);
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  if (fs.existsSync(linkPath)) fs.unlinkSync(linkPath);
-  try {
-    fs.linkSync(filePath, linkPath);
-    return true;
-  } catch {
-    return false;
+  for (const location of ['git', 'worktree']) {
+    const linkPath = resolveMcpConfigLinkPath(statePath, filePath, location);
+    const temporaryPath = `${linkPath}.tmp-${process.pid}`;
+    try {
+      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+      fs.linkSync(filePath, temporaryPath);
+      fs.renameSync(temporaryPath, linkPath);
+      const otherLocation = location === 'git' ? 'worktree' : 'git';
+      const otherPath = resolveMcpConfigLinkPath(statePath, filePath, otherLocation);
+      if (fs.existsSync(otherPath)) fs.unlinkSync(otherPath);
+      return location;
+    } catch {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    }
   }
+  return null;
 }
 
 function mcpStateMatchesConfig(state, filePath, statePath) {
-  const linkPath = resolveMcpConfigLinkPath(statePath);
-  if (state?.version !== 2 || state.configLink !== true
+  const linkPath = resolveMcpConfigLinkPath(statePath, filePath, state?.configLink);
+  if (state?.version !== 2 || !['git', 'worktree'].includes(state.configLink)
     || !fs.existsSync(filePath) || !fs.existsSync(linkPath)) return false;
   const configStat = fs.statSync(filePath);
   const linkStat = fs.statSync(linkPath);
@@ -428,18 +444,19 @@ function mcpStateMatchesConfig(state, filePath, statePath) {
 // Register the read-only `gx mcp` server in the target repo's .mcp.json so any
 // agent there can call list_agents / who_owns / my_context. Merges into an
 // existing .mcp.json without disturbing other servers; idempotent.
-function installMcpServer(repoRoot, { dryRun }) {
+function installMcpServer(repoRoot, { dryRun, linkConfig = replaceMcpConfigLink }) {
   const filePath = path.join(repoRoot, MCP_REL);
   const statePath = resolveMcpStatePath(repoRoot);
   const fileExisted = fs.existsSync(filePath);
+  const originalContents = fileExisted ? fs.readFileSync(filePath) : null;
   const config = readJsonIfExists(filePath) || {};
   config.mcpServers = config.mcpServers || {};
   const existingState = readJsonIfExists(statePath);
   const missingServers = missingManagedMcpServers(config);
   if (missingServers.length === 0) {
     if (!dryRun && (!existingState || !mcpStateMatchesConfig(existingState, filePath, statePath))) {
-      removeMcpOwnershipState(statePath);
-      writeJson(statePath, { version: 2, configLink: false, servers: {} }, { dryRun: false });
+      removeMcpOwnershipState(statePath, filePath);
+      writeJson(statePath, { version: 2, configLink: null, servers: {} }, { dryRun: false });
     }
     return { status: 'unchanged', dest: filePath };
   }
@@ -450,24 +467,38 @@ function installMcpServer(repoRoot, { dryRun }) {
   const state = (fileExisted && existingState && mcpStateMatchesConfig(existingState, filePath, statePath)
     ? existingState
     : null)
-    || { version: 2, configLink: true, servers: {} };
+    || { version: 2, configLink: null, servers: {} };
   state.servers = state.servers || {};
-  for (const key of missingServers) {
-    const hadPrevious = Object.prototype.hasOwnProperty.call(config.mcpServers, key);
+  for (const [key, desired] of Object.entries(MCP_SERVER_SPECS)) {
+    const isLegacyGx = key === MCP_SERVER_KEY
+      && !existingState
+      && !state.servers[key]
+      && mcpSpecsMatch(config.mcpServers[key], desired);
+    if (!missingServers.includes(key) && !isLegacyGx) continue;
+    const hadPrevious = !isLegacyGx && Object.prototype.hasOwnProperty.call(config.mcpServers, key);
     state.servers[key] = {
       hadPrevious,
       ...(hadPrevious ? { previous: deepClone(config.mcpServers[key]) } : {}),
     };
-    config.mcpServers[key] = deepClone(MCP_SERVER_SPECS[key]);
+    if (!isLegacyGx) config.mcpServers[key] = deepClone(desired);
   }
 
   const status = hadManagedServer ? 'updated' : fileExisted ? 'merged' : 'created';
   if (!dryRun) {
     writeJson(filePath, config, { dryRun: false });
     state.version = 2;
-    state.configLink = true;
-    if (replaceMcpConfigLink(filePath, statePath)) writeJson(statePath, state, { dryRun: false });
-    else removeMcpOwnershipState(statePath);
+    const configLink = linkConfig(filePath, statePath);
+    if (configLink) {
+      state.configLink = configLink;
+      writeJson(statePath, state, { dryRun: false });
+    } else {
+      if (fileExisted) fs.writeFileSync(filePath, originalContents);
+      else fs.unlinkSync(filePath);
+      if (!existingState || !mcpStateMatchesConfig(existingState, filePath, statePath)) {
+        removeMcpOwnershipState(statePath, filePath);
+      }
+      return { status: 'ownership-unavailable', dest: filePath };
+    }
   }
   return { status, dest: filePath, state: statePath };
 }
@@ -482,7 +513,7 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   if (!state || !state.servers) {
     const legacyGx = config?.mcpServers?.[MCP_SERVER_KEY];
     if (!mcpSpecsMatch(legacyGx, MCP_SERVER_SPECS[MCP_SERVER_KEY])) {
-      if (!dryRun) removeMcpOwnershipState(statePath);
+      if (!dryRun) removeMcpOwnershipState(statePath, filePath);
       return { status: 'absent', dest: filePath };
     }
     delete config.mcpServers[MCP_SERVER_KEY];
@@ -490,16 +521,16 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
     if (!dryRun) {
       if (removeConfig) fs.unlinkSync(filePath);
       else writeJson(filePath, config, { dryRun: false });
-      removeMcpOwnershipState(statePath);
+      removeMcpOwnershipState(statePath, filePath);
     }
     return { status: removeConfig ? 'removed' : 'pruned', dest: filePath };
   }
   if (!config || !config.mcpServers) {
-    if (!dryRun) removeMcpOwnershipState(statePath);
+    if (!dryRun) removeMcpOwnershipState(statePath, filePath);
     return { status: 'absent', dest: filePath };
   }
   if (!mcpStateMatchesConfig(state, filePath, statePath)) {
-    if (!dryRun) removeMcpOwnershipState(statePath);
+    if (!dryRun) removeMcpOwnershipState(statePath, filePath);
     return { status: 'preserved', dest: filePath };
   }
 
@@ -521,7 +552,7 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   if (!dryRun) {
     if (removeConfig) fs.unlinkSync(filePath);
     else if (changed) writeJson(filePath, config, { dryRun: false });
-    removeMcpOwnershipState(statePath);
+    removeMcpOwnershipState(statePath, filePath);
   }
   return { status: removeConfig ? 'removed' : changed ? 'pruned' : 'preserved', dest: filePath };
 }
