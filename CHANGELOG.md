@@ -1,5 +1,18 @@
 # Changelog
 
+## [8.4.0](https://github.com/opencue/gitguardex/compare/v8.3.0...v8.4.0) (2026-09-01)
+
+
+### Features
+
+* **agents:** message agents with or without Nodeterm ([#765](https://github.com/opencue/gitguardex/issues/765)) ([125a90a](https://github.com/opencue/gitguardex/commit/125a90aae959338da526930a2ac04969e0c1659b))
+* **vscode:** expose managed worktrees as visible repositories ([#763](https://github.com/opencue/gitguardex/issues/763)) ([915baf0](https://github.com/opencue/gitguardex/commit/915baf0e6f4dbb86cd11011f549e9d55eb6cf659))
+
+
+### Bug Fixes
+
+* **cleanup:** recover stale Codex worktrees before lane start ([#764](https://github.com/opencue/gitguardex/issues/764)) ([378394f](https://github.com/opencue/gitguardex/commit/378394f58f0b9edb4e99281fd9c59783b421d69c))
+
 ## [8.3.0](https://github.com/opencue/gitguardex/compare/v8.2.0...v8.3.0) (2026-08-31)
 
 
