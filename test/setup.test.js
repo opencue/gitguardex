@@ -1495,6 +1495,7 @@ test('setup accepts equivalent multiline CodeGraph TOML with quoted keys without
   const codexDir = path.join(fakeHome, '.codex');
   fs.mkdirSync(codexDir, { recursive: true });
   const config = `["mcp_servers".'codegraph'] # managed MCP
+env = { BRACKET = "[" }
 "args" = [
   'serve', # command
   '--mcp',

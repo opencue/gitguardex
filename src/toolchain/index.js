@@ -600,6 +600,28 @@ function stripTomlComment(line) {
   return line;
 }
 
+function countTomlSyntaxCharacter(line, target) {
+  let quote = null;
+  let escaped = false;
+  let count = 0;
+  for (const char of line) {
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = quote === char ? null : quote || char;
+      continue;
+    }
+    if (!quote && char === target) count += 1;
+  }
+  return count;
+}
+
 function parseTomlString(value) {
   const trimmed = value.trim();
   if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
@@ -738,8 +760,8 @@ function readCodegraphMcpConfig(config) {
     const line = stripTomlComment(rawLine).trim();
     if (!line) continue;
     pending = pending ? `${pending} ${line}` : line;
-    arrayDepth += [...line].filter((char) => char === '[').length;
-    arrayDepth -= [...line].filter((char) => char === ']').length;
+    arrayDepth += countTomlSyntaxCharacter(line, '[');
+    arrayDepth -= countTomlSyntaxCharacter(line, ']');
     if (arrayDepth > 0) continue;
     const separator = pending.indexOf('=');
     if (separator > 0) {
