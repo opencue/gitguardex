@@ -646,15 +646,29 @@ function parseTomlStringArray(value) {
 }
 
 function findCodegraphMcpSection(lines) {
-  const start = lines.findIndex((line) => (
-    /^\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:codegraph|"codegraph"|'codegraph')\s*\]$/
-      .test(stripTomlComment(line).trim())
-  ));
-  if (start < 0) return null;
-  const next = lines.findIndex((line, index) => (
-    index > start && /^\[\[?.+\]\]?$/.test(stripTomlComment(line).trim())
-  ));
-  return { start, end: next < 0 ? lines.length : next };
+  const key = '(?:mcp_servers|"mcp_servers"|\'mcp_servers\')';
+  const codegraph = '(?:codegraph|"codegraph"|\'codegraph\')';
+  const headerPattern = new RegExp(`^\\[\\s*${key}\\s*\\.\\s*${codegraph}\\s*\\]$`);
+  const assignmentPattern = new RegExp(`^${key}\\s*\\.\\s*${codegraph}\\s*=`);
+  const parentHeaderPattern = new RegExp(`^\\[\\s*${key}\\s*\\]$`);
+  const childAssignmentPattern = new RegExp(`^${codegraph}\\s*=`);
+  for (let start = 0; start < lines.length; start += 1) {
+    const normalized = stripTomlComment(lines[start]).trim();
+    if (assignmentPattern.test(normalized)) return { start, end: start + 1, inline: true };
+    if (headerPattern.test(normalized)) {
+      const next = lines.findIndex((line, index) => (
+        index > start && /^\[\[?.+\]\]?$/.test(stripTomlComment(line).trim())
+      ));
+      return { start, end: next < 0 ? lines.length : next, inline: false };
+    }
+    if (!parentHeaderPattern.test(normalized)) continue;
+    for (let index = start + 1; index < lines.length; index += 1) {
+      const candidate = stripTomlComment(lines[index]).trim();
+      if (/^\[\[?.+\]\]?$/.test(candidate)) break;
+      if (childAssignmentPattern.test(candidate)) return { start: index, end: index + 1, inline: true };
+    }
+  }
+  return null;
 }
 
 function readCodegraphMcpConfig(config) {
@@ -662,6 +676,18 @@ function readCodegraphMcpConfig(config) {
   const section = findCodegraphMcpSection(lines);
   if (!section) return null;
   const assignments = new Map();
+  if (section.inline) {
+    const assignment = stripTomlComment(lines[section.start]).trim();
+    const value = assignment.slice(assignment.indexOf('=') + 1).trim();
+    if (!value.startsWith('{') || !value.endsWith('}')) return null;
+    const body = value.slice(1, -1);
+    const command = body.match(/(?:^|,)\s*(?:command|"command"|'command')\s*=\s*("(?:\\.|[^"\\])*"|'[^']*')\s*(?=,|$)/);
+    const args = body.match(/(?:^|,)\s*(?:args|"args"|'args')\s*=\s*(\[[^\]]*\])\s*(?=,|$)/);
+    return {
+      command: parseTomlString(command?.[1] || ''),
+      args: parseTomlStringArray(args?.[1] || ''),
+    };
+  }
   let pending = '';
   let arrayDepth = 0;
   for (const rawLine of lines.slice(section.start + 1, section.end)) {
