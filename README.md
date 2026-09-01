@@ -233,6 +233,14 @@ finds the last published GitHub release, and writes one grouped GitHub release b
 <details>
 <summary><strong>v8.x</strong></summary>
 
+### v8.4.0
+- Added authenticated agent messaging that delivers live when safe and queues
+  durably when Nodeterm or tmux delivery is unavailable.
+- Added worktree-shared CLI and MCP inbox operations for reading and
+  acknowledging queued agent messages.
+- Improved stale Codex worktree recovery and VS Code visibility for managed
+  worktrees.
+
 ### v8.3.0
 - Added adaptive direct-main agent work and branch-targeted `gx sync`.
 - Made worktree cleanup safer by preserving active or locked lanes while pruning
