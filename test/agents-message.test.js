@@ -1,8 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
+  acquireDeliveryLock,
   buildEnvelope,
+  inspectAgentComposer,
   inspectAgentPane,
   pasteEnvelope,
   sendAgentMessage,
@@ -21,6 +26,20 @@ function session(overrides = {}) {
     ...overrides
   };
 }
+
+test('acquireDeliveryLock excludes a concurrent sender until release', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-message-lock-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+
+  const release = acquireDeliveryLock(repoRoot, 'target-session');
+  assert.equal(typeof release, 'function');
+  assert.equal(acquireDeliveryLock(repoRoot, 'target-session'), null);
+  release();
+
+  const reacquired = acquireDeliveryLock(repoRoot, 'target-session');
+  assert.equal(typeof reacquired, 'function');
+  reacquired();
+});
 
 test('buildEnvelope keeps multiline content but strips terminal controls and header newlines', () => {
   const envelope = buildEnvelope({
@@ -106,11 +125,6 @@ test('pasteEnvelope sends the payload over stdin in one tmux command list', () =
     '#{pane_in_mode}',
     'send-keys -t %7 -X cancel',
     ';',
-    'send-keys',
-    '-t',
-    '%7',
-    'C-u',
-    ';',
     'paste-buffer',
     '-d',
     '-p',
@@ -125,6 +139,26 @@ test('pasteEnvelope sends the payload over stdin in one tmux command list', () =
     '%7',
     'Enter'
   ]);
+});
+
+test('inspectAgentComposer accepts only a verified empty backend prompt', () => {
+  const runTmux = (_args, _options) => ({
+    status: 0,
+    stdout: 'completed output\n\n› \n\n? for shortcuts\n',
+    stderr: ''
+  });
+
+  assert.deepEqual(inspectAgentComposer(session(), '%7', { runTmux }), { ok: true });
+  assert.deepEqual(
+    inspectAgentComposer(session(), '%7', {
+      runTmux: () => ({ status: 0, stdout: '› unsent draft\n\n? for shortcuts\n', stderr: '' })
+    }),
+    { ok: false, kind: 'target-composer-not-empty', observed: 'unsent draft' }
+  );
+  assert.deepEqual(
+    inspectAgentComposer(session({ agent: 'gemini' }), '%7', { runTmux }),
+    { ok: false, kind: 'target-not-paste-aware', observed: 'gemini' }
+  );
 });
 
 test('verifySourceCaller requires the sender process to descend from the claimed agent', () => {
@@ -192,7 +226,9 @@ test('sendAgentMessage discovers its source session from a worktree subdirectory
     {
       listAgentSessions: () => [target, source],
       verifySourceCaller: () => ({ ok: true }),
+      acquireDeliveryLock: () => () => {},
       inspectAgentPane: () => probes.shift(),
+      inspectAgentComposer: () => ({ ok: true }),
       pasteEnvelope: () => ({ ok: true }),
       nonce: () => 'fixed'
     }
@@ -262,7 +298,9 @@ test('sendAgentMessage delivers only after source, target, pane, and post-write 
     {
       listAgentSessions: () => [target, source],
       verifySourceCaller: () => ({ ok: true }),
+      acquireDeliveryLock: () => () => {},
       inspectAgentPane: () => probes.shift(),
+      inspectAgentComposer: () => ({ ok: true }),
       pasteEnvelope(pane, envelope) {
         pasted.push({ pane, envelope });
         return { ok: true };
@@ -282,6 +320,51 @@ test('sendAgentMessage delivers only after source, target, pane, and post-write 
     pasted[0].envelope,
     /reply-to: gx agents send --session source-session --message <text>/
   );
+});
+
+test('sendAgentMessage rechecks activity under the target delivery lock before writing', () => {
+  const target = session();
+  const source = session({
+    id: 'source-session',
+    branch: 'agent/codex/source',
+    worktreePath: '/repo/source',
+    tmux: { backend: 'tmux', target: '%6' }
+  });
+  let reads = 0;
+  let pasted = false;
+
+  const result = sendAgentMessage(
+    '/repo',
+    { sessionId: target.id, sourceSessionId: source.id, message: 'please continue' },
+    {
+      listAgentSessions: () => {
+        reads += 1;
+        return [reads >= 3 ? { ...target, activity: 'working' } : target, source];
+      },
+      verifySourceCaller: () => ({ ok: true }),
+      acquireDeliveryLock: () => () => {},
+      inspectAgentPane: () => ({
+        ok: true,
+        paneId: '%7',
+        panePid: 100,
+        agentPid: 200,
+        observed: 'codex'
+      }),
+      inspectAgentComposer: () => ({ ok: true }),
+      pasteEnvelope: () => {
+        pasted = true;
+        return { ok: true };
+      }
+    }
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    kind: 'target-busy',
+    retryable: true,
+    detail: 'target activity is working; expected done'
+  });
+  assert.equal(pasted, false);
 });
 
 test('sendAgentMessage reports when the target pane was replaced during delivery', () => {
@@ -307,7 +390,9 @@ test('sendAgentMessage reports when the target pane was replaced during delivery
     {
       listAgentSessions: () => [target, source],
       verifySourceCaller: () => ({ ok: true }),
+      acquireDeliveryLock: () => () => {},
       inspectAgentPane: () => probes.shift(),
+      inspectAgentComposer: () => ({ ok: true }),
       pasteEnvelope: () => ({ ok: true }),
       nonce: () => 'fixed'
     }

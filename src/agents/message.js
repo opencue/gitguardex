@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const { TOOL_NAME } = require('../context');
@@ -11,6 +12,10 @@ const { listAgentSessions } = require('./sessions');
 
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const SAFE_PANE_ID = /^%\d+$/;
+const COMPOSER_PROMPTS = {
+  codex: /^\s*›(.*)$/u,
+  claude: /^\s*❯(.*)$/u
+};
 
 function oneLine(value) {
   return String(value === undefined || value === null ? '' : value)
@@ -156,6 +161,72 @@ function inspectAgentPane(session, deps = {}) {
   };
 }
 
+function inspectAgentComposer(session, target, deps = {}) {
+  const prompt = COMPOSER_PROMPTS[oneLine(session?.agent)];
+  if (!prompt) {
+    return { ok: false, kind: 'target-not-paste-aware', observed: oneLine(session?.agent) || 'unknown' };
+  }
+  const runTmux = deps.runTmux || tmuxCommand.runTmux;
+  const result = runTmux(['capture-pane', '-p', '-t', target], { stdio: 'pipe' });
+  if (result?.error || result?.status !== 0) {
+    return {
+      ok: false,
+      kind: 'target-pane-unreadable',
+      observed: oneLine(result?.stderr || result?.error?.message) || target
+    };
+  }
+  const visibleLines = String(result.stdout || '').split('\n');
+  const footer = visibleLines.slice(-6);
+  for (let index = footer.length - 1; index >= 0; index -= 1) {
+    const match = footer[index].match(prompt);
+    if (!match) continue;
+    return String(match[1] || '').trim() === ''
+      ? { ok: true }
+      : { ok: false, kind: 'target-composer-not-empty', observed: 'unsent draft' };
+  }
+  return { ok: false, kind: 'target-composer-unverified', observed: 'empty prompt not visible' };
+}
+
+function deliveryLockPath(repoRoot, sessionId) {
+  const digest = crypto.createHash('sha256').update(String(sessionId)).digest('hex');
+  return path.join(repoRoot, '.guardex', 'agents', 'message-locks', `${digest}.lock`);
+}
+
+function acquireDeliveryLock(repoRoot, sessionId) {
+  const lockPath = deliveryLockPath(repoRoot, sessionId);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const descriptor = fs.openSync(lockPath, 'wx', 0o600);
+      fs.writeFileSync(descriptor, `${process.pid}\n`, 'utf8');
+      fs.closeSync(descriptor);
+      return () => {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      let ownerPid = 0;
+      try {
+        ownerPid = Number.parseInt(fs.readFileSync(lockPath, 'utf8'), 10);
+        if (ownerPid > 0) process.kill(ownerPid, 0);
+        return null;
+      } catch (ownerError) {
+        if (ownerError.code === 'EPERM') return null;
+        try {
+          fs.unlinkSync(lockPath);
+        } catch (unlinkError) {
+          if (unlinkError.code !== 'ENOENT') return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function pasteEnvelope(target, envelope, deps = {}) {
   if (!SAFE_PANE_ID.test(target)) {
     return { ok: false, detail: `unsafe tmux pane target: ${target || 'missing'}` };
@@ -176,11 +247,6 @@ function pasteEnvelope(target, envelope, deps = {}) {
       target,
       '#{pane_in_mode}',
       `send-keys -t ${target} -X cancel`,
-      ';',
-      'send-keys',
-      '-t',
-      target,
-      'C-u',
       ';',
       'paste-buffer',
       '-d',
@@ -320,42 +386,92 @@ function sendAgentMessage(repoRoot, options = {}, deps = {}) {
     );
   }
 
-  const inspect = deps.inspectAgentPane || inspectAgentPane;
-  const before = inspect(target, deps);
-  if (!before.ok)
-    return refusal(
-      before.kind,
-      `target pane refused: ${before.observed || 'unknown'}`,
-      before.kind === 'target-pane-unreadable'
-    );
-
-  const nonce = deps.nonce || newNonce;
-  const envelope = buildEnvelope({
-    nonce: nonce(),
-    sourceId: source.id,
-    sourceTitle: source.branch || source.id,
-    body
-  });
-  const paste = deps.pasteEnvelope || pasteEnvelope;
-  const written = paste(before.paneId, envelope, deps);
-  if (!written.ok)
-    return refusal('delivery-failed', written.detail || 'tmux delivery failed', true);
-
-  const after = inspect(target, deps);
-  if (!samePane(before, after)) {
-    return refusal(
-      'sent-to-replaced-target',
-      'target pane or agent process changed after the write'
-    );
+  const acquireLock = deps.acquireDeliveryLock || acquireDeliveryLock;
+  const releaseLock = acquireLock(repoRoot, target.id);
+  if (!releaseLock) {
+    return refusal('target-busy', 'another message delivery holds the target session lock', true);
   }
-  return {
-    ok: true,
-    kind: 'sent',
-    receipt: 'unverified',
-    sourceSessionId: source.id,
-    targetSessionId: target.id,
-    paneId: before.paneId
-  };
+  try {
+    const refreshed = findSession(list(repoRoot), { sessionId: target.id });
+    if (!refreshed || refreshed.status !== 'active') {
+      return refusal('target-gone', 'target session changed before delivery');
+    }
+    if (refreshed.activity !== 'done') {
+      return refusal(
+        'target-busy',
+        `target activity is ${refreshed.activity || 'unknown'}; expected done`,
+        true
+      );
+    }
+
+    const inspect = deps.inspectAgentPane || inspectAgentPane;
+    const before = inspect(refreshed, deps);
+    if (!before.ok)
+      return refusal(
+        before.kind,
+        `target pane refused: ${before.observed || 'unknown'}`,
+        before.kind === 'target-pane-unreadable'
+      );
+
+    const inspectComposer = deps.inspectAgentComposer || inspectAgentComposer;
+    const composer = inspectComposer(refreshed, before.paneId, deps);
+    if (!composer.ok) {
+      return refusal(
+        composer.kind,
+        `target composer refused: ${composer.observed || 'unknown'}`,
+        composer.kind === 'target-pane-unreadable'
+      );
+    }
+
+    const current = findSession(list(repoRoot), { sessionId: target.id });
+    if (!current || current.status !== 'active') {
+      return refusal('target-gone', 'target session changed before delivery');
+    }
+    if (current.activity !== 'done') {
+      return refusal(
+        'target-busy',
+        `target activity is ${current.activity || 'unknown'}; expected done`,
+        true
+      );
+    }
+    if (
+      oneLine(current.tmux?.backend || 'tmux') !== 'tmux' ||
+      oneLine(current.agent) !== oneLine(refreshed.agent) ||
+      paneTarget(current) !== before.paneId
+    ) {
+      return refusal('target-gone', 'target session changed before delivery');
+    }
+
+    const nonce = deps.nonce || newNonce;
+    const envelope = buildEnvelope({
+      nonce: nonce(),
+      sourceId: source.id,
+      sourceTitle: source.branch || source.id,
+      body
+    });
+    const paste = deps.pasteEnvelope || pasteEnvelope;
+    const written = paste(before.paneId, envelope, deps);
+    if (!written.ok)
+      return refusal('delivery-failed', written.detail || 'tmux delivery failed', true);
+
+    const after = inspect(current, deps);
+    if (!samePane(before, after)) {
+      return refusal(
+        'sent-to-replaced-target',
+        'target pane or agent process changed after the write'
+      );
+    }
+    return {
+      ok: true,
+      kind: 'sent',
+      receipt: 'unverified',
+      sourceSessionId: source.id,
+      targetSessionId: target.id,
+      paneId: before.paneId
+    };
+  } finally {
+    releaseLock();
+  }
 }
 
 function renderSendResult(result, json = false) {
@@ -377,8 +493,10 @@ function runSendCommand(repoRoot, options = {}, deps = {}) {
 
 module.exports = {
   MAX_MESSAGE_BYTES,
+  acquireDeliveryLock,
   buildEnvelope,
   inspectAgentPane,
+  inspectAgentComposer,
   pasteEnvelope,
   renderSendResult,
   sendAgentMessage,
