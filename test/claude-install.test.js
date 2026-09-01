@@ -329,6 +329,16 @@ test('missingManagedMcpServers rejects truthy but incorrect definitions', () => 
   assert.deepEqual(missing, ['gx', 'codegraph']);
 });
 
+test('missingManagedMcpServers accepts equivalent definitions with reordered keys', () => {
+  const missing = claudeModule.missingManagedMcpServers({
+    mcpServers: {
+      gx: { args: ['mcp', 'serve'], command: 'gx' },
+      codegraph: { args: ['serve', '--mcp'], command: 'codegraph', type: 'stdio' },
+    },
+  });
+  assert.deepEqual(missing, []);
+});
+
 test('installMcpServer dry-run does not write .mcp.json', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: true });

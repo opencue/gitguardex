@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { isDeepStrictEqual } = require('util');
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
 const { gitRun, resolveRepoRoot } = require('../../git');
 
@@ -364,7 +365,7 @@ function mcpServerSpec() {
 }
 
 function mcpSpecsMatch(actual, desired) {
-  return JSON.stringify(actual) === JSON.stringify(desired);
+  return isDeepStrictEqual(actual, desired);
 }
 
 function missingManagedMcpServers(config) {
