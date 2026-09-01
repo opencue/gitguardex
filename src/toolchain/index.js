@@ -592,7 +592,9 @@ function configureCodegraphForCodex(options = {}) {
 
   const configPath = path.join(codexDir, 'config.toml');
   const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
-  if (/^\s*\[mcp_servers\.codegraph\]\s*$/m.test(config)) {
+  const agentsPath = path.join(codexDir, 'AGENTS.md');
+  if (/^\s*\[mcp_servers\.codegraph\]\s*$/m.test(config)
+    && fs.existsSync(agentsPath)) {
     return { status: 'already-configured', path: configPath };
   }
 
@@ -605,7 +607,7 @@ function configureCodegraphForCodex(options = {}) {
 
   const backups = [
     backupGlobalAgentFile(configPath),
-    backupGlobalAgentFile(path.join(codexDir, 'AGENTS.md')),
+    backupGlobalAgentFile(agentsPath),
   ];
   const result = run(
     CODEGRAPH_BIN,
@@ -616,7 +618,7 @@ function configureCodegraphForCodex(options = {}) {
     },
   );
   if (result.status !== 0) {
-    const targets = [configPath, path.join(codexDir, 'AGENTS.md')];
+    const targets = [configPath, agentsPath];
     backups.forEach((backup, index) => {
       if (backup.status === 'created') fs.copyFileSync(backup.path, targets[index]);
       else if (fs.existsSync(targets[index])) fs.unlinkSync(targets[index]);
