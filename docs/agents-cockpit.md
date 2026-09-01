@@ -187,12 +187,27 @@ gx agents send \
 
 Have the registered source agent run the command from its worktree. It may pass
 `--from-session <id>`; GitGuardex verifies that the caller descends from that
-session's live agent process. It only sends to an active session whose
-activity is `done`, whose backend is tmux, and whose recorded pane still has
-the expected agent process in the foreground. The message is wrapped in a
-nonce-stamped outer envelope and pasted through a named tmux buffer. A
-successful command confirms paste and submission, not that the target agent
-read or acted on the message.
+session's live agent process. GitGuardex first attempts guarded live delivery
+to an active session whose activity is `done`, whose backend is tmux, and whose
+recorded pane still has the expected agent process in the foreground. The
+message is wrapped in a nonce-stamped outer envelope and pasted through a named
+tmux buffer. If the target is busy or its live pane cannot be safely verified,
+GitGuardex stores the authenticated message in a private, worktree-shared queue
+instead of dropping it.
+
+The target agent reads and acknowledges pending messages from its own
+registered process:
+
+```bash
+gx agents inbox
+gx agents inbox --ack <message-id>
+```
+
+The repo-scoped `gx` MCP exposes the same flow as `send_agent_message`,
+`read_agent_messages`, and `ack_agent_message`. This works without a Nodeterm
+server; caller-process and session ownership are still verified. Live-send
+success confirms paste and submission, not that the target agent read or acted
+on the message. Queued messages remain pending until acknowledged.
 
 ## Finish a lane
 

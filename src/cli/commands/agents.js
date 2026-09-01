@@ -181,6 +181,14 @@ function agents(rawArgs) {
     return;
   }
 
+  if (options.subcommand === 'inbox') {
+    const result = agentMessage.runInboxCommand(repoRoot, options);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exitCode = result.status;
+    return;
+  }
+
   if (options.subcommand === 'set-status') {
     const result = agentActivity.runSetStatusCommand(repoRoot, options);
     if (result.stdout) process.stdout.write(result.stdout);

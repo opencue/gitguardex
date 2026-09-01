@@ -5,13 +5,14 @@
 // newline-delimited JSON-RPC 2.0; we implement the small surface an agent
 // needs: initialize, tools/list, tools/call, ping.
 //
-// All tools are READ-ONLY — the server only reflects git/worktree/lock/PR
-// state, it never mutates a repo.
+// Radar tools are read-only. Messaging tools write only to GitGuardex's local
+// authenticated agent inbox and guarded terminal-delivery state.
 
 const readline = require('node:readline');
 
 const collect = require('./collect');
 const { packageJson } = require('../context');
+const agentMessage = require('../agents/message');
 
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -79,6 +80,43 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'send_agent_message',
+    description:
+      'Send to an authenticated GitGuardex agent session. Delivers live when safe, otherwise queues durably.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Target session id.' },
+        branch: { type: 'string', description: 'Target branch instead of session_id.' },
+        message: { type: 'string', description: 'Message body.' },
+        from_session: { type: 'string', description: 'Explicit source session id; caller ownership is verified.' },
+      },
+      required: ['message'],
+    },
+  },
+  {
+    name: 'read_agent_messages',
+    description: 'Read pending messages for the authenticated calling agent session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Explicit caller session id; caller ownership is verified.' },
+      },
+    },
+  },
+  {
+    name: 'ack_agent_message',
+    description: 'Acknowledge and remove one queued message from the authenticated calling agent inbox.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Explicit caller session id; caller ownership is verified.' },
+        message_id: { type: 'string', description: 'Queued message id.' },
+      },
+      required: ['message_id'],
+    },
+  },
 ];
 
 function callTool(name, args = {}) {
@@ -107,6 +145,20 @@ function callTool(name, args = {}) {
       }
       return collect.myContext({ includePr: includePrs });
     }
+    case 'send_agent_message':
+      return agentMessage.sendOrQueueAgentMessage(process.cwd(), {
+        sessionId: args.session_id,
+        branch: args.branch,
+        sourceSessionId: args.from_session,
+        message: args.message,
+      });
+    case 'read_agent_messages':
+      return agentMessage.readAgentInbox(process.cwd(), { sessionId: args.session_id });
+    case 'ack_agent_message':
+      return agentMessage.acknowledgeAgentMessage(process.cwd(), {
+        sessionId: args.session_id,
+        messageId: args.message_id,
+      });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

@@ -187,7 +187,8 @@ the PR as a readable severity, location, and finding table.
 | `gx branch finish --via-pr --wait-for-merge --cleanup` | Ship safely through a PR. |
 | `gx branch finish --fast` | Squash-merge a locally verified small change without local preflight or AI review. |
 | `gx agents status` | Show active agent lanes. |
-| `gx agents send --session <id> --message <text>` | Safely submit a message to an idle tmux-backed agent lane. |
+| `gx agents send --session <id> --message <text>` | Deliver safely to an idle agent or queue for its next turn. |
+| `gx agents inbox [--ack <message-id>]` | Read or acknowledge the authenticated standalone message queue. |
 | `gx cleanup` | Prune merged or stale worktrees. |
 
 Need the terminal cockpit? Run `gx cockpit`; see the

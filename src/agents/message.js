@@ -11,6 +11,7 @@ const { getAgentDefinition } = require('./registry');
 const { agentStateDir, listAgentSessions } = require('./sessions');
 
 const MAX_MESSAGE_BYTES = 64 * 1024;
+const MAX_INBOX_MESSAGES = 1000;
 const SAFE_MESSAGE_ID = /^[a-zA-Z0-9_-]{8,128}$/;
 const SAFE_PANE_ID = /^%\d+$/;
 const QUEUEABLE_FAILURES = new Set([
@@ -363,26 +364,47 @@ function samePane(before, after) {
   );
 }
 
+function pathInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return (
+    relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
+}
+
 function verifySourceCaller(source, deps = {}) {
   const inspect = deps.inspectAgentPane || inspectAgentPane;
   const observed = inspect(source, deps);
-  if (!observed.ok) return observed;
 
   const runProcess = deps.runProcess || run;
-  const processResult = runProcess('ps', ['-e', '-o', 'pid=,ppid='], { stdio: 'pipe' });
+  const processResult = runProcess('ps', ['-e', '-o', 'pid=,ppid=,comm='], { stdio: 'pipe' });
   if (processResult?.error || processResult?.status !== 0) {
     return { ok: false, kind: 'source-caller-unverified', observed: 'process tree unavailable' };
   }
 
   const parents = new Map();
+  const commands = new Map();
   for (const rawLine of String(processResult.stdout || '').split('\n')) {
-    const match = rawLine.trim().match(/^(\d+)\s+(\d+)$/);
-    if (match) parents.set(Number.parseInt(match[1], 10), Number.parseInt(match[2], 10));
+    const match = rawLine.trim().match(/^(\d+)\s+(\d+)(?:\s+(\S+))?$/);
+    if (!match) continue;
+    const pid = Number.parseInt(match[1], 10);
+    parents.set(pid, Number.parseInt(match[2], 10));
+    if (match[3]) commands.set(pid, path.basename(match[3]));
   }
   let pid = Number.isInteger(deps.callerPid) ? deps.callerPid : process.pid;
   const visited = new Set();
+  const expected = expectedAgentCommands(source);
+  const readProcessCwd =
+    deps.readProcessCwd || ((processId) => fs.realpathSync(`/proc/${processId}/cwd`));
   while (pid > 0 && !visited.has(pid)) {
-    if (pid === observed.agentPid) return { ok: true };
+    if (observed.ok && pid === observed.agentPid) return { ok: true };
+    if (expected.includes(commands.get(pid)) && source.worktreePath) {
+      try {
+        if (pathInside(source.worktreePath, readProcessCwd(pid))) return { ok: true };
+      } catch (_error) {
+        // A process can exit between ps and /proc inspection; keep walking.
+      }
+    }
     visited.add(pid);
     pid = parents.get(pid) || 0;
   }
@@ -393,12 +415,17 @@ function authenticateSourceAndTarget(repoRoot, options = {}, deps = {}) {
   const list = deps.listAgentSessions || listAgentSessions;
   const sessions = list(repoRoot);
   const target = findSession(sessions, options);
-  if (!target) return refusal('target-not-found', 'target session was not found in this repository');
+  if (!target)
+    return refusal('target-not-found', 'target session was not found in this repository');
   const source = findSourceSession(sessions, options);
   if (!source) {
-    return refusal('source-not-found', 'run from a registered agent worktree or pass --from-session');
+    return refusal(
+      'source-not-found',
+      'run from a registered agent worktree or pass --from-session'
+    );
   }
-  if (source.id === target.id) return refusal('self-send', 'an agent cannot send a message to itself');
+  if (source.id === target.id)
+    return refusal('self-send', 'an agent cannot send a message to itself');
   if (source.status !== 'active') {
     return refusal('source-gone', `source session status is ${source.status || 'unknown'}`);
   }
@@ -450,11 +477,7 @@ function queueAgentMessage(repoRoot, options = {}, deps = {}) {
 function sendOrQueueAgentMessage(repoRoot, options = {}, deps = {}) {
   const live = sendAgentMessage(repoRoot, options, deps);
   if (live.ok || !QUEUEABLE_FAILURES.has(live.kind) || options.queue === false) return live;
-  return queueAgentMessage(
-    repoRoot,
-    { ...options, liveFailureKind: live.kind },
-    deps
-  );
+  return queueAgentMessage(repoRoot, { ...options, liveFailureKind: live.kind }, deps);
 }
 
 function inboxSession(repoRoot, options = {}, deps = {}) {
@@ -463,7 +486,8 @@ function inboxSession(repoRoot, options = {}, deps = {}) {
   const target = options.sessionId
     ? findSession(sessions, { sessionId: options.sessionId })
     : findSourceSession(sessions, options);
-  if (!target) return refusal('target-not-found', 'target session was not found in this repository');
+  if (!target)
+    return refusal('target-not-found', 'target session was not found in this repository');
   if (target.status !== 'active') {
     return refusal('target-gone', `target session status is ${target.status || 'unknown'}`);
   }
@@ -488,14 +512,20 @@ function readAgentInbox(repoRoot, options = {}, deps = {}) {
   const messages = fs
     .readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && SAFE_MESSAGE_ID.test(entry.name.replace(/\.json$/, '')))
+    .slice(0, MAX_INBOX_MESSAGES)
     .map((entry) => {
       try {
-        return JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf8'));
+        const filePath = path.join(dir, entry.name);
+        if (fs.statSync(filePath).size > MAX_MESSAGE_BYTES + 4096) return null;
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
       } catch (_error) {
         return null;
       }
     })
-    .filter((record) => record && record.schemaVersion === 1 && record.targetSessionId === authenticated.target.id)
+    .filter(
+      (record) =>
+        record && record.schemaVersion === 1 && record.targetSessionId === authenticated.target.id
+    )
     .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
   return { ok: true, kind: 'inbox', targetSessionId: authenticated.target.id, messages };
 }
@@ -510,7 +540,13 @@ function acknowledgeAgentMessage(repoRoot, options = {}, deps = {}) {
     return refusal('message-not-found', error.message);
   }
   if (!fs.existsSync(filePath)) return refusal('message-not-found', 'queued message was not found');
-  fs.unlinkSync(filePath);
+  try {
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    if (error.code === 'ENOENT')
+      return refusal('message-not-found', 'queued message was not found');
+    throw error;
+  }
   return {
     ok: true,
     kind: 'acknowledged',
@@ -660,6 +696,9 @@ function sendAgentMessage(repoRoot, options = {}, deps = {}) {
 
 function renderSendResult(result, json = false) {
   if (json) return `${JSON.stringify(result, null, 2)}\n`;
+  if (result.ok && result.kind === 'queued') {
+    return `[${TOOL_NAME}] Message queued for ${result.targetSessionId} (${result.messageId}); live delivery was unavailable (${result.liveFailureKind}).\n`;
+  }
   if (result.ok) {
     return `[${TOOL_NAME}] Message pasted and submitted to ${result.targetSessionId} (${result.paneId}); target consumption is not yet receipt-verified.\n`;
   }
@@ -668,8 +707,35 @@ function renderSendResult(result, json = false) {
 }
 
 function runSendCommand(repoRoot, options = {}, deps = {}) {
-  const result = sendAgentMessage(repoRoot, options, deps);
+  const result = sendOrQueueAgentMessage(repoRoot, options, deps);
   const output = renderSendResult(result, options.json);
+  return result.ok
+    ? { status: 0, stdout: output, stderr: '', result }
+    : { status: 1, stdout: options.json ? output : '', stderr: options.json ? '' : output, result };
+}
+
+function renderInboxResult(result, json = false) {
+  if (json) return `${JSON.stringify(result, null, 2)}\n`;
+  if (!result.ok) return `[${TOOL_NAME}] Inbox unavailable (${result.kind}): ${result.detail}.\n`;
+  if (result.kind === 'acknowledged') {
+    return `[${TOOL_NAME}] Acknowledged queued message ${result.messageId}.\n`;
+  }
+  if (result.messages.length === 0) return `[${TOOL_NAME}] Agent inbox is empty.\n`;
+  const lines = [`[${TOOL_NAME}] Agent inbox: ${result.messages.length} pending message(s)`];
+  for (const message of result.messages) {
+    lines.push(
+      `--- ${message.id} from ${message.sourceBranch || message.sourceSessionId} at ${message.createdAt} ---`,
+      sanitizeBody(message.body)
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function runInboxCommand(repoRoot, options = {}, deps = {}) {
+  const result = options.ackMessageId
+    ? acknowledgeAgentMessage(repoRoot, { ...options, messageId: options.ackMessageId }, deps)
+    : readAgentInbox(repoRoot, options, deps);
+  const output = renderInboxResult(result, options.json);
   return result.ok
     ? { status: 0, stdout: output, stderr: '', result }
     : { status: 1, stdout: options.json ? output : '', stderr: options.json ? '' : output, result };
@@ -677,13 +743,19 @@ function runSendCommand(repoRoot, options = {}, deps = {}) {
 
 module.exports = {
   MAX_MESSAGE_BYTES,
+  acknowledgeAgentMessage,
   acquireDeliveryLock,
   buildEnvelope,
   inspectAgentPane,
   inspectAgentComposer,
   pasteEnvelope,
+  queueAgentMessage,
+  readAgentInbox,
+  renderInboxResult,
   renderSendResult,
   sendAgentMessage,
+  sendOrQueueAgentMessage,
   verifySourceCaller,
+  runInboxCommand,
   runSendCommand
 };

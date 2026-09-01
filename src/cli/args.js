@@ -393,6 +393,7 @@ function parseAgentsArgs(rawArgs) {
     print: false,
     message: '',
     sourceSessionId: '',
+    ackMessageId: '',
   };
   let terminalProvided = false;
 
@@ -465,6 +466,15 @@ function parseAgentsArgs(rawArgs) {
         throw new Error('--message requires text');
       }
       options.message = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--ack') {
+      const next = rest[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error('--ack requires a queued message id');
+      }
+      options.ackMessageId = next;
       index += 1;
       continue;
     }
@@ -678,7 +688,7 @@ function parseAgentsArgs(rawArgs) {
     throw new Error(`Unknown option: ${arg}`);
   }
 
-  if (!['start', 'stop', 'status', 'files', 'diff', 'locks', 'finish', 'cleanup-sessions', 'set-status', 'jump', 'send'].includes(options.subcommand)) {
+  if (!['start', 'stop', 'status', 'files', 'diff', 'locks', 'finish', 'cleanup-sessions', 'set-status', 'jump', 'send', 'inbox'].includes(options.subcommand)) {
     throw new Error(`Unknown agents subcommand: ${options.subcommand}`);
   }
   if (options.pid !== null && options.subcommand !== 'stop') {
@@ -738,10 +748,10 @@ function parseAgentsArgs(rawArgs) {
   }
   if (
     options.json &&
-    !['status', 'files', 'diff', 'locks', 'cleanup-sessions', 'finish', 'send'].includes(options.subcommand) &&
+    !['status', 'files', 'diff', 'locks', 'cleanup-sessions', 'finish', 'send', 'inbox'].includes(options.subcommand) &&
     !(options.subcommand === 'start' && options.dryRun)
   ) {
-    throw new Error('--json is only supported with `gx agents start --dry-run|status|files|diff|locks|finish|cleanup-sessions|send`');
+    throw new Error('--json is only supported with `gx agents start --dry-run|status|files|diff|locks|finish|cleanup-sessions|send|inbox`');
   }
   if (options.subcommand === 'start' && options.json && !options.dryRun) {
     throw new Error('gx agents start --json requires --dry-run');
@@ -751,6 +761,9 @@ function parseAgentsArgs(rawArgs) {
   }
   if ((options.message || options.sourceSessionId) && options.subcommand !== 'send') {
     throw new Error('--message and --from-session are only supported with `gx agents send`');
+  }
+  if (options.ackMessageId && options.subcommand !== 'inbox') {
+    throw new Error('--ack is only supported with `gx agents inbox`');
   }
   if (options.subcommand === 'send') {
     if (!options.message) {

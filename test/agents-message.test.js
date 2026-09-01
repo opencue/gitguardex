@@ -5,12 +5,15 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  acknowledgeAgentMessage,
   acquireDeliveryLock,
   buildEnvelope,
   inspectAgentComposer,
   inspectAgentPane,
   pasteEnvelope,
+  readAgentInbox,
   sendAgentMessage,
+  sendOrQueueAgentMessage,
   verifySourceCaller
 } = require('../src/agents/message');
 
@@ -190,6 +193,25 @@ test('verifySourceCaller requires the sender process to descend from the claimed
     kind: 'source-caller-unverified',
     observed: 'caller is not owned by source'
   });
+});
+
+test('verifySourceCaller authenticates a non-tmux agent by ancestor command and worktree', () => {
+  const source = session({
+    id: 'source-session',
+    worktreePath: '/repo/source',
+    tmux: null
+  });
+  const result = verifySourceCaller(source, {
+    callerPid: 400,
+    inspectAgentPane: () => ({ ok: false, kind: 'target-not-tmux-pane' }),
+    runProcess: () => ({
+      status: 0,
+      stdout: '100 1 bash\n200 100 codex\n300 200 node\n400 300 node\n'
+    }),
+    readProcessCwd: (pid) => (pid === 200 ? '/repo/source' : '/tmp')
+  });
+
+  assert.deepEqual(result, { ok: true });
 });
 
 test('sendAgentMessage rejects an unverified --from-session identity', () => {
@@ -424,4 +446,99 @@ test('sendAgentMessage reports when the target pane was replaced during delivery
     retryable: false,
     detail: 'target pane or agent process changed after the write'
   });
+});
+
+test('sendOrQueueAgentMessage durably queues a busy target for its next turn', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-message-queue-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const target = session({ activity: 'working' });
+  const source = session({
+    id: 'source-session',
+    branch: 'agent/codex/source',
+    worktreePath: '/repo/source',
+    tmux: { backend: 'tmux', target: '%6' }
+  });
+  const deps = {
+    listAgentSessions: () => [target, source],
+    verifySourceCaller: () => ({ ok: true }),
+    messageId: () => 'queue-message-1'
+  };
+
+  const queued = sendOrQueueAgentMessage(
+    repoRoot,
+    { sessionId: target.id, sourceSessionId: source.id, message: 'continue later' },
+    deps
+  );
+  assert.deepEqual(queued, {
+    ok: true,
+    kind: 'queued',
+    messageId: 'queue-message-1',
+    sourceSessionId: source.id,
+    targetSessionId: target.id,
+    liveFailureKind: 'target-busy'
+  });
+
+  const inbox = readAgentInbox(repoRoot, { sessionId: target.id }, deps);
+  assert.equal(inbox.ok, true);
+  assert.equal(inbox.messages.length, 1);
+  assert.equal(inbox.messages[0].body, 'continue later');
+  assert.equal(inbox.messages[0].sourceSessionId, source.id);
+});
+
+test('acknowledgeAgentMessage removes only the authenticated target message', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-message-ack-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const target = session({ activity: 'working' });
+  const source = session({
+    id: 'source-session',
+    branch: 'agent/codex/source',
+    worktreePath: '/repo/source',
+    tmux: { backend: 'tmux', target: '%6' }
+  });
+  const deps = {
+    listAgentSessions: () => [target, source],
+    verifySourceCaller: () => ({ ok: true }),
+    messageId: () => 'queue-message-2'
+  };
+  sendOrQueueAgentMessage(
+    repoRoot,
+    { sessionId: target.id, sourceSessionId: source.id, message: 'ack me' },
+    deps
+  );
+
+  assert.deepEqual(
+    acknowledgeAgentMessage(repoRoot, { sessionId: target.id, messageId: 'queue-message-2' }, deps),
+    {
+      ok: true,
+      kind: 'acknowledged',
+      messageId: 'queue-message-2',
+      targetSessionId: target.id
+    }
+  );
+  assert.deepEqual(readAgentInbox(repoRoot, { sessionId: target.id }, deps).messages, []);
+});
+
+test('sendOrQueueAgentMessage never queues an unverified sender', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-message-auth-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const target = session({ activity: 'working' });
+  const source = session({ id: 'source-session', worktreePath: '/repo/source' });
+  const deps = {
+    listAgentSessions: () => [target, source],
+    verifySourceCaller: () => ({
+      ok: false,
+      kind: 'source-caller-unverified',
+      observed: 'not a descendant'
+    }),
+    messageId: () => 'queue-message-3'
+  };
+
+  const result = sendOrQueueAgentMessage(
+    repoRoot,
+    { sessionId: target.id, sourceSessionId: source.id, message: 'forged' },
+    deps
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.kind, 'source-caller-unverified');
+  assert.equal(fs.existsSync(path.join(repoRoot, '.guardex', 'agents', 'message-queue')), false);
 });

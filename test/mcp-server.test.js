@@ -17,17 +17,25 @@ test('initialize pins the server protocol version even when the client requests 
   assert.equal(r.result.protocolVersion, server.PROTOCOL_VERSION, 'server pins its own supported version');
 });
 
-test('tools/list returns the four read-only tools, each with a schema', () => {
+test('tools/list returns radar and authenticated messaging tools, each with a schema', () => {
   const r = server.dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
   const names = r.result.tools.map((t) => t.name).sort();
-  assert.deepEqual(names, ['list_agents', 'my_context', 'repo_state', 'who_owns']);
+  assert.deepEqual(names, [
+    'ack_agent_message',
+    'list_agents',
+    'my_context',
+    'read_agent_messages',
+    'repo_state',
+    'send_agent_message',
+    'who_owns',
+  ]);
   for (const t of r.result.tools) {
     assert.ok(t.description, `${t.name} has a description`);
     assert.equal(t.inputSchema.type, 'object', `${t.name} has an object input schema`);
   }
   assert.ok(
-    Buffer.byteLength(JSON.stringify(r.result.tools), 'utf8') <= 2247,
-    'the batched preflight must not grow the startup tool schema past the previous baseline',
+    Buffer.byteLength(JSON.stringify(r.result.tools), 'utf8') <= 6000,
+    'the full tool schema must stay within the bounded startup budget',
   );
 });
 
@@ -55,6 +63,51 @@ test('my_context batches edit ownership and repo radar while PR lookups stay opt
   } finally {
     collect.editContext = originalEditContext;
     collect.collectAllAgents = originalCollectAllAgents;
+  }
+});
+
+test('messaging tools map MCP arguments onto authenticated message operations', () => {
+  const message = require('../src/agents/message');
+  const originals = {
+    send: message.sendOrQueueAgentMessage,
+    read: message.readAgentInbox,
+    ack: message.acknowledgeAgentMessage,
+  };
+  const calls = [];
+  message.sendOrQueueAgentMessage = (repo, options) => {
+    calls.push(['send', repo, options]);
+    return { ok: true, kind: 'queued' };
+  };
+  message.readAgentInbox = (repo, options) => {
+    calls.push(['read', repo, options]);
+    return { ok: true, messages: [] };
+  };
+  message.acknowledgeAgentMessage = (repo, options) => {
+    calls.push(['ack', repo, options]);
+    return { ok: true, kind: 'acknowledged' };
+  };
+  try {
+    server.callTool('send_agent_message', {
+      session_id: 'target',
+      from_session: 'source',
+      message: 'hello',
+    });
+    server.callTool('read_agent_messages', { session_id: 'target' });
+    server.callTool('ack_agent_message', { session_id: 'target', message_id: 'message-1' });
+    assert.deepEqual(calls, [
+      ['send', process.cwd(), {
+        sessionId: 'target',
+        branch: undefined,
+        sourceSessionId: 'source',
+        message: 'hello',
+      }],
+      ['read', process.cwd(), { sessionId: 'target' }],
+      ['ack', process.cwd(), { sessionId: 'target', messageId: 'message-1' }],
+    ]);
+  } finally {
+    message.sendOrQueueAgentMessage = originals.send;
+    message.readAgentInbox = originals.read;
+    message.acknowledgeAgentMessage = originals.ack;
   }
 });
 
@@ -99,7 +152,7 @@ test('serve() reads newline-delimited JSON from stdin and writes responses to st
   const first = out.trim().split('\n')[0];
   const msg = JSON.parse(first);
   assert.equal(msg.id, 1);
-  assert.equal(msg.result.tools.length, 4);
+  assert.equal(msg.result.tools.length, 7);
 });
 
 test('serve() reports a malformed line as a JSON-RPC parse error (-32700, id null)', async () => {
