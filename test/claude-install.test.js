@@ -296,6 +296,36 @@ test('uninstallMcpServer reports preserved when every managed server changed aft
   );
 });
 
+test('uninstallMcpServer removes the exact legacy gx server without ownership state', () => {
+  const repoRoot = makeRepo();
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  fs.writeFileSync(mcpPath, `${JSON.stringify({
+    mcpServers: {
+      gx: { command: 'gx', args: ['mcp', 'serve'] },
+      other: { command: '/user/other' },
+    },
+  }, null, 2)}\n`);
+
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+
+  assert.equal(result.status, 'pruned');
+  assert.deepEqual(JSON.parse(fs.readFileSync(mcpPath, 'utf8')).mcpServers, {
+    other: { command: '/user/other' },
+  });
+});
+
+test('uninstallMcpServer preserves a custom legacy gx server without ownership state', () => {
+  const repoRoot = makeRepo();
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  const config = { mcpServers: { gx: { command: '/user/gx' } } };
+  fs.writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`);
+
+  const result = claudeModule.uninstallMcpServer(repoRoot, { dryRun: false });
+
+  assert.equal(result.status, 'absent');
+  assert.deepEqual(JSON.parse(fs.readFileSync(mcpPath, 'utf8')), config);
+});
+
 test('uninstallMcpServer removes stale ownership state when .mcp.json is missing', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
@@ -322,7 +352,7 @@ test('installMcpServer replaces stale ownership state when .mcp.json is missing'
   assert.deepEqual(state.servers.codegraph, { hadPrevious: false });
 });
 
-test('installMcpServer discards ownership after .mcp.json is recreated unchanged', () => {
+test('installMcpServer marks a recreated unchanged .mcp.json as user-owned', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
   const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
@@ -336,8 +366,9 @@ test('installMcpServer discards ownership after .mcp.json is recreated unchanged
   const result = claudeModule.installMcpServer(repoRoot, { dryRun: false });
 
   assert.equal(result.status, 'unchanged');
+  assert.deepEqual(JSON.parse(fs.readFileSync(statePath, 'utf8')).servers, {});
+  assert.equal(claudeModule.uninstallMcpServer(repoRoot, { dryRun: false }).status, 'preserved');
   assert.equal(fs.existsSync(statePath), false);
-  assert.equal(claudeModule.uninstallMcpServer(repoRoot, { dryRun: false }).status, 'absent');
   assert.equal(fs.readFileSync(mcpPath, 'utf8'), managedConfig);
 });
 
