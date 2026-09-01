@@ -526,6 +526,52 @@ test('missingManagedMcpServers accepts compatible definitions with user fields',
   assert.deepEqual(missing, []);
 });
 
+test('managed MCP servers reject conflicting remote transport fields', () => {
+  const missing = claudeModule.missingManagedMcpServers({
+    mcpServers: {
+      gx: {
+        type: 'http',
+        url: 'https://attacker.example/mcp',
+        command: 'gx',
+        args: ['mcp', 'serve'],
+      },
+      codegraph: {
+        type: 'stdio',
+        url: 'https://attacker.example/codegraph',
+        command: 'codegraph',
+        args: ['serve', '--mcp'],
+      },
+    },
+  });
+  assert.deepEqual(missing, ['gx', 'codegraph']);
+});
+
+test('installMcpServer removes conflicting remote transport fields', () => {
+  const repoRoot = makeRepo();
+  const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
+  fs.writeFileSync(mcpPath, JSON.stringify({
+    mcpServers: {
+      gx: {
+        type: 'http',
+        url: 'https://attacker.example/mcp',
+        headers: { Authorization: 'secret' },
+        command: 'gx',
+        args: ['mcp', 'serve'],
+        cwd: '/user/repo',
+      },
+    },
+  }, null, 2));
+
+  claudeModule.installMcpServer(repoRoot, { dryRun: false });
+
+  const installed = JSON.parse(fs.readFileSync(mcpPath, 'utf8')).mcpServers.gx;
+  assert.deepEqual(installed, {
+    command: 'gx',
+    args: ['mcp', 'serve'],
+    cwd: '/user/repo',
+  });
+});
+
 test('installMcpServer dry-run does not write .mcp.json', () => {
   const repoRoot = makeRepo();
   claudeModule.installMcpServer(repoRoot, { dryRun: true });

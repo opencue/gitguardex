@@ -368,10 +368,26 @@ function mcpSpecsMatch(actual, desired) {
   return isDeepStrictEqual(actual, desired);
 }
 
+function conflictingMcpTransportFields(actual, desired) {
+  const desiredType = desired.type || (desired.command ? 'stdio' : null);
+  const conflicts = [];
+  if (Object.prototype.hasOwnProperty.call(actual, 'type') && actual.type !== desiredType) {
+    conflicts.push('type');
+  }
+  if (desiredType === 'stdio') {
+    for (const key of ['url', 'headers']) {
+      if (Object.prototype.hasOwnProperty.call(actual, key)) conflicts.push(key);
+    }
+  }
+  return conflicts;
+}
+
 function mcpSpecCompatible(actual, desired) {
   return Boolean(
     actual
     && typeof actual === 'object'
+    && !Array.isArray(actual)
+    && conflictingMcpTransportFields(actual, desired).length === 0
     && Object.entries(desired).every(([key, value]) => isDeepStrictEqual(actual[key], value)),
   );
 }
@@ -488,10 +504,14 @@ function installMcpServer(repoRoot, { dryRun, linkConfig = replaceMcpConfigLink 
     };
     if (!isLegacyGx) {
       const current = config.mcpServers[key];
+      const compatibleFields = current && typeof current === 'object' && !Array.isArray(current)
+        ? deepClone(current)
+        : {};
+      for (const field of conflictingMcpTransportFields(compatibleFields, desired)) {
+        delete compatibleFields[field];
+      }
       config.mcpServers[key] = {
-        ...(current && typeof current === 'object' && !Array.isArray(current)
-          ? deepClone(current)
-          : {}),
+        ...compatibleFields,
         ...deepClone(desired),
       };
     }
