@@ -740,6 +740,7 @@ function configureCodegraphForCodex(options = {}) {
     return { status: 'failed', reason: 'codegraph Codex MCP installer failed', backups };
   }
   const configured = fs.existsSync(configPath)
+    && fs.readFileSync(configPath, 'utf8').includes(config)
     && hasConfiguredCodegraphMcp(fs.readFileSync(configPath, 'utf8'))
     && hasCodegraphInstructions(agentsPath);
   if (!configured) {

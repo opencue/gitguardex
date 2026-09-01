@@ -1371,7 +1371,7 @@ exit 1
   const fakeCodegraph = createFakeBin('codegraph', `
 if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
 echo "$@" > "${codegraphMarker}"
-cat > "$HOME/.codex/config.toml" <<'TOML'
+cat >> "$HOME/.codex/config.toml" <<'TOML'
 [mcp_servers.codegraph]
 command = "codegraph"
 args = ["serve", "--mcp"]
@@ -1396,6 +1396,7 @@ exit 0
     'install --target=codex --location=global --yes --no-permissions',
   );
   assert.equal(fs.readFileSync(path.join(codexDir, 'config.toml.guardex.bak'), 'utf8'), 'model = "test"\n');
+  assert.match(fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf8'), /model = "test"/);
   assert.equal(fs.readFileSync(path.join(codexDir, 'AGENTS.md.guardex.bak'), 'utf8'), '# existing\n');
   assert.match(result.stdout, /CodeGraph MCP configured for Codex/);
 });
@@ -1628,7 +1629,16 @@ exit 1
 `);
   const fakeCodegraph = createFakeBin('codegraph', `
 if [[ "$1" == "--version" ]]; then echo "0.8.0"; exit 0; fi
-printf 'partial\n' > "$HOME/.codex/AGENTS.md"
+cat > "$HOME/.codex/config.toml" <<'TOML'
+[mcp_servers.codegraph]
+command = "codegraph"
+args = ["serve", "--mcp"]
+TOML
+cat > "$HOME/.codex/AGENTS.md" <<'MARKER'
+<!-- CODEGRAPH_START -->
+## CodeGraph
+<!-- CODEGRAPH_END -->
+MARKER
 exit 0
 `).fakePath;
 
