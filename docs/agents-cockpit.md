@@ -167,6 +167,32 @@ gx agents locks --branch agent/codex/fix-auth-tests-2026-04-29-21-30 --json
 These inspection commands are lane-scoped. They require `--branch` so a
 human or cockpit pane must choose which sandbox to inspect.
 
+## Message an idle agent lane
+
+Send a message by canonical session id:
+
+```bash
+gx agents send \
+  --session agent__codex__fix-auth-tests \
+  --message "Re-run the focused auth test and report the result."
+```
+
+Or select the target by its recorded branch:
+
+```bash
+gx agents send \
+  --branch agent/codex/fix-auth-tests-2026-04-29-21-30 \
+  --message "Re-run the focused auth test and report the result."
+```
+
+Run the command from a registered source-agent worktree, or pass
+`--from-session <id>`. GitGuardex only sends to an active session whose
+activity is `done`, whose backend is tmux, and whose recorded pane still has
+the expected agent process in the foreground. The message is wrapped in a
+nonce-stamped outer envelope and pasted through a named tmux buffer. A
+successful command confirms paste and submission, not that the target agent
+read or acted on the message.
+
 ## Finish a lane
 
 Finish by branch:

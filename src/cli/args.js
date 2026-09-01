@@ -391,6 +391,8 @@ function parseAgentsArgs(rawArgs) {
     waiting: false,
     done: false,
     print: false,
+    message: '',
+    sourceSessionId: '',
   };
   let terminalProvided = false;
 
@@ -445,6 +447,24 @@ function parseAgentsArgs(rawArgs) {
         throw new Error('--session requires an agent session id');
       }
       options.sessionId = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--from-session') {
+      const next = rest[index + 1];
+      if (!next || next.startsWith('-')) {
+        throw new Error('--from-session requires an agent session id');
+      }
+      options.sourceSessionId = next;
+      index += 1;
+      continue;
+    }
+    if (arg === '--message' || arg === '--text') {
+      const next = rest[index + 1];
+      if (!next) {
+        throw new Error('--message requires text');
+      }
+      options.message = next;
       index += 1;
       continue;
     }
@@ -658,7 +678,7 @@ function parseAgentsArgs(rawArgs) {
     throw new Error(`Unknown option: ${arg}`);
   }
 
-  if (!['start', 'stop', 'status', 'files', 'diff', 'locks', 'finish', 'cleanup-sessions', 'set-status', 'jump'].includes(options.subcommand)) {
+  if (!['start', 'stop', 'status', 'files', 'diff', 'locks', 'finish', 'cleanup-sessions', 'set-status', 'jump', 'send'].includes(options.subcommand)) {
     throw new Error(`Unknown agents subcommand: ${options.subcommand}`);
   }
   if (options.pid !== null && options.subcommand !== 'stop') {
@@ -704,8 +724,8 @@ function parseAgentsArgs(rawArgs) {
       throw new Error('agents finish accepts only one of --session or --branch');
     }
   }
-  if (options.branch && !['files', 'diff', 'locks', 'finish', 'set-status', 'jump'].includes(options.subcommand)) {
-    throw new Error('--branch is only supported with `gx agents files|diff|locks|finish|set-status|jump`');
+  if (options.branch && !['files', 'diff', 'locks', 'finish', 'set-status', 'jump', 'send'].includes(options.subcommand)) {
+    throw new Error('--branch is only supported with `gx agents files|diff|locks|finish|set-status|jump|send`');
   }
   if ((options.activity || options.worktree) && !['set-status'].includes(options.subcommand)) {
     throw new Error('--activity and --worktree are only supported with `gx agents set-status`');
@@ -718,16 +738,30 @@ function parseAgentsArgs(rawArgs) {
   }
   if (
     options.json &&
-    !['status', 'files', 'diff', 'locks', 'cleanup-sessions', 'finish'].includes(options.subcommand) &&
+    !['status', 'files', 'diff', 'locks', 'cleanup-sessions', 'finish', 'send'].includes(options.subcommand) &&
     !(options.subcommand === 'start' && options.dryRun)
   ) {
-    throw new Error('--json is only supported with `gx agents start --dry-run|status|files|diff|locks|finish|cleanup-sessions`');
+    throw new Error('--json is only supported with `gx agents start --dry-run|status|files|diff|locks|finish|cleanup-sessions|send`');
   }
   if (options.subcommand === 'start' && options.json && !options.dryRun) {
     throw new Error('gx agents start --json requires --dry-run');
   }
   if (options.staleAgeMinutes !== 24 * 60 && options.subcommand !== 'cleanup-sessions') {
     throw new Error('--older-than-minutes is only supported with `gx agents cleanup-sessions`');
+  }
+  if ((options.message || options.sourceSessionId) && options.subcommand !== 'send') {
+    throw new Error('--message and --from-session are only supported with `gx agents send`');
+  }
+  if (options.subcommand === 'send') {
+    if (!options.message) {
+      throw new Error('gx agents send requires --message <text>');
+    }
+    if (!options.sessionId && !options.branch) {
+      throw new Error('gx agents send requires --session or --branch');
+    }
+    if (options.sessionId && options.branch) {
+      throw new Error('gx agents send accepts only one of --session or --branch');
+    }
   }
 
   return options;
