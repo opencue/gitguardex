@@ -218,6 +218,7 @@ test('installMcpServer merges into an existing .mcp.json without clobbering othe
 });
 
 for (const [name, config, message] of [
+  ['null root', null, /must contain a JSON object/],
   ['non-object root', [], /must contain a JSON object/],
   ['string mcpServers', { mcpServers: 'invalid' }, /non-object mcpServers value/],
   ['array mcpServers', { mcpServers: [] }, /non-object mcpServers value/],
@@ -549,7 +550,7 @@ test('managed MCP servers reject conflicting remote transport fields', () => {
 test('installMcpServer removes conflicting remote transport fields', () => {
   const repoRoot = makeRepo();
   const mcpPath = path.join(repoRoot, claudeModule.MCP_REL);
-  fs.writeFileSync(mcpPath, JSON.stringify({
+  const original = {
     mcpServers: {
       gx: {
         type: 'http',
@@ -560,7 +561,8 @@ test('installMcpServer removes conflicting remote transport fields', () => {
         cwd: '/user/repo',
       },
     },
-  }, null, 2));
+  };
+  fs.writeFileSync(mcpPath, JSON.stringify(original, null, 2));
 
   claudeModule.installMcpServer(repoRoot, { dryRun: false });
 
@@ -570,6 +572,9 @@ test('installMcpServer removes conflicting remote transport fields', () => {
     args: ['mcp', 'serve'],
     cwd: '/user/repo',
   });
+
+  assert.equal(claudeModule.uninstallMcpServer(repoRoot, { dryRun: false }).status, 'pruned');
+  assert.deepEqual(JSON.parse(fs.readFileSync(mcpPath, 'utf8')), original);
 });
 
 test('installMcpServer dry-run does not write .mcp.json', () => {

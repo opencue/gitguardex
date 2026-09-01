@@ -465,8 +465,8 @@ function installMcpServer(repoRoot, { dryRun, linkConfig = replaceMcpConfigLink 
   const statePath = resolveMcpStatePath(repoRoot);
   const fileExisted = fs.existsSync(filePath);
   const originalContents = fileExisted ? fs.readFileSync(filePath) : null;
-  const config = readJsonIfExists(filePath) || {};
-  if (typeof config !== 'object' || Array.isArray(config)) {
+  const config = fileExisted ? readJsonIfExists(filePath) : {};
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error(`${MCP_REL} must contain a JSON object`);
   }
   if (config.mcpServers == null) config.mcpServers = {};
@@ -572,15 +572,16 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   for (const [key, ownership] of Object.entries(state.servers)) {
     const desired = MCP_SERVER_SPECS[key];
     if (!desired) continue;
-    const installed = {
-      ...(ownership.hadPrevious
-        && ownership.previous
-        && typeof ownership.previous === 'object'
-        && !Array.isArray(ownership.previous)
-        ? ownership.previous
-        : {}),
-      ...desired,
-    };
+    const previous = ownership.hadPrevious
+      && ownership.previous
+      && typeof ownership.previous === 'object'
+      && !Array.isArray(ownership.previous)
+      ? deepClone(ownership.previous)
+      : {};
+    for (const field of conflictingMcpTransportFields(previous, desired)) {
+      delete previous[field];
+    }
+    const installed = { ...previous, ...desired };
     if (!mcpSpecsMatch(config.mcpServers[key], installed)) continue;
     if (ownership.hadPrevious) {
       config.mcpServers[key] = deepClone(ownership.previous);
