@@ -1,6 +1,6 @@
 'use strict';
 
-// `gx mcp` — cross-repo, read-only multi-agent observability over MCP.
+// `gx mcp` — cross-repo observability plus authenticated local agent messaging.
 //   gx mcp serve            run the stdio MCP server (for agent harnesses)
 //   gx mcp list-agents      one-shot human/debug view of all agent lanes
 //   gx mcp who-owns <file>  who holds the lock on a file
@@ -75,7 +75,7 @@ function whoOwns(rest) {
 function register() {
   process.stdout.write(
     [
-      'Register the read-only gx agent-observability MCP with your harness:',
+      'Register the gx agent-observability and messaging MCP with your harness:',
       '',
       'Claude Code (user scope — available in every repo):',
       `  claude mcp add gx -s user -- ${SHORT_TOOL_NAME} mcp serve`,
@@ -88,7 +88,8 @@ function register() {
       '  }',
       '',
       'Codex / other MCP clients: run `gx mcp serve` as a stdio MCP server.',
-      'Tools exposed (all read-only): list_agents, repo_state, who_owns, my_context.',
+      'Read-only tools: list_agents, repo_state, who_owns, my_context.',
+      'Authenticated messaging: send_agent_message, read_agent_messages, ack_agent_message.',
       '',
     ].join('\n') + '\n',
   );

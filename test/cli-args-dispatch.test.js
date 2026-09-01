@@ -149,6 +149,9 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
     waiting: false,
     done: false,
     print: false,
+    message: '',
+    sourceSessionId: '',
+    ackMessageId: '',
   });
 
   const dryRunOptions = parseAgentsArgs([
@@ -235,6 +238,50 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
   assert.throws(
     () => parseAgentsArgs(['start', '--panel', '--dry-run', '--json']),
     /gx agents start --dry-run requires a task/,
+  );
+
+  const sendOptions = parseAgentsArgs([
+    'send',
+    '--session',
+    'target-session',
+    '--from-session',
+    'source-session',
+    '--message',
+    'continue with the tests',
+    '--json',
+  ]);
+  assert.equal(sendOptions.sessionId, 'target-session');
+  assert.equal(sendOptions.sourceSessionId, 'source-session');
+  assert.equal(sendOptions.message, 'continue with the tests');
+  assert.equal(sendOptions.json, true);
+
+  assert.throws(
+    () => parseAgentsArgs(['send', '--session', 'target-session']),
+    /gx agents send requires --message/,
+  );
+  assert.throws(
+    () => parseAgentsArgs(['send', '--session', 'target-session', '--message', '--json']),
+    /--message requires text/,
+  );
+  assert.throws(
+    () => parseAgentsArgs(['send', '--message', 'hello']),
+    /gx agents send requires --session or --branch/,
+  );
+
+  const inboxOptions = parseAgentsArgs([
+    'inbox',
+    '--session',
+    'target-session',
+    '--ack',
+    'message-1',
+    '--json',
+  ]);
+  assert.equal(inboxOptions.sessionId, 'target-session');
+  assert.equal(inboxOptions.ackMessageId, 'message-1');
+  assert.equal(inboxOptions.json, true);
+  assert.throws(
+    () => parseAgentsArgs(['status', '--ack', 'message-1']),
+    /--ack is only supported with `gx agents inbox`/,
   );
 });
 

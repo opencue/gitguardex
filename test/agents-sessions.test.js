@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const cp = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -158,4 +159,34 @@ test('session ids cannot escape the sessions directory', () => {
     () => readAgentSession(repoRoot, 'nested/session'),
     /Invalid agent session id/,
   );
+});
+
+test('linked worktrees share the primary checkout session store', (t) => {
+  const repoRoot = makeRepoRoot();
+  const worktree = path.join(repoRoot, 'linked-worktree');
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const git = (...args) => cp.execFileSync(
+    'git',
+    ['-c', 'core.hooksPath=/dev/null', ...args],
+    { cwd: repoRoot, stdio: 'ignore' }
+  );
+  git('init', '-b', 'main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  fs.writeFileSync(path.join(repoRoot, 'seed.txt'), 'seed\n');
+  git('add', 'seed.txt');
+  git('commit', '-m', 'seed');
+  git('worktree', 'add', '-b', 'agent/codex/shared-sessions', worktree);
+
+  const created = createAgentSession(repoRoot, {
+    id: 'shared-session',
+    task: 'Share session state',
+    agent: 'codex',
+    branch: 'agent/codex/shared-sessions',
+    worktreePath: worktree,
+    base: 'main',
+  });
+
+  assert.deepEqual(readAgentSession(worktree, created.id), created);
+  assert.deepEqual(listAgentSessions(worktree), [created]);
 });

@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const cp = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -22,8 +23,27 @@ const SESSION_FIELDS = [
   'updatedAt',
 ];
 
+function stateRepoRoot(repoRoot) {
+  const root = path.resolve(repoRoot);
+  const result = cp.spawnSync('git', ['rev-parse', '--git-common-dir'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 3000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (!result || result.status !== 0) return root;
+  const common = String(result.stdout || '').trim();
+  if (!common) return root;
+  const absolute = path.isAbsolute(common) ? common : path.resolve(root, common);
+  return path.basename(absolute) === '.git' ? path.dirname(absolute) : root;
+}
+
+function agentStateDir(repoRoot) {
+  return path.join(stateRepoRoot(repoRoot), '.guardex', 'agents');
+}
+
 function sessionsDir(repoRoot) {
-  return path.join(repoRoot, '.guardex', 'agents', 'sessions');
+  return path.join(agentStateDir(repoRoot), 'sessions');
 }
 
 function assertSessionId(sessionId) {
@@ -141,6 +161,8 @@ function removeAgentSession(repoRoot, sessionId) {
 }
 
 module.exports = {
+  agentStateDir,
+  stateRepoRoot,
   sessionFilePath,
   sessionsDir,
   createAgentSession,
