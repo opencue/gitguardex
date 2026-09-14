@@ -66,19 +66,21 @@ test('expandGlob matches literals and single-segment wildcards', () => {
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
-test('applyCopy copies files, skips existing and directories', () => {
+test('applyCopy copies files and isolated directories, skipping existing targets', () => {
   const repo = mkTmp();
   const wt = mkTmp();
   write(path.join(repo, '.env'), 'SECRET=1');
   write(path.join(repo, 'apps', 'web', '.env'), 'PORT=3000');
   fs.mkdirSync(path.join(wt, 'apps', 'web'), { recursive: true });
-  fs.mkdirSync(path.join(repo, 'node_modules')); // a directory -> copy unsupported
+  write(path.join(repo, 'node_modules', 'package', 'index.js'), 'original');
 
   const ops = provision.applyCopy(repo, wt, ['.env', 'apps/*/.env', 'node_modules', 'nope']);
   assert.equal(fs.readFileSync(path.join(wt, '.env'), 'utf8'), 'SECRET=1');
   assert.equal(fs.readFileSync(path.join(wt, 'apps', 'web', '.env'), 'utf8'), 'PORT=3000');
   assert.ok(ops.some((o) => o.status === 'copied' && o.file === '.env'));
-  assert.ok(ops.some((o) => o.status === 'skipped' && /directory/.test(o.note)));
+  assert.ok(ops.some((o) => o.status === 'copied' && o.file === 'node_modules'));
+  write(path.join(wt, 'node_modules', 'package', 'index.js'), 'changed');
+  assert.equal(fs.readFileSync(path.join(repo, 'node_modules', 'package', 'index.js'), 'utf8'), 'original');
   assert.ok(ops.some((o) => o.status === 'skipped' && o.file === 'nope'));
 
   // Re-running is idempotent: existing files are left unchanged.
@@ -104,7 +106,7 @@ test('applySymlink links files and directories into the worktree', () => {
 
 test('applyPostCreate runs hooks with worktree cwd and gx env, honoring the opt-out', () => {
   const captured = [];
-  const deps = { run: (cmd, cwd, env) => { captured.push({ cmd, cwd, env }); return { status: 0 }; } };
+  const deps = { hasApproval: () => true, run: (cmd, cwd, env) => { captured.push({ cmd, cwd, env }); return { status: 0 }; } };
   const ops = provision.applyPostCreate('/repo', '/wt', ['echo hi'], deps);
   assert.equal(ops[0].status, 'ran');
   assert.equal(captured[0].cmd, 'echo hi');
@@ -112,7 +114,7 @@ test('applyPostCreate runs hooks with worktree cwd and gx env, honoring the opt-
   assert.equal(captured[0].env.GUARDEX_WORKTREE, '/wt');
   assert.equal(captured[0].env.GUARDEX_REPO_ROOT, '/repo');
 
-  const failed = provision.applyPostCreate('/repo', '/wt', ['boom'], { run: () => ({ status: 2 }) });
+  const failed = provision.applyPostCreate('/repo', '/wt', ['boom'], { hasApproval: () => true, run: () => ({ status: 2 }) });
   assert.equal(failed[0].status, 'failed');
 
   const prev = process.env.GUARDEX_PROVISION_HOOKS;
@@ -121,6 +123,78 @@ test('applyPostCreate runs hooks with worktree cwd and gx env, honoring the opt-
   assert.equal(skipped[0].status, 'skipped');
   if (prev === undefined) delete process.env.GUARDEX_PROVISION_HOOKS;
   else process.env.GUARDEX_PROVISION_HOOKS = prev;
+});
+
+test('directory copies preserve internal links without linking back to the source', (t) => {
+  const repo = mkTmp();
+  const wt = mkTmp();
+  t.after(() => { fs.rmSync(repo, { recursive: true, force: true }); fs.rmSync(wt, { recursive: true, force: true }); });
+  write(path.join(repo, 'deps', 'pkg', 'cli'), 'original');
+  fs.chmodSync(path.join(repo, 'deps', 'pkg', 'cli'), 0o755);
+  fs.mkdirSync(path.join(repo, 'deps', '.bin'));
+  fs.symlinkSync('../pkg/cli', path.join(repo, 'deps', '.bin', 'cli'));
+  fs.symlinkSync(path.join(repo, 'deps', 'pkg'), path.join(repo, 'deps', 'alias'));
+  const operations = provision.applyCopy(repo, wt, ['deps']);
+  assert.equal(operations[0].status, 'copied');
+  fs.writeFileSync(path.join(wt, 'deps', '.bin', 'cli'), 'changed');
+  assert.equal(fs.readFileSync(path.join(repo, 'deps', 'pkg', 'cli'), 'utf8'), 'original');
+  assert.equal(fs.readFileSync(path.join(wt, 'deps', 'alias', 'cli'), 'utf8'), 'changed');
+  assert.equal(fs.statSync(path.join(wt, 'deps', 'pkg', 'cli')).mode & 0o777, 0o755);
+});
+
+test('copy rejects escaping links and leaves no partial directory or destination writes', (t) => {
+  const repo = mkTmp();
+  const wt = mkTmp();
+  t.after(() => { fs.rmSync(repo, { recursive: true, force: true }); fs.rmSync(wt, { recursive: true, force: true }); });
+  write(path.join(repo, 'deps', 'ok'), 'ok');
+  write(path.join(repo, 'outside'), 'secret');
+  fs.symlinkSync('../outside', path.join(repo, 'deps', 'escape'));
+  const operations = provision.applyCopy(repo, wt, ['deps']);
+  assert.equal(operations[0].status, 'failed');
+  assert.deepEqual(fs.readdirSync(wt), []);
+});
+
+test('neither copy nor symlink creates parents through an escaping destination link', (t) => {
+  const repo = mkTmp();
+  const wt = mkTmp();
+  const outside = mkTmp();
+  t.after(() => { for (const root of [repo, wt, outside]) fs.rmSync(root, { recursive: true, force: true }); });
+  write(path.join(repo, 'tunnel', 'nested', 'file'), 'data');
+  fs.symlinkSync(outside, path.join(wt, 'tunnel'));
+  for (const apply of [provision.applyCopy, provision.applySymlink]) {
+    const operations = apply(repo, wt, ['tunnel/nested/file']);
+    assert.ok(operations.every((op) => op.status !== 'copied' && op.status !== 'linked'));
+    assert.deepEqual(fs.readdirSync(outside), [], 'even intermediate directories must stay inside the worktree');
+  }
+});
+
+test('directory copy leaves an existing target and dangling target link untouched', (t) => {
+  const repo = mkTmp();
+  const wt = mkTmp();
+  t.after(() => { for (const root of [repo, wt]) fs.rmSync(root, { recursive: true, force: true }); });
+  write(path.join(repo, 'deps', 'entry'), 'source');
+  write(path.join(wt, 'deps', 'entry'), 'user work');
+  assert.equal(provision.applyCopy(repo, wt, ['deps'])[0].status, 'unchanged');
+  assert.equal(fs.readFileSync(path.join(wt, 'deps', 'entry'), 'utf8'), 'user work');
+  write(path.join(repo, 'dangling', 'entry'), 'source');
+  fs.symlinkSync('missing', path.join(wt, 'dangling'));
+  assert.equal(provision.applyCopy(repo, wt, ['dangling'])[0].status, 'unchanged');
+  assert.equal(fs.readlinkSync(path.join(wt, 'dangling')), 'missing');
+});
+
+test('copy requests native copy-on-write plus exclusive creation, with built-in copy fallback', (t) => {
+  const repo = mkTmp();
+  const wt = mkTmp();
+  t.after(() => { fs.rmSync(repo, { recursive: true, force: true }); fs.rmSync(wt, { recursive: true, force: true }); });
+  write(path.join(repo, 'deps', 'entry'), 'data');
+  const calls = [];
+  const operations = provision.applyCopy(repo, wt, ['deps'], { copyFile: (source, target, flags) => {
+    calls.push(flags);
+    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+  } });
+  assert.equal(operations[0].status, 'copied');
+  assert.deepEqual(calls, [fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL]);
+  assert.equal(fs.readFileSync(path.join(wt, 'deps', 'entry'), 'utf8'), 'data');
 });
 
 test('prepareAgentWorktree applies declarative provisioning even without apps/*', () => {

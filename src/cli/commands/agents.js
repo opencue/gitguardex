@@ -390,7 +390,7 @@ function agents(rawArgs) {
     return;
   }
 
-  process.stdout.write(agentStatus.runStatusCommand(repoRoot, options));
+  agentStatus.writeStatusCommand(repoRoot, options);
   process.exitCode = 0;
 }
 

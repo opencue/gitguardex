@@ -147,6 +147,55 @@ security-sensitive, migration, dependency, or broad refactor changes.
 
 ---
 
+## Worktree provisioning
+
+Opt into isolated dependency copies in `.guardex.json` (JSONC is supported):
+
+```json
+{
+  "provision": {
+    "files": { "copy": ["node_modules", ".env"], "symlink": [] },
+    "postCreate": ["npm run build"]
+  }
+}
+```
+
+New `gx branch start` worktrees apply this configuration. `copy` supports files
+and directories, attempts native copy-on-write, and falls back to regular copying.
+Unlike shared symlinks, modifying a copied dependency does not modify the source.
+Existing targets are left untouched. Internal symlinks are relocated inside the
+copy; dangling links, links outside the selected directory, and special files
+fail the directory copy without installing a partial target. An explicit copy
+never falls back to a shared symlink. Without an explicit copy policy, legacy
+dependency sharing remains available; choose copies for writable dependencies.
+
+**Migration:** `postCreate` now skips commands until their exact ordered list has
+been approved locally for that repository. In a human terminal, run:
+
+```bash
+gx worktree approve-hooks --target /path/to/source-repo
+gx worktree provision --source /path/to/source-repo --target /path/to/agent-worktree
+# Revoke approval without running hooks:
+gx worktree approve-hooks --target /path/to/source-repo --revoke
+```
+
+Approval is stored outside the repo under the Guardex user's
+`.config/gitguardex/provision-approvals/`. Changed command lists require fresh
+consent; noninteractive runs and `--yes` cannot grant it. Approved hooks can run
+arbitrary shell code, including subsequently changed scripts: approval is not a
+sandbox or a review of those scripts. `GUARDEX_PROVISION_HOOKS=0` disables even
+approved hooks. `provision --with-defaults` also applies legacy dependency links
+where they do not overlap an explicit copy policy (used by branch creation).
+
+`gx agents status` prints its header before Git probes and then each completed
+session row on a terminal. Redirected text and `--json` retain their prior format.
+This is progressive display, not a claim that Git collection is faster.
+
+These adaptations were inspired by [Worktrunk](https://github.com/max-sixty/worktrunk),
+not implemented by adding a second worktree manager. Reproduce the local copy
+comparison with `node scripts/benchmark-provision.js`; it reports repeated-run
+timings and allocation accounting, not universal performance or storage savings.
+
 ## Code-assist review gate
 
 Add `--gate-review` to review the PR before merge. Add `--gate-autofix` to let
