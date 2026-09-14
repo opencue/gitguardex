@@ -1041,10 +1041,15 @@ if [[ -n "$auto_transfer_stash_ref" ]]; then
   fi
 fi
 
-hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" ".venv"
-hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "node_modules"
-hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "apps/frontend/node_modules"
-hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "apps/backend/node_modules"
+if [[ -f "${repo_root}/.guardex.json" ]]; then
+  # Explicit copy policies win over legacy dependency sharing, even on failure.
+  run_guardex_cli worktree provision --source "$repo_root" --target "$worktree_path" --with-defaults
+else
+  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" ".venv"
+  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "node_modules"
+  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "apps/frontend/node_modules"
+  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "apps/backend/node_modules"
+fi
 if ! initialize_openspec_change_workspace "$repo_root" "$worktree_path" "$openspec_change_slug" "$openspec_capability_slug"; then
   exit 1
 fi

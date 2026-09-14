@@ -458,6 +458,8 @@ test('skill_guard adaptive direct-main ownership expires after the configured le
 
 test('skill_guard keeps adaptive direct-main ownership while an allowed command is active', async () => {
   const dir = makeRepoOn('main');
+  const releasePath = path.join(dir, 'command-release');
+  let activeDone;
   try {
     fs.writeFileSync(path.join(dir, '.env'), 'GUARDEX_WORKTREE_MODE=adaptive\n');
     const leaseEnv = { GUARDEX_ADAPTIVE_SESSION_LEASE_SEC: '0.01' };
@@ -476,7 +478,14 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
     const lockPath = path.join(dir, '.git', 'gitguardex', 'adaptive-direct-session.lock');
     const leasePath = path.join(dir, '.git', 'gitguardex', 'adaptive-direct-session.json');
     const markerPath = path.join(dir, 'command-active');
-    const command = `python3 -c 'from pathlib import Path; import time; Path("${markerPath}").write_text("active"); time.sleep(0.2)'`;
+    // Keep the command alive until the denial has been checked, even on a busy
+    // machine. A bounded deadline still prevents a failed test leaking a child.
+    const command = `python3 -c 'from pathlib import Path; import time
+Path("${markerPath}").write_text("active")
+release = Path("${releasePath}")
+deadline = time.monotonic() + 10
+while not release.exists() and time.monotonic() < deadline: time.sleep(0.01)
+assert release.exists(), "test did not release command"'`;
     const active = cp.spawn(
       'python3',
       [
@@ -489,7 +498,7 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
       ],
       { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    const activeDone = new Promise((resolve, reject) => {
+    activeDone = new Promise((resolve, reject) => {
       active.on('error', reject);
       active.on('close', resolve);
     });
@@ -498,7 +507,7 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
     }
     assert.equal(fs.existsSync(markerPath), true, 'locked command did not start');
 
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
     const blocked = await invokeHookAsync(
       dir,
       writePayload(path.join(dir, 'src', 'second.js'), dir, 'adaptive-active-b'),
@@ -507,6 +516,7 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
     assert.equal(blocked.status, 2, blocked.stderr || blocked.stdout);
     assert.match(blocked.stderr, /owned by another active agent session/);
 
+    fs.writeFileSync(releasePath, 'done');
     const activeStatus = await activeDone;
     assert.equal(activeStatus, 0);
     const reclaimed = await invokeHookAsync(
@@ -516,6 +526,10 @@ test('skill_guard keeps adaptive direct-main ownership while an allowed command 
     );
     assert.equal(reclaimed.status, 0, reclaimed.stderr || reclaimed.stdout);
   } finally {
+    if (activeDone) {
+      fs.writeFileSync(releasePath, 'done');
+      await activeDone;
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

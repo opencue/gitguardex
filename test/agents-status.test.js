@@ -10,6 +10,44 @@ const {
 } = require('./helpers/install-test-helpers');
 const { createAgentSession } = require('../src/agents/sessions');
 
+test('TTY agent status emits its header before Git collection and each row before the next probe', () => {
+  const repo = makeRepo();
+  for (const id of ['first', 'second']) createAgentSession(repo, { id, agent: 'codex', branch: `agent/${id}`, worktreePath: repo });
+  const chunks = [];
+  const stream = { isTTY: true, write: (text) => chunks.push(text) };
+  let probes = 0;
+  const status = require('../src/agents/status');
+  status.writeStatusCommand(repo, {}, stream, {
+    listWorktrees: () => {
+      assert.match(chunks.join(''), /Agent sessions: 2/);
+      return [];
+    },
+    readChangedFiles: () => {
+      if (probes > 0) assert.match(chunks.join(''), /changed=1/);
+      probes++;
+      // Simulate a slow synchronous Git probe, not a timing-only assertion.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      return ['changed.txt'];
+    },
+  });
+  assert.equal(probes, 2);
+  assert.equal(chunks.join('').match(/Agent sessions:/g).length, 1);
+  assert.equal(chunks.join('').match(/changed=1/g).length, 2);
+  assert.equal(chunks.join('').includes('\x1b'), false);
+});
+
+test('streamed status preserves JSON and redirected output byte for byte', () => {
+  const repo = makeRepo();
+  createAgentSession(repo, { id: 'only', agent: 'codex', branch: 'dev', worktreePath: repo });
+  const status = require('../src/agents/status');
+  for (const options of [{}, { json: true }]) {
+    let output = '';
+    status.writeStatusCommand(repo, options, { isTTY: Boolean(options.json), write: (text) => { output += text; } });
+    assert.equal(output, status.runStatusCommand(repo, options));
+    if (options.json) assert.equal(JSON.parse(output).schemaVersion, 1);
+  }
+});
+
 function makeRepo() {
   const repoDir = initRepo();
   seedCommit(repoDir);

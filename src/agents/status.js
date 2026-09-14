@@ -53,7 +53,7 @@ function normalizePr(session) {
   };
 }
 
-function normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees) {
+function normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, readChanges = readChangedFiles) {
   const branch = session.branch || '';
   const worktreePath = session.worktreePath || '';
   const claimedFiles = uniqueSorted([
@@ -73,7 +73,7 @@ function normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees) {
     worktreeExists: worktreePath ? fs.existsSync(worktreePath) : false,
     lockCount: lockDetails.counts.get(branch) || 0,
     claimedFiles,
-    changedFiles: readChangedFiles(repoRoot, branch, worktrees),
+    changedFiles: readChanges(repoRoot, branch, worktrees),
     metadata: session.metadata && typeof session.metadata === 'object' ? session.metadata : {},
     launchCommand: session.launchCommand || '',
     tmux: session.tmux && typeof session.tmux === 'object' ? session.tmux : null,
@@ -110,6 +110,17 @@ function metadataSummary(metadata) {
     .join(' ');
 }
 
+function renderSession(session) {
+  const meta = metadataSummary(session.metadata);
+  const pr = session.prUrl || session.prState ? ` pr=${formatValue(session.prState)} ${formatValue(session.prUrl)}` : '';
+  return `- ${formatValue(session.id)} ${formatValue(session.agent)} ${formatValue(session.status)} ` +
+    `branch=${formatValue(session.branch)} base=${formatValue(session.base)} ` +
+    `worktreeExists=${session.worktreeExists ? 'yes' : 'no'} locks=${session.lockCount} ` +
+    `changed=${Array.isArray(session.changedFiles) ? session.changedFiles.length : 0}${pr} ` +
+    `task=${formatValue(session.task)} worktree=${formatValue(session.worktreePath)}` +
+    `${meta ? ` meta=${meta}` : ''}`;
+}
+
 function renderAgentsStatus(payload, options = {}) {
   if (options.json) return `${JSON.stringify(payload, null, 2)}\n`;
 
@@ -118,23 +129,32 @@ function renderAgentsStatus(payload, options = {}) {
   }
 
   const lines = [`[${TOOL_NAME}] Agent sessions: ${payload.sessions.length} (${payload.repoRoot})`];
-  for (const session of payload.sessions) {
-    const meta = metadataSummary(session.metadata);
-    const pr = session.prUrl || session.prState ? ` pr=${formatValue(session.prState)} ${formatValue(session.prUrl)}` : '';
-    lines.push(
-      `- ${formatValue(session.id)} ${formatValue(session.agent)} ${formatValue(session.status)} ` +
-      `branch=${formatValue(session.branch)} base=${formatValue(session.base)} ` +
-      `worktreeExists=${session.worktreeExists ? 'yes' : 'no'} locks=${session.lockCount} ` +
-      `changed=${Array.isArray(session.changedFiles) ? session.changedFiles.length : 0}${pr} ` +
-      `task=${formatValue(session.task)} worktree=${formatValue(session.worktreePath)}` +
-      `${meta ? ` meta=${meta}` : ''}`,
-    );
-  }
+  for (const session of payload.sessions) lines.push(renderSession(session));
   return `${lines.join('\n')}\n`;
 }
 
 function runStatusCommand(repoRoot, options = {}) {
   return renderAgentsStatus(buildAgentsStatusPayload(repoRoot), options);
+}
+
+function writeStatusCommand(repoRoot, options = {}, output = process.stdout, deps = {}) {
+  if (options.json || !output.isTTY) {
+    output.write(runStatusCommand(repoRoot, options));
+    return;
+  }
+  const sessions = listAgentSessions(repoRoot);
+  if (sessions.length === 0) {
+    output.write(renderAgentsStatus({ repoRoot, sessions: [] }));
+    return;
+  }
+  // Append-only progress works on narrow terminals and needs no cursor rewrites.
+  output.write(`[${TOOL_NAME}] Agent sessions: ${sessions.length} (${repoRoot})\n`);
+  const lockDetails = readLockDetails(repoRoot);
+  const worktrees = (deps.listWorktrees || listWorktrees)(repoRoot);
+  for (const session of sessions) {
+    const row = normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, deps.readChangedFiles);
+    output.write(`${renderSession(row)}\n`);
+  }
 }
 
 module.exports = {
@@ -143,4 +163,5 @@ module.exports = {
   readLockDetails,
   renderAgentsStatus,
   runStatusCommand,
+  writeStatusCommand,
 };

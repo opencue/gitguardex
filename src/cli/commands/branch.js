@@ -489,6 +489,9 @@ function ship(rawArgs) {
 function worktree(rawArgs) {
   const activeCwd = process.cwd();
   const [subcommand, ...rest] = rawArgs;
+  if (subcommand === 'approve-hooks' || subcommand === 'provision') {
+    return require('./worktree-provision').worktreeProvision(subcommand, rest);
+  }
   if (subcommand === 'prune') {
     const { target, passthrough } = extractTargetedArgs(rest);
     invokePackageAsset('worktreePrune', passthrough, {
@@ -497,7 +500,7 @@ function worktree(rawArgs) {
     });
     return;
   }
-  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree prune [cleanup-options]`);
+  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <prune|provision|approve-hooks> [options]`);
 }
 
 module.exports = {

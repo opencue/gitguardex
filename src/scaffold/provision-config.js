@@ -17,14 +17,15 @@
 //   }
 //
 // Parsed with jsonc-parser (comments allowed) — no new dependency. copy/symlink
-// are pure filesystem ops. postCreate runs shell commands from the repo owner's
-// committed config (same trust as package.json scripts); disable with
-// GUARDEX_PROVISION_HOOKS=0. Everything is best-effort and never throws fatally.
+// are pure filesystem ops. postCreate requires separate local approval of the
+// exact command list; a committed config alone is not consent to execute it.
+// GUARDEX_PROVISION_HOOKS=0 disables even approved hooks. Provisioning is best-effort.
 
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const jsonc = require('jsonc-parser');
+const { hasApproval } = require('./provision-approvals');
 
 const CONFIG_BASENAME = '.guardex.json';
 const POST_CREATE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -126,8 +127,14 @@ function expandGlob(rootDir, pattern, deps = {}) {
   return matches.filter((rel) => rel !== '');
 }
 
-function ensureParentDir(filePath) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+function ensureParentDir(filePath, worktreeReal) {
+  const parent = path.dirname(filePath);
+  // Validate before mkdir, which otherwise follows existing destination links.
+  let ancestor = parent;
+  while (!targetAlreadyPresent(ancestor)) ancestor = path.dirname(ancestor);
+  if (!withinReal(ancestor, worktreeReal)) throw new Error('destination escapes worktree');
+  fs.mkdirSync(parent, { recursive: true });
+  if (!withinReal(parent, worktreeReal)) throw new Error('destination escapes worktree');
 }
 
 function safeRealpath(target) {
@@ -158,6 +165,43 @@ function targetAlreadyPresent(destPath) {
   }
 }
 
+function copyDirectory(source, destination, deps) {
+  const root = fs.realpathSync(source);
+  const staging = fs.mkdtempSync(path.join(path.dirname(destination), '.gx-copy-'));
+  const directories = [[root, staging]];
+  const links = [];
+  const flags = fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL;
+  try {
+    for (let index = 0; index < directories.length; index++) {
+      const [from, to] = directories[index];
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        const src = path.join(from, entry.name);
+        const dest = path.join(to, entry.name);
+        if (entry.isSymbolicLink()) {
+          const target = fs.realpathSync(src);
+          if (!withinReal(target, root)) throw new Error('copy link escapes selected directory');
+          links.push([dest, path.join(staging, path.relative(root, target)), fs.statSync(target).isDirectory()]);
+        } else if (entry.isDirectory()) {
+          fs.mkdirSync(dest);
+          directories.push([src, dest]);
+        } else if (entry.isFile()) {
+          (deps.copyFile || fs.copyFileSync)(src, dest, flags);
+        } else {
+          throw new Error('copy supports only regular files, directories and internal symlinks');
+        }
+      }
+    }
+    for (const [dest, target, directory] of links) {
+      fs.symlinkSync(path.relative(path.dirname(dest), target) || '.', dest, directory ? 'dir' : 'file');
+    }
+    for (const [from, to] of directories.reverse()) fs.chmodSync(to, fs.statSync(from).mode & 0o777);
+    if (targetAlreadyPresent(destination)) throw new Error('copy target appeared during provisioning');
+    fs.renameSync(staging, destination);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 function applyCopy(repoRoot, worktreePath, patterns, deps = {}) {
   const operations = [];
   const repoReal = safeRealpath(repoRoot);
@@ -177,22 +221,19 @@ function applyCopy(repoRoot, worktreePath, patterns, deps = {}) {
           operations.push({ status: 'skipped', file: rel, note: 'resolves outside repo root' });
           continue;
         }
-        if (fs.statSync(src).isDirectory()) {
-          operations.push({ status: 'skipped', file: rel, note: 'copy of a directory unsupported; use symlink' });
-          continue;
-        }
         if (targetAlreadyPresent(dest)) {
           operations.push({ status: 'unchanged', file: rel, note: 'already present in worktree' });
           continue;
         }
-        ensureParentDir(dest);
-        // Destination parent must resolve inside the worktree (block writes that
-        // tunnel through a symlink the worktree may already contain).
-        if (!withinReal(path.dirname(dest), worktreeReal)) {
-          operations.push({ status: 'skipped', file: rel, note: 'destination escapes worktree' });
-          continue;
+        ensureParentDir(dest, worktreeReal);
+        if (fs.statSync(src).isDirectory()) {
+          const sourceReal = fs.realpathSync(src);
+          if (withinReal(worktreePath, sourceReal)) throw new Error('copy target is inside source directory');
+          copyDirectory(src, dest, deps);
+        } else {
+          if (!fs.statSync(src).isFile()) throw new Error('copy source is not a regular file');
+          (deps.copyFile || fs.copyFileSync)(src, dest, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
         }
-        fs.copyFileSync(src, dest);
         operations.push({ status: 'copied', file: rel, note: 'copied from repo root' });
       } catch (error) {
         operations.push({ status: 'failed', file: rel, note: `copy failed: ${error.message}` });
@@ -225,11 +266,7 @@ function applySymlink(repoRoot, worktreePath, patterns, deps = {}) {
           operations.push({ status: 'unchanged', file: rel, note: 'already present in worktree' });
           continue;
         }
-        ensureParentDir(dest);
-        if (!withinReal(path.dirname(dest), worktreeReal)) {
-          operations.push({ status: 'skipped', file: rel, note: 'destination escapes worktree' });
-          continue;
-        }
+        ensureParentDir(dest, worktreeReal);
         fs.symlinkSync(src, dest);
         operations.push({ status: 'linked', file: rel, note: `→ ${path.relative(worktreePath, src)}` });
       } catch (error) {
@@ -249,6 +286,12 @@ function applyPostCreate(repoRoot, worktreePath, commands, deps = {}) {
   if (commands.length === 0) return [];
   if (hooksDisabled()) {
     return commands.map((command) => ({ status: 'skipped', file: command, note: 'GUARDEX_PROVISION_HOOKS disabled' }));
+  }
+  if (!(deps.hasApproval || hasApproval)(repoRoot, commands, deps)) {
+    return commands.map((command) => ({
+      status: 'skipped', file: command, code: 'HOOK_APPROVAL_REQUIRED',
+      note: 'postCreate requires local consent: run gx worktree approve-hooks --target <source-repo> in a terminal',
+    }));
   }
   const run = deps.run || ((cmd, cwd, env) => spawnSync('sh', ['-lc', cmd], {
     cwd,
@@ -287,7 +330,11 @@ function applyProvisionConfig(repoRoot, worktreePath, config, deps = {}) {
   if (!config) return [];
   const operations = [];
   operations.push(...applyCopy(repoRoot, worktreePath, config.files.copy, deps));
-  operations.push(...applySymlink(repoRoot, worktreePath, config.files.symlink, deps));
+  const copiedPaths = config.files.copy.flatMap((pattern) => expandGlob(repoRoot, pattern, deps));
+  const symlinkPaths = config.files.symlink.flatMap((pattern) => expandGlob(repoRoot, pattern, deps))
+    .filter((rel) => !copiedPaths.some((copy) => rel === copy || rel.startsWith(`${copy}/`) || copy.startsWith(`${rel}/`)));
+  // A failed explicit copy must never fall back to writable shared dependencies.
+  operations.push(...applySymlink(repoRoot, worktreePath, symlinkPaths, deps));
   operations.push(...applyPostCreate(repoRoot, worktreePath, config.postCreate, deps));
   return operations;
 }
