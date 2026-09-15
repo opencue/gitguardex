@@ -11,8 +11,9 @@ const CARGO = `CARGO_BUILD_JOBS=${CARGO_JOBS}`;
 function supervisedLaunch() {
   const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
   const wt = '/repo/.omx/agent-worktrees/repo__codex__fix-auth';
-  return [process.execPath, path.resolve(__dirname, '../src/agents/supervise.js'), wt,
-    'agent__codex__fix-auth', `cd '${wt}' && ${CARGO} 'codex' 'fix auth'`].map(quote).join(' ');
+  return `cd '${wt}' && ${CARGO} ` + [process.execPath,
+    path.resolve(__dirname, '../src/agents/supervise.js'), wt,
+    'agent__codex__fix-auth', '--', 'codex', 'fix auth'].map(quote).join(' ');
 }
 
 function loadStartWithMocks({

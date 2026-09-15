@@ -5,7 +5,7 @@ const {
 } = require('../context');
 const { runPackageAsset } = require('../core/runtime');
 const { currentBranchName } = require('../git');
-const { buildAgentLaunchCommand, shellQuote } = require('./launch');
+const { buildAgentLaunchCommand } = require('./launch');
 const { runTaskStart } = require('../worktree-start');
 const { resolveAgent } = require('./registry');
 const {
@@ -375,6 +375,7 @@ function buildSessionPayload(options, metadata, status, extra = {}) {
     agentId: options.agent || 'codex',
     prompt: options.task,
     worktreePath: path.resolve(metadata.worktreePath),
+    supervisorSessionId: id,
   });
   return {
     id,
@@ -385,7 +386,7 @@ function buildSessionPayload(options, metadata, status, extra = {}) {
     base: options.base || null,
     claims: Array.isArray(options.claims) ? [...options.claims] : [],
     metadata: options.metadata && typeof options.metadata === 'object' ? { ...options.metadata } : {},
-    launchCommand: [process.execPath, path.join(__dirname, 'supervise.js'), path.resolve(metadata.worktreePath), id, launch].map(shellQuote).join(' '),
+    launchCommand: launch,
     tmux: options.tmux && typeof options.tmux === 'object' ? { ...options.tmux } : null,
     status,
     ...extra,

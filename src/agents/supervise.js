@@ -4,8 +4,8 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { leaseDirectory, processIdentity } = require('./process-lease');
 
-function supervise(worktreePath, sessionId, command) {
-  if (!worktreePath || !sessionId || !command)
+function supervise(worktreePath, sessionId, separator, ...command) {
+  if (!worktreePath || !sessionId || separator !== '--' || !command[0])
     throw new Error('Missing agent supervision arguments');
   const worktree = fs.realpathSync(worktreePath);
   process.chdir(worktree);
@@ -36,9 +36,9 @@ function supervise(worktreePath, sessionId, command) {
     fs.renameSync(temp, file);
   };
   heartbeat();
-  const child = spawn('sh', ['-c', command], {
-    cwd: worktree, stdio: 'inherit', detached: true
-  });
+  // Spawn the registered executable directly, not an intermediate shell.
+  // Keep the terminal session/group so /dev/tty and job control still work.
+  const child = spawn(command[0], command.slice(1), { cwd: worktree, stdio: 'inherit' });
   lease.child = child.pid ? probe(child.pid) : null;
   heartbeat();
   const interval = Number(process.env.GUARDEX_HEARTBEAT_MS || 5000);
@@ -52,43 +52,19 @@ function supervise(worktreePath, sessionId, command) {
     },
     Number.isSafeInteger(interval) && interval >= 100 ? interval : 5000
   );
-  // The child has its own process group; forward to the shell and the agent.
+  // SIGINT from the terminal already reaches the foreground group. Forward
+  // explicit SIGTERM only to our direct child, never to the user's shell group.
   const forward = (signal) => {
     if (!child.pid) return;
     try {
-      process.kill(-child.pid, signal);
+      child.kill(signal);
     } catch (error) {
       if (error.code !== 'ESRCH') throw error;
     }
   };
-  process.on('SIGINT', () => forward('SIGINT'));
+  process.on('SIGINT', () => {});
   process.on('SIGTERM', () => forward('SIGTERM'));
-  const groupAlive = () => {
-    if (!child.pid) return false;
-    try {
-      process.kill(-child.pid, 0);
-      if (process.platform !== 'linux') return true;
-      // Orphaned zombies may await reaping by init, but no longer own work.
-      return fs.readdirSync('/proc').filter((pid) => /^\d+$/.test(pid)).some((pid) => {
-        try {
-          const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
-          const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-          return Number(fields[2]) === child.pid && fields[0] !== 'Z';
-        } catch (error) {
-          if (['ENOENT', 'ESRCH'].includes(error.code)) return false;
-          throw error;
-        }
-      });
-    } catch (error) {
-      return error.code !== 'ESRCH';
-    }
-  };
   const done = (code, signal) => {
-    // The shell can exit before an agent finishes handling termination.
-    if (groupAlive()) {
-      setTimeout(() => done(code, signal), 100);
-      return;
-    }
     clearInterval(timer);
     fs.rmSync(file, { force: true });
     fs.rmSync(temp, { force: true });
