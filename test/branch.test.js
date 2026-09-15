@@ -148,6 +148,52 @@ test('agent-branch-start reuses the current agent worktree instead of cloning it
   );
 });
 
+for (const scenario of ['linked default', 'linked absolute', 'primary absolute']) {
+test(`agent-branch-start places fresh worktrees at the canonical root: ${scenario}`, () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  let source = repoDir;
+  if (scenario.startsWith('linked')) {
+    const parent = runBranchStart(['--tier', 'T1', '--no-transfer', 'parent lane', 'bot'], repoDir);
+    assert.equal(parent.status, 0, parent.stderr || parent.stdout);
+    source = extractCreatedWorktree(parent.stdout);
+    commitFile(source, 'parent-only.txt', 'parent commit\n', 'parent-only commit');
+    fs.writeFileSync(path.join(source, 'keep-local.txt'), 'uncommitted parent work\n');
+  }
+  const sourceHead = runCmd('git', ['rev-parse', 'HEAD'], source).stdout.trim();
+  const absoluteRoot = path.join(path.dirname(repoDir), 'absolute worktrees');
+  const expectedRoot = scenario.endsWith('absolute')
+    ? absoluteRoot
+    : path.join(repoDir, '.omx', 'agent-worktrees');
+  const args = ['--new', '--tier', 'T1', '--no-transfer', 'child lane', 'bot'];
+  if (scenario.endsWith('absolute')) args.push('--worktree-root', absoluteRoot);
+  const result = runBranchStart(args, source);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const created = extractCreatedWorktree(result.stdout);
+  assert.equal(path.dirname(created), expectedRoot);
+  assert.match(path.basename(created), new RegExp(`^${escapeRegexLiteral(path.basename(repoDir))}__codex__`));
+  assert.equal(runCmd('git', ['rev-parse', 'HEAD'], created).stdout.trim(), sourceHead);
+  if (source !== repoDir) {
+    assert.equal(fs.readFileSync(path.join(source, 'keep-local.txt'), 'utf8'), 'uncommitted parent work\n');
+    assert.equal(fs.existsSync(path.join(created, 'keep-local.txt')), false);
+    assert.equal(fs.existsSync(path.join(source, '.omx', 'agent-worktrees')), false);
+  }
+});
+}
+
+test('agent-branch-start reuses dirty matching worktrees at an absolute root', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  const absoluteRoot = path.join(path.dirname(repoDir), 'absolute worktrees');
+  const args = ['--tier', 'T1', '--no-transfer', '--worktree-root', absoluteRoot, 'absolute reuse regression', 'bot'];
+  const first = runBranchStart(args, repoDir);
+  assert.equal(first.status, 0, first.stderr || first.stdout);
+  const worktree = extractCreatedWorktree(first.stdout);
+  fs.writeFileSync(path.join(worktree, 'keep-local.txt'), 'uncommitted work\n');
+  const second = runBranchStart(args, repoDir);
+  assert.equal(second.status, 0, second.stderr || second.stdout);
+  assert.match(second.stdout, /Matched dirty managed worktree for requested task/);
+  assert.equal(extractCreatedWorktree(second.stdout), worktree);
+});
+
 test('agent-branch-start recovers clean detached managed worktrees before creating another lane', () => {
   const { repoDir } = createBootstrappedRepo({ committed: true });
   const staleWorktree = path.join(repoDir, '.omx', 'agent-worktrees', 'agent__stale-detached-lane');

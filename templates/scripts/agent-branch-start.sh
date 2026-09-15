@@ -401,9 +401,7 @@ resolve_openspec_capability_slug() {
 }
 
 resolve_repo_prefix() {
-  local root
-  root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  basename "$root"
+  basename "$worktree_repo_root"
 }
 
 resolve_worktree_leaf() {
@@ -552,8 +550,11 @@ managed_worktree_roots() {
   local root
   local seen_roots=$'\n'
 
+  if [[ "$explicit_root" != /* ]]; then
+    explicit_root="${repo}/${explicit_root}"
+  fi
   for root in \
-    "${repo}/${explicit_root}" \
+    "$explicit_root" \
     "${repo}/.omx/agent-worktrees" \
     "${repo}/.omc/agent-worktrees"; do
     if [[ -n "$root" && "$seen_roots" != *$'\n'"$root"$'\n'* ]]; then
@@ -774,6 +775,13 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
+# Keep source-checkout/base/transfer semantics, but place new lanes beside
+# each other under the primary checkout, never under the current linked lane.
+worktree_repo_root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
+if [[ -z "$worktree_repo_root" ]]; then
+  echo "[agent-branch-start] Cannot resolve the primary worktree root." >&2
+  exit 1
+fi
 
 guardex_env_helper="${repo_root}/scripts/guardex-env.sh"
 if [[ -f "$guardex_env_helper" ]]; then
@@ -819,7 +827,7 @@ if [[ "$PRINT_NAME_ONLY" -eq 1 ]]; then
 fi
 
 if [[ "$REUSE_EXISTING_WORKTREE" -eq 1 ]]; then
-  matching_dirty_worktree="$(find_matching_dirty_agent_worktree "$repo_root" "$WORKTREE_ROOT_REL" "$task_slug" "$agent_slug")"
+  matching_dirty_worktree="$(find_matching_dirty_agent_worktree "$worktree_repo_root" "$WORKTREE_ROOT_REL" "$task_slug" "$agent_slug")"
   if [[ -n "$matching_dirty_worktree" ]]; then
     IFS=$'\t' read -r reused_branch reused_worktree <<<"$matching_dirty_worktree"
     echo "[agent-branch-start] Matched dirty managed worktree for requested task."
@@ -863,7 +871,11 @@ while git show-ref --verify --quiet "refs/heads/${branch_name}"; do
   branch_suffix=$((branch_suffix + 1))
 done
 
-worktree_root="${repo_root}/${WORKTREE_ROOT_REL}"
+if [[ "$WORKTREE_ROOT_REL" == /* ]]; then
+  worktree_root="$WORKTREE_ROOT_REL"
+else
+  worktree_root="${worktree_repo_root}/${WORKTREE_ROOT_REL}"
+fi
 mkdir -p "$worktree_root"
 worktree_leaf="$(resolve_worktree_leaf "$branch_name" "$agent_slug")"
 worktree_path="${worktree_root}/${worktree_leaf}"

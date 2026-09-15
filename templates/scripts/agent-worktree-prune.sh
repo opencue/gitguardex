@@ -593,6 +593,7 @@ remove_worktree_with_lock_guard() {
 
   python3 - "$shared_lock" "$lock_file" "$repo_root" "$worktree" "$remove_reason" "$branch" "$DRY_RUN" <<'PY'
 import json
+import os
 import subprocess
 import sys
 
@@ -606,6 +607,19 @@ shared_lock, lock_file, repo_root, worktree, remove_reason, branch, dry_run = sy
 try:
     with open(shared_lock, 'a+', encoding='utf-8') as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+
+        # An ignored child worktree can contain active or uncommitted work
+        # even when the parent appears clean. Never recursively remove it.
+        registered = subprocess.run(
+            ['git', '-C', repo_root, 'worktree', 'list', '--porcelain', '-z'],
+            stdout=subprocess.PIPE, check=True,
+        )
+        parent = os.path.realpath(worktree)
+        for field in registered.stdout.split(b'\0'):
+            if field.startswith(b'worktree '):
+                child = os.path.realpath(os.fsdecode(field[len(b'worktree '):]))
+                if child != parent and os.path.commonpath([parent, child]) == parent:
+                    raise SystemExit(11)
 
         try:
             with open(lock_file, encoding='utf-8') as handle:
@@ -653,7 +667,7 @@ try:
 
         result = subprocess.run(command, check=False)
         raise SystemExit(0 if result.returncode == 0 else 1)
-except OSError:
+except (OSError, subprocess.CalledProcessError):
     print(
         f'[agent-worktree-prune] Cannot safely acquire active lock guard: {shared_lock}',
         file=sys.stderr,
@@ -894,6 +908,11 @@ process_entry() {
     removed_worktrees=$((removed_worktrees + 1))
   else
     remove_status=$?
+    if [[ "$remove_status" -eq 11 ]]; then
+      skipped_active=$((skipped_active + 1))
+      echo "[agent-worktree-prune] Skipping worktree with registered descendants: ${wt}"
+      return
+    fi
     if [[ "$remove_status" -ne 10 ]]; then
       exit "$remove_status"
     fi

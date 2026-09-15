@@ -369,6 +369,28 @@ exit 0
 });
 
 
+test('worktree prune preserves parents containing registered descendant worktrees', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  const parentBranch = 'agent/nested-parent';
+  const parent = path.join(repoDir, '.omx', 'agent-worktrees', 'parent');
+  const child = path.join(parent, '.omx', 'agent-worktrees', 'child');
+  for (const [branch, worktree] of [[parentBranch, parent], ['agent/nested-child', child]]) {
+    const result = runCmd('git', ['worktree', 'add', '-b', branch, worktree, 'dev'], repoDir);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+  fs.writeFileSync(path.join(child, 'uncommitted.txt'), 'preserve child work\n');
+  assert.equal(runCmd('git', ['status', '--porcelain'], parent).stdout.trim(), '');
+  const args = ['--delete-branches', '--branch', parentBranch];
+  for (const extra of [['--dry-run'], [], ['--force-dirty']]) {
+    const result = runWorktreePrune([...args, ...extra], repoDir);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Skipping worktree with registered descendants:/);
+    assert.equal(fs.readFileSync(path.join(child, 'uncommitted.txt'), 'utf8'), 'preserve child work\n');
+    assert.equal(runCmd('git', ['rev-parse', '--show-toplevel'], child).stdout.trim(), child);
+    assert.equal(runCmd('git', ['show-ref', '--verify', '--quiet', `refs/heads/${parentBranch}`], repoDir).status, 0);
+  }
+});
+
 test('worktree prune preserves dirty agent worktrees unless --force-dirty is used', () => {
   const repoDir = initRepo();
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
