@@ -214,7 +214,12 @@ function buildAgentLaunchCommand(options) {
     throw new Error(`Unsupported agent: ${agentId}`);
   }
 
-  const launchCommand = buildPromptCommand(baseParts, agent, prompt);
+  if (options.supervisorSessionId && !worktreePath) throw new Error('Supervised launch requires a worktree');
+  const launchParts = options.supervisorSessionId
+    ? [process.execPath, require('node:path').join(__dirname, 'supervise.js'),
+      worktreePath, options.supervisorSessionId, '--', ...baseParts]
+    : baseParts;
+  const launchCommand = buildPromptCommand(launchParts, agent, prompt);
   const envParts = [...buildResourceEnv(), ...buildSessionEnv(agent, sessionId)];
   const envPrefix = envParts.join(' ');
   const launchWithEnv = envPrefix ? `${envPrefix} ${launchCommand}` : launchCommand;

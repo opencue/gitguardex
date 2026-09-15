@@ -563,6 +563,17 @@ has_live_process_in_worktree() {
   local wt="$1"
   local proc_cwd=""
 
+  if [[ -d "${repo_common_dir}/gx-process-leases" ]]; then
+    local lease_probe="${GUARDEX_CLI_ENTRY:-}"
+    [[ -n "$lease_probe" ]] || return 0
+    lease_probe="$(dirname "$lease_probe")/../src/agents/process-lease.js"
+    [[ -f "$lease_probe" ]] || return 0
+    local lease_status=0
+    "${GUARDEX_NODE_BIN:-node}" "$lease_probe" "$wt" || lease_status=$?
+    # Unknown probes fail closed too; only explicit inactive (1) can continue.
+    [[ "$lease_status" -eq 1 ]] || return 0
+  fi
+
   [[ -d /proc ]] || return 1
 
   for proc_cwd in /proc/[0-9]*/cwd; do

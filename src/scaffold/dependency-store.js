@@ -72,7 +72,9 @@ function treeDigest(root) {
       const target = fs.realpathSync(file);
       if (target !== root && !target.startsWith(root + path.sep))
         throw new Error('dependency link escapes selected directory');
-      hash.update(fs.readlinkSync(file));
+      // Copies canonicalize internal links; hash their resolved in-tree target,
+      // not an absolute spelling or intermediate link that copying rewrites.
+      hash.update(path.relative(root, target));
     } else if (entry.isFile()) {
       hash.update(JSON.stringify(fs.statSync(file).mode & 0o111));
       hash.update(fs.readFileSync(file));
@@ -85,8 +87,8 @@ function setWritable(root, writable) {
   fs.chmodSync(root, writable ? 0o755 : 0o555);
   walk(root, (file, entry) => {
     if (!entry.isSymbolicLink()) {
-      const executable = entry.isDirectory() || fs.statSync(file).mode & 0o111;
-      fs.chmodSync(file, (executable ? 0o555 : 0o444) | (writable ? 0o200 : 0));
+      const mode = entry.isDirectory() ? 0o555 : 0o444 | (fs.statSync(file).mode & 0o111);
+      fs.chmodSync(file, mode | (writable ? 0o200 : 0));
     }
   });
 }

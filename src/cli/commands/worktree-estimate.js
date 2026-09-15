@@ -13,13 +13,17 @@ function worktreeEstimate(args) {
   const repoRoot = resolveRepoRoot(target);
   let ref = 'HEAD';
   let json = false;
+  let checkQuota = false;
+  let destination = repoRoot;
   const exclusions = [];
   for (let index = 0; index < passthrough.length; index++) {
     const arg = passthrough[index];
     if (arg === '--json') json = true;
-    else if (['--ref', '--sparse-exclude'].includes(arg) && passthrough[index + 1]) {
+    else if (arg === '--check-quota') checkQuota = true;
+    else if (['--ref', '--sparse-exclude', '--destination'].includes(arg) && passthrough[index + 1]) {
       const value = passthrough[++index];
       if (arg === '--ref') ref = value;
+      else if (arg === '--destination') destination = value;
       else exclusions.push(value);
     } else throw new Error(`Unexpected estimate option: ${arg}`);
   }
@@ -41,6 +45,10 @@ function worktreeEstimate(args) {
     );
   }
   const report = estimateCheckout(repoRoot, ref, exclusions);
+  report.quota = require('../../worktree-quota').inspectWorktreeQuota(repoRoot, report.checkoutBytes, destination);
+  if (checkQuota && report.quota?.violations.length) {
+    throw new Error(report.quota.violations.join(', ') + ': reuse an existing task or inspect safe cleanup before creating another worktree. No new checkout was created.');
+  }
   if (json) console.log(JSON.stringify(report));
   else {
     console.log(
@@ -52,6 +60,9 @@ function worktreeEstimate(args) {
       );
     }
     console.log(`[agent-branch-start] ${report.note}`);
+    if (report.quota) {
+      console.log('[agent-branch-start] Quota: ' + JSON.stringify(report.quota));
+    }
   }
 }
 

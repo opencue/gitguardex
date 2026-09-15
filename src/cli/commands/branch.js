@@ -292,6 +292,15 @@ function branch(rawArgs) {
   if (subcommand === 'start') {
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
+    const readOnly = isReadOnlyBranchStart(passthrough);
+    const quota = readOnly ? {} : require('../../worktree-quota').readWorktreeQuota(repoRoot);
+    if (!readOnly) {
+      const modeIndex = passthrough.indexOf('--provision-mode');
+      if (modeIndex >= 0 && !passthrough[modeIndex + 1]) throw new Error('--provision-mode requires a value');
+      require('../../scaffold/provision-config').provisioningMode({
+        mode: modeIndex >= 0 ? passthrough[modeIndex + 1] : undefined
+      });
+    }
     if (passthrough.includes('--task-id')) {
       if (passthrough.filter((arg) => arg === '--task-id').length !== 1)
         throw new Error('--task-id must appear once');
@@ -305,7 +314,7 @@ function branch(rawArgs) {
       });
       recoverStaleManagedWorktrees(repoRoot);
     }
-    if (passthrough.includes('--task-id') && !isReadOnlyBranchStart(passthrough)) {
+    if ((passthrough.includes('--task-id') || Object.keys(quota).length) && !isReadOnlyBranchStart(passthrough)) {
       require('../../worktree-start').invokeTaskStart(repoRoot, passthrough);
       return;
     }
@@ -459,7 +468,9 @@ function pivot(rawArgs) {
     process.exitCode = 0;
     return;
   }
-  const result = runPackageAsset('branchStart', passthrough, { cwd: repoRoot });
+  const result = isReadOnlyBranchStart(passthrough)
+    ? runPackageAsset('branchStart', passthrough, { cwd: repoRoot })
+    : require('../../worktree-start').runTaskStart(repoRoot, passthrough);
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0) {
@@ -506,6 +517,7 @@ function worktree(rawArgs) {
   const activeCwd = process.cwd();
   const [subcommand, ...rest] = rawArgs;
   if (subcommand === 'estimate') return require('./worktree-estimate').worktreeEstimate(rest);
+  if (subcommand === 'prune-artifacts') return require('./storage').pruneArtifacts(rest);
   if (subcommand === 'retry-cleanup') {
     if (rest.length === 1 && ['--help', '-h'].includes(rest[0])) {
       console.log(
@@ -531,7 +543,7 @@ function worktree(rawArgs) {
     });
     return;
   }
-  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <prune|provision|approve-hooks|estimate|retry-cleanup> [options]`);
+  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <prune|provision|approve-hooks|estimate|retry-cleanup|prune-artifacts> [options]`);
 }
 
 module.exports = {

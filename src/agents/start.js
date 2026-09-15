@@ -6,6 +6,7 @@ const {
 const { runPackageAsset } = require('../core/runtime');
 const { currentBranchName } = require('../git');
 const { buildAgentLaunchCommand } = require('./launch');
+const { runTaskStart } = require('../worktree-start');
 const { resolveAgent } = require('./registry');
 const {
   applyAgentSelectionKey,
@@ -369,8 +370,15 @@ function buildSessionPayload(options, metadata, status, extra = {}) {
     return null;
   }
 
+  const id = extra.id || agentSessionIdForBranch(metadata.branch);
+  const launch = buildAgentLaunchCommand({
+    agentId: options.agent || 'codex',
+    prompt: options.task,
+    worktreePath: path.resolve(metadata.worktreePath),
+    supervisorSessionId: id,
+  });
   return {
-    id: extra.id || agentSessionIdForBranch(metadata.branch),
+    id,
     task: options.task,
     agent: options.agent || 'codex',
     branch: metadata.branch,
@@ -378,11 +386,7 @@ function buildSessionPayload(options, metadata, status, extra = {}) {
     base: options.base || null,
     claims: Array.isArray(options.claims) ? [...options.claims] : [],
     metadata: options.metadata && typeof options.metadata === 'object' ? { ...options.metadata } : {},
-    launchCommand: buildAgentLaunchCommand({
-      agentId: options.agent || 'codex',
-      prompt: options.task,
-      worktreePath: path.resolve(metadata.worktreePath),
-    }),
+    launchCommand: launch,
     tmux: options.tmux && typeof options.tmux === 'object' ? { ...options.tmux } : null,
     status,
     ...extra,
@@ -452,7 +456,9 @@ function buildRecoveryLines(metadata, claims, session) {
 
 function startSingleAgentLane(repoRoot, options, deps = {}) {
   const packageAssetRunner = deps.packageAssetRunner || runPackageAsset;
-  const startResult = packageAssetRunner('branchStart', buildBranchStartArgs(options), { cwd: repoRoot });
+  const startResult = deps.packageAssetRunner
+    ? packageAssetRunner('branchStart', buildBranchStartArgs(options), { cwd: repoRoot })
+    : runTaskStart(repoRoot, buildBranchStartArgs(options));
   let stdout = String(startResult.stdout || '');
   let stderr = String(startResult.stderr || '');
   if (isSpawnFailure(startResult)) {

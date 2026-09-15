@@ -11,6 +11,7 @@ SPARSE_EXCLUDES=()
 TASK_ID=""
 PREVIEW=0
 REMEMBER_SPARSE=0
+PROVISION_MODE="${GUARDEX_PROVISION_MODE:-full}"
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
 OPENSPEC_AUTO_INIT_RAW="${GUARDEX_OPENSPEC_AUTO_INIT:-true}"
@@ -62,6 +63,7 @@ Options:
   --task-id <id>       Stable task identity; reuse its worktree even after a title change
   --preview           Read-only checkout estimate; no fetch, cleanup or creation
   --remember-sparse   Save explicit --sparse-exclude choices after creating a NEW worktree
+  --provision-mode <minimal|docs|full>  Preparation level (default full); reduced modes skip dependencies and hooks
   --agent <name>       Agent name
   --base <branch>      Base branch to fork from
   --worktree-root <p>  Worktree root dir (default: .omx/agent-worktrees)
@@ -107,6 +109,14 @@ while [[ $# -gt 0 ]]; do
     --preview)
       PREVIEW=1
       shift
+      ;;
+    --provision-mode)
+      PROVISION_MODE="${2:-}"
+      if [[ "$PROVISION_MODE" != minimal && "$PROVISION_MODE" != docs && "$PROVISION_MODE" != full ]]; then
+        echo "[agent-branch-start] Invalid --provision-mode; expected minimal, docs or full." >&2
+        exit 1
+      fi
+      shift 2
       ;;
     --remember-sparse)
       REMEMBER_SPARSE=1
@@ -186,6 +196,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$PROVISION_MODE" != minimal && "$PROVISION_MODE" != docs && "$PROVISION_MODE" != full ]]; then
+  echo "[agent-branch-start] Invalid provisioning mode; expected minimal, docs or full." >&2
+  exit 1
+fi
+export GUARDEX_PROVISION_MODE="$PROVISION_MODE"
 
 if [[ "${#POSITIONAL_ARGS[@]}" -gt 3 ]]; then
   echo "[agent-branch-start] Too many positional arguments." >&2
@@ -741,26 +757,6 @@ hydrate_local_helper_in_worktree() {
   echo "[agent-branch-start] Hydrated local helper in worktree: ${relative_path}"
 }
 
-hydrate_dependency_dir_symlink_in_worktree() {
-  local repo="$1"
-  local worktree="$2"
-  local relative_path="$3"
-  local source_path="${repo}/${relative_path}"
-  local target_path="${worktree}/${relative_path}"
-
-  if [[ ! -d "$source_path" ]]; then
-    return 0
-  fi
-
-  if [[ -e "$target_path" ]]; then
-    return 0
-  fi
-
-  mkdir -p "$(dirname "$target_path")"
-  ln -s "$source_path" "$target_path"
-  echo "[agent-branch-start] Linked dependency dir in worktree: ${relative_path}"
-}
-
 initialize_openspec_plan_workspace() {
   local repo="$1"
   local worktree="$2"
@@ -972,7 +968,13 @@ else
   start_ref="${BASE_BRANCH}"
 fi
 
-estimate_args=(worktree estimate --target "$repo_root" --ref "$start_ref")
+if [[ "$WORKTREE_ROOT_REL" == /* ]]; then
+  worktree_root="$WORKTREE_ROOT_REL"
+else
+  worktree_root="${worktree_repo_root}/${WORKTREE_ROOT_REL}"
+fi
+estimate_args=(worktree estimate --target "$repo_root" --ref "$start_ref" --destination "$worktree_root")
+if [[ "$PREVIEW" -eq 0 ]]; then estimate_args+=(--check-quota); fi
 for sparse_dir in "${SPARSE_EXCLUDES[@]}"; do
   estimate_args+=(--sparse-exclude "$sparse_dir")
 done
@@ -986,11 +988,6 @@ while git show-ref --verify --quiet "refs/heads/${branch_name}"; do
   branch_suffix=$((branch_suffix + 1))
 done
 
-if [[ "$WORKTREE_ROOT_REL" == /* ]]; then
-  worktree_root="$WORKTREE_ROOT_REL"
-else
-  worktree_root="${worktree_repo_root}/${WORKTREE_ROOT_REL}"
-fi
 mkdir -p "$worktree_root"
 worktree_leaf="$(resolve_worktree_leaf "$branch_name" "$agent_slug")"
 worktree_path="${worktree_root}/${worktree_leaf}"
@@ -1186,15 +1183,7 @@ if [[ -n "$auto_transfer_stash_ref" ]]; then
   fi
 fi
 
-if [[ -f "${repo_root}/.guardex.json" ]]; then
-  # Explicit copy policies win over legacy dependency sharing, even on failure.
-  run_guardex_cli worktree provision --source "$repo_root" --target "$worktree_path" --with-defaults
-else
-  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" ".venv"
-  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "node_modules"
-  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "apps/frontend/node_modules"
-  hydrate_dependency_dir_symlink_in_worktree "$repo_root" "$worktree_path" "apps/backend/node_modules"
-fi
+run_guardex_cli worktree provision --source "$repo_root" --target "$worktree_path" --with-defaults --mode "$PROVISION_MODE"
 if ! initialize_openspec_change_workspace "$repo_root" "$worktree_path" "$openspec_change_slug" "$openspec_capability_slug"; then
   exit 1
 fi

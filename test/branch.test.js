@@ -611,7 +611,7 @@ test('agent-branch-start leaves removed workflow helpers out of new worktrees', 
 });
 
 
-test('agent-branch-start links dependency directories into new worktrees when present', () => {
+test('agent-branch-start isolates dependencies and refuses nonrelocatable Python environments', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
 
@@ -641,28 +641,29 @@ test('agent-branch-start links dependency directories into new worktrees when pr
     GUARDEX_PROTECTED_BRANCHES: 'main',
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /Linked dependency dir in worktree: \.venv/);
-  assert.match(result.stdout, /Linked dependency dir in worktree: apps\/frontend\/node_modules/);
-  assert.match(result.stdout, /Linked dependency dir in worktree: apps\/backend\/node_modules/);
+  assert.match(result.stdout, /Python environments are not relocatable/);
+  assert.match(result.stdout, /provision copied: "apps\/frontend\/node_modules"/);
+  assert.match(result.stdout, /provision copied: "apps\/backend\/node_modules"/);
 
   const createdWorktree = extractCreatedWorktree(result.stdout);
   assert.equal(fs.existsSync(path.join(createdWorktree, 'node_modules')), true, 'root node_modules should exist in the worktree');
-  for (const relativeDir of dependencyDirs.filter((dir) => dir !== 'node_modules')) {
+  for (const relativeDir of dependencyDirs.filter((dir) => dir !== '.venv')) {
     const sourceDir = path.join(repoDir, relativeDir);
     const linkedDir = path.join(createdWorktree, relativeDir);
     assert.equal(fs.existsSync(linkedDir), true, `worktree path should exist: ${relativeDir}`);
-    assert.equal(fs.lstatSync(linkedDir).isSymbolicLink(), true, `worktree path should be a symlink: ${relativeDir}`);
-    assert.equal(fs.readlinkSync(linkedDir), sourceDir, `symlink should target source dependency dir: ${relativeDir}`);
+    assert.equal(fs.lstatSync(linkedDir).isSymbolicLink(), false, `worktree path must be private: ${relativeDir}`);
     assert.equal(
       fs.existsSync(path.join(linkedDir, '.guardex-link-marker')),
       true,
-      `symlink should expose source contents: ${relativeDir}`,
+      `copy should include source contents: ${relativeDir}`,
     );
+    fs.writeFileSync(path.join(linkedDir, '.guardex-link-marker'), 'changed');
+    assert.equal(fs.readFileSync(path.join(sourceDir, '.guardex-link-marker'), 'utf8'), 'present\n');
   }
   assert.equal(
     fs.existsSync(path.join(createdWorktree, '.venv', 'bin', 'python3')),
-    true,
-    'worktree-local .venv/bin/python3 should resolve through the source venv symlink',
+    false,
+    'Python environments must be recreated, not shared or copied across paths',
   );
 });
 
