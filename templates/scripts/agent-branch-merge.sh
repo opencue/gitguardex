@@ -9,6 +9,9 @@ AGENT_NAME="${GUARDEX_MERGE_AGENT_NAME:-codex}"
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
 declare -a SOURCE_BRANCHES=()
+_MERGE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/guardex-base-branch.sh
+source "${_MERGE_SCRIPT_DIR}/lib/guardex-base-branch.sh"
 
 usage() {
   cat <<'EOF'
@@ -51,13 +54,20 @@ sanitize_slug() {
 resolve_base_branch() {
   local repo="$1"
   local explicit_target="$2"
-  local configured=""
-  local branch_base=""
+  local configured="" branch_base="" inferred=""
 
   if [[ -n "$explicit_target" ]]; then
     branch_base="$(git -C "$repo" config --get "branch.${explicit_target}.guardexBase" || true)"
     if [[ -n "$branch_base" ]]; then
       printf '%s' "$branch_base"
+      return 0
+    fi
+    # Infer from git history before trusting the repo-wide configured base.
+    inferred="$(guardex_infer_base_branch "$repo" "$explicit_target" || true)"
+    if [[ -n "$inferred" ]]; then
+      printf '[gx] base for '"'"'%s'"'"' not recorded; inferred '"'"'%s'"'"' from git history (set branch.%s.guardexBase to override)\n' \
+        "$explicit_target" "$inferred" "$explicit_target" >&2
+      printf '%s' "$inferred"
       return 0
     fi
   fi

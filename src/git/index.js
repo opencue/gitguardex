@@ -1087,10 +1087,146 @@ function branchExists(repoRoot, branch) {
 }
 
 /**
+ * Infer the PR base branch from git history when no explicit base is recorded.
+ *
+ * Tries two strategies in order:
+ *  1. Reflog hint — scans the source branch's reflog for the oldest
+ *     "branch: Created from <name>" entry; when <name> is an existing local
+ *     branch (not HEAD, not a SHA, not sourceBranch itself) it is returned
+ *     immediately.
+ *  2. Ancestry — builds a candidate set from configuredBase,
+ *     protectedBranches, defaultBase, and every local non-agent branch;
+ *     computes `git rev-list --count <merge-base>..<source>` for each;
+ *     the candidate with the smallest count wins.  Ties are broken by
+ *     configuredBase preference, then protectedBranches order, then
+ *     lexical; a one-line WARNING is printed on stderr when a tie occurs.
+ *
+ * Returns null when no candidate shares history with sourceBranch (the
+ * branch may not exist yet, or is an unrelated orphan).
+ *
+ * @param {string} repoRoot Repo to inspect.
+ * @param {string} sourceBranch Agent branch whose base to infer.
+ * @param {{configuredBase?: string, protectedBranches?: string[], defaultBase?: string}} opts
+ * @returns {string|null} Inferred base branch name, or null.
+ */
+function inferBaseBranchFromHistory(repoRoot, sourceBranch, {
+  configuredBase = '',
+  protectedBranches = [],
+  defaultBase = '',
+} = {}) {
+  // 1. Reflog hint: oldest "Created from <name>" entry.
+  const reflogResult = gitRun(repoRoot, ['reflog', 'show', '--no-abbrev', sourceBranch], { allowFailure: true });
+  if (reflogResult.status === 0) {
+    let reflogBase = '';
+    for (const line of String(reflogResult.stdout || '').split('\n')) {
+      const m = line.match(/: branch: Created from (.+)$/);
+      if (m) {
+        reflogBase = m[1].trim();
+      }
+    }
+    if (
+      reflogBase &&
+      reflogBase !== 'HEAD' &&
+      reflogBase !== sourceBranch &&
+      !/^[0-9a-f]{40}$/i.test(reflogBase) &&
+      branchExists(repoRoot, reflogBase)
+    ) {
+      return reflogBase;
+    }
+  }
+
+  // 2. Ancestry search: build ordered, deduped candidate set.
+  const seen = new Set();
+  /** @type {string[]} */
+  const candidates = [];
+
+  /** @param {string} name */
+  function addCandidate(name) {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    if (
+      branchExists(repoRoot, name) ||
+      gitRefExists(repoRoot, `refs/remotes/origin/${name}`)
+    ) {
+      candidates.push(name);
+    }
+  }
+
+  if (configuredBase) addCandidate(configuredBase);
+  for (const pb of protectedBranches) addCandidate(pb);
+  if (defaultBase) addCandidate(defaultBase);
+
+  // All local non-agent branches.
+  const allBranches = gitRun(repoRoot, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], { allowFailure: true });
+  if (allBranches.status === 0) {
+    for (const b of String(allBranches.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean)) {
+      if (b !== sourceBranch && !b.startsWith('agent/')) {
+        addCandidate(b);
+      }
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  let bestCount = Infinity;
+  /** @type {string[]} */
+  let bestCandidates = [];
+
+  for (const candidate of candidates) {
+    const ref = gitRefExists(repoRoot, `refs/remotes/origin/${candidate}`)
+      ? `origin/${candidate}`
+      : candidate;
+    const mbResult = gitRun(repoRoot, ['merge-base', sourceBranch, ref], { allowFailure: true });
+    if (mbResult.status !== 0) continue;
+    const mb = String(mbResult.stdout || '').trim();
+    if (!mb) continue;
+    const countResult = gitRun(repoRoot, ['rev-list', '--count', `${mb}..${sourceBranch}`], { allowFailure: true });
+    if (countResult.status !== 0) continue;
+    const count = parseInt(String(countResult.stdout || '').trim(), 10);
+    if (Number.isNaN(count)) continue;
+
+    if (count < bestCount) {
+      bestCount = count;
+      bestCandidates = [candidate];
+    } else if (count === bestCount) {
+      bestCandidates.push(candidate);
+    }
+  }
+
+  if (bestCandidates.length === 0) return null;
+
+  if (bestCandidates.length > 1) {
+    // Tie-break: configuredBase > protectedBranches order > lexical.
+    let winner = '';
+    if (configuredBase && bestCandidates.includes(configuredBase)) {
+      winner = configuredBase;
+    } else {
+      for (const pb of protectedBranches) {
+        if (bestCandidates.includes(pb)) {
+          winner = pb;
+          break;
+        }
+      }
+    }
+    if (!winner) {
+      winner = [...bestCandidates].sort()[0];
+    }
+    process.stderr.write(
+      `[gx] WARNING: tie between base candidates [${bestCandidates.join(', ')}]; picked '${winner}'\n`,
+    );
+    return winner;
+  }
+
+  return bestCandidates[0];
+}
+
+/**
  * Resolve the base branch for the finish flow: CLI override wins and repairs
  * the branch metadata before any gate can restart the finish; otherwise the
  * per-branch `branch.<source>.guardexBase` recorded at branch-start; otherwise
- * the repo-wide configured base; otherwise the repo's detected default branch.
+ * inferred from git history (persisted as branch.<source>.guardexBase so every
+ * later step agrees); otherwise the repo-wide configured base; otherwise the
+ * repo's detected default branch.
  *
  * @param {string} repoRoot Repo to inspect.
  * @param {string} sourceBranch Source agent branch (used for per-branch base).
@@ -1111,6 +1247,24 @@ function resolveFinishBaseBranch(repoRoot, sourceBranch, explicitBase) {
     const perBranch = readGitConfig(repoRoot, `branch.${sourceBranch}.guardexBase`);
     if (perBranch) {
       return perBranch;
+    }
+
+    // No recorded base: infer from git history before trusting the repo-wide config.
+    const configuredBase = readGitConfig(repoRoot, GIT_BASE_BRANCH_KEY);
+    const protectedBranches = readConfiguredProtectedBranches(repoRoot) || [...DEFAULT_PROTECTED_BRANCHES];
+    const defaultBase = detectDefaultBaseBranch(repoRoot);
+    const inferred = inferBaseBranchFromHistory(repoRoot, sourceBranch, {
+      configuredBase,
+      protectedBranches,
+      defaultBase,
+    });
+    if (inferred) {
+      gitRun(repoRoot, ['config', `branch.${sourceBranch}.guardexBase`, inferred]);
+      process.stderr.write(
+        `[gx] base for '${sourceBranch}' not recorded; inferred '${inferred}' from git history` +
+          ` (set branch.${sourceBranch}.guardexBase to override)\n`,
+      );
+      return inferred;
     }
   }
 
@@ -1231,6 +1385,7 @@ module.exports = {
   worktreeHasLocalChanges,
   gitOutputLines,
   branchExists,
+  inferBaseBranchFromHistory,
   resolveFinishBaseBranch,
   branchMergedIntoBase,
   syncOperation,
