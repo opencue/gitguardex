@@ -36,7 +36,9 @@ function supervise(worktreePath, sessionId, command) {
     fs.renameSync(temp, file);
   };
   heartbeat();
-  const child = spawn('sh', ['-c', command], { cwd: worktree, stdio: 'inherit' });
+  const child = spawn('sh', ['-c', command], {
+    cwd: worktree, stdio: 'inherit', detached: true
+  });
   lease.child = child.pid ? probe(child.pid) : null;
   heartbeat();
   const interval = Number(process.env.GUARDEX_HEARTBEAT_MS || 5000);
@@ -50,11 +52,43 @@ function supervise(worktreePath, sessionId, command) {
     },
     Number.isSafeInteger(interval) && interval >= 100 ? interval : 5000
   );
-  // Terminal SIGINT reaches the foreground process group, including the child.
-  // Do not double-forward it. Explicit termination of the supervisor is forwarded.
-  process.on('SIGINT', () => {});
-  process.on('SIGTERM', () => child.kill('SIGTERM'));
+  // The child has its own process group; forward to the shell and the agent.
+  const forward = (signal) => {
+    if (!child.pid) return;
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+    }
+  };
+  process.on('SIGINT', () => forward('SIGINT'));
+  process.on('SIGTERM', () => forward('SIGTERM'));
+  const groupAlive = () => {
+    if (!child.pid) return false;
+    try {
+      process.kill(-child.pid, 0);
+      if (process.platform !== 'linux') return true;
+      // Orphaned zombies may await reaping by init, but no longer own work.
+      return fs.readdirSync('/proc').filter((pid) => /^\d+$/.test(pid)).some((pid) => {
+        try {
+          const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+          const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+          return Number(fields[2]) === child.pid && fields[0] !== 'Z';
+        } catch (error) {
+          if (['ENOENT', 'ESRCH'].includes(error.code)) return false;
+          throw error;
+        }
+      });
+    } catch (error) {
+      return error.code !== 'ESRCH';
+    }
+  };
   const done = (code, signal) => {
+    // The shell can exit before an agent finishes handling termination.
+    if (groupAlive()) {
+      setTimeout(() => done(code, signal), 100);
+      return;
+    }
     clearInterval(timer);
     fs.rmSync(file, { force: true });
     fs.rmSync(temp, { force: true });

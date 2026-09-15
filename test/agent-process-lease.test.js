@@ -5,6 +5,62 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 
+test('termination reaches the agent and retains its lease until shutdown completes',
+  { skip: process.platform !== 'linux', timeout: 10000 }, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-terminate-'));
+    const { leaseDirectory, probeLeases, processIdentity } = require('../src/agents/process-lease');
+    cp.execFileSync('git', ['init', '-q', root]);
+    const ready = path.join(root, 'ready');
+    const stopping = path.join(root, 'stopping');
+    const release = path.join(root, 'release');
+    const script = path.join(root, 'agent.js');
+    fs.writeFileSync(script, `
+      const fs = require('node:fs');
+      process.chdir('/');
+      process.on('SIGTERM', () => {
+        fs.writeFileSync(${JSON.stringify(stopping)}, '');
+        setInterval(() => {
+          if (fs.existsSync(${JSON.stringify(release)})) process.exit(0);
+        }, 20);
+      });
+      setInterval(() => {}, 1000);
+      fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+    `);
+    const { shellQuote } = require('../src/agents/launch');
+    const child = cp.spawn(process.execPath, [
+      path.resolve(__dirname, '../src/agents/supervise.js'), root, 'termination',
+      `${shellQuote(process.execPath)} ${shellQuote(script)}; :`
+    ], { stdio: 'ignore' });
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    let agentPid;
+    t.after(() => {
+      for (const pid of [agentPid, child.pid]) {
+        if (!pid) continue;
+        try { process.kill(pid, 'SIGKILL'); } catch (error) {
+          if (error.code !== 'ESRCH') throw error;
+        }
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    const waitFor = async (file) => {
+      const deadline = Date.now() + 3000;
+      while (!fs.existsSync(file) && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.ok(fs.existsSync(file), `${path.basename(file)} must be published`);
+    };
+    await waitFor(ready);
+    agentPid = Number(fs.readFileSync(ready, 'utf8'));
+    child.kill('SIGTERM');
+    await waitFor(stopping);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(processIdentity(agentPid), 'agent is still shutting down');
+    assert.equal(probeLeases(root).active, true, 'lease survives shell termination and agent chdir');
+    fs.writeFileSync(release, '');
+    await exited;
+    assert.equal(processIdentity(agentPid), null);
+    assert.deepEqual(fs.readdirSync(leaseDirectory(root)), []);
+  });
+
 test('canonical session launch supervises the real command without changing prompt quoting', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-launch-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
