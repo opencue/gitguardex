@@ -572,9 +572,28 @@ printf '%s\\n' '{"findings":[]}'
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /GitHub auth unavailable; wrote PR review artifact:/);
-  const artifactPath = path.join(repoDir, '.gitguardex', 'pr-reviews', 'pr-13.md');
+  const artifactPath = result.stdout.match(/wrote PR review artifact: (.+)/)[1].trim();
+  assert.ok(artifactPath.startsWith(path.join(repoDir, '.git', 'guardex', 'runs')));
+  assert.ok(artifactPath.endsWith(path.join('results', 'pr-13.md')));
   assert.equal(fs.existsSync(artifactPath), true);
   assert.match(fs.readFileSync(artifactPath, 'utf8'), /No findings/);
+
+  const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, {
+    PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
+  });
+  assert.equal(second.status, 0, second.stderr || second.stdout);
+  const secondPath = second.stdout.match(/Wrote PR review artifact: (.+)/)[1].trim();
+  assert.notEqual(secondPath, artifactPath);
+  assert.match(fs.readFileSync(artifactPath, 'utf8'), /No findings/);
+  assert.match(fs.readFileSync(secondPath, 'utf8'), /No findings/);
+
+  for (const explicit of ['custom-review.md', path.join(repoDir, 'absolute-review.md')]) {
+    const custom = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir, '--artifact', explicit], repoDir, {
+      PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
+    });
+    assert.equal(custom.status, 0, custom.stderr || custom.stdout);
+    assert.match(fs.readFileSync(path.resolve(repoDir, explicit), 'utf8'), /No findings/);
+  }
 });
 
 });
