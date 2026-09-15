@@ -1,7 +1,11 @@
 const { fs, path, TOOL_NAME } = require('../../context');
 const { resolveRepoRoot, currentBranchName, readProtectedBranches } = require('../../git');
 const { extractTargetedArgs } = require('../../core/runtime');
-const { loadProvisionConfig, applyProvisionConfig } = require('../../scaffold/provision-config');
+const {
+  loadProvisionConfig,
+  applyProvisionConfig,
+  provisioningMode
+} = require('../../scaffold/provision-config');
 const {
   repositoryIdentity,
   requestApproval,
@@ -11,7 +15,7 @@ const {
 function worktreeProvision(subcommand, args) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gx worktree approve-hooks [--target <repo>] [--revoke]\ngx worktree provision --source <repo> [--target <worktree>] [--with-defaults]'
+      'gx worktree approve-hooks [--target <repo>] [--revoke]\ngx worktree provision --source <repo> [--target <worktree>] [--with-defaults] [--mode minimal|docs|full]'
     );
     return;
   }
@@ -36,9 +40,12 @@ function worktreeProvision(subcommand, args) {
   }
   let source = '';
   let withDefaults = false;
+  let mode;
   for (let index = 0; index < passthrough.length; index++) {
     const arg = passthrough[index];
     if (arg === '--with-defaults') withDefaults = true;
+    else if (arg === '--mode' && passthrough[index + 1] && !passthrough[index + 1].startsWith('--'))
+      mode = passthrough[++index];
     else if (
       arg === '--source' &&
       passthrough[index + 1] &&
@@ -48,6 +55,7 @@ function worktreeProvision(subcommand, args) {
     else throw new Error(`Unexpected provisioning option: ${arg}`);
   }
   if (!source) throw new Error('Provisioning requires --source <repo>');
+  mode = provisioningMode({ mode });
   source = resolveRepoRoot(source);
   if (
     source === repoRoot ||
@@ -74,7 +82,7 @@ function worktreeProvision(subcommand, args) {
       ])
     ];
   }
-  for (const operation of applyProvisionConfig(source, repoRoot, config)) {
+  for (const operation of applyProvisionConfig(source, repoRoot, config, { mode })) {
     console.log(
       `[${TOOL_NAME}] provision ${operation.status}${operation.code ? ` ${operation.code}` : ''}: ${JSON.stringify(operation.file)} (${operation.note})`
     );

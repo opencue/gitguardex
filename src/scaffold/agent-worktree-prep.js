@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { provisionFromConfig } = require('./provision-config');
+const { provisionFromConfig, provisioningMode } = require('./provision-config');
 
 const ENV_FILE_CANDIDATES = [
   '.env',
@@ -28,7 +28,7 @@ const ENV_FILE_CANDIDATES = [
   '.env.development',
   '.env.development.local',
   '.env.production',
-  '.env.production.local',
+  '.env.production.local'
 ];
 
 // Port pool by detected app role. Storefronts get the Vite/Next range,
@@ -36,7 +36,7 @@ const ENV_FILE_CANDIDATES = [
 const PORT_POOLS = {
   storefront: 5174,
   backend: 9101,
-  default: 8100,
+  default: 8100
 };
 
 function detectAppPackages(repoRoot) {
@@ -77,7 +77,7 @@ function isPortFree(port) {
   // CI image); the dev server will fail loudly if it isn't.
   const probe = spawnSync('lsof', ['-iTCP:' + port, '-sTCP:LISTEN', '-t'], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 2000,
+    timeout: 2000
   });
   if (probe.error) return true;
   const out = (probe.stdout && probe.stdout.toString().trim()) || '';
@@ -114,7 +114,7 @@ function symlinkAppEnvFiles(repoRoot, worktreePath, appName) {
       operations.push({
         status: 'unchanged',
         file: `apps/${appName}/${candidate}`,
-        note: 'already present in worktree',
+        note: 'already present in worktree'
       });
       continue;
     }
@@ -123,13 +123,13 @@ function symlinkAppEnvFiles(repoRoot, worktreePath, appName) {
       operations.push({
         status: 'linked',
         file: `apps/${appName}/${candidate}`,
-        note: `→ ${path.relative(worktreePath, rootEnv)}`,
+        note: `→ ${path.relative(worktreePath, rootEnv)}`
       });
     } catch (err) {
       operations.push({
         status: 'failed',
         file: `apps/${appName}/${candidate}`,
-        note: `symlink failed: ${err.message}`,
+        note: `symlink failed: ${err.message}`
       });
     }
   }
@@ -152,7 +152,7 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts) {
     return {
       status: 'failed',
       file: `apps/${appName}/.env.local`,
-      note: 'no free port found in pool',
+      note: 'no free port found in pool'
     };
   }
   takenPorts.add(port);
@@ -183,11 +183,12 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts) {
   return {
     status: 'wrote',
     file: `apps/${appName}/.env.local`,
-    note: `PORT=${port} (${role} pool)`,
+    note: `PORT=${port} (${role} pool)`
   };
 }
 
-function prepareAgentWorktree(repoRoot, worktreePath) {
+function prepareAgentWorktree(repoRoot, worktreePath, deps = {}) {
+  const mode = provisioningMode(deps);
   if (!repoRoot || !worktreePath) return [];
   if (repoRoot === worktreePath) return [];
   if (!fs.existsSync(worktreePath)) return [];
@@ -196,7 +197,8 @@ function prepareAgentWorktree(repoRoot, worktreePath) {
 
   // Declarative `.guardex.json` provisioning runs for ANY repo (monorepo or
   // not) — copy/symlink gitignored files and run post_create hooks.
-  operations.push(...provisionFromConfig(repoRoot, worktreePath));
+  operations.push(...provisionFromConfig(repoRoot, worktreePath, deps));
+  if (mode !== 'full') return operations;
 
   // Built-in apps/* monorepo convenience: env-file symlinks + a free dev port
   // per app. Stays as the zero-config default for monorepos.
@@ -216,5 +218,5 @@ module.exports = {
   pickFreePort,
   symlinkAppEnvFiles,
   assignAgentPort,
-  prepareAgentWorktree,
+  prepareAgentWorktree
 };
