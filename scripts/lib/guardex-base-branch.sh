@@ -1,0 +1,1 @@
+../../templates/scripts/lib/guardex-base-branch.sh

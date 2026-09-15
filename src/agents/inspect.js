@@ -1,6 +1,6 @@
 const { fs, path, DEFAULT_BASE_BRANCH, LOCK_FILE_RELATIVE } = require('../context');
 const { run } = require('../core/runtime');
-const { resolveRepoRoot } = require('../git');
+const { resolveRepoRoot, inferBaseBranchFromHistory } = require('../git');
 
 const INSPECT_EXCLUDE_PATHS = new Set([LOCK_FILE_RELATIVE]);
 
@@ -68,11 +68,19 @@ function worktreePathForBranch(repoRoot, branch, worktrees = null) {
 }
 
 function resolveBaseBranch(repoRoot, branch) {
-  return (
-    readGitConfig(repoRoot, `branch.${branch}.guardexBase`) ||
-    readGitConfig(repoRoot, 'multiagent.baseBranch') ||
-    DEFAULT_BASE_BRANCH
-  );
+  const perBranch = readGitConfig(repoRoot, `branch.${branch}.guardexBase`);
+  if (perBranch) return perBranch;
+
+  const configuredBase = readGitConfig(repoRoot, 'multiagent.baseBranch');
+  // Infer from history; do NOT persist (inspect is read-only display).
+  const inferred = inferBaseBranchFromHistory(repoRoot, branch, {
+    configuredBase,
+    protectedBranches: [],
+    defaultBase: DEFAULT_BASE_BRANCH,
+  });
+  if (inferred) return inferred;
+
+  return configuredBase || DEFAULT_BASE_BRANCH;
 }
 
 function compareRefForBase(repoRoot, baseBranch) {

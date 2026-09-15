@@ -12,6 +12,8 @@ GH_BIN="${GUARDEX_GH_BIN:-gh}"
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
 FINISH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/guardex-base-branch.sh
+source "${FINISH_SCRIPT_DIR}/lib/guardex-base-branch.sh"
 CLEANUP_AFTER_MERGE_RAW="${GUARDEX_FINISH_CLEANUP:-true}"
 WAIT_FOR_MERGE_RAW="${GUARDEX_FINISH_WAIT_FOR_MERGE:-true}"
 WAIT_TIMEOUT_SECONDS_RAW="${GUARDEX_FINISH_WAIT_TIMEOUT_SECONDS:-1800}"
@@ -892,9 +894,17 @@ if [[ "$BASE_BRANCH_EXPLICIT" -eq 0 ]]; then
   if [[ -n "$source_branch_base" ]]; then
     BASE_BRANCH="$source_branch_base"
   else
-    configured_base="$(git -C "$repo_root" config --get multiagent.baseBranch || true)"
-    if [[ -n "$configured_base" ]]; then
-      BASE_BRANCH="$configured_base"
+    # Infer from git history before trusting the repo-wide configured base.
+    inferred_finish_base="$(guardex_infer_base_branch "$repo_root" "$SOURCE_BRANCH" || true)"
+    if [[ -n "$inferred_finish_base" ]]; then
+      BASE_BRANCH="$inferred_finish_base"
+      printf '[gx] base for '"'"'%s'"'"' not recorded; inferred '"'"'%s'"'"' from git history (set branch.%s.guardexBase to override)\n' \
+        "$SOURCE_BRANCH" "$inferred_finish_base" "$SOURCE_BRANCH" >&2
+    else
+      configured_base="$(git -C "$repo_root" config --get multiagent.baseBranch || true)"
+      if [[ -n "$configured_base" ]]; then
+        BASE_BRANCH="$configured_base"
+      fi
     fi
   fi
 fi

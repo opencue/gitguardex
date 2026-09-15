@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+_CODEX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/guardex-base-branch.sh
+source "${_CODEX_SCRIPT_DIR}/lib/guardex-base-branch.sh"
+
 TASK_NAME="${GUARDEX_TASK_NAME:-task}"
 AGENT_NAME="${GUARDEX_AGENT_NAME:-agent}"
 BASE_BRANCH="${GUARDEX_BASE_BRANCH:-}"
@@ -600,10 +604,28 @@ resolve_worktree_base_branch() {
     return 0
   fi
 
-  local configured_base
-  configured_base="$(git -C "$repo_root" config --get multiagent.baseBranch || true)"
-  if [[ -n "$configured_base" ]]; then
-    printf '%s' "$configured_base"
+  # If the worktree's branch has an explicit guardexBase, trust it.
+  local _wt_branch _branch_base _inferred _configured_base
+  _wt_branch="$(git -C "$_wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -n "$_wt_branch" && "$_wt_branch" != "HEAD" ]]; then
+    _branch_base="$(git -C "$repo_root" config --get "branch.${_wt_branch}.guardexBase" 2>/dev/null || true)"
+    if [[ -n "$_branch_base" ]]; then
+      printf '%s' "$_branch_base"
+      return 0
+    fi
+    # Infer from git history before trusting the repo-wide configured base.
+    _inferred="$(guardex_infer_base_branch "$repo_root" "$_wt_branch" 2>/dev/null || true)"
+    if [[ -n "$_inferred" ]]; then
+      printf '[gx] base for '"'"'%s'"'"' not recorded; inferred '"'"'%s'"'"' from git history (set branch.%s.guardexBase to override)\n' \
+        "$_wt_branch" "$_inferred" "$_wt_branch" >&2
+      printf '%s' "$_inferred"
+      return 0
+    fi
+  fi
+
+  _configured_base="$(git -C "$repo_root" config --get multiagent.baseBranch || true)"
+  if [[ -n "$_configured_base" ]]; then
+    printf '%s' "$_configured_base"
     return 0
   fi
 

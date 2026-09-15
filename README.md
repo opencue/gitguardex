@@ -74,7 +74,14 @@ Parallel agents can edit the same files, overwrite tests, or commit directly to
 <summary><strong>Implementation evidence and shipped hardening</strong></summary>
 
 - **Correct base targeting** — persist and validate each lane's base so an
-  unattended finish cannot use another checkout's target. ([#745](https://github.com/opencue/gitguardex/pull/745), [#750](https://github.com/opencue/gitguardex/pull/750), [#751](https://github.com/opencue/gitguardex/pull/751))
+  unattended finish cannot use another checkout's target. When
+  `branch.<b>.guardexBase` is absent (e.g., a worktree created with raw
+  `git worktree add`), the finish and stop hooks infer the base from git
+  history: the oldest reflog "Created from &lt;name&gt;" entry wins; if absent,
+  ancestry distance (commits ahead of each candidate's merge-base) selects the
+  closest; ties prefer `multiagent.baseBranch`, then protected branches, then
+  lexical order; and the result is persisted as `branch.<b>.guardexBase` for
+  every subsequent gate. ([#745](https://github.com/opencue/gitguardex/pull/745), [#750](https://github.com/opencue/gitguardex/pull/750), [#751](https://github.com/opencue/gitguardex/pull/751))
 - **Billing-aware CI fallback** — waive only named checks that GitHub could not
   start because of billing, while keeping repository preflight mandatory.
   ([#743](https://github.com/opencue/gitguardex/pull/743))

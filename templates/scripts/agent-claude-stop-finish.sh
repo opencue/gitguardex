@@ -15,6 +15,9 @@ set -euo pipefail
 
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
+_STOP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/guardex-base-branch.sh
+source "${_STOP_SCRIPT_DIR}/lib/guardex-base-branch.sh"
 
 run_guardex_cli() {
   if [[ -n "$CLI_ENTRY" ]]; then
@@ -67,10 +70,18 @@ elif value is not None:
 }
 
 resolve_base_branch() {
-  local repo="$1" branch="$2" configured head_ref cand
+  local repo="$1" branch="$2" configured inferred head_ref cand
   configured="$(git -C "$repo" config --get "branch.${branch}.guardexBase" 2>/dev/null || true)"
   if [[ -n "$configured" ]]; then
     printf '%s' "$configured"
+    return 0
+  fi
+  # Infer from git history before trusting the repo-wide configured base.
+  inferred="$(guardex_infer_base_branch "$repo" "$branch" 2>/dev/null || true)"
+  if [[ -n "$inferred" ]]; then
+    printf '[gx] base for '"'"'%s'"'"' not recorded; inferred '"'"'%s'"'"' from git history (set branch.%s.guardexBase to override)\n' \
+      "$branch" "$inferred" "$branch" >&2
+    printf '%s' "$inferred"
     return 0
   fi
   configured="$(git -C "$repo" config --get multiagent.baseBranch 2>/dev/null || true)"

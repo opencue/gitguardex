@@ -34,6 +34,7 @@ required_symlinks=(
   scripts/codex-agent.sh
   scripts/install-agent-git-hooks.sh
   scripts/review-bot-watch.sh
+  scripts/lib/guardex-base-branch.sh
   scripts/openspec/init-change-workspace.sh
   scripts/openspec/init-plan-workspace.sh
 )
@@ -48,6 +49,8 @@ for path in "${required_symlinks[@]}"; do
   expected_basename="$(basename "$path")"
   if [[ "$path" == scripts/openspec/* ]]; then
     expected_prefix="../../templates/scripts/openspec/"
+  elif [[ "$path" == scripts/lib/* ]]; then
+    expected_prefix="../../templates/scripts/lib/"
   else
     expected_prefix="../templates/scripts/"
   fi

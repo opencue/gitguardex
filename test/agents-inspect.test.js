@@ -95,3 +95,35 @@ test('agents locks lists locks owned by the selected branch', () => {
     ],
   );
 });
+
+const { runHumanCmd } = require('./helpers/install-test-helpers');
+const { resolveBaseBranch: inspectResolveBaseBranch } = require('../src/agents/inspect');
+
+test('agents inspect resolveBaseBranch infers base from history without persisting it', () => {
+  // Set up: main → station03 (1 commit) → agent branch (1 commit)
+  const repoDir = initRepoOnBranch('main');
+  seedCommit(repoDir);
+
+  let result = runHumanCmd('git', ['checkout', '-b', 'station03'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runHumanCmd('git', ['commit', '--allow-empty', '-m', 'station03 work'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+
+  const branch = 'agent/codex/inspect-infer';
+  result = runHumanCmd('git', ['checkout', '-b', branch], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runHumanCmd('git', ['commit', '--allow-empty', '-m', 'agent work'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+
+  // Set stale multiagent.baseBranch
+  result = runHumanCmd('git', ['config', 'multiagent.baseBranch', 'main'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+
+  // Inspect should infer station03 (reflog hint)
+  const base = inspectResolveBaseBranch(repoDir, branch);
+  assert.equal(base, 'station03');
+
+  // Must NOT have persisted guardexBase (inspect is read-only)
+  result = runHumanCmd('git', ['config', '--get', `branch.${branch}.guardexBase`], repoDir);
+  assert.notEqual(result.status, 0, 'inspect resolveBaseBranch must not persist guardexBase');
+});
