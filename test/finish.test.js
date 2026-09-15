@@ -136,46 +136,48 @@ test('post-finish cleanup uses lsof when proc cwd inspection is unavailable', ()
   );
 });
 
-test('post-finish cleanup does not spawn an unmonitorable deferred worker', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-cleanup-repo-'));
-  const worktreePath = fs.mkdtempSync(path.join(repoRoot, 'worktree-'));
-  const gitDir = fs.mkdtempSync(path.join(repoRoot, 'gitdir-'));
-  let spawned = false;
-  const scheduled = scheduleFinishedDetachedWorktreeCleanup(
-    { repoRoot, worktreePath },
-    {
-      procRoot: '',
-      runner: (command) =>
-        command === 'git' ? { status: 0, stdout: gitDir } : { status: 127, stdout: '' },
-      spawn: () => {
-        spawned = true;
-      },
-    },
+function detachedCleanupFixture(t) {
+  const repoRoot = initRepo();
+  seedCommit(repoRoot);
+  const worktreePath = path.join(repoRoot, '.omx/agent-worktrees/finished');
+  assert.equal(
+    runCmd('git', ['worktree', 'add', '--detach', worktreePath, 'HEAD'], repoRoot).status,
+    0
   );
+  t.after(() => fs.rmSync(path.dirname(repoRoot), { recursive: true, force: true }));
+  return { repoRoot, worktreePath, worktreeIdentity: captureWorktreeIdentity(worktreePath) };
+}
+
+test('post-finish cleanup does not spawn an unmonitorable deferred worker', (t) => {
+  const plan = detachedCleanupFixture(t);
+  let spawned = false;
+  const scheduled = scheduleFinishedDetachedWorktreeCleanup(plan, {
+    procRoot: '',
+    runner: (command, args) =>
+      command === 'git' ? runCmd(command, args, plan.repoRoot) : { status: 127, stdout: '' },
+    spawn: () => {
+      spawned = true;
+    }
+  });
   assert.equal(scheduled, false);
   assert.equal(spawned, false);
 });
 
-test('post-finish cleanup handles an asynchronous deferred worker spawn failure', () => {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-cleanup-spawn-repo-'));
-  const worktreePath = fs.mkdtempSync(path.join(repoRoot, 'worktree-'));
-  const gitDir = fs.mkdtempSync(path.join(repoRoot, 'gitdir-'));
+test('post-finish cleanup handles an asynchronous deferred worker spawn failure', (t) => {
+  const plan = detachedCleanupFixture(t);
   const child = new EventEmitter();
   child.unref = () => {};
   const originalError = console.error;
   console.error = () => {};
   try {
     assert.equal(
-      scheduleFinishedDetachedWorktreeCleanup(
-        { repoRoot, worktreePath },
-        {
-          procRoot: '',
-          runner: (command) =>
-            command === 'git' ? { status: 0, stdout: gitDir } : { status: 1, stdout: '' },
-          spawn: () => child,
-        },
-      ),
-      true,
+      scheduleFinishedDetachedWorktreeCleanup(plan, {
+        procRoot: '',
+        runner: (command, args) =>
+          command === 'git' ? runCmd(command, args, plan.repoRoot) : { status: 1, stdout: '' },
+        spawn: () => child
+      }),
+      true
     );
     assert.doesNotThrow(() => child.emit('error', new Error('EAGAIN')));
   } finally {

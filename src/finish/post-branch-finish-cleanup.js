@@ -54,24 +54,33 @@ function captureWorktreeIdentity(worktreePath, runner = run) {
   }
 }
 
-function worktreeIdentityMatches(plan, runner = run) {
-  if (!plan?.worktreeIdentity) return false;
+function worktreeIdentityState(plan, runner = run) {
+  if (!plan?.worktreeIdentity) return 'unknown';
   try {
     const gitDirResult = runner(
       'git',
       ['-C', plan.worktreePath, 'rev-parse', '--absolute-git-dir'],
       { cwd: plan.worktreePath }
     );
-    if (gitDirResult.status !== 0) return false;
+    if (gitDirResult.status !== 0 || !String(gitDirResult.stdout || '').trim()) return 'unknown';
     const gitDir = path.resolve(String(gitDirResult.stdout || '').trim());
-    if (gitDir !== plan.worktreeIdentity.gitDir) return false;
+    if (gitDir !== plan.worktreeIdentity.gitDir) return 'changed';
     return (
       fs.readFileSync(path.join(gitDir, 'gitguardex-finish-cleanup-id'), 'utf8').trim() ===
       plan.worktreeIdentity.token
-    );
+    ) ? 'same' : 'changed';
   } catch {
-    return false;
+    return 'unknown';
   }
+}
+
+function worktreeIdentityMatches(plan, runner = run) {
+  return worktreeIdentityState(plan, runner) === 'same';
+}
+
+function worktreeMissing(worktreePath) {
+  try { fs.lstatSync(worktreePath); return false; }
+  catch (error) { return error.code === 'ENOENT'; }
 }
 
 function resolveSharedRepoRoot(target) {
@@ -191,11 +200,227 @@ function prepareBranchFinishCleanup(argv, activeCwd) {
   }
 }
 
-function cleanupFinishedDetachedWorktree(plan) {
+function commonGitDirectory(repoRoot) {
+  const result = run('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir']);
+  if (result.status !== 0) throw new Error('Cannot resolve cleanup queue directory');
+  return fs.realpathSync(path.resolve(repoRoot, result.stdout.trim()));
+}
+
+function cleanupQueueDirectory(repoRoot, create = false) {
+  const directory = path.join(commonGitDirectory(repoRoot), 'gitguardex-pending-cleanup');
+  if (create) {
+    try {
+      fs.mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+  }
+  const stat = fs.lstatSync(directory);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    stat.mode & 0o077 ||
+    (process.getuid && stat.uid !== process.getuid())
+  )
+    throw new Error('Unsafe cleanup queue directory');
+  return directory;
+}
+
+function readPrivateJob(file) {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      stat.size > 16384 ||
+      stat.mode & 0o077 ||
+      (process.getuid && stat.uid !== process.getuid())
+    )
+      throw new Error('Unsafe cleanup job');
+    return JSON.parse(fs.readFileSync(fd, 'utf8'));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function validCleanupPlan(plan) {
+  try {
+    const common = commonGitDirectory(plan.repoRoot);
+    return (
+      fs.realpathSync(plan.repoRoot) === plan.repoRoot &&
+      path.resolve(plan.worktreePath) === plan.worktreePath &&
+      isManagedAgentWorktree(plan.repoRoot, plan.worktreePath) &&
+      pathContains(path.join(common, 'worktrees'), plan.worktreeIdentity.gitDir) &&
+      plan.worktreeIdentity.gitDir !== path.join(common, 'worktrees') &&
+      /^[a-f0-9-]{36}$/.test(plan.worktreeIdentity.token) &&
+      /^[a-f0-9]{40,64}$/.test(plan.expectedHead)
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Persist only after a successful finish, pinning the post-finish detached HEAD.
+// Pending jobs live outside the worktree and survive worker exits/reboots.
+function persistFinishedCleanup(plan) {
+  try {
+    if (!plan || !worktreeIdentityMatches(plan)) return null;
+    const head = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
+    const branch = run('git', ['-C', plan.worktreePath, 'symbolic-ref', '-q', 'HEAD']);
+    if (head.status !== 0 || branch.status !== 1) return null;
+    const pending = {
+      repoRoot: fs.realpathSync(plan.repoRoot),
+      worktreePath: plan.worktreePath,
+      worktreeIdentity: plan.worktreeIdentity,
+      expectedHead: head.stdout.trim()
+    };
+    if (!validCleanupPlan(pending)) return null;
+    const jobFile = path.join(
+      cleanupQueueDirectory(pending.repoRoot, true),
+      pending.worktreeIdentity.token + '.json'
+    );
+    try {
+      fs.writeFileSync(jobFile, JSON.stringify(pending), { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      // Never rebind an existing job to new work at the same path.
+      if (JSON.stringify(readPrivateJob(jobFile)) !== JSON.stringify(pending)) return null;
+    }
+    return { ...pending, jobFile };
+  } catch (error) {
+    console.error(`[${TOOL_NAME}] Warning: could not persist finished cleanup: ${error.message}`);
+    return null;
+  }
+}
+
+function retireCleanupJob(plan) {
+  if (!plan.jobFile) return;
+  try {
+    const expected = path.join(
+      cleanupQueueDirectory(plan.repoRoot),
+      plan.worktreeIdentity.token + '.json'
+    );
+    if (plan.jobFile === expected) fs.unlinkSync(expected);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+function retryPendingFinishedCleanup(repoRoot, options = {}) {
+  let directory;
+  try {
+    directory = cleanupQueueDirectory(repoRoot);
+  } catch (error) {
+    if (error.code !== 'ENOENT')
+      console.error(`[${TOOL_NAME}] Warning: cleanup queue unavailable: ${error.message}`);
+    return;
+  }
+  // Bounded opportunistic pass; long-lived sessions are handled by workers.
+  let attempted = 0;
+  const jobs = fs.readdirSync(directory).filter((name) => /^[a-f0-9-]{36}\.json$/.test(name))
+    .map((name) => {
+      try { return { name, mtime: fs.lstatSync(path.join(directory, name)).mtimeMs }; }
+      catch { return null; }
+    }).filter(Boolean).sort((a, b) => a.mtime - b.mtime || a.name.localeCompare(b.name));
+  for (const { name } of jobs) {
+    if (attempted >= 16) break;
+    try {
+      const jobFile = path.join(directory, name);
+      const plan = { ...readPrivateJob(jobFile), jobFile };
+      if (
+        !validCleanupPlan(plan) ||
+        commonGitDirectory(plan.repoRoot) !== commonGitDirectory(repoRoot) ||
+        name !== plan.worktreeIdentity.token + '.json'
+      )
+        continue;
+      attempted++;
+      // Rotate blocked jobs durably so later jobs are not starved.
+      const fd = fs.openSync(jobFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try {
+        if (fs.fstatSync(fd).nlink !== 1) continue;
+        const now = new Date();
+        fs.futimesSync(fd, now, now);
+      } finally { fs.closeSync(fd); }
+      const identity = worktreeIdentityState(plan);
+      if (worktreeMissing(plan.worktreePath) || identity === 'changed') {
+        retireCleanupJob(plan);
+        continue;
+      }
+      if (identity !== 'same') continue;
+      const head = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
+      if (head.status === 0 && head.stdout.trim() !== plan.expectedHead) {
+        retireCleanupJob(plan);
+        continue;
+      }
+      if (cleanupFinishedDetachedWorktree(plan)) retireCleanupJob(plan);
+      else if (options.schedule) scheduleFinishedDetachedWorktreeCleanup(plan);
+    } catch (error) {
+      console.error(`[${TOOL_NAME}] Warning: skipped cleanup job: ${error.message}`);
+    }
+  }
+}
+
+function cleanupFinishedDetachedWorktree(input) {
+  const plan = input?.expectedHead ? input : persistFinishedCleanup(input);
+  if (!validCleanupPlan(plan)) return false;
+  // Same OS mutex as claims writers and prune; never release anyone's claims.
+  const result = run(
+    'python3',
+    [
+      path.join(__dirname, 'with-claims-lock.py'),
+      '--try-lock',
+      path.join(commonGitDirectory(plan.repoRoot), 'agent-file-locks.lock'),
+      process.execPath,
+      __filename,
+      '--remove-locked',
+      Buffer.from(JSON.stringify(plan)).toString('base64url')
+    ],
+    { cwd: plan.repoRoot }
+  );
+  if (result.status === 0) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    retireCleanupJob(plan);
+  }
+  return result.status === 0;
+}
+
+function removeFinishedWorktreeLocked(plan) {
+  if (!validCleanupPlan(plan)) return false;
   if (!plan || !worktreeIdentityMatches(plan)) return false;
 
   try {
     process.chdir(plan.repoRoot);
+    if (fs.realpathSync(plan.worktreePath) !== plan.worktreePath) return false;
+    const registered = run('git', ['-C', plan.repoRoot, 'worktree', 'list', '--porcelain', '-z']);
+    if (registered.status !== 0) return false;
+    let found = false;
+    for (const record of registered.stdout.split('\0\0')) {
+      const fields = record.split('\0');
+      const entry = fields.find((field) => field.startsWith('worktree '));
+      if (!entry) continue;
+      const candidate = path.resolve(entry.slice(9));
+      if (candidate === plan.worktreePath) {
+        found = true;
+        if (fields.some((field) => field === 'locked' || field.startsWith('locked '))) return false;
+      } else if (pathContains(plan.worktreePath, candidate)) return false;
+    }
+    if (!found) return false;
+    const claimsFile = path.join(plan.worktreePath, '.omx/state/agent-file-locks.json');
+    try {
+      const claims = JSON.parse(fs.readFileSync(claimsFile, 'utf8'));
+      if (
+        !claims?.locks ||
+        typeof claims.locks !== 'object' ||
+        Array.isArray(claims.locks) ||
+        Object.keys(claims.locks).length
+      )
+        return false;
+    } catch (error) {
+      if (error.code !== 'ENOENT') return false;
+    }
+    const commit = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
+    if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
     if (hasLiveProcessInWorktree(plan.worktreePath)) return false;
     if (!worktreeIdentityMatches(plan)) return false;
     const status = run(
@@ -225,7 +450,6 @@ function cleanupFinishedDetachedWorktree(plan) {
       );
       return false;
     }
-    run('git', ['-C', plan.repoRoot, 'worktree', 'prune'], { cwd: plan.repoRoot });
     console.log(
       `[${TOOL_NAME}] Removed finished detached worktree after finish worker exit: ${plan.worktreePath}`
     );
@@ -238,10 +462,12 @@ function cleanupFinishedDetachedWorktree(plan) {
   }
 }
 
-function scheduleFinishedDetachedWorktreeCleanup(plan, options = {}) {
-  if (!plan || !fs.existsSync(plan.worktreePath)) return false;
+function scheduleFinishedDetachedWorktreeCleanup(input, options = {}) {
+  if (!input || !fs.existsSync(input.worktreePath)) return false;
 
   try {
+    const plan = input.jobFile ? input : persistFinishedCleanup(input);
+    if (!plan || !validCleanupPlan(plan)) return false;
     const runner = options.runner || run;
     const worktreeIdentity =
       plan.worktreeIdentity || captureWorktreeIdentity(plan.worktreePath, runner);
@@ -257,8 +483,16 @@ function scheduleFinishedDetachedWorktreeCleanup(plan, options = {}) {
     }
     const payload = Buffer.from(JSON.stringify(cleanupPlan), 'utf8').toString('base64url');
     const child = (options.spawn || cp.spawn)(
-      process.execPath,
-      [__filename, '--deferred-worker', payload],
+      'python3',
+      [
+        path.join(__dirname, 'with-claims-lock.py'),
+        '--try-lock',
+        path.join(cleanupQueueDirectory(plan.repoRoot), plan.worktreeIdentity.token + '.lock'),
+        process.execPath,
+        __filename,
+        '--deferred-worker',
+        payload
+      ],
       {
         cwd: plan.repoRoot,
         detached: true,
@@ -284,17 +518,40 @@ function scheduleFinishedDetachedWorktreeCleanup(plan, options = {}) {
 }
 
 async function runDeferredCleanupWorker(plan, options = {}) {
-  const attempts = options.attempts ?? Number.POSITIVE_INFINITY;
+  const attempts = options.attempts ?? 360;
   const intervalMs = options.intervalMs ?? 1000;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!fs.existsSync(plan.worktreePath)) return true;
-    if (!worktreeIdentityMatches(plan, options.runner || run)) return false;
-    const probe = probeLiveProcessInWorktree(plan.worktreePath, options);
-    if (!probe.supported) return false;
-    if (!probe.active) {
-      return cleanupFinishedDetachedWorktree(plan);
+    if (worktreeMissing(plan.worktreePath)) {
+      retireCleanupJob(plan);
+      return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const identity = worktreeIdentityState(plan, options.runner || run);
+    if (identity === 'changed') {
+      retireCleanupJob(plan);
+      return false;
+    }
+    if (plan.expectedHead) {
+      const head = (options.runner || run)('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
+      if (head.status === 0 && head.stdout.trim() !== plan.expectedHead) {
+        retireCleanupJob(plan);
+        return false;
+      }
+    }
+    const probe = (options.probe || probeLiveProcessInWorktree)(plan.worktreePath, options);
+    if (
+      identity === 'same' &&
+      probe.supported &&
+      !probe.active &&
+      (options.cleanup || cleanupFinishedDetachedWorktree)(plan)
+    ) {
+      retireCleanupJob(plan);
+      return true;
+    }
+    if (attempt + 1 < attempts) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(intervalMs * (attempt + 1), 30_000))
+      );
+    }
   }
   return false;
 }
@@ -307,10 +564,21 @@ module.exports = {
   isManagedAgentWorktree,
   probeLiveProcessInWorktree,
   prepareBranchFinishCleanup,
+  persistFinishedCleanup,
+  retryPendingFinishedCleanup,
   runDeferredCleanupWorker,
   scheduleFinishedDetachedWorktreeCleanup,
   worktreeIdentityMatches
 };
+
+if (require.main === module && process.argv[2] === '--remove-locked') {
+  try {
+    const plan = JSON.parse(Buffer.from(process.argv[3] || '', 'base64url').toString('utf8'));
+    process.exitCode = removeFinishedWorktreeLocked(plan) ? 0 : 1;
+  } catch {
+    process.exitCode = 1;
+  }
+}
 
 if (require.main === module && process.argv[2] === '--deferred-worker') {
   try {

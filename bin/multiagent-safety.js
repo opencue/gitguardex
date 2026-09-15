@@ -3,7 +3,7 @@
 const { runFromBin } = require('../src/cli/main');
 const {
   cleanupFinishedDetachedWorktree,
-  hasLiveProcessInWorktree,
+  persistFinishedCleanup,
   prepareBranchFinishCleanup,
   scheduleFinishedDetachedWorktreeCleanup
 } = require('../src/finish/post-branch-finish-cleanup');
@@ -13,10 +13,9 @@ const finishCleanup = prepareBranchFinishCleanup(process.argv.slice(2), process.
 void runFromBin().then(() => {
   if (!process.exitCode && finishCleanup) {
     process.chdir(finishCleanup.repoRoot);
-    if (hasLiveProcessInWorktree(finishCleanup.worktreePath)) {
-      scheduleFinishedDetachedWorktreeCleanup(finishCleanup);
-    } else {
-      cleanupFinishedDetachedWorktree(finishCleanup);
+    const pending = persistFinishedCleanup(finishCleanup);
+    if (pending && !cleanupFinishedDetachedWorktree(pending)) {
+      scheduleFinishedDetachedWorktreeCleanup(pending);
     }
   }
 });

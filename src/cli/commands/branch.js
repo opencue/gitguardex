@@ -248,7 +248,7 @@ function isLinkedAgentWorktree(worktreePath) {
 }
 
 function isReadOnlyBranchStart(args) {
-  return args.some((arg) => ['--help', '-h', 'help', '--print-name-only'].includes(arg));
+  return args.some((arg) => ['--help', '-h', 'help', '--print-name-only', '--preview'].includes(arg));
 }
 
 function recoverStaleManagedWorktrees(repoRoot) {
@@ -292,7 +292,23 @@ function branch(rawArgs) {
   if (subcommand === 'start') {
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
-    if (!isReadOnlyBranchStart(passthrough)) recoverStaleManagedWorktrees(repoRoot);
+    if (passthrough.includes('--task-id')) {
+      if (passthrough.filter((arg) => arg === '--task-id').length !== 1)
+        throw new Error('--task-id must appear once');
+      require('../../worktree-start').validateTaskId(
+        passthrough[passthrough.indexOf('--task-id') + 1]
+      );
+    }
+    if (!isReadOnlyBranchStart(passthrough)) {
+      require('../../finish/post-branch-finish-cleanup').retryPendingFinishedCleanup(repoRoot, {
+        schedule: true
+      });
+      recoverStaleManagedWorktrees(repoRoot);
+    }
+    if (passthrough.includes('--task-id') && !isReadOnlyBranchStart(passthrough)) {
+      require('../../worktree-start').invokeTaskStart(repoRoot, passthrough);
+      return;
+    }
     invokePackageAsset('branchStart', passthrough, { cwd: repoRoot });
     return;
   }
@@ -489,6 +505,21 @@ function ship(rawArgs) {
 function worktree(rawArgs) {
   const activeCwd = process.cwd();
   const [subcommand, ...rest] = rawArgs;
+  if (subcommand === 'estimate') return require('./worktree-estimate').worktreeEstimate(rest);
+  if (subcommand === 'retry-cleanup') {
+    if (rest.length === 1 && ['--help', '-h'].includes(rest[0])) {
+      console.log(
+        'Usage: gx worktree retry-cleanup [--target <repo>]\nRetry saved post-finish jobs safely. Active, dirty or claimed worktrees are preserved.\nJobs survive restarts; a later branch start also retries them. No system daemon is installed.'
+      );
+      return;
+    }
+    const { target, passthrough } = extractTargetedArgs(rest);
+    if (passthrough.length) throw new Error('Usage: gx worktree retry-cleanup [--target <repo>]');
+    return require('../../finish/post-branch-finish-cleanup').retryPendingFinishedCleanup(
+      resolveRepoRoot(target),
+      { schedule: true }
+    );
+  }
   if (subcommand === 'approve-hooks' || subcommand === 'provision') {
     return require('./worktree-provision').worktreeProvision(subcommand, rest);
   }
@@ -500,7 +531,7 @@ function worktree(rawArgs) {
     });
     return;
   }
-  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <prune|provision|approve-hooks> [options]`);
+  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <prune|provision|approve-hooks|estimate|retry-cleanup> [options]`);
 }
 
 module.exports = {
