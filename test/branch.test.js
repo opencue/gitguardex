@@ -180,6 +180,93 @@ test(`agent-branch-start places fresh worktrees at the canonical root: ${scenari
 });
 }
 
+test('agent-branch-start sparse exclusions avoid bulky checkout without staging deletions', (t) => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  const excluded = ['logs', 'artifacts/run data'];
+  for (const dir of [...excluded, 'logs-keep']) {
+    fs.mkdirSync(path.join(repoDir, dir), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, dir, 'payload.bin'), Buffer.alloc(4 * 1024 * 1024, 7));
+  }
+  commitAll(repoDir, 'seed bulky tracked fixtures');
+  const start = (task, extra = []) => runBranchStart(
+    ['--new', '--no-transfer', '--tier', 'T1', task, 'bot', ...extra], repoDir,
+  );
+  const full = start('full checkout');
+  assert.equal(full.status, 0, full.stderr || full.stdout);
+  const fullPath = extractCreatedWorktree(full.stdout);
+  const sparse = start('sparse checkout', excluded.flatMap((dir) => ['--sparse-exclude', dir]));
+  assert.equal(sparse.status, 0, sparse.stderr || sparse.stdout);
+  const sparsePath = extractCreatedWorktree(sparse.stdout);
+  for (const dir of excluded) {
+    assert.ok(fs.existsSync(path.join(fullPath, dir, 'payload.bin')));
+    assert.equal(fs.existsSync(path.join(sparsePath, dir)), false);
+    assert.ok(fs.existsSync(path.join(repoDir, dir, 'payload.bin')), 'source stays complete');
+  }
+  assert.ok(fs.existsSync(path.join(sparsePath, 'logs-keep/payload.bin')), 'component boundaries are exact');
+  const payloadBytes = (root) => [...excluded, 'logs-keep'].reduce((bytes, dir) => {
+    const file = path.join(root, dir, 'payload.bin');
+    return bytes + (fs.existsSync(file) ? fs.statSync(file).size : 0);
+  }, 0);
+  assert.equal(payloadBytes(fullPath) - payloadBytes(sparsePath), 8 * 1024 * 1024);
+  t.diagnostic(`Tracked fixture payload: full=${payloadBytes(fullPath)} sparse=${payloadBytes(sparsePath)} bytes`);
+  assert.equal(runCmd('git', ['config', '--bool', '--get', 'core.sparseCheckout'], repoDir).stdout.trim(), '');
+  assert.equal(runCmd('git', ['diff', '--name-only', 'HEAD'], sparsePath).stdout.trim(), '');
+  const added = runCmd('git', ['add', '-A'], sparsePath);
+  assert.equal(added.status, 0, added.stderr);
+  assert.equal(runCmd('git', ['diff', '--cached', '--name-only'], sparsePath).stdout.trim(), '');
+  assert.equal(runCmd('git', ['rev-parse', 'HEAD^{tree}'], sparsePath).stdout,
+    runCmd('git', ['rev-parse', 'HEAD^{tree}'], fullPath).stdout);
+  const restored = runCmd('git', ['sparse-checkout', 'disable'], sparsePath);
+  assert.equal(restored.status, 0, restored.stderr);
+  for (const dir of excluded) assert.equal(fs.statSync(path.join(sparsePath, dir, 'payload.bin')).size, 4 * 1024 * 1024);
+});
+
+test('agent-branch-start sparse exclusions do not first materialize omitted blobs', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  fs.mkdirSync(path.join(repoDir, 'logs'));
+  fs.writeFileSync(path.join(repoDir, 'logs/history.txt'), 'log\n');
+  fs.writeFileSync(path.join(repoDir, '.gitattributes'), 'logs/** filter=checkout-probe\n');
+  commitAll(repoDir, 'seed checkout filter');
+  const marker = path.join(path.dirname(repoDir), 'checkout-probe');
+  const quotedMarker = "'" + marker.replaceAll("'", "'\\''") + "'";
+  assert.equal(runCmd('git', ['config', 'filter.checkout-probe.smudge', `echo copied >> ${quotedMarker}; cat`], repoDir).status, 0);
+  const sparse = runBranchStart(['--new', '--no-transfer', '--tier', 'T1', '--sparse-exclude', 'logs', 'no materialization', 'bot'], repoDir);
+  assert.equal(sparse.status, 0, sparse.stderr || sparse.stdout);
+  assert.equal(fs.existsSync(marker), false, 'excluded blobs never reach checkout filters');
+  const full = runBranchStart(['--new', '--no-transfer', '--tier', 'T1', 'full materialization', 'bot'], repoDir);
+  assert.equal(full.status, 0, full.stderr || full.stdout);
+  assert.ok(fs.existsSync(marker), 'control: a full checkout executes the filter');
+});
+
+test('agent-branch-start uses configured sparse exclusions and preserves transferred edits', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  fs.mkdirSync(path.join(repoDir, 'logs'));
+  fs.writeFileSync(path.join(repoDir, 'logs/history.txt'), 'original\n');
+  fs.writeFileSync(path.join(repoDir, 'logs/unchanged.txt'), 'large unchanged log\n');
+  commitAll(repoDir, 'seed logs');
+  assert.equal(runCmd('git', ['config', '--add', 'multiagent.worktreeSparseExclude', 'logs'], repoDir).status, 0);
+  fs.writeFileSync(path.join(repoDir, 'logs/history.txt'), 'local change\n');
+  const result = runBranchStart(['--new', '--tier', 'T1', 'sparse transfer', 'bot'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const worktree = extractCreatedWorktree(result.stdout);
+  assert.equal(fs.readFileSync(path.join(worktree, 'logs/history.txt'), 'utf8'), 'local change\n');
+  assert.equal(fs.existsSync(path.join(worktree, 'logs/unchanged.txt')), false);
+  assert.equal(fs.readFileSync(path.join(repoDir, 'logs/history.txt'), 'utf8'), 'original\n');
+});
+
+test('agent-branch-start rejects unsafe sparse exclusions before creating a branch or moving edits', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  fs.writeFileSync(path.join(repoDir, 'keep-local.txt'), 'preserve\n');
+  const before = runCmd('git', ['for-each-ref', '--format=%(refname)'], repoDir).stdout;
+  for (const dir of ['', '/', '.', '../logs', 'logs/../src', 'logs/*', 'logs\n/src', '.git', '-logs']) {
+    const result = runBranchStart(['--sparse-exclude', dir, 'invalid sparse', 'bot'], repoDir);
+    assert.notEqual(result.status, 0, dir);
+    assert.match(result.stderr, /sparse-exclude/);
+    assert.equal(runCmd('git', ['for-each-ref', '--format=%(refname)'], repoDir).stdout, before);
+    assert.equal(fs.readFileSync(path.join(repoDir, 'keep-local.txt'), 'utf8'), 'preserve\n');
+  }
+});
+
 test('agent-branch-start reuses dirty matching worktrees at an absolute root', () => {
   const { repoDir } = createBootstrappedRepo({ committed: true });
   const absoluteRoot = path.join(path.dirname(repoDir), 'absolute worktrees');

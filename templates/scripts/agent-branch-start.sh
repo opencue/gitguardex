@@ -7,6 +7,7 @@ BASE_BRANCH=""
 BASE_BRANCH_EXPLICIT=0
 WORKTREE_ROOT_REL=""
 WORKTREE_ROOT_EXPLICIT=0
+SPARSE_EXCLUDES=()
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
 OPENSPEC_AUTO_INIT_RAW="${GUARDEX_OPENSPEC_AUTO_INIT:-true}"
@@ -58,6 +59,11 @@ Options:
   --agent <name>       Agent name
   --base <branch>      Base branch to fork from
   --worktree-root <p>  Worktree root dir (default: .omx/agent-worktrees)
+  --sparse-exclude <dir>  Omit a tracked directory from a NEW checkout (repeatable).
+                         Literal repo-relative paths only; not globs.
+                         Defaults to git config --add multiagent.worktreeSparseExclude <dir>.
+                         Existing worktrees are unchanged. Restore omitted files with
+                         git sparse-checkout disable inside the new worktree.
   --reuse-existing     Reuse an existing matching worktree (default)
   --new                Force a fresh worktree instead of reusing
   --tier <T1|T2|T3>    OpenSpec tier for scaffolding (default T1; T2 for a
@@ -125,6 +131,14 @@ while [[ $# -gt 0 ]]; do
     --worktree-root)
       WORKTREE_ROOT_REL="${2:-.omx/agent-worktrees}"
       WORKTREE_ROOT_EXPLICIT=1
+      shift 2
+      ;;
+    --sparse-exclude)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "[agent-branch-start] --sparse-exclude requires a repo-relative directory." >&2
+        exit 1
+      fi
+      SPARSE_EXCLUDES+=("$2")
       shift 2
       ;;
     --)
@@ -775,6 +789,27 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
+if [[ ${#SPARSE_EXCLUDES[@]} -eq 0 ]]; then
+  while IFS= read -r -d '' sparse_dir; do
+    SPARSE_EXCLUDES+=("$sparse_dir")
+  done < <(git -C "$repo_root" config --null --get-all multiagent.worktreeSparseExclude || true)
+fi
+# Fail before moving local edits. Paths become anchored Git patterns, so refuse
+# pattern syntax and traversal instead of accidentally excluding source code.
+for sparse_dir in "${SPARSE_EXCLUDES[@]}"; do
+  case "$sparse_dir" in
+    ""|/*|-*|*'*'*|*'?'*|*'['*|*']'*|*'\'*|*$'\n'*|*$'\r'*|*$'\t'*|*" ")
+      echo "[agent-branch-start] Invalid --sparse-exclude directory: $sparse_dir" >&2
+      exit 1
+      ;;
+  esac
+  case "/$sparse_dir/" in
+    *"/../"*|*"/./"*|*"/.git/"*|*"//"*)
+      echo "[agent-branch-start] Invalid --sparse-exclude directory: $sparse_dir" >&2
+      exit 1
+      ;;
+  esac
+done
 # Keep source-checkout/base/transfer semantics, but place new lanes beside
 # each other under the primary checkout, never under the current linked lane.
 worktree_repo_root="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
@@ -1021,7 +1056,11 @@ if [[ -n "$current_branch" && "$current_branch" != "HEAD" ]] && is_protected_bra
 fi
 
 worktree_add_output=""
-if ! worktree_add_output="$(git -C "$repo_root" worktree add -b "$branch_name" "$worktree_path" "$start_ref" 2>&1)"; then
+worktree_checkout_args=()
+if [[ ${#SPARSE_EXCLUDES[@]} -gt 0 ]]; then
+  worktree_checkout_args+=(--no-checkout)
+fi
+if ! worktree_add_output="$(git -C "$repo_root" worktree add "${worktree_checkout_args[@]}" -b "$branch_name" "$worktree_path" "$start_ref" 2>&1)"; then
   printf '%s\n' "$worktree_add_output" >&2
   exit 1
 fi
@@ -1031,6 +1070,16 @@ if [[ ! -d "$worktree_path" || ! -e "$worktree_path/.git" ]]; then
   printf '[agent-branch-start] ERROR: git worktree add reported success but %s is not a valid worktree.\n' "$worktree_path" >&2
   printf '%s\n' "$worktree_add_output" >&2
   exit 1
+fi
+if [[ ${#SPARSE_EXCLUDES[@]} -gt 0 ]]; then
+  # Set the sparse rules before the first checkout: never allocate the omitted
+  # blobs, even temporarily. Git keeps the index/rules local to this worktree.
+  {
+    printf '/*\n'
+    printf '!/%s/\n' "${SPARSE_EXCLUDES[@]}"
+  } | git -C "$worktree_path" sparse-checkout set --no-cone --no-sparse-index --stdin
+  git -C "$worktree_path" read-tree -mu HEAD
+  echo "[agent-branch-start] Sparse checkout: omitted ${#SPARSE_EXCLUDES[@]} configured directories; git sparse-checkout disable restores them."
 fi
 git -C "$repo_root" config "branch.${branch_name}.guardexBase" "$BASE_BRANCH" >/dev/null 2>&1 || true
 git -C "$repo_root" config "branch.${branch_name}.guardexWorktreeRoot" "$WORKTREE_ROOT_REL" >/dev/null 2>&1 || true
