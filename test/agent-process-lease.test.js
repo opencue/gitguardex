@@ -6,6 +6,36 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 test(
+  'a zombie main thread does not make its live worker threads dead',
+  { skip: process.platform !== 'linux' },
+  async (t) => {
+    const code =
+      'import threading,time,ctypes; threading.Thread(target=lambda: time.sleep(10)).start(); ctypes.CDLL(None).pthread_exit(None)';
+    const child = cp.spawn('python3', ['-c', code], { stdio: 'ignore' });
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    t.after(async () => {
+      child.kill('SIGKILL');
+      await exited;
+    });
+    const deadline = Date.now() + 3000;
+    let fields;
+    while (Date.now() < deadline) {
+      const stat = fs.readFileSync('/proc/' + child.pid + '/stat', 'utf8');
+      fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      if (fields[0] === 'Z' && Number(fields[17]) > 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(fields[0], 'Z');
+    assert.ok(Number(fields[17]) > 1);
+    const { processIdentity, identityState } = require('../src/agents/process-lease');
+    const identity = processIdentity(child.pid);
+    assert.ok(identity, 'live threads retain their birth identity despite unavailable cwd');
+    assert.equal(identity.cwd, null);
+    assert.equal(identityState(identity), 'live');
+  }
+);
+
+test(
   'supervised agent retains its controlling terminal',
   { skip: process.platform !== 'linux' },
   (t) => {
@@ -150,18 +180,22 @@ test('canonical session launch supervises the real command without changing prom
   assert.equal(fs.readFileSync(path.join(root, 'prompt.txt'), 'utf8'), prompt);
 });
 
-test('missing proc cwd preserves live process identity', { skip: process.platform !== 'linux' }, (t) => {
-  const { processIdentity, identityState } = require('../src/agents/process-lease');
-  const identity = processIdentity(process.pid);
-  for (const code of ['ENOENT', 'ESRCH']) {
-    const mock = t.mock.method(fs, 'readlinkSync', () => {
-      throw Object.assign(new Error('cwd unavailable'), { code });
-    });
-    assert.deepEqual(processIdentity(process.pid), { ...identity, cwd: null });
-    assert.equal(identityState(identity), 'live');
-    mock.mock.restore();
+test(
+  'missing proc cwd preserves live process identity',
+  { skip: process.platform !== 'linux' },
+  (t) => {
+    const { processIdentity, identityState } = require('../src/agents/process-lease');
+    const identity = processIdentity(process.pid);
+    for (const code of ['ENOENT', 'ESRCH']) {
+      const mock = t.mock.method(fs, 'readlinkSync', () => {
+        throw Object.assign(new Error('cwd unavailable'), { code });
+      });
+      assert.deepEqual(processIdentity(process.pid), { ...identity, cwd: null });
+      assert.equal(identityState(identity), 'live');
+      mock.mock.restore();
+    }
   }
-});
+);
 
 test('lease birth identity defeats PID reuse; stale heartbeat never overrides live ownership', () => {
   const { identityState } = require('../src/agents/process-lease');

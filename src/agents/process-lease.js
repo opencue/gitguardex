@@ -18,7 +18,9 @@ function processIdentity(pid) {
   try {
     const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    if (fields[0] === 'Z') return null;
+    // A exited main thread can be Z while other threads still own work.
+    // Only a single-thread zombie proves that the process has stopped.
+    if (fields[0] === 'Z' && fields[17] === '1') return null;
     const birth =
       fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() + ':' + fields[19];
     let cwd = null;

@@ -54,7 +54,13 @@ function inspectWorktreeQuota(repoRoot, checkoutBytes, destination = repoRoot) {
     for (const worktree of secondary) {
       // Missing registrations consume a count slot, but no disk space. A
       // failure during traversal is unknown usage, not permission to proceed.
-      if (fs.existsSync(worktree)) currentBytes += allocatedBytes(worktree, seen);
+      try {
+        fs.lstatSync(worktree);
+      } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        throw error;
+      }
+      currentBytes += allocatedBytes(worktree, seen);
     }
   }
   let freeBytes = null;

@@ -136,10 +136,13 @@ test('unknown usage of an inaccessible registered worktree fails closed', (t) =>
   runCmd('git', ['config', 'multiagent.worktreeMaxBytes', '999999999'], repoDir);
   const exists = fs.existsSync;
   const stat = fs.lstatSync;
-  t.mock.method(fs, 'existsSync', (file) => file === worktree ? false : exists(file));
+  t.mock.method(fs, 'existsSync', (file) => (file === worktree ? false : exists(file)));
   t.mock.method(fs, 'lstatSync', (file, ...args) => {
     if (file === worktree) throw Object.assign(new Error('usage denied'), { code: 'EACCES' });
     return stat(file, ...args);
   });
-  assert.throws(() => require('../src/worktree-quota').inspectWorktreeQuota(repoDir, 0), /usage denied/);
+  assert.throws(
+    () => require('../src/worktree-quota').inspectWorktreeQuota(repoDir, 0),
+    /usage denied/
+  );
 });
