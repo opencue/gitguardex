@@ -127,3 +127,19 @@ test('quota is enforced by pivot and agent lane entrypoints too', () => {
     assert.match(result.stderr + result.stdout, /QUOTA_WORKTREE_COUNT/);
   }
 });
+
+test('unknown usage of an inaccessible registered worktree fails closed', (t) => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  const first = runBranchStart(['--new', '--no-transfer', 'permission probe', 'bot'], repoDir);
+  assert.equal(first.status, 0, first.stderr);
+  const worktree = extractCreatedWorktree(first.stdout);
+  runCmd('git', ['config', 'multiagent.worktreeMaxBytes', '999999999'], repoDir);
+  const exists = fs.existsSync;
+  const stat = fs.lstatSync;
+  t.mock.method(fs, 'existsSync', (file) => file === worktree ? false : exists(file));
+  t.mock.method(fs, 'lstatSync', (file, ...args) => {
+    if (file === worktree) throw Object.assign(new Error('usage denied'), { code: 'EACCES' });
+    return stat(file, ...args);
+  });
+  assert.throws(() => require('../src/worktree-quota').inspectWorktreeQuota(repoDir, 0), /usage denied/);
+});

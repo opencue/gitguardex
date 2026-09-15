@@ -21,7 +21,13 @@ function processIdentity(pid) {
     if (fields[0] === 'Z') return null;
     const birth =
       fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() + ':' + fields[19];
-    return { pid, birth, cwd: fs.readlinkSync('/proc/' + pid + '/cwd') };
+    let cwd = null;
+    try {
+      cwd = fs.readlinkSync('/proc/' + pid + '/cwd');
+    } catch (error) {
+      if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error;
+    }
+    return { pid, birth, cwd };
   } catch (error) {
     if (['ENOENT', 'ESRCH'].includes(error.code)) return null;
     throw error;

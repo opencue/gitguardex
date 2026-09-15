@@ -150,6 +150,19 @@ test('canonical session launch supervises the real command without changing prom
   assert.equal(fs.readFileSync(path.join(root, 'prompt.txt'), 'utf8'), prompt);
 });
 
+test('missing proc cwd preserves live process identity', { skip: process.platform !== 'linux' }, (t) => {
+  const { processIdentity, identityState } = require('../src/agents/process-lease');
+  const identity = processIdentity(process.pid);
+  for (const code of ['ENOENT', 'ESRCH']) {
+    const mock = t.mock.method(fs, 'readlinkSync', () => {
+      throw Object.assign(new Error('cwd unavailable'), { code });
+    });
+    assert.deepEqual(processIdentity(process.pid), { ...identity, cwd: null });
+    assert.equal(identityState(identity), 'live');
+    mock.mock.restore();
+  }
+});
+
 test('lease birth identity defeats PID reuse; stale heartbeat never overrides live ownership', () => {
   const { identityState } = require('../src/agents/process-lease');
   const identity = { pid: 123, birth: 'boot:10', cwd: '/work' };
