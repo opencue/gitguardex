@@ -8,6 +8,9 @@ BASE_BRANCH_EXPLICIT=0
 WORKTREE_ROOT_REL=""
 WORKTREE_ROOT_EXPLICIT=0
 SPARSE_EXCLUDES=()
+TASK_ID=""
+PREVIEW=0
+REMEMBER_SPARSE=0
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
 OPENSPEC_AUTO_INIT_RAW="${GUARDEX_OPENSPEC_AUTO_INIT:-true}"
@@ -56,6 +59,9 @@ Positional:
 
 Options:
   --task <name>        Task name/slug
+  --task-id <id>       Stable task identity; reuse its worktree even after a title change
+  --preview           Read-only checkout estimate; no fetch, cleanup or creation
+  --remember-sparse   Save explicit --sparse-exclude choices after creating a NEW worktree
   --agent <name>       Agent name
   --base <branch>      Base branch to fork from
   --worktree-root <p>  Worktree root dir (default: .omx/agent-worktrees)
@@ -85,6 +91,26 @@ while [[ $# -gt 0 ]]; do
     --task)
       TASK_NAME="${2:-task}"
       shift 2
+      ;;
+    --task-id)
+      if [[ -n "$TASK_ID" ]]; then
+        echo "[agent-branch-start] --task-id must appear once." >&2
+        exit 1
+      fi
+      TASK_ID="${2:-}"
+      if [[ ! "$TASK_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]]; then
+        echo "[agent-branch-start] Invalid --task-id (use 1-128 letters, digits, . _ : -)." >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --preview)
+      PREVIEW=1
+      shift
+      ;;
+    --remember-sparse)
+      REMEMBER_SPARSE=1
+      shift
       ;;
     --agent)
       AGENT_NAME="${2:-agent}"
@@ -443,6 +469,10 @@ resolve_worktree_leaf() {
 }
 
 print_reused_agent_worktree() {
+  if [[ "$REMEMBER_SPARSE" -eq 1 ]]; then
+    echo "[agent-branch-start] --remember-sparse requires a new worktree; no configuration changed." >&2
+    return 1
+  fi
   local branch_name="$1"
   local worktree_path="$2"
   local stored_base=""
@@ -789,6 +819,10 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
+if [[ "$REMEMBER_SPARSE" -eq 1 && ( "${#SPARSE_EXCLUDES[@]}" -eq 0 || "$PREVIEW" -eq 1 || "$PRINT_NAME_ONLY" -eq 1 ) ]]; then
+  echo "[agent-branch-start] --remember-sparse requires explicit --sparse-exclude choices and a normal start." >&2
+  exit 1
+fi
 if [[ ${#SPARSE_EXCLUDES[@]} -eq 0 ]]; then
   while IFS= read -r -d '' sparse_dir; do
     SPARSE_EXCLUDES+=("$sparse_dir")
@@ -841,7 +875,46 @@ if [[ "$BASE_BRANCH_EXPLICIT" -eq 1 && -z "$BASE_BRANCH" ]]; then
 fi
 
 current_branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-if [[ "$REUSE_EXISTING_WORKTREE" -eq 1 && "$current_branch" == agent/* ]]; then
+if [[ -n "$TASK_ID" && "$PRINT_NAME_ONLY" -eq 0 ]]; then
+  task_branch=""
+  while IFS= read -r candidate; do
+    [[ "$(git config --get "branch.${candidate}.guardexTaskId" || true)" == "$TASK_ID" ]] || continue
+    if [[ -n "$task_branch" ]]; then
+      echo "[agent-branch-start] Ambiguous task ID: $TASK_ID; refusing another worktree." >&2
+      exit 1
+    fi
+    task_branch="$candidate"
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+  if [[ -n "$task_branch" ]]; then
+    if [[ "$REUSE_EXISTING_WORKTREE" -eq 0 || "$task_branch" != "agent/$(normalize_role "$AGENT_NAME")/"* ]]; then
+      echo "[agent-branch-start] Task ID already has a branch: $task_branch; refusing a duplicate or different agent role." >&2
+      exit 1
+    fi
+    task_worktree=""
+    entry_worktree=""
+    task_locked=0
+    while IFS= read -r -d '' field; do
+      case "$field" in
+        "worktree "*) entry_worktree="${field#worktree }" ;;
+        "branch refs/heads/$task_branch") task_worktree="$entry_worktree" ;;
+        locked*) [[ "$task_worktree" != "$entry_worktree" ]] || task_locked=1 ;;
+      esac
+    done < <(git worktree list --porcelain -z)
+    if [[ -z "$task_worktree" || ! -e "$task_worktree/.git" || "$task_locked" -eq 1 ]] \
+      || [[ "$(git config --get "branch.${task_branch}.guardexStartReady" || true)" != true ]] \
+      || branch_published_then_remote_pruned "$repo_root" "$task_branch"; then
+      echo "[agent-branch-start] Task ID has an unavailable, locked, incomplete or finished worktree; refusing reuse." >&2
+      exit 1
+    fi
+    if [[ "$PREVIEW" -eq 1 ]]; then
+      echo "[agent-branch-start] Preview: would reuse task $TASK_ID at $task_worktree (no new checkout)."
+    else
+      print_reused_agent_worktree "$task_branch" "$task_worktree"
+    fi
+    exit 0
+  fi
+fi
+if [[ -z "$TASK_ID" && "$PREVIEW" -eq 0 && "$REUSE_EXISTING_WORKTREE" -eq 1 && "$current_branch" == agent/* ]]; then
   print_reused_agent_worktree "$current_branch" "$repo_root"
   exit $?
 fi
@@ -861,7 +934,7 @@ if [[ "$PRINT_NAME_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
-if [[ "$REUSE_EXISTING_WORKTREE" -eq 1 ]]; then
+if [[ -z "$TASK_ID" && "$PREVIEW" -eq 0 && "$REUSE_EXISTING_WORKTREE" -eq 1 ]]; then
   matching_dirty_worktree="$(find_matching_dirty_agent_worktree "$worktree_repo_root" "$WORKTREE_ROOT_REL" "$task_slug" "$agent_slug")"
   if [[ -n "$matching_dirty_worktree" ]]; then
     IFS=$'\t' read -r reused_branch reused_worktree <<<"$matching_dirty_worktree"
@@ -889,7 +962,7 @@ if [[ "$BASE_BRANCH_EXPLICIT" -eq 0 ]]; then
 fi
 
 if git show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
-  git fetch origin "${BASE_BRANCH}" --quiet
+  if [[ "$PREVIEW" -eq 0 ]]; then git fetch origin "${BASE_BRANCH}" --quiet; fi
   start_ref="origin/${BASE_BRANCH}"
 else
   if ! git show-ref --verify --quiet "refs/heads/${BASE_BRANCH}"; then
@@ -898,6 +971,13 @@ else
   fi
   start_ref="${BASE_BRANCH}"
 fi
+
+estimate_args=(worktree estimate --target "$repo_root" --ref "$start_ref")
+for sparse_dir in "${SPARSE_EXCLUDES[@]}"; do
+  estimate_args+=(--sparse-exclude "$sparse_dir")
+done
+run_guardex_cli "${estimate_args[@]}"
+if [[ "$PREVIEW" -eq 1 ]]; then exit 0; fi
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 branch_suffix=2
@@ -1083,6 +1163,10 @@ if [[ ${#SPARSE_EXCLUDES[@]} -gt 0 ]]; then
 fi
 git -C "$repo_root" config "branch.${branch_name}.guardexBase" "$BASE_BRANCH" >/dev/null 2>&1 || true
 git -C "$repo_root" config "branch.${branch_name}.guardexWorktreeRoot" "$WORKTREE_ROOT_REL" >/dev/null 2>&1 || true
+if [[ -n "$TASK_ID" ]]; then
+  git -C "$repo_root" config "branch.${branch_name}.guardexTaskId" "$TASK_ID"
+  git -C "$repo_root" config "branch.${branch_name}.guardexStartReady" false
+fi
 # Fresh agent branches should start unpublished; clear any inherited base-branch tracking.
 git -C "$worktree_path" branch --unset-upstream "$branch_name" >/dev/null 2>&1 || true
 
@@ -1118,6 +1202,15 @@ if ! initialize_openspec_plan_workspace "$repo_root" "$worktree_path" "$openspec
   exit 1
 fi
 
+if [[ -n "$TASK_ID" ]]; then
+  git -C "$repo_root" config "branch.${branch_name}.guardexStartReady" true
+fi
+if [[ "$REMEMBER_SPARSE" -eq 1 ]]; then
+  git -C "$repo_root" config --local --unset-all multiagent.worktreeSparseExclude || [[ "$?" -eq 5 ]]
+  for sparse_dir in "${SPARSE_EXCLUDES[@]}"; do
+    git -C "$repo_root" config --local --add multiagent.worktreeSparseExclude "$sparse_dir"
+  done
+fi
 echo "[agent-branch-start] Created branch: ${branch_name}"
 echo "[agent-branch-start] Worktree: ${worktree_path}"
 echo "[agent-branch-start] OpenSpec tier: ${OPENSPEC_TIER}"
