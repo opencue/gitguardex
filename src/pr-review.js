@@ -9,6 +9,7 @@ const { run } = require('./core/runtime');
 const { repoApiPath, repoNameWithOwner } = require('./github-api');
 const { codexReviewEffort, resolveProviderBin } = require('./provider-binary');
 const { partitionByAnchor } = require('./review-diff');
+const { createRun, writeRunFile, completeRun, pruneDisposable } = require('./storage/run-artifacts');
 
 const TOOL_PREFIX = '[gitguardex]';
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
@@ -370,14 +371,20 @@ function renderMarkdownReview({ pr, provider, findings, unanchored = [], truncat
   return `${lines.join('\n').replace(/\n{3,}/g, '\n\n')}\n`;
 }
 
-function defaultArtifactPath(repoRoot, pr) {
-  return path.join(repoRoot, '.gitguardex', 'pr-reviews', `pr-${pr}.md`);
-}
-
 function writeArtifact(repoRoot, artifactPath, payload) {
-  const outputPath = artifactPath
-    ? path.resolve(repoRoot, artifactPath)
-    : defaultArtifactPath(repoRoot, payload.pr);
+  if (!artifactPath) {
+    const run = createRun(repoRoot);
+    const outputPath = writeRunFile(run, 'results', `pr-${payload.pr}.md`, renderMarkdownReview(payload));
+    writeRunFile(run, 'logs', 'review.json', JSON.stringify({
+      pr: payload.pr, provider: payload.provider, findings: payload.findings.length
+    }));
+    completeRun(run);
+    // Retention is best effort; a valid durable review must not be lost because
+    // another process changed a disposable file or its permissions.
+    try { pruneDisposable(repoRoot); } catch { /* Preserve the review result. */ }
+    return outputPath;
+  }
+  const outputPath = path.resolve(repoRoot, artifactPath);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, renderMarkdownReview(payload), 'utf8');
   return outputPath;
