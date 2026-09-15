@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const prReview = require('../src/pr-review');
 
 // Both review providers are AGENTS: given tools they will read the repo, run a
@@ -25,6 +26,7 @@ const DIFF = [
 function withTempRepo(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-review-timeout-'));
   try {
+    execFileSync('git', ['init', '-q', dir]);
     return fn(dir);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
