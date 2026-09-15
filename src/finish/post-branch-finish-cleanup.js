@@ -164,6 +164,12 @@ function probeLiveProcessInWorktree(worktreePath, options = {}) {
   return { supported: true, active };
 }
 
+function probeWorktreeOwnership(worktreePath, options = {}) {
+  const lease = require('../agents/process-lease').probeLeases(worktreePath);
+  if (lease.active) return lease;
+  return (options.probe || probeLiveProcessInWorktree)(worktreePath, options);
+}
+
 function hasLiveProcessInWorktree(
   worktreePath,
   procRoot = process.platform === 'linux' ? '/proc' : '',
@@ -421,7 +427,7 @@ function removeFinishedWorktreeLocked(plan) {
     }
     const commit = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
     if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
-    if (hasLiveProcessInWorktree(plan.worktreePath)) return false;
+    if (probeWorktreeOwnership(plan.worktreePath).active) return false;
     if (!worktreeIdentityMatches(plan)) return false;
     const status = run(
       'git',
@@ -474,7 +480,7 @@ function scheduleFinishedDetachedWorktreeCleanup(input, options = {}) {
     if (!worktreeIdentity) return false;
     const cleanupPlan = { ...plan, worktreeIdentity };
     if (!worktreeIdentityMatches(cleanupPlan, runner)) return false;
-    const probe = probeLiveProcessInWorktree(plan.worktreePath, options);
+    const probe = probeWorktreeOwnership(plan.worktreePath, options);
     if (!probe.supported) {
       console.error(
         `[${TOOL_NAME}] Warning: cannot safely monitor the finished worktree; deferred cleanup was not started: ${plan.worktreePath}`
@@ -537,7 +543,7 @@ async function runDeferredCleanupWorker(plan, options = {}) {
         return false;
       }
     }
-    const probe = (options.probe || probeLiveProcessInWorktree)(plan.worktreePath, options);
+    const probe = probeWorktreeOwnership(plan.worktreePath, options);
     if (
       identity === 'same' &&
       probe.supported &&
@@ -563,6 +569,7 @@ module.exports = {
   hasLiveProcessInWorktree,
   isManagedAgentWorktree,
   probeLiveProcessInWorktree,
+  probeWorktreeOwnership,
   prepareBranchFinishCleanup,
   persistFinishedCleanup,
   retryPendingFinishedCleanup,

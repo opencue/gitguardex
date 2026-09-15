@@ -10,7 +10,7 @@
 //     "provision": {
 //       "files": {
 //         "copy":    [".env", "apps/*/.env"],   // per-worktree copies
-//         "symlink": ["node_modules", ".venv"]  // shared via symlink
+//         "symlink": ["node_modules"]  // dependencies are isolated copies, not links
 //       },
 //       "postCreate": ["pnpm install --offline"]
 //     }

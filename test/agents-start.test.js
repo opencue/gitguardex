@@ -8,6 +8,13 @@ const path = require('node:path');
 const CARGO_JOBS = Math.max(2, Math.floor((os.cpus().length || 8) / 4));
 const CARGO = `CARGO_BUILD_JOBS=${CARGO_JOBS}`;
 
+function supervisedLaunch() {
+  const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
+  const wt = '/repo/.omx/agent-worktrees/repo__codex__fix-auth';
+  return [process.execPath, path.resolve(__dirname, '../src/agents/supervise.js'), wt,
+    'agent__codex__fix-auth', `cd '${wt}' && ${CARGO} 'codex' 'fix auth'`].map(quote).join(' ');
+}
+
 function loadStartWithMocks({
   runPackageAsset,
   createAgentSession,
@@ -20,6 +27,7 @@ function loadStartWithMocks({
   const sessionsPath = require.resolve('../src/agents/sessions');
   const terminalPath = require.resolve('../src/agents/terminal');
   const gitPath = require.resolve('../src/git');
+  const worktreeStartPath = require.resolve('../src/worktree-start');
   const originalLoad = Module._load;
 
   delete require.cache[startPath];
@@ -28,6 +36,9 @@ function loadStartWithMocks({
     const resolved = Module._resolveFilename(request, parent, isMain);
     if (resolved === runtimePath) {
       return { runPackageAsset };
+    }
+    if (resolved === worktreeStartPath) {
+      return { runTaskStart: (cwd, args) => runPackageAsset('branchStart', args, { cwd }) };
     }
     if (resolved === sessionsPath) {
       return { createAgentSession, updateAgentSession, listAgentSessions };
@@ -98,7 +109,7 @@ test('agents start creates canonical session after successful branch start', () 
         base: 'main',
         claims: [],
         metadata: {},
-        launchCommand: `cd '/repo/.omx/agent-worktrees/repo__codex__fix-auth' && ${CARGO} 'codex' 'fix auth'`,
+        launchCommand: supervisedLaunch(),
         tmux: null,
         status: 'active',
       },
@@ -186,7 +197,7 @@ test('agents start claim failure updates canonical session to claim-failed', () 
         base: 'main',
         claims: ['src/auth.js'],
         metadata: {},
-        launchCommand: `cd '/repo/.omx/agent-worktrees/repo__codex__fix-auth' && ${CARGO} 'codex' 'fix auth'`,
+        launchCommand: supervisedLaunch(),
         tmux: null,
         status: 'claim-failed',
         claimFailure: {
@@ -282,7 +293,8 @@ test('agents start launches repeated codex accounts with unique branch tasks', (
   assert.match(sessionFile, /\.guardex\/agents\/terminals\/agent__codex__fix-auth-codex-01-2\.kitty-session$/);
   const sessionBody = fs.readFileSync(sessionFile, 'utf8');
   assert.match(sessionBody, /new_tab '1: codex fix-auth-codex-01'/);
-  assert.match(sessionBody, /launch --title '2: codex fix-auth-codex-02' sh -lc 'cd/);
+  assert.match(sessionBody, /launch --title '2: codex fix-auth-codex-02' sh -lc /);
+  assert.match(sessionBody, /src\/agents\/supervise\.js/);
   assert.deepEqual(created.map((entry) => entry.payload.task), ['fix auth', 'fix auth']);
   assert.deepEqual(created.map((entry) => entry.payload.branch), [
     'agent/codex/fix-auth-codex-01',

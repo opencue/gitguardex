@@ -14,6 +14,7 @@ function loadStartWithMocks({
 }) {
   const startPath = require.resolve('../src/agents/start');
   const runtimePath = require.resolve('../src/core/runtime');
+  const worktreeStartPath = require.resolve('../src/worktree-start');
   const sessionsPath = require.resolve('../src/agents/sessions');
   const terminalPath = require.resolve('../src/agents/terminal');
   const gitPath = require.resolve('../src/git');
@@ -25,6 +26,9 @@ function loadStartWithMocks({
     const resolved = Module._resolveFilename(request, parent, isMain);
     if (resolved === runtimePath) {
       return { runPackageAsset };
+    }
+    if (resolved === worktreeStartPath) {
+      return { runTaskStart: (cwd, args) => runPackageAsset('branchStart', args, { cwd }) };
     }
     if (resolved === sessionsPath) {
       return { createAgentSession, updateAgentSession, listAgentSessions };
@@ -98,7 +102,8 @@ test('panel-launched single agent opens a Kitty terminal session', () => {
   assert.match(sessionBody, /launch --title 'gx welcome' sh -lc 'gx'/);
   assert.match(sessionBody, /new_tab '1: codex fix-auth'/);
   assert.match(sessionBody, /cd '.*repo__codex__fix-auth'/);
-  assert.match(sessionBody, /launch --title '1: codex fix-auth' sh -lc 'cd/);
+  assert.match(sessionBody, /launch --title '1: codex fix-auth' sh -lc /);
+  assert.match(sessionBody, /src\/agents\/supervise\.js/);
   assert.ok(sessionBody.indexOf("new_tab 'gx welcome'") < sessionBody.indexOf("new_tab '1: codex fix-auth'"));
 });
 

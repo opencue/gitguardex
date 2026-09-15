@@ -65,31 +65,36 @@ function estimateCheckout(repoRoot, ref, exclusions) {
   };
 }
 
-function invokeTaskStart(repoRoot, args) {
-  if (args.filter((arg) => arg === '--task-id').length !== 1)
+function runTaskStart(repoRoot, args) {
+  const taskFlags = args.filter((arg) => arg === '--task-id').length;
+  if (taskFlags > 1)
     throw new Error('--task-id must appear once');
-  const id = validateTaskId(args[args.indexOf('--task-id') + 1]);
+  const id = taskFlags ? validateTaskId(args[args.indexOf('--task-id') + 1]) : '';
   const common = run('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir']);
   if (common.status !== 0) throw new Error('Cannot resolve task lock directory');
-  const lock = path.join(
-    fs.realpathSync(path.resolve(repoRoot, common.stdout.trim())),
-    `gitguardex-task-${crypto.createHash('sha256').update(id).digest('hex')}.lock`
-  );
-  const result = run(
-    'python3',
-    [
-      path.join(__dirname, 'finish/with-claims-lock.py'),
-      lock,
-      'bash',
-      packageAssetPath('branchStart'),
-      ...args
-    ],
+  const commonDir = fs.realpathSync(path.resolve(repoRoot, common.stdout.trim()));
+  const locks = [];
+  if (Object.keys(require('./worktree-quota').readWorktreeQuota(repoRoot)).length) {
+    locks.push(path.join(commonDir, 'gitguardex-worktree-quota.lock'));
+  }
+  if (id) locks.push(path.join(commonDir, `gitguardex-task-${crypto.createHash('sha256').update(id).digest('hex')}.lock`));
+  let command = ['bash', packageAssetPath('branchStart'), ...args];
+  for (const lock of locks.reverse()) {
+    command = ['python3', path.join(__dirname, 'finish/with-claims-lock.py'), lock, ...command];
+  }
+  return run(
+    command[0],
+    command.slice(1),
     { cwd: repoRoot, env: packageAssetEnv() }
   );
+}
+
+function invokeTaskStart(repoRoot, args) {
+  const result = runTaskStart(repoRoot, args);
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0)
     throw new Error(`Task start failed or is busy (status ${result.status})`);
 }
 
-module.exports = { estimateCheckout, invokeTaskStart, validateTaskId };
+module.exports = { estimateCheckout, runTaskStart, invokeTaskStart, validateTaskId };
