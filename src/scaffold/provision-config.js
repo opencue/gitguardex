@@ -26,9 +26,21 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const jsonc = require('jsonc-parser');
 const { hasApproval } = require('./provision-approvals');
+const { provisionDependency } = require('./dependency-store');
 
 const CONFIG_BASENAME = '.guardex.json';
 const POST_CREATE_TIMEOUT_MS = 10 * 60 * 1000;
+
+function provisioningMode(deps = {}) {
+  const mode = deps.mode || process.env.GUARDEX_PROVISION_MODE || 'full';
+  if (!['minimal', 'docs', 'full'].includes(mode))
+    throw new Error(`Invalid provisioning mode: ${mode}`);
+  return mode;
+}
+
+function isDependencyPath(rel) {
+  return rel.split(/[\\/]/).some((part) => ['node_modules', '.venv', 'venv'].includes(part));
+}
 
 function toStringArray(value) {
   if (!Array.isArray(value)) return [];
@@ -66,9 +78,9 @@ function loadProvisionConfig(repoRoot, deps = {}) {
     source: configPath,
     files: {
       copy: toStringArray(files.copy),
-      symlink: toStringArray(files.symlink),
+      symlink: toStringArray(files.symlink)
     },
-    postCreate: toStringArray(provision.postCreate),
+    postCreate: toStringArray(provision.postCreate)
   };
 }
 
@@ -180,7 +192,11 @@ function copyDirectory(source, destination, deps) {
         if (entry.isSymbolicLink()) {
           const target = fs.realpathSync(src);
           if (!withinReal(target, root)) throw new Error('copy link escapes selected directory');
-          links.push([dest, path.join(staging, path.relative(root, target)), fs.statSync(target).isDirectory()]);
+          links.push([
+            dest,
+            path.join(staging, path.relative(root, target)),
+            fs.statSync(target).isDirectory()
+          ]);
         } else if (entry.isDirectory()) {
           fs.mkdirSync(dest);
           directories.push([src, dest]);
@@ -192,12 +208,23 @@ function copyDirectory(source, destination, deps) {
       }
     }
     for (const [dest, target, directory] of links) {
-      fs.symlinkSync(path.relative(path.dirname(dest), target) || '.', dest, directory ? 'dir' : 'file');
+      fs.symlinkSync(
+        path.relative(path.dirname(dest), target) || '.',
+        dest,
+        directory ? 'dir' : 'file'
+      );
     }
-    for (const [from, to] of directories.reverse()) fs.chmodSync(to, fs.statSync(from).mode & 0o777);
-    if (targetAlreadyPresent(destination)) throw new Error('copy target appeared during provisioning');
+    for (const [from, to] of directories.reverse())
+      fs.chmodSync(to, fs.statSync(from).mode & 0o777);
+    if (targetAlreadyPresent(destination))
+      throw new Error('copy target appeared during provisioning');
     fs.renameSync(staging, destination);
   } finally {
+    // A read-only snapshot may have supplied directory modes before publication
+    // failed. Restore only our private staging tree so cleanup can remove it.
+    if (fs.existsSync(staging)) {
+      for (const [, directory] of directories) fs.chmodSync(directory, 0o700);
+    }
     fs.rmSync(staging, { recursive: true, force: true });
   }
 }
@@ -228,11 +255,18 @@ function applyCopy(repoRoot, worktreePath, patterns, deps = {}) {
         ensureParentDir(dest, worktreeReal);
         if (fs.statSync(src).isDirectory()) {
           const sourceReal = fs.realpathSync(src);
-          if (withinReal(worktreePath, sourceReal)) throw new Error('copy target is inside source directory');
-          copyDirectory(src, dest, deps);
+          if (withinReal(worktreePath, sourceReal))
+            throw new Error('copy target is inside source directory');
+          if (isDependencyPath(rel))
+            provisionDependency(repoRoot, rel, dest, { ...deps, copyDirectory });
+          else copyDirectory(src, dest, deps);
         } else {
           if (!fs.statSync(src).isFile()) throw new Error('copy source is not a regular file');
-          (deps.copyFile || fs.copyFileSync)(src, dest, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+          (deps.copyFile || fs.copyFileSync)(
+            src,
+            dest,
+            fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL
+          );
         }
         operations.push({ status: 'copied', file: rel, note: 'copied from repo root' });
       } catch (error) {
@@ -268,7 +302,11 @@ function applySymlink(repoRoot, worktreePath, patterns, deps = {}) {
         }
         ensureParentDir(dest, worktreeReal);
         fs.symlinkSync(src, dest);
-        operations.push({ status: 'linked', file: rel, note: `→ ${path.relative(worktreePath, src)}` });
+        operations.push({
+          status: 'linked',
+          file: rel,
+          note: `→ ${path.relative(worktreePath, src)}`
+        });
       } catch (error) {
         operations.push({ status: 'failed', file: rel, note: `symlink failed: ${error.message}` });
       }
@@ -278,27 +316,38 @@ function applySymlink(repoRoot, worktreePath, patterns, deps = {}) {
 }
 
 function hooksDisabled() {
-  const flag = String(process.env.GUARDEX_PROVISION_HOOKS || '').trim().toLowerCase();
+  const flag = String(process.env.GUARDEX_PROVISION_HOOKS || '')
+    .trim()
+    .toLowerCase();
   return ['0', 'false', 'no', 'off'].includes(flag);
 }
 
 function applyPostCreate(repoRoot, worktreePath, commands, deps = {}) {
   if (commands.length === 0) return [];
   if (hooksDisabled()) {
-    return commands.map((command) => ({ status: 'skipped', file: command, note: 'GUARDEX_PROVISION_HOOKS disabled' }));
+    return commands.map((command) => ({
+      status: 'skipped',
+      file: command,
+      note: 'GUARDEX_PROVISION_HOOKS disabled'
+    }));
   }
   if (!(deps.hasApproval || hasApproval)(repoRoot, commands, deps)) {
     return commands.map((command) => ({
-      status: 'skipped', file: command, code: 'HOOK_APPROVAL_REQUIRED',
-      note: 'postCreate requires local consent: run gx worktree approve-hooks --target <source-repo> in a terminal',
+      status: 'skipped',
+      file: command,
+      code: 'HOOK_APPROVAL_REQUIRED',
+      note: 'postCreate requires local consent: run gx worktree approve-hooks --target <source-repo> in a terminal'
     }));
   }
-  const run = deps.run || ((cmd, cwd, env) => spawnSync('sh', ['-lc', cmd], {
-    cwd,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: POST_CREATE_TIMEOUT_MS,
-  }));
+  const run =
+    deps.run ||
+    ((cmd, cwd, env) =>
+      spawnSync('sh', ['-lc', cmd], {
+        cwd,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: POST_CREATE_TIMEOUT_MS
+      }));
 
   const operations = [];
   const env = { ...process.env, GUARDEX_WORKTREE: worktreePath, GUARDEX_REPO_ROOT: repoRoot };
@@ -315,10 +364,10 @@ function applyPostCreate(repoRoot, worktreePath, commands, deps = {}) {
       ok
         ? { status: 'ran', file: command, note: 'post_create hook ok' }
         : {
-          status: 'failed',
-          file: command,
-          note: `post_create exited ${result && result.status}${result && result.error ? `: ${result.error.message}` : ''}`,
-        },
+            status: 'failed',
+            file: command,
+            note: `post_create exited ${result && result.status}${result && result.error ? `: ${result.error.message}` : ''}`
+          }
     );
   }
   return operations;
@@ -327,20 +376,47 @@ function applyPostCreate(repoRoot, worktreePath, commands, deps = {}) {
 // Apply a normalized provision config to a worktree. Order: copy, symlink, then
 // postCreate hooks (so hooks see the env/deps already in place). Best-effort.
 function applyProvisionConfig(repoRoot, worktreePath, config, deps = {}) {
+  const mode = provisioningMode(deps);
+  if (mode !== 'full')
+    return [
+      {
+        status: 'skipped',
+        code: 'PROVISION_MODE_SKIPPED',
+        file: mode,
+        note: 'dependencies, hooks, build and index provisioning skipped'
+      }
+    ];
   if (!config) return [];
   const operations = [];
   operations.push(...applyCopy(repoRoot, worktreePath, config.files.copy, deps));
   const copiedPaths = config.files.copy.flatMap((pattern) => expandGlob(repoRoot, pattern, deps));
-  const symlinkPaths = config.files.symlink.flatMap((pattern) => expandGlob(repoRoot, pattern, deps))
-    .filter((rel) => !copiedPaths.some((copy) => rel === copy || rel.startsWith(`${copy}/`) || copy.startsWith(`${rel}/`)));
+  const symlinkPaths = config.files.symlink
+    .flatMap((pattern) => expandGlob(repoRoot, pattern, deps))
+    .filter(
+      (rel) =>
+        !copiedPaths.some(
+          (copy) => rel === copy || rel.startsWith(`${copy}/`) || copy.startsWith(`${rel}/`)
+        )
+    );
   // A failed explicit copy must never fall back to writable shared dependencies.
-  operations.push(...applySymlink(repoRoot, worktreePath, symlinkPaths, deps));
+  operations.push(
+    ...applyCopy(repoRoot, worktreePath, symlinkPaths.filter(isDependencyPath), deps)
+  );
+  operations.push(
+    ...applySymlink(
+      repoRoot,
+      worktreePath,
+      symlinkPaths.filter((rel) => !isDependencyPath(rel)),
+      deps
+    )
+  );
   operations.push(...applyPostCreate(repoRoot, worktreePath, config.postCreate, deps));
   return operations;
 }
 
 // Convenience: load + apply for a freshly created worktree.
 function provisionFromConfig(repoRoot, worktreePath, deps = {}) {
+  provisioningMode(deps);
   if (!repoRoot || !worktreePath || repoRoot === worktreePath) return [];
   if (!fs.existsSync(worktreePath)) return [];
   const config = loadProvisionConfig(repoRoot, deps);
@@ -349,6 +425,8 @@ function provisionFromConfig(repoRoot, worktreePath, deps = {}) {
 }
 
 module.exports = {
+  copyDirectory,
+  provisioningMode,
   CONFIG_BASENAME,
   loadProvisionConfig,
   expandGlob,
@@ -357,5 +435,5 @@ module.exports = {
   applySymlink,
   applyPostCreate,
   applyProvisionConfig,
-  provisionFromConfig,
+  provisionFromConfig
 };

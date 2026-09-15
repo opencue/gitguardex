@@ -13,6 +13,37 @@ const {
 } = require('./helpers/install-test-helpers');
 const { saveApproval } = require('../src/scaffold/provision-approvals');
 
+test('explicit docs/minimal modes skip dependencies and approved build hooks', () => {
+  const repo = initRepo();
+  seedCommit(repo);
+  const wt = path.join(repo, 'lane');
+  assert.equal(runCmd('git', ['worktree', 'add', '-b', 'agent/modes', wt], repo).status, 0);
+  fs.mkdirSync(path.join(repo, 'node_modules'));
+  fs.writeFileSync(path.join(repo, 'node_modules', 'marker'), 'dependency');
+  const commands = ['echo built > build-marker'];
+  fs.writeFileSync(
+    path.join(repo, '.guardex.json'),
+    JSON.stringify({ provision: { postCreate: commands } })
+  );
+  const home = path.join(repo, 'test-home');
+  saveApproval(repo, commands, {
+    approvalDir: path.join(home, '.config', 'gitguardex', 'provision-approvals')
+  });
+  const args = ['worktree', 'provision', '--source', repo, '--target', wt, '--with-defaults'];
+  for (const mode of ['docs', 'minimal']) {
+    const result = runNodeWithEnv([...args, '--mode', mode], repo, { GUARDEX_HOME_DIR: home });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /PROVISION_MODE_SKIPPED/);
+    assert.equal(fs.existsSync(path.join(wt, 'node_modules')), false);
+    assert.equal(fs.existsSync(path.join(wt, 'build-marker')), false);
+  }
+  assert.notEqual(runNode([...args, '--mode', 'unknown'], repo).status, 0);
+  const full = runNodeWithEnv([...args, '--mode', 'full'], repo, { GUARDEX_HOME_DIR: home });
+  assert.equal(full.status, 0, full.stderr);
+  assert.equal(fs.lstatSync(path.join(wt, 'node_modules')).isSymbolicLink(), false);
+  assert.equal(fs.existsSync(path.join(wt, 'build-marker')), true);
+});
+
 test('approve-hooks refuses noninteractive approval and unknown auto-approval flags', () => {
   const repo = initRepo();
   seedCommit(repo);
