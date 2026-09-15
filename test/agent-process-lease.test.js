@@ -5,6 +5,22 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 
+test('an unreadable lease directory fails closed instead of appearing absent', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-lease-access-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  cp.execFileSync('git', ['init', '-q', root]);
+  const { leaseDirectory, probeLeases } = require('../src/agents/process-lease');
+  const directory = leaseDirectory(root);
+  const exists = fs.existsSync;
+  const stat = fs.lstatSync;
+  t.mock.method(fs, 'existsSync', (file) => (file === directory ? false : exists(file)));
+  t.mock.method(fs, 'lstatSync', (file, ...args) => {
+    if (file === directory) throw Object.assign(new Error('lease denied'), { code: 'EACCES' });
+    return stat(file, ...args);
+  });
+  assert.deepEqual(probeLeases(root), { active: true, supported: false });
+});
+
 test(
   'a zombie main thread does not make its live worker threads dead',
   { skip: process.platform !== 'linux' },

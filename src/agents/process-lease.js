@@ -18,7 +18,7 @@ function processIdentity(pid) {
   try {
     const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    // A exited main thread can be Z while other threads still own work.
+    // An exited main thread can be Z while other threads still own work.
     // Only a single-thread zombie proves that the process has stopped.
     if (fields[0] === 'Z' && fields[17] === '1') return null;
     const birth =
@@ -51,11 +51,14 @@ function identityState(identity, probe = processIdentity) {
 function probeLeases(worktree) {
   try {
     const directory = leaseDirectory(worktree);
-    if (!fs.existsSync(directory)) return { active: false, supported: true };
-    if (
-      !fs.lstatSync(path.dirname(directory)).isDirectory() ||
-      !fs.lstatSync(directory).isDirectory()
-    )
+    let directoryStat;
+    try {
+      directoryStat = fs.lstatSync(directory);
+    } catch (error) {
+      if (error.code === 'ENOENT') return { active: false, supported: true };
+      throw error;
+    }
+    if (!fs.lstatSync(path.dirname(directory)).isDirectory() || !directoryStat.isDirectory())
       return { active: true, supported: false };
     for (const name of fs.readdirSync(directory)) {
       if (!name.endsWith('.json')) continue;
