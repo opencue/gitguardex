@@ -99,3 +99,28 @@ test('Python virtual environments require recreation rather than incompatible co
     /not relocatable/
   );
 });
+
+test('snapshot preserves owner-only executable bits across sealing and materialization', (t) => {
+  const { root, repo, storeDir } = fixture(t);
+  fs.chmodSync(path.join(repo, 'node_modules/tool'), 0o700);
+  const result = provisionDependency(repo, 'node_modules', path.join(root, 'out'), {
+    storeDir,
+    copyDirectory
+  });
+  assert.equal(fs.statSync(path.join(result.snapshot, 'tool')).mode & 0o111, 0o100);
+  assert.equal(fs.statSync(path.join(root, 'out/tool')).mode & 0o111, 0o100);
+});
+
+test('snapshot supports absolute internal links and internal symlink chains', (t) => {
+  const { root, repo, storeDir } = fixture(t);
+  const dependencies = path.join(repo, 'node_modules');
+  fs.symlinkSync(path.join(dependencies, 'tool'), path.join(dependencies, 'absolute'));
+  fs.symlinkSync('absolute', path.join(dependencies, 'chain'));
+  const result = provisionDependency(repo, 'node_modules', path.join(root, 'out'), {
+    storeDir,
+    copyDirectory
+  });
+  assert.equal(fs.readFileSync(path.join(result.snapshot, 'chain'), 'utf8'), 'original');
+  fs.writeFileSync(path.join(root, 'out/chain'), 'private');
+  assert.equal(fs.readFileSync(path.join(dependencies, 'chain'), 'utf8'), 'original');
+});
