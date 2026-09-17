@@ -175,6 +175,21 @@ test('a command with no registry entry is left entirely alone', () => {
   assert.equal(hasRenderableHelp('definitely-not-a-command'), false);
 });
 
+test('a prototype key is not mistaken for a command', () => {
+  // CLI_COMMAND_HELP is a plain object, so a bare lookup resolves
+  // Object.prototype: `CLI_COMMAND_HELP['constructor']` is a truthy function
+  // with no `nativeHelp`, and `gx help constructor` answered
+  // "USAGE: gx constructor [options]" with exit 0 — the same false positive
+  // as an unknown command name, reached through the prototype.
+  for (const name of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__']) {
+    assert.equal(hasRenderableHelp(name), false, `${name} must not look like a documented command`);
+    const viaHelp = runCli(['help', name]);
+    assert.equal(viaHelp.status, 1, `gx help ${name} exited ${viaHelp.status}`);
+    const viaFlag = runCli([name, '--help']);
+    assert.equal(viaFlag.status, 1, `gx ${name} --help exited ${viaFlag.status}`);
+  }
+});
+
 test('-h is treated the same as --help', () => {
   for (const command of ['finish', 'sync', 'report']) {
     const result = runCli([command, '-h']);

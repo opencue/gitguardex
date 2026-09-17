@@ -191,6 +191,12 @@ const HELP_FLAGS = new Set(['--help', '-h']);
 // `nativeHelp: true` entry means "the command owns its help" and renders
 // nothing, so it is not renderable here either.
 function hasRenderableHelp(command) {
+  // Object.hasOwn, not a bare lookup: CLI_COMMAND_HELP is a plain object, so
+  // `CLI_COMMAND_HELP['constructor']` is Object.prototype.constructor — truthy,
+  // with no `nativeHelp` — and `gx help constructor` answered
+  // "USAGE: gx constructor [options]" with exit 0. Same false positive as an
+  // unknown command name, reached through the prototype.
+  if (!Object.hasOwn(CLI_COMMAND_HELP, command)) return false;
   const entry = CLI_COMMAND_HELP[command];
   return Boolean(entry) && entry.nativeHelp !== true;
 }
