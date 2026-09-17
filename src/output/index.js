@@ -9,6 +9,7 @@ const {
   GUARDEX_REPO_TOGGLE_ENV,
   CLI_COMMAND_DESCRIPTIONS,
   CLI_COMMAND_GROUPS,
+  CLI_COMMAND_HELP,
   CLI_QUICKSTART_STEPS,
   AGENT_BOT_DESCRIPTIONS,
   DOCTOR_AUTO_FINISH_DETAIL_LIMIT,
@@ -243,6 +244,157 @@ function groupedCommandCatalogLines(indent = '  ', options = {}) {
   return lines;
 }
 
+// ---------------------------------------------------------------------------
+// Machine- and agent-facing help.
+//
+// `gx --help --json` emits the whole catalog as one JSON object so a caller
+// can enumerate commands, subcommands and flags without scraping prose — and
+// so a renamed or added command shows up without anybody updating a scraper.
+// ---------------------------------------------------------------------------
+function commandCatalogJson() {
+  const invoked = getInvokedCliName();
+  const entryFor = (name) => {
+    const key = String(name).split(/\s+/)[0];
+    const help = CLI_COMMAND_HELP[key] || {};
+    if (help.nativeHelp) {
+      return {
+        nativeHelp: true,
+        helpCommand: `${invoked} ${key} --help`,
+      };
+    }
+    return {
+      nativeHelp: false,
+      usage: help.usage ? help.usage.replace(/^gx\b/, invoked) : `${invoked} ${key} [options]`,
+      summary: help.summary || null,
+      subcommands: (help.subcommands || []).map(([n, d]) => ({ name: n, description: d })),
+      flags: (help.flags || []).map(([f, d]) => ({ flag: f, description: d })),
+      examples: (help.examples || []).map((e) => e.replace(/^gx\b/, invoked)),
+      notes: help.notes || [],
+    };
+  };
+  return {
+    cli: invoked,
+    version: packageJson.version,
+    runtime: runtimeVersion(),
+    groups: CLI_COMMAND_GROUPS.map((group) => ({
+      label: group.label,
+      description: group.description || null,
+      commands: group.commands.map(([name, description]) => {
+        const key = String(name).split(/\s+/)[0];
+        return { name: key, description, ...entryFor(name) };
+      }),
+    })),
+  };
+}
+
+// Per-command help for every command that does not print its own usage, so
+// `--help` ALWAYS answers and ALWAYS exits 0. Shape follows the house style
+// `gx cleanup --help` already set: USAGE, prose, then the sections that apply.
+function commandHelpLines(command, options = {}) {
+  const invoked = options.invokedBasename || getInvokedCliName();
+  const localize = (text) => String(text).replace(/\bgx\b/g, invoked);
+  const help = CLI_COMMAND_HELP[command];
+  const lines = [];
+
+  let catalogDescription = null;
+  let groupLabel = null;
+  for (const group of CLI_COMMAND_GROUPS) {
+    for (const [name, description] of group.commands) {
+      if (String(name).split(/\s+/)[0] === command) {
+        catalogDescription = description;
+        groupLabel = group.label;
+      }
+    }
+  }
+
+  lines.push(`USAGE: ${localize(help && help.usage ? help.usage : `gx ${command} [options]`)}`);
+  const summary = (help && help.summary) || catalogDescription;
+  if (summary) {
+    lines.push('');
+    for (const line of wrapHelpText(localize(summary), 76)) lines.push(`  ${line}`);
+  }
+
+  const pad = (rows) => {
+    const width = Math.max(0, ...rows.map(([left]) => left.length));
+    const out = [];
+    for (const [left, right] of rows) {
+      const gap = width + 2;
+      if (left.length > 30) {
+        out.push(`  ${left}`);
+        for (const line of wrapHelpText(localize(right), 74 - gap)) {
+          out.push(`  ${' '.repeat(gap)}${line}`);
+        }
+        continue;
+      }
+      const wrapped = wrapHelpText(localize(right), 74 - gap);
+      out.push(`  ${left.padEnd(width)}  ${wrapped[0] || ''}`.trimEnd());
+      for (const line of wrapped.slice(1)) out.push(`  ${' '.repeat(gap)}${line}`);
+    }
+    return out;
+  };
+
+  if (help && help.subcommands && help.subcommands.length) {
+    lines.push('');
+    lines.push('SUBCOMMANDS');
+    for (const line of pad(help.subcommands)) lines.push(line);
+  }
+
+  if (help && help.flags && help.flags.length) {
+    lines.push('');
+    lines.push('OPTIONS');
+    for (const line of pad(help.flags)) lines.push(line);
+    lines.push('');
+    lines.push('  Not every accepted flag is listed — these are the ones worth knowing');
+    lines.push('  first. Anything unlisted is still parsed.');
+  }
+
+  if (help && help.examples && help.examples.length) {
+    lines.push('');
+    lines.push('EXAMPLES');
+    for (const example of help.examples) lines.push(`  ${localize(example)}`);
+  }
+
+  if (help && help.notes && help.notes.length) {
+    lines.push('');
+    lines.push('NOTES');
+    for (const note of help.notes) {
+      const wrapped = wrapHelpText(localize(note), 72);
+      lines.push(`  - ${wrapped[0] || ''}`);
+      for (const line of wrapped.slice(1)) lines.push(`    ${line}`);
+    }
+  }
+
+  lines.push('');
+  if (groupLabel) lines.push(`  Group: ${groupLabel}`);
+  lines.push(`  ${invoked} --help          every command, grouped`);
+  lines.push(`  ${invoked} --help --json   the same catalog as JSON`);
+  return lines;
+}
+
+// Word wrap for help bodies. Long unbreakable tokens (paths, flags) are left
+// alone rather than hyphenated, so a wrapped line can exceed `width`.
+function wrapHelpText(text, width) {
+  const limit = Math.max(24, Number(width) || 72);
+  const words = String(text).split(/\s+/).filter(Boolean);
+  if (!words.length) return [''];
+  const out = [];
+  let line = '';
+  for (const word of words) {
+    if (!line) {
+      line = word;
+      continue;
+    }
+    if (line.length + 1 + word.length <= limit) {
+      line += ` ${word}`;
+      continue;
+    }
+    out.push(line);
+    line = word;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
 function quickstartLines(indent = '  ') {
   return CLI_QUICKSTART_STEPS.map((step, index) => `${indent}${index + 1}. ${step}`);
 }
@@ -378,7 +530,10 @@ function usage(options = {}) {
       .join('\n');
     console.log(`USAGE: ${invoked} <command> [options]
 COMMANDS
-${groupedCommandLinesTerse}`);
+${groupedCommandLinesTerse}
+HELP
+  ${invoked} <command> --help   one command: usage, subcommands, main flags
+  ${invoked} --help --json      the whole catalog as JSON, in one call`);
     if (outsideGitRepo) {
       console.log(
         `[${TOOL_NAME}] No git repository detected. Re-run from a repo root or pass --target <path>.`,
@@ -420,6 +575,8 @@ NOTES
   - Target another repo: ${invoked} <cmd> --target <repo-path>.
   - On protected main, setup/install/fix/doctor auto-sandbox via agent branch + PR flow.
   - Run '${invoked} cleanup' to prune merged agent branches/worktrees.
+  - Per-command help: ${invoked} <command> --help (or ${invoked} help <command>).
+  - Machine-readable catalog: ${invoked} --help --json.
   - Legacy aliases: ${LEGACY_NAMES.join(', ')}.`);
 
   if (outsideGitRepo) {
@@ -845,6 +1002,8 @@ function printCompressible(text, options = {}) {
 }
 
 module.exports = {
+  commandCatalogJson,
+  commandHelpLines,
   runtimeVersion,
   supportsAnsiColors,
   isTerseMode,
