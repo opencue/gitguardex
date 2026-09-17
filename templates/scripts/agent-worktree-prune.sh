@@ -24,6 +24,10 @@ PR_MERGED_LOOKUP_DISABLED=0
 PR_MERGED_LOOKUP_LOADED=0
 declare -A MERGED_PR_BRANCHES=()
 OPEN_PR_LOOKUP_UNAVAILABLE=0
+OPEN_PR_LOOKUP_LOADED=0
+OPEN_PR_LOOKUP_TRUNCATED=0
+OPEN_PR_LOOKUP_LIMIT="${GUARDEX_OPEN_PR_LOOKUP_LIMIT:-200}"
+declare -A OPEN_PR_BRANCHES=()
 LANE_PR_LOOKUP_LOADED=0
 LANE_PR_LOOKUP_UNAVAILABLE=0
 declare -A LANE_PR_STATES=()
@@ -214,6 +218,46 @@ load_merged_pr_branches() {
   return 0
 }
 
+# One `gh pr list` for every open PR instead of one per branch. The merged
+# lookup above has always worked this way; the open-PR probe did not, so an
+# unattended cleanup paid a forge round-trip per candidate lane — ~30 s on a
+# repo with a couple of dozen agent worktrees, which is time a `git pull` spent
+# waiting because post-merge cleanup runs inline.
+#
+# The set is only trusted when it is COMPLETE. `gh pr list` silently caps at
+# --limit, and a truncated set would read as "this branch has no open PR" for
+# every lane past the cap — i.e. it would DELETE lanes that still have a PR.
+# The per-branch probe cannot make that mistake, so on truncation (or any
+# failure) the caller falls back to it and the fail-closed contract holds.
+load_open_pr_lookup() {
+  if [[ "$OPEN_PR_LOOKUP_LOADED" -eq 1 ]]; then
+    return 0
+  fi
+  if ! command -v "$GH_BIN" >/dev/null 2>&1; then
+    return 1
+  fi
+  local open_branches=""
+  if ! open_branches="$(
+    "$GH_BIN" pr list --state open --limit "$OPEN_PR_LOOKUP_LIMIT" --json headRefName --jq '.[].headRefName' 2>/dev/null
+  )"; then
+    return 1
+  fi
+  local count=0
+  if [[ -n "$open_branches" ]]; then
+    while IFS= read -r open_branch; do
+      [[ -z "$open_branch" ]] && continue
+      OPEN_PR_BRANCHES["$open_branch"]=1
+      count=$((count + 1))
+    done <<< "$open_branches"
+  fi
+  if (( count >= OPEN_PR_LOOKUP_LIMIT )); then
+    OPEN_PR_LOOKUP_TRUNCATED=1
+    return 1
+  fi
+  OPEN_PR_LOOKUP_LOADED=1
+  return 0
+}
+
 branch_has_merged_pr() {
   local branch="$1"
   if [[ "$INCLUDE_PR_MERGED" -ne 1 ]]; then
@@ -321,6 +365,13 @@ should_preserve_open_pr_branch() {
   if ! command -v "$GH_BIN" >/dev/null 2>&1; then
     OPEN_PR_LOOKUP_UNAVAILABLE=1
     return 0
+  fi
+  # One batched list answers every lane. Only when it is unusable — gh failed,
+  # or the list hit --limit and may be missing branches — do we fall through to
+  # the per-branch probe below.
+  if load_open_pr_lookup; then
+    [[ -n "${OPEN_PR_BRANCHES[$branch]:-}" ]]
+    return
   fi
   if ! open_branch="$(
     "$GH_BIN" pr list --state open --head "$branch" --limit 1 --json headRefName --jq '.[0].headRefName // ""' 2>/dev/null
