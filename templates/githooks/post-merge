@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${GUARDEX_DISABLE_POST_MERGE_CLEANUP:-0}" == "1" ]]; then
-  exit 0
+# The env var alone is not reachable from a GUI client: VS Code's Source Control
+# "Sync Changes" runs `git pull` with its own environment, so a user who only
+# wants their pulls back cannot set it. Same reason pre-push reads
+# multiagent.allowVscodeProtectedBranchWrites from git config — GUI clients get
+# a config key, not an env var.
+#
+#   git config --global multiagent.disablePostMergeCleanup true
+#
+# The sweep is housekeeping; `gx cleanup` and the next doctor run still do it.
+disable_cleanup_raw="${GUARDEX_DISABLE_POST_MERGE_CLEANUP:-$(git config --get multiagent.disablePostMergeCleanup 2>/dev/null || true)}"
+if [[ -z "$disable_cleanup_raw" ]]; then
+  disable_cleanup_raw="false"
 fi
+disable_cleanup="$(printf '%s' "$disable_cleanup_raw" | tr '[:upper:]' '[:lower:]')"
+case "$disable_cleanup" in
+  1|true|yes|on) exit 0 ;;
+esac
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$repo_root" ]]; then
