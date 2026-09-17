@@ -692,7 +692,7 @@ const CLI_COMMAND_HELP = {
       ['--post', 'Post the findings as inline GitHub comments'],
       ['--no-post', 'Do not post anything (the default when writing an artifact)'],
       ['--artifact <path>', 'Write the findings to a file'],
-      ['--output <path>', 'Write the raw provider output to a file'],
+      ['--output <path>', 'Exact alias for --artifact; both write the findings file'],
       ['--fix', 'Let the provider apply and commit the fixes'],
       ['--timeout-ms <n>', 'Give up on the provider after this long'],
       ['--target <path>', 'Act on another repo instead of the current directory'],
