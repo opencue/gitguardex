@@ -23,6 +23,16 @@ GH_BIN="${GUARDEX_GH_BIN:-gh}"
 PR_MERGED_LOOKUP_DISABLED=0
 PR_MERGED_LOOKUP_LOADED=0
 declare -A MERGED_PR_BRANCHES=()
+# `git worktree list --porcelain` was re-run for EVERY branch (104 times in one
+# traced sweep) even though the answer only changes when this script itself
+# removes a worktree. Same for `rev-parse --verify refs/heads/<b>`: one branch
+# was resolved up to 88 times. Both are memoized, and both caches are dropped
+# at the points where this script mutates the thing they describe — a stale
+# "branch still has a worktree" would keep a branch that became deletable, and
+# a stale tip would be used to pick a remote ref to delete.
+WORKTREE_BRANCHES_LOADED=0
+declare -A WORKTREE_BRANCHES=()
+declare -A BRANCH_TIP_CACHE=()
 OPEN_PR_LOOKUP_UNAVAILABLE=0
 OPEN_PR_LOOKUP_LOADED=0
 OPEN_PR_LOOKUP_TRUNCATED=0
@@ -470,9 +480,48 @@ delete_local_branch() {
   run_cmd git -C "$repo_root" branch -d "$branch"
 }
 
+load_worktree_branches() {
+  if [[ "$WORKTREE_BRANCHES_LOADED" -eq 1 ]]; then
+    return 0
+  fi
+  WORKTREE_BRANCHES=()
+  local line=""
+  while IFS= read -r line; do
+    [[ "$line" == branch\ refs/heads/* ]] || continue
+    WORKTREE_BRANCHES["${line#branch refs/heads/}"]=1
+  done < <(git -C "$repo_root" worktree list --porcelain 2>/dev/null || true)
+  WORKTREE_BRANCHES_LOADED=1
+  return 0
+}
+
+invalidate_worktree_branches() {
+  WORKTREE_BRANCHES_LOADED=0
+}
+
 branch_has_worktree() {
   local branch="$1"
-  git -C "$repo_root" worktree list --porcelain | grep -q "^branch refs/heads/${branch}$"
+  load_worktree_branches
+  [[ -n "${WORKTREE_BRANCHES[$branch]:-}" ]]
+}
+
+# The tip of a local branch, memoized. Empty (and cached as empty) when the
+# branch does not exist, which is what the callers' `|| true` already treated
+# as "no tip".
+branch_tip() {
+  local branch="$1"
+  if [[ -n "${BRANCH_TIP_CACHE[$branch]+set}" ]]; then
+    printf '%s' "${BRANCH_TIP_CACHE[$branch]}"
+    return 0
+  fi
+  local tip=""
+  tip="$(git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
+  BRANCH_TIP_CACHE["$branch"]="$tip"
+  printf '%s' "$tip"
+  return 0
+}
+
+invalidate_branch_tip() {
+  unset "BRANCH_TIP_CACHE[$1]" 2>/dev/null || true
 }
 
 # Globs treated as agent state, not real work. Worktrees whose only "dirty"
@@ -925,7 +974,7 @@ process_entry() {
     elif [[ "$DELETE_BRANCHES" -eq 1 ]] && branch_has_merged_pr "$branch"; then
       remove_reason="merged-agent-pr"
       branch_delete_mode="force"
-      expected_branch_head="$(git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
+      expected_branch_head="$(branch_tip "$branch")"
     elif [[ "$ONLY_DIRTY_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
       remove_reason="clean-agent-worktree"
     fi
@@ -967,6 +1016,8 @@ process_entry() {
 
   local remove_status=0
   if remove_worktree_with_lock_guard "$wt" "$remove_reason" "$branch"; then
+    # The worktree list just changed; branch_has_worktree must re-read it.
+    invalidate_worktree_branches
     removed_worktrees=$((removed_worktrees + 1))
   else
     remove_status=$?
@@ -991,7 +1042,7 @@ process_entry() {
     if [[ ( "$branch" == agent/* || "$branch" == work/* ) && "$DELETE_BRANCHES" -eq 1 && "$remove_reason" != "stale-no-pr-worktree" ]]; then
       local deleted_label="$branch_delete_label"
       if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
-        remote_delete_head="$(classified_merged_pr_head "$branch" || git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
+        remote_delete_head="$(classified_merged_pr_head "$branch" || branch_tip "$branch")"
       fi
       if delete_local_branch "$branch" "$branch_delete_mode" "$expected_branch_head" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
@@ -1008,6 +1059,7 @@ process_entry() {
       fi
     elif [[ "$branch" == __agent_integrate_* || "$branch" == __source-probe-* ]]; then
       run_cmd git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1 || true
+      invalidate_branch_tip "$branch"
       removed_branches=$((removed_branches + 1))
       echo "[agent-worktree-prune] Deleted temporary branch: ${branch}"
     fi
@@ -1050,6 +1102,7 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
       if ! branch_idle_gate "$branch" "" "temporary-worktree"; then
         continue
       fi
+      invalidate_branch_tip "$branch"
       if run_cmd git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
         echo "[agent-worktree-prune] Deleted stale temporary branch: ${branch}"
@@ -1093,7 +1146,7 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
       merged_by_ancestor=1
     elif [[ "$PRUNE_STALE_LANES" -ne 1 ]] && branch_has_merged_pr "$branch"; then
       merged_by_pr=1
-      expected_branch_head="$(git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
+      expected_branch_head="$(branch_tip "$branch")"
     fi
     if [[ "$merged_by_ancestor" -eq 1 || "$merged_by_pr" -eq 1 || "$closed_by_pr" -eq 1 ]]; then
       if ! reserve_branch_slot "$branch"; then
@@ -1118,7 +1171,7 @@ if [[ "$DELETE_BRANCHES" -eq 1 ]]; then
         continue
       fi
       if [[ "$DELETE_REMOTE_BRANCHES" -eq 1 && "$delete_remote_branch" -eq 1 ]]; then
-        remote_delete_head="$(classified_merged_pr_head "$branch" || git -C "$repo_root" rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
+        remote_delete_head="$(classified_merged_pr_head "$branch" || branch_tip "$branch")"
       fi
       if delete_local_branch "$branch" "$branch_delete_mode" "$expected_branch_head" >/dev/null 2>&1; then
         removed_branches=$((removed_branches + 1))
