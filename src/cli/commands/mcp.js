@@ -117,7 +117,11 @@ function mcp(rawArgs = []) {
     return;
   }
   printUsage();
-  process.exitCode = subcommand ? 1 : 0;
+  // A help flag is a request for this usage, not an unknown subcommand —
+  // exiting 1 on it reads as "the command failed" to anything checking the
+  // status.
+  const askedForHelp = subcommand === '--help' || subcommand === '-h';
+  process.exitCode = subcommand && !askedForHelp ? 1 : 0;
 }
 
 module.exports = { mcp };

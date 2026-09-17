@@ -251,11 +251,18 @@ function groupedCommandCatalogLines(indent = '  ', options = {}) {
 // can enumerate commands, subcommands and flags without scraping prose — and
 // so a renamed or added command shows up without anybody updating a scraper.
 // ---------------------------------------------------------------------------
+// CLI_COMMAND_HELP is a plain object, so a bare lookup resolves prototype
+// keys: `CLI_COMMAND_HELP['constructor']` is a function, and rendering it
+// produced help for a command that does not exist.
+function helpEntry(command) {
+  return Object.hasOwn(CLI_COMMAND_HELP, command) ? CLI_COMMAND_HELP[command] : undefined;
+}
+
 function commandCatalogJson() {
   const invoked = getInvokedCliName();
   const entryFor = (name) => {
     const key = String(name).split(/\s+/)[0];
-    const help = CLI_COMMAND_HELP[key] || {};
+    const help = helpEntry(key) || {};
     if (help.nativeHelp) {
       return {
         nativeHelp: true,
@@ -293,7 +300,7 @@ function commandCatalogJson() {
 function commandHelpLines(command, options = {}) {
   const invoked = options.invokedBasename || getInvokedCliName();
   const localize = (text) => String(text).replace(/\bgx\b/g, invoked);
-  const help = CLI_COMMAND_HELP[command];
+  const help = helpEntry(command);
   const lines = [];
 
   let catalogDescription = null;
