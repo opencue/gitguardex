@@ -136,21 +136,34 @@ test('interception never shadows help a command prints itself', () => {
   // One fingerprint per command whose own help is richer than any registry
   // entry could be. If interception starts swallowing it the string is gone
   // and this fails — which is what the budget/ci-init/watch regression needed.
+  //
+  // The list is self-validating: a fingerprint that ALSO appears in the
+  // registry stub proves nothing, because the test would pass while the
+  // native help was being shadowed. Two of the first draft's fingerprints
+  // were exactly that — `['onboard', 'onboard']` and `['pivot', 'agent']`,
+  // both of which occur in the stub's own catalogue description. The
+  // assertion below rejects a lazy fingerprint instead of trusting it.
   const FINGERPRINTS = [
     ['cleanup', '--force-dirty'],
     ['budget', '--warn-usd'],
-    ['ci-init', '--dry-run'],
-    ['watch', 'worktree'],
-    ['mcp', 'serve'],
-    ['hook', 'post-merge'],
-    ['locks', 'allow-delete'],
-    ['protect', 'reset'],
-    ['speckit', 'specify'],
-    ['prompt', '--list-parts'],
-    ['pivot', 'agent'],
-    ['onboard', 'onboard']
+    ['ci-init', 'budget-friendly'],
+    ['watch', '--interval'],
+    ['mcp', 'list-agents'],
+    ['hook', 'pre-commit'],
+    ['locks', 'agent-file-locks'],
+    ['protect', 'gitguardex protect'],
+    ['speckit', 'ignore-agent-tools'],
+    ['prompt', 'shell-ready'],
+    ['pivot', 'agent-branch-start'],
+    ['onboard', '--reset']
   ];
   for (const [command, fingerprint] of FINGERPRINTS) {
+    const stub = commandHelpLines(command).join('\n');
+    assert.equal(
+      stub.includes(fingerprint),
+      false,
+      `fingerprint ${JSON.stringify(fingerprint)} for ${command} also appears in the registry stub, so it cannot detect shadowing`
+    );
     const result = runCli([command, '--help']);
     assert.equal(result.status, 0, `${command} --help exited ${result.status}`);
     assert.equal(
