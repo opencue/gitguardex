@@ -627,16 +627,29 @@ has_live_process_in_worktree() {
 
   [[ -d /proc ]] || return 1
 
-  for proc_cwd in /proc/[0-9]*/cwd; do
-    [[ -e "$proc_cwd" ]] || continue
-    local live_cwd=""
-    live_cwd="$(readlink "$proc_cwd" 2>/dev/null || true)"
+  # ONE readlink for every process, not one per process. `readlink` takes many
+  # operands and prints a line each, and this check only needs the SET of live
+  # cwds — which pid owns one is never used.
+  #
+  # The old loop spawned a readlink per /proc entry. On a workstation with ~4000
+  # processes that is ~4000 forks, and an `execve` count of a full post-merge
+  # sweep was 6602 processes — 4074 of them this readlink — which is where the
+  # ~30 s a `git pull` spent waiting on post-merge cleanup actually went. It was
+  # never the forge: the same sweep makes 5 HTTPS calls.
+  #
+  # Unreadable entries (other users' processes) print nothing and are skipped,
+  # exactly as the per-entry version's empty result was skipped.
+  local live_cwds=""
+  live_cwds="$(readlink /proc/[0-9]*/cwd 2>/dev/null || true)"
+  [[ -n "$live_cwds" ]] || return 1
+  local live_cwd=""
+  while IFS= read -r live_cwd; do
     [[ -n "$live_cwd" ]] || continue
     live_cwd="${live_cwd% (deleted)}"
     if [[ "$live_cwd" == "$wt" || "$live_cwd" == "${wt}"/* ]]; then
       return 0
     fi
-  done
+  done <<< "$live_cwds"
 
   return 1
 }
