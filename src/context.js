@@ -459,6 +459,316 @@ const CLI_COMMAND_GROUPS = [
     ],
   },
 ];
+// CLI_COMMAND_HELP backs `gx <command> --help` for every command that does
+// not print its own usage, and `gx --help --json` for all of them.
+//
+// Why it exists: before this table, 16 of the 24 catalogued commands answered
+// `--help` with "[gitguardex] Unknown option: --help" and a non-zero exit —
+// the worst possible answer for any caller trying to discover the interface,
+// and especially for an agent, which reads a non-zero exit as "the command
+// failed" and has no other way to enumerate the flags.
+//
+// Single source of truth per command: a command that already prints good help
+// of its own carries only `nativeHelp: true` here, so this table never
+// restates (and never drifts from) text the command itself owns.
+//
+// `flags` is deliberately NOT the full parsed surface — `parseFinishArgs`
+// alone accepts 39 flags. It is the subset worth naming first. The drift
+// guard in test/command-help.test.js is one-directional: every flag named
+// here must exist as a literal in src/, so the help cannot invent a flag.
+// It does not require every parsed flag to be documented.
+const CLI_COMMAND_HELP = {
+  onboard: { nativeHelp: true },
+  pivot: { nativeHelp: true },
+  cleanup: { nativeHelp: true },
+  locks: { nativeHelp: true },
+  hook: { nativeHelp: true },
+  protect: { nativeHelp: true },
+  speckit: { nativeHelp: true },
+  prompt: { nativeHelp: true },
+
+  setup: {
+    usage: 'gx setup [options]',
+    summary: 'Install, repair, and verify the guardrails in a repo. Idempotent — safe to re-run.',
+    flags: [
+      ['--install-only', 'Install the managed surface without running the verify pass'],
+      ['--repair', 'Repair drift only (same as `gx doctor`)'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+      ['--current', 'Only this repo; do not walk into nested repos or submodules'],
+      ['--recursive', 'Also set up nested repos found below the target'],
+      ['--include-submodules', 'Also set up the repo\'s submodules'],
+      ['--skip-speckit', 'Do not install the Spec Kit slash skills'],
+      ['--dry-run', 'Print what would change without writing'],
+      ['--json', 'Machine-readable result'],
+    ],
+    examples: ['gx setup', 'gx setup --repair', 'gx setup --target ../other-repo'],
+  },
+
+  doctor: {
+    usage: 'gx doctor [options]',
+    summary: 'Repair drift in the managed surface, then verify it. Auto-sandboxes when run on a protected base.',
+    flags: [
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+      ['--current', 'Only this repo; skip nested repos and submodules'],
+      ['--json', 'Machine-readable result'],
+      ['--dry-run', 'Report findings without repairing'],
+      ['--keep-stale-locks', 'Do not reap file locks from abandoned worktrees'],
+      ['--verbose-auto-finish', 'Full auto-finish detail instead of the compact summary'],
+    ],
+    examples: ['gx doctor', 'gx doctor --json', 'gx doctor --target ../other-repo'],
+  },
+
+  status: {
+    usage: 'gx status [options]',
+    summary: 'Report CLI + service health. Read-only — never modifies files.',
+    flags: [
+      ['--strict', 'Run the stricter scan instead of the health summary'],
+      ['--verbose', 'Include per-check detail'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+      ['--json', 'Machine-readable result'],
+    ],
+    examples: ['gx status', 'gx status --json'],
+    notes: ['`gx` with no arguments opens the cockpit on a TTY and falls back to this on a pipe.'],
+  },
+
+  migrate: {
+    usage: 'gx migrate [options]',
+    summary: 'Convert a legacy repo-local install to the zero-copy, CLI-owned surface.',
+    flags: [
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+      ['--dry-run', 'Print the migration plan without applying it'],
+      ['--force', 'Migrate even when the repo looks already migrated'],
+    ],
+    examples: ['gx migrate --dry-run', 'gx migrate'],
+  },
+
+  branch: {
+    usage: 'gx branch <start|finish|merge> [options]',
+    summary: 'The branch workflow surface: open an agent lane, land it, or merge overlapping lanes.',
+    subcommands: [
+      ['start "<task>" "<agent>"', 'Create an agent branch + isolated worktree and print its path'],
+      ['finish', 'Commit, push, PR and merge the lane (see `gx finish`)'],
+      ['merge', 'Merge overlapping agent branches through an integration lane (see `gx merge`)'],
+    ],
+    flags: [
+      ['--base <branch>', 'Base the lane on this branch instead of the repo default'],
+      ['--task-id <id>', 'Reuse an explicit task id in the branch name'],
+      ['--print-name-only', 'Print the branch name and nothing else'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+    ],
+    examples: [
+      'gx branch start "fix the pull latency" "claude"',
+      'gx branch finish --branch agent/claude/my-lane --via-pr --wait-for-merge',
+    ],
+    notes: ['On a protected base, prefer `gx pivot` — it is one call and needs no bypass env var.'],
+  },
+
+  ship: {
+    usage: 'gx ship [options]',
+    summary: 'Stage, commit, push, open a PR, wait for the merge, then clean up. Alias for '
+      + '`finish --via-pr --wait-for-merge --cleanup --gate-review`.',
+    flags: [
+      ['--branch <agent/...>', 'Ship one named lane instead of the current one'],
+      ['--commit-message <msg>', 'Use this commit message instead of the generated one'],
+      ['--base <branch>', 'Target this base branch'],
+      ['--no-gate-review', 'Skip the AI-review merge gate (the gate is ON by default)'],
+      ['--fast', 'Skip the gate and the preflight — use only on a lane you already verified'],
+      ['--dry-run', 'Print the plan without pushing or merging'],
+    ],
+    examples: ['gx ship', 'gx ship --branch agent/claude/my-lane'],
+    notes: [
+      'The merge gate is fail-CLOSED here: review must be clean and CI green before the merge.',
+      'Bare `gx finish --wait-for-merge` is fail-OPEN by comparison — prefer `ship` or `--gate-review`.',
+    ],
+  },
+
+  finish: {
+    usage: 'gx finish [options]',
+    summary: 'Commit, PR and merge completed agent branches.',
+    flags: [
+      ['--branch <agent/...>', 'Finish one named lane'],
+      ['--all', 'Finish every ready agent lane in the repo'],
+      ['--via-pr', 'Land through a pull request instead of a direct merge'],
+      ['--wait-for-merge', 'Block until the PR is merged'],
+      ['--gate-review', 'Fail-closed gate: require a clean AI review + green CI before merging'],
+      ['--cleanup', 'Prune the branch and worktree after the merge'],
+      ['--no-auto-commit', 'Refuse to commit for you; fail if the tree is dirty'],
+      ['--commit-message <msg>', 'Use this commit message'],
+      ['--base <branch>', 'Target this base branch'],
+      ['--dry-run', 'Print the plan without pushing or merging'],
+    ],
+    examples: [
+      'gx finish --branch agent/claude/my-lane --via-pr --wait-for-merge --cleanup',
+      'gx finish --all --dry-run',
+    ],
+    notes: ['`--wait-for-merge` alone does NOT gate the merge; add `--gate-review` or use `gx ship`.'],
+  },
+
+  merge: {
+    usage: 'gx merge [options]',
+    summary: 'Create or reuse an integration lane and merge overlapping agent branches into it.',
+    flags: [
+      ['--branch <agent/...>', 'Add this lane to the integration branch (repeatable)'],
+      ['--agent <name>', 'Merge every lane owned by this agent'],
+      ['--into <branch>', 'Use an existing integration branch'],
+      ['--base <branch>', 'Base the integration lane on this branch'],
+      ['--task <name>', 'Name the integration lane'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+    ],
+    examples: ['gx merge --agent claude', 'gx merge --branch agent/a/one --branch agent/b/two'],
+  },
+
+  sync: {
+    usage: 'gx sync [options]',
+    summary: 'Bring agent branches up to date with origin/<base>.',
+    flags: [
+      ['--base <branch>', 'Sync against this base instead of the repo default'],
+      ['--branch <agent/...>', 'Sync one named lane'],
+      ['--all-agent-branches', 'Sync every agent lane'],
+      ['--check', 'Report what is behind without changing anything'],
+      ['--ff-only', 'Refuse anything but a fast-forward'],
+      ['--strategy <name>', 'Reconcile with this strategy instead of the default'],
+      ['--allow-dirty', 'Sync even with uncommitted changes present'],
+      ['--dry-run', 'Print the plan without moving any ref'],
+      ['--json', 'Machine-readable result'],
+    ],
+    examples: ['gx sync --check', 'gx sync --all-agent-branches --ff-only'],
+  },
+
+  worktree: {
+    usage: 'gx worktree <prune|provision|approve-hooks|estimate|retry-cleanup|prune-artifacts> [options]',
+    summary: 'The worktree surface: prune stale lanes, provision a new one, or measure disk cost.',
+    subcommands: [
+      ['prune', 'Remove worktrees whose branch is merged or abandoned'],
+      ['provision', 'Provision a worktree for an existing branch'],
+      ['approve-hooks', 'Approve the managed hooks inside a provisioned worktree'],
+      ['estimate', 'Read-only tracked-blob size estimate for a new worktree'],
+      ['retry-cleanup', 'Retry saved post-finish cleanup jobs (active/dirty/claimed lanes are preserved)'],
+      ['prune-artifacts', 'Drop registered, unchanged logs and cache from completed runs'],
+    ],
+    flags: [
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+      ['--dry-run', 'Print actions without removing anything'],
+      ['--json', 'Machine-readable result (estimate)'],
+    ],
+    examples: ['gx worktree prune --dry-run', 'gx worktree estimate --json'],
+  },
+
+  agents: {
+    usage: 'gx agents <subcommand> [options]',
+    summary: 'Repo-scoped review and cleanup bots, plus the agent inbox and lane inspection.',
+    subcommands: [
+      ['status', 'Show the running bots and the agent lanes (the default with no subcommand)'],
+      ['start', 'Start the review + cleanup bots for this repo'],
+      ['stop', 'Stop them'],
+      ['finish', 'Finish an agent lane by session or branch'],
+      ['files', 'Show which files each lane has touched'],
+      ['diff', 'Show one lane\'s diff'],
+      ['locks', 'Show the file locks each lane holds'],
+      ['jump', 'Open a terminal in a lane\'s worktree'],
+      ['send', 'Send a message to another agent\'s inbox'],
+      ['inbox', 'Read this agent\'s inbox'],
+      ['ack', 'Acknowledge an inbox message'],
+      ['set-status', 'Set this lane\'s status (waiting / done / free text)'],
+      ['cleanup-sessions', 'Drop session records for lanes that no longer exist'],
+    ],
+    flags: [
+      ['--json', 'Machine-readable result'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+      ['--session <id>', 'Address one agent session'],
+      ['--branch <agent/...>', 'Address one agent branch'],
+      ['--dry-run', 'Print actions without applying them'],
+    ],
+    examples: ['gx agents status --json', 'gx agents files --branch agent/claude/my-lane'],
+  },
+
+  'pr-review': {
+    usage: 'gx pr-review [options]',
+    summary: 'Run a local Codex/Claude review of a pull request; post inline GitHub comments, '
+      + 'write an artifact, or apply the fixes.',
+    flags: [
+      ['--pr <number>', 'Review this PR instead of the current branch\'s'],
+      ['--provider <name>', 'Choose the review backend'],
+      ['--post', 'Post the findings as inline GitHub comments'],
+      ['--no-post', 'Do not post anything (the default when writing an artifact)'],
+      ['--artifact <path>', 'Write the findings to a file'],
+      ['--output <path>', 'Write the raw provider output to a file'],
+      ['--fix', 'Let the provider apply and commit the fixes'],
+      ['--timeout-ms <n>', 'Give up on the provider after this long'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+    ],
+    examples: ['gx pr-review --pr 785 --post', 'gx pr-review --pr 785 --artifact review.md --no-post'],
+    notes: [
+      'Exits 0 even when it finds something — read the printed findings, not the exit code.',
+      'To watch a PR with the review bot instead, that is `gx review --only-pr <n> --once`.',
+    ],
+  },
+
+  cockpit: {
+    usage: 'gx cockpit [options]',
+    summary: 'Create or attach to this repo\'s tmux/kitty cockpit session.',
+    flags: [
+      ['--backend <auto|kitty|tmux>', 'Force a terminal backend'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+    ],
+    examples: ['gx cockpit', 'gx cockpit --backend tmux'],
+    notes: ['Interactive; needs a TTY. `gx` with no arguments opens it automatically on a TTY.'],
+  },
+
+  'install-agent-skills': {
+    usage: 'gx install-agent-skills [options]',
+    summary: 'Install the Guardex Codex/Claude skills into the user home.',
+    flags: [
+      ['--force', 'Overwrite skills that are already installed'],
+      ['--dry-run', 'Print what would be written'],
+    ],
+    examples: ['gx install-agent-skills'],
+  },
+
+  report: {
+    usage: 'gx report <scorecard|session-severity> [options]',
+    summary: 'Security and safety reports.',
+    subcommands: [
+      ['scorecard', 'OpenSSF scorecard for the repo'],
+      ['session-severity', 'Severity summary for an agent session'],
+    ],
+    flags: [
+      ['--repo <github.com/owner/repo>', 'Report on this repo'],
+      ['--scorecard-json <path>', 'Read a scorecard JSON already on disk'],
+      ['--output-dir <path>', 'Write the report here'],
+      ['--json', 'Machine-readable result'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+    ],
+    examples: ['gx report scorecard --repo github.com/opencue/gitguardex'],
+  },
+
+  release: {
+    usage: 'gx release [options]',
+    summary: 'Create or update the current GitHub release with README-generated notes.',
+    flags: [
+      ['--title <text>', 'Release title'],
+      ['--notes <path>', 'Use these notes instead of the generated ones'],
+      ['--repo <owner/name>', 'Act on this repo'],
+      ['--target <path>', 'Act on another repo instead of the current directory'],
+    ],
+    examples: ['gx release', 'gx release --title "v7.1.0"'],
+  },
+
+  help: {
+    usage: 'gx help [command]',
+    summary: 'List every command, or explain one.',
+    flags: [
+      ['--json', 'Emit the whole command catalog as JSON (with `gx --help --json`)'],
+    ],
+    examples: ['gx --help', 'gx --help --json', 'gx help finish', 'gx finish --help'],
+  },
+
+  version: {
+    usage: 'gx version',
+    summary: 'Print the GitGuardex version.',
+    examples: ['gx version', 'gx --version'],
+  },
+};
 const CLI_COMMAND_DESCRIPTIONS = CLI_COMMAND_GROUPS.flatMap((group) => group.commands);
 const CLI_QUICKSTART_STEPS = [
   'gx setup',
@@ -1021,6 +1331,7 @@ module.exports = {
   TARGETED_FORCEABLE_MANAGED_PATHS,
   COMMAND_TYPO_ALIASES,
   SUGGESTIBLE_COMMANDS,
+  CLI_COMMAND_HELP,
   CLI_COMMAND_DESCRIPTIONS,
   CLI_COMMAND_GROUPS,
   CLI_QUICKSTART_STEPS,

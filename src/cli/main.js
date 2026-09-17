@@ -14,7 +14,12 @@ const toolchainModule = require('../toolchain');
 const budgetModule = require('../budget');
 const ciInitModule = require('../ci-init');
 const speckitModule = require('../speckit');
-const { usage, startTransientSpinner } = require('../output');
+const {
+  usage,
+  startTransientSpinner,
+  commandHelpLines,
+  commandCatalogJson,
+} = require('../output');
 const {
   maybeSuggestCommand,
   normalizeCommandOrThrow,
@@ -147,8 +152,103 @@ async function maybeAutoRunDoctorFromDefaultStatus(statusPayload) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// `--help` must never fail.
+//
+// Before this, 16 of the 24 catalogued commands answered `--help` with
+// "[gitguardex] Unknown option: --help" and exit 1. A human shrugs and reads
+// the README; an agent reads exit 1 as "that command does not work" and has
+// no other way to discover the flags. So: every command answers `--help`,
+// and every answer exits 0.
+//
+// Two layers, because a rejection can come from a subcommand parser this
+// dispatcher never sees:
+//   1. helpFlagIsTopLevel() below intercepts `gx <cmd> --help` before the
+//      command runs — unless the command prints better help of its own.
+//   2. printHelpForRejectedHelpFlag() in runFromBin() converts a command's
+//      own "Unknown option: --help" / "Usage: ..." rejection into that
+//      command's help and exit 0. This is what makes `gx agents status
+//      --help` and `gx report scorecard --help` answer too.
+
+// Commands that already print their own usage on `--help` and exit 0.
+// Verified by test/command-help.test.js, which spawns every one of them: if a
+// command loses its native help, the test fails rather than silently falling
+// through to the shorter registry text.
+const COMMANDS_WITH_NATIVE_HELP = new Set([
+  'onboard',
+  'pivot',
+  'cleanup',
+  'locks',
+  'hook',
+  'protect',
+  'speckit',
+  'prompt',
+]);
+
+const HELP_FLAGS = new Set(['--help', '-h']);
+
+// True when a help flag is being asked of the command ITSELF rather than of
+// one of its subcommands. `gx worktree --help` and
+// `gx doctor --target /tmp --help` qualify; `gx worktree retry-cleanup
+// --help` does not — that one belongs to the subcommand, which prints its own
+// help (and layer 2 catches it if it does not).
+//
+// Every command here dispatches as `const [subcommand, ...rest] = rawArgs`,
+// so a subcommand can only be the FIRST token. Scanning further would
+// misread a flag's value: in `--target /tmp --help`, `/tmp` looks positional
+// but is not a subcommand.
+function helpFlagIsTopLevel(rest) {
+  if (!rest.length) return false;
+  if (!String(rest[0]).startsWith('-')) return false;
+  return rest.some((arg) => HELP_FLAGS.has(arg));
+}
+
+function printCommandHelp(command) {
+  console.log(commandHelpLines(command).join('\n'));
+}
+
+// Layer 2. Only rewrites a failure that is unmistakably "you asked me for
+// help and I did not understand the flag" — a help flag in argv AND a
+// rejection naming it, or a bare usage string. Any other error still fails.
+function printHelpForRejectedHelpFlag(argv, error) {
+  if (!argv.length) return false;
+  const [rawCommand, ...rest] = argv;
+  if (!rest.some((arg) => HELP_FLAGS.has(arg))) return false;
+  const message = String((error && error.message) || '');
+  const rejectedHelp = /Unknown [^:]*:\s*(--help|-h)\s*$/.test(message);
+  const bareUsage = /^Usage:/.test(message);
+  if (!rejectedHelp && !bareUsage) return false;
+  let command;
+  try {
+    command = normalizeCommandOrThrow(rawCommand);
+  } catch {
+    return false;
+  }
+  // A command whose own usage text is richer than the registry entry keeps it.
+  if (bareUsage) {
+    console.log(message);
+    console.log('');
+    console.log(commandHelpLines(command).join('\n'));
+    return true;
+  }
+  printCommandHelp(command);
+  return true;
+}
+
 async function main() {
-  const args = process.argv.slice(2);
+  let args = process.argv.slice(2);
+
+  // `gx help <command>` is the shape a caller reaches for first, so make it
+  // exactly `gx <command> --help`. Rewriting argv here (rather than handling
+  // it in the help branch below) means the two spellings can never drift, and
+  // a command with native help still gets to print its own.
+  if (
+    args.length > 1
+    && (args[0] === 'help' || args[0] === '--help' || args[0] === '-h')
+    && !String(args[1]).startsWith('-')
+  ) {
+    args = [args[1], '--help', ...args.slice(2)];
+  }
 
   if (args.length === 0) {
     if (isInteractiveTerminal() && !legacyDefaultStatusEnabled() && !defaultCockpitDisabled()) {
@@ -172,7 +272,19 @@ async function main() {
   const command = normalizeCommandOrThrow(rawCommand);
 
   if (command === '--help' || command === '-h' || command === 'help') {
+    // One call, machine-readable: every group, command, subcommand and the
+    // flags worth naming. Saves an agent 24 `--help` round-trips.
+    if (rest.includes('--json')) {
+      console.log(JSON.stringify(commandCatalogJson(), null, 2));
+      return;
+    }
     usage();
+    return;
+  }
+
+  // Layer 1 (see the note above COMMANDS_WITH_NATIVE_HELP).
+  if (helpFlagIsTopLevel(rest) && !COMMANDS_WITH_NATIVE_HELP.has(command)) {
+    printCommandHelp(command);
     return;
   }
 
@@ -251,6 +363,9 @@ async function runFromBin() {
   try {
     await main();
   } catch (error) {
+    if (printHelpForRejectedHelpFlag(process.argv.slice(2), error)) {
+      return;
+    }
     console.error(`[${TOOL_NAME}] ${error.message}`);
     process.exitCode = 1;
   }
@@ -263,4 +378,7 @@ if (require.main === module) {
 module.exports = {
   main,
   runFromBin,
+  COMMANDS_WITH_NATIVE_HELP,
+  helpFlagIsTopLevel,
+  printHelpForRejectedHelpFlag,
 };
