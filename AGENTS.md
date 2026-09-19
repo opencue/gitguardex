@@ -51,7 +51,10 @@ If you are a Claude Code session arriving in this repo for the first time:
    `gx pr-review` and `gx branch finish --gate-review` run `abide check` on
    the PR diff and post its verdicts beside the AI review (`act` blocks like a
    high finding, `flag` is advisory); `--no-abide` / `--no-gate-abide` or
-   `GUARDEX_REVIEW_ABIDE=0` turn that off.
+   `GUARDEX_REVIEW_ABIDE=0` turn that off. `gx codex install` wires the same
+   hooks into `.codex/hooks.json` for Codex (accept them once via `/hooks`);
+   `gx status` and the MCP `my_context` tool show whether the rules are
+   enforced here (hooks, rubric freshness, key, last-7-day violations).
 
 ## ExecPlans
 
