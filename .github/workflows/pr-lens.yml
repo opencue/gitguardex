@@ -26,7 +26,10 @@ jobs:
           node-version: 20
       - run: npm ci --ignore-scripts
       - name: Install pinned renderer outside checkout
-        run: npm install --prefix "$RUNNER_TEMP/pr-lens" --ignore-scripts --no-audit --no-fund @coldtea/pr-lens-cli@0.6.1
+        run: |
+          mkdir -p "$RUNNER_TEMP/pr-lens"
+          cp .github/pr-lens-runtime/package*.json "$RUNNER_TEMP/pr-lens/"
+          npm ci --prefix "$RUNNER_TEMP/pr-lens" --ignore-scripts --no-audit --no-fund
       - name: Real CLI contract tests (no model calls)
         env:
           GUARDEX_TEST_PR_LENS_BIN: ${{ runner.temp }}/pr-lens/node_modules/.bin/pr-lens
