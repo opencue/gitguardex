@@ -17,6 +17,7 @@ const {
 const toolchainModule = require('../../toolchain');
 const doctorModule = require('../../doctor');
 const speckitModule = require('../../speckit');
+const abide = require('../../abide');
 const { printAutoFinishSummary, colorize, supportsAnsiColors } = require('../../output');
 const { printOperations } = require('../../scaffold');
 const { hasCompletedOnboarding } = require('./onboard');
@@ -47,6 +48,18 @@ function printRequiredSystemToolStatus() {
     const reasonText = tool.reason ? ` (${tool.reason})` : '';
     console.log(`[${TOOL_NAME}] Install ${tool.name}: ${tool.installHint}${reasonText}`);
   }
+}
+
+// Setup rewrites the managed AGENTS.md block, which is one of the sources the
+// abide rubric was compiled from. Say so when that leaves the rubric stale.
+function printAbideRubricNote(repoRoot) {
+  const rubric = abide.rubricStatus(repoRoot);
+  if (rubric.status !== 'stale') return;
+  const what = [...rubric.changed, ...rubric.removed].join(', ');
+  console.log(
+    `[${TOOL_NAME}] abide rubric is stale (${what}); the next Claude session recompiles it, `
+    + `or run '${SHORT_TOOL_NAME} claude install --compile' now.`,
+  );
 }
 
 function setup(rawArgs) {
@@ -212,6 +225,7 @@ function setup(rawArgs) {
         dryRun: perRepoOptions.dryRun,
       });
     printWorktreePruneSummary(prunePayload, { baseBranch: currentBaseBranch });
+    printAbideRubricNote(scanResult.repoRoot);
     printSetupRepoHints(scanResult.repoRoot, currentBaseBranch, repoLabel);
 
     aggregateErrors += scanResult.errors;

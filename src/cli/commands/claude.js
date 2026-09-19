@@ -13,7 +13,6 @@
 
 const cp = require('child_process');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { isDeepStrictEqual } = require('util');
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
@@ -34,20 +33,13 @@ const MCP_SERVER_SPECS = {
 
 // Abide (github.com/coldteadotai/abide) compiles the repo's AGENTS.md /
 // CLAUDE.md into a rubric and judges every edit against it from outside the
-// agent's context window. `gx claude install` hands the hook wiring to abide's
-// own installer (`abide init claude --project`): it self-tests the hook before
-// enabling it and writes `.abide/.gitignore`. Opt out with --no-abide.
-const ABIDE_PACKAGE = '@coldtea/abide';
-// Pinned: the npx fallback must not execute whatever the registry calls
-// latest, and a new version lands in a new npx cache dir, which would turn
-// the absolute hook path abide writes stale on every upstream release.
-const ABIDE_VERSION = '0.0.5';
-const ABIDE_HOOK_MARKER = 'abide-hook.js';
-const ABIDE_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'];
-// Where abide itself looks for a key, in order: process env, .env.local and
-// .env at the repo root, then ~/.abide/.env.
-const ABIDE_KEY_NAMES = ['TYPESAFE_AI_API_KEY', 'AI_GATEWAY_API_KEY'];
-const ABIDE_INIT_TIMEOUT_MS = 120_000;
+// agent's context window. gx installs the four hooks through the in-repo shim
+// `.claude/hooks/abide_hook.js` (a managed hook file below), so the committed
+// settings entry is the same on every machine; the shim finds the abide
+// package at run time. Opt out with --no-abide. Shared runtime: src/abide.js.
+const abide = require('../../abide');
+const ABIDE_COMPILE_TIMEOUT_MS = 15 * 60_000;
+const ABIDE_CALIBRATE_TIMEOUT_MS = 10 * 60_000;
 
 const MANAGED_AGENT_SKILLS = [
   { name: 'gitguardex', source: ['.claude', 'skills', 'gitguardex'] },
@@ -64,6 +56,8 @@ const MANAGED_HOOK_FILES = [
   // for live-session presence. Must ship with them or those hooks fail their
   // import (fail-open, but then presence is silently absent on target repos).
   '_session_presence.py',
+  // Portable launcher for abide's rule hooks; finds @coldtea/abide at run time.
+  'abide_hook.js',
 ];
 
 const MANAGED_SLASH_COMMANDS = [
@@ -621,86 +615,73 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   return { status: removeConfig ? 'removed' : changed ? 'pruned' : 'preserved', dest: filePath };
 }
 
-// Every abide hook entry in a settings file, keyed by event. Each entry carries
-// the absolute hook script path abide wrote (`node "<script>" <event>`). All
-// matches are kept, so a dead entry beside a live one is still seen.
-function abideHookEntries(settings) {
-  const out = {};
-  const hooks = (settings && settings.hooks) || {};
-  for (const eventName of ABIDE_HOOK_EVENTS) {
-    for (const group of hooks[eventName] || []) {
-      for (const hook of group.hooks || []) {
-        const cmd = hook.command || '';
-        if (!cmd.includes(ABIDE_HOOK_MARKER)) continue;
-        const match = cmd.match(/"([^"]*abide-hook\.js)"/);
-        (out[eventName] ||= []).push({ command: cmd, script: match ? match[1] : null });
-      }
-    }
-  }
-  return out;
-}
-
 function abideHooksStatus(repoRoot) {
   const settings = readJsonIfExists(path.join(repoRoot, SETTINGS_REL));
-  const entries = abideHookEntries(settings);
+  const entries = abide.abideHookEntries(settings);
   const present = Object.keys(entries);
-  const missingEvents = ABIDE_HOOK_EVENTS.filter((e) => !entries[e]);
-  const staleScripts = [...new Set(present
-    .flatMap((e) => entries[e].map((entry) => entry.script))
-    .filter((script) => script && !fs.existsSync(script)))];
-  return { present, missingEvents, staleScripts };
+  const shimEvents = present.filter((e) => entries[e].some((entry) => entry.shim));
+  const missingEvents = abide.ABIDE_HOOK_EVENTS.filter((e) => !shimEvents.includes(e));
+  // Entries abide's own installer wrote: an absolute path that only works on
+  // the machine that ran it. Install migrates them to the shim.
+  const legacyScripts = [...new Set(present
+    .flatMap((e) => entries[e].filter((entry) => !entry.shim).map((entry) => entry.script))
+    .filter(Boolean))];
+  const staleScripts = legacyScripts.filter((script) => !fs.existsSync(script));
+  const shimPath = path.join(repoRoot, abide.ABIDE_SHIM_REL);
+  return {
+    present,
+    shimEvents,
+    missingEvents,
+    legacyScripts,
+    staleScripts,
+    shimFileExists: fs.existsSync(shimPath),
+  };
 }
 
-function readEnvFileKeys(filePath) {
-  let raw;
+function ensureAbideGitignore(repoRoot, { dryRun }) {
+  const dir = path.join(repoRoot, abide.ABIDE_DIR_REL);
+  const target = path.join(dir, '.gitignore');
+  const wanted = ['events.jsonl', 'compile-skill.md'];
+  let existing = [];
   try {
-    raw = fs.readFileSync(filePath, 'utf8');
+    existing = fs.readFileSync(target, 'utf8').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   } catch (_error) {
-    return new Set();
+    existing = [];
   }
-  const found = new Set();
-  for (const line of raw.split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)$/);
-    if (!match) continue;
-    // KEY="" and KEY='' are as empty as KEY=.
-    const value = match[2].trim().replace(/^(["'])(.*)\1$/, '$2').trim();
-    if (!value) continue;
-    if (ABIDE_KEY_NAMES.includes(match[1])) found.add(match[1]);
+  const missing = wanted.filter((entry) => !existing.includes(entry));
+  if (missing.length === 0) return false;
+  if (!dryRun) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(target, `${[...existing, ...missing].join('\n')}\n`);
   }
-  return found;
+  return true;
 }
 
-// Mirrors abide's own credential lookup so `check` can say up front whether
-// the hooks will have a key to call Jev with.
-function abideKeySource(repoRoot, env = process.env) {
-  if (ABIDE_KEY_NAMES.some((name) => (env[name] || '').trim() !== '')) return 'environment';
-  const places = [
-    ['.env.local', path.join(repoRoot, '.env.local')],
-    ['.env', path.join(repoRoot, '.env')],
-    ['~/.abide/.env', path.join(os.homedir(), '.abide', '.env')],
-  ];
-  for (const [label, filePath] of places) {
-    if (readEnvFileKeys(filePath).size > 0) return label;
+// Make sure the shim can find abide here; warm the npx cache when it cannot.
+function ensureAbidePackage(repoRoot) {
+  const found = abide.resolveShimPackageDir(repoRoot);
+  if (found) return { packageDir: found };
+  const fetched = abide.runAbide(repoRoot, ['help']);
+  if (fetched.status === 'unavailable') {
+    return { packageDir: null, note: `neither 'abide' nor 'npx' on PATH; hooks stay silent until 'npm i -g ${abide.ABIDE_PACKAGE}'` };
   }
-  return null;
+  if (fetched.status !== 'ok') {
+    return { packageDir: null, note: `could not fetch ${abide.ABIDE_PACKAGE}: ${abide.summarizeAbideOutput(fetched)}` };
+  }
+  const after = abide.resolveShimPackageDir(repoRoot);
+  return after
+    ? { packageDir: after, via: fetched.via }
+    : { packageDir: null, note: `${abide.ABIDE_PACKAGE} was fetched but the shim cannot see it; set GUARDEX_ABIDE_PACKAGE_DIR` };
 }
 
-function commandOnPath(bin) {
-  const probe = process.platform === 'win32' ? 'where' : 'which';
-  return cp.spawnSync(probe, [bin], { stdio: 'ignore' }).status === 0;
-}
-
-// `abide` on PATH wins (a global install keeps the hook script at a stable
-// path). Otherwise npx fetches the package, which is how abide's own README
-// installs it. GUARDEX_ABIDE_BIN points at a specific executable instead.
-function resolveAbideCommand(env = process.env) {
-  const override = (env.GUARDEX_ABIDE_BIN || '').trim();
-  if (override) return { command: override, args: [], via: 'GUARDEX_ABIDE_BIN' };
-  if (commandOnPath('abide')) return { command: 'abide', args: [], via: 'PATH' };
-  if (commandOnPath('npx')) {
-    return { command: 'npx', args: ['--yes', `${ABIDE_PACKAGE}@${ABIDE_VERSION}`], via: 'npx' };
-  }
-  return null;
+function abideSelfTest(repoRoot) {
+  const result = cp.spawnSync(process.execPath, [path.join(repoRoot, abide.ABIDE_SHIM_REL), 'session-start'], {
+    cwd: repoRoot,
+    input: '{}',
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  return !result.error && result.status === 0;
 }
 
 function installAbide(repoRoot, { dryRun, noAbide }) {
@@ -708,70 +689,93 @@ function installAbide(repoRoot, { dryRun, noAbide }) {
   if (noAbide) return { status: 'skipped', dest: settingsPath };
 
   const before = abideHooksStatus(repoRoot);
-  if (before.missingEvents.length === 0 && before.staleScripts.length === 0) {
-    return { status: 'unchanged', dest: settingsPath };
+  const migrate = before.legacyScripts.length > 0;
+  const wire = before.missingEvents.length > 0 || migrate;
+  const gitignoreChange = ensureAbideGitignore(repoRoot, { dryRun: true });
+  if (!wire && !gitignoreChange) {
+    const packageDir = abide.resolveShimPackageDir(repoRoot);
+    return packageDir
+      ? { status: 'unchanged', dest: settingsPath, packageDir }
+      : { status: 'unchanged', dest: settingsPath, packageDir: null, note: `${abide.ABIDE_PACKAGE} not found on this machine; run install again once it is` };
   }
-  const relink = before.staleScripts.length > 0;
-  if (dryRun) return { status: relink ? 'would-relink' : 'would-install', dest: settingsPath };
+  if (dryRun) return { status: migrate ? 'would-migrate' : wire ? 'would-install' : 'would-update', dest: settingsPath };
 
-  const abide = resolveAbideCommand();
-  if (!abide) {
-    return {
-      status: 'unavailable',
-      dest: settingsPath,
-      note: `neither 'abide' nor 'npx' found on PATH; install with 'npm i -g ${ABIDE_PACKAGE}'`,
-    };
+  if (wire) {
+    // Drop every abide entry (upstream absolute ones included), then merge the
+    // shim entries in, so the outcome never depends on what was there.
+    uninstallAbide(repoRoot, { dryRun: false, keepShim: true });
+    const settings = readJsonIfExists(settingsPath);
+    writeJson(settingsPath, mergeSettings(settings, abide.abideSettingsTemplate()), { dryRun: false });
   }
-  // Clear the dead entries first so the outcome does not depend on whether
-  // the installer replaces its own entries or appends beside them.
-  if (relink) uninstallAbide(repoRoot, { dryRun: false });
-  const result = cp.spawnSync(abide.command, [...abide.args, 'init', 'claude', '--project'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    timeout: ABIDE_INIT_TIMEOUT_MS,
-    env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
-    // npx / abide are .cmd shims on Windows and only resolve through a shell.
-    shell: process.platform === 'win32',
-  });
-  const label = [abide.command, ...abide.args, 'init', 'claude', '--project'].join(' ');
-  if (result.error || result.status !== 0) {
-    // abide renders an Ink box; keep the words, drop the frame.
-    const output = `${result.stdout || ''}\n${result.stderr || ''}`
-      .replace(/[─-╿]/g, ' ')
-      .split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 3).join(' ');
-    const reason = result.error ? result.error.message : output || `exit ${result.status}`;
-    return {
-      status: 'failed',
-      dest: settingsPath,
-      via: abide.via,
-      note: `'${label}' failed: ${reason}`,
-    };
+  ensureAbideGitignore(repoRoot, { dryRun: false });
+
+  const pkg = ensureAbidePackage(repoRoot);
+  if (!abideSelfTest(repoRoot)) {
+    return { status: 'failed', dest: settingsPath, note: `the shim at ${abide.ABIDE_SHIM_REL} did not run cleanly` };
   }
   const after = abideHooksStatus(repoRoot);
-  if (after.missingEvents.length > 0 || after.staleScripts.length > 0) {
-    const what = after.missingEvents.length > 0
-      ? `still lacks: ${after.missingEvents.join(', ')}`
-      : `still points at missing script(s): ${after.staleScripts.join(', ')}`;
-    return {
-      status: 'failed',
-      dest: settingsPath,
-      via: abide.via,
-      note: `abide reported success but ${SETTINGS_REL} ${what}`,
-    };
+  if (after.missingEvents.length > 0 || after.legacyScripts.length > 0) {
+    return { status: 'failed', dest: settingsPath, note: `${SETTINGS_REL} still lacks shim hooks for: ${after.missingEvents.join(', ') || 'none'}; legacy entries left: ${after.legacyScripts.length}` };
   }
-  return { status: relink ? 'relinked' : 'installed', dest: settingsPath, via: abide.via };
+  return {
+    status: migrate ? 'migrated' : wire ? 'installed' : 'updated',
+    dest: settingsPath,
+    packageDir: pkg.packageDir,
+    ...(pkg.via ? { via: pkg.via } : {}),
+    ...(pkg.note ? { note: pkg.note } : {}),
+  };
 }
 
-// Drop only the entries abide wrote; rubric files stay, exactly like
-// `abide uninstall claude --project`.
-function uninstallAbide(repoRoot, { dryRun }) {
+// `abide compile` runs a headless Claude Code turn that reads the instruction
+// files and writes .abide/rubric.json, so the first interactive session does
+// not spend its first turn compiling.
+function compileAbideRubric(repoRoot, { dryRun }) {
+  const rubric = abide.rubricStatus(repoRoot);
+  if (rubric.status === 'fresh') return { status: 'fresh', rules: rubric.rules };
+  if (!abide.abideKeySource(repoRoot)) return { status: 'no-key' };
+  if (dryRun) return { status: 'would-compile', reason: rubric.status };
+  const result = abide.runAbide(repoRoot, ['compile'], { stdio: 'inherit', timeoutMs: ABIDE_COMPILE_TIMEOUT_MS });
+  if (result.status !== 'ok') {
+    return { status: 'failed', note: result.status === 'unavailable' ? 'abide is not installed' : `${result.label} exited ${result.exitCode}` };
+  }
+  const after = abide.rubricStatus(repoRoot);
+  return after.status === 'fresh'
+    ? { status: 'compiled', rules: after.rules }
+    : { status: 'failed', note: `rubric is ${after.status} after compile` };
+}
+
+// `abide calibrate --json` scores every model rule against recent git history
+// and marks the ones that never decide. Costs Jev calls, so it is opt-in.
+function calibrateAbideRules(repoRoot) {
+  const result = abide.runAbide(repoRoot, ['calibrate', '--json'], { timeoutMs: ABIDE_CALIBRATE_TIMEOUT_MS });
+  if (result.status !== 'ok') {
+    return { status: 'failed', note: result.status === 'unavailable' ? 'abide is not installed' : `${result.label} failed: ${abide.summarizeAbideOutput(result)}` };
+  }
+  const jsonLine = result.stdout.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{')).pop();
+  try {
+    const parsed = JSON.parse(jsonLine || '');
+    return {
+      status: 'ok',
+      hunks: parsed.hunks || 0,
+      weak: Array.isArray(parsed.weak) ? parsed.weak : [],
+      noisy: Array.isArray(parsed.noisy) ? parsed.noisy : [],
+    };
+  } catch (_error) {
+    return { status: 'failed', note: `${result.label} produced no JSON` };
+  }
+}
+
+// Drop only the entries abide wrote (upstream and shim); the rubric under
+// .abide/ stays, exactly like `abide uninstall claude --project`.
+function uninstallAbide(repoRoot, { dryRun, keepShim = false }) {
   const settingsPath = path.join(repoRoot, SETTINGS_REL);
   const settings = readJsonIfExists(settingsPath);
   if (!settings || !settings.hooks) return { status: 'absent', dest: settingsPath };
   let removed = 0;
   for (const eventName of Object.keys(settings.hooks)) {
     const groups = (settings.hooks[eventName] || []).map((group) => {
-      const kept = (group.hooks || []).filter((h) => !(h.command || '').includes(ABIDE_HOOK_MARKER));
+      const kept = (group.hooks || []).filter((h) => !abide.isAbideHookCommand(h.command)
+        || (keepShim && abide.isShimCommand(h.command)));
       removed += (group.hooks || []).length - kept.length;
       return { ...group, hooks: kept };
     }).filter((group) => group.hooks.length > 0);
@@ -799,6 +803,7 @@ function runInstall(rawArgs) {
   // After settings + symlink: abide merges into the settings file we just
   // wrote and needs AGENTS.md / CLAUDE.md on disk to find any rules.
   const abideResult = installAbide(repoRoot, opts);
+  const compileResult = opts.compile && !opts.noAbide ? compileAbideRubric(repoRoot, opts) : null;
 
   // Summary
   const summarize = (label, items, key) => {
@@ -817,12 +822,18 @@ function runInstall(rawArgs) {
   }
   logInfo(`mcp server (${MCP_REL}): ${mcpResult.status}`);
   logInfo(`CLAUDE.md symlink: ${symlinkResult.status}${symlinkResult.note ? ` (${symlinkResult.note})` : ''}`);
-  const abideLine = `abide rule hooks: ${abideResult.status}${abideResult.via ? ` via ${abideResult.via}` : ''}${abideResult.note ? ` (${abideResult.note})` : ''}`;
-  if (abideResult.status === 'failed' || abideResult.status === 'unavailable') {
-    logWarn(abideLine);
-    logInfo(`abide is non-blocking: a TypeSafe key ('abide login') and 'gx claude install' again turn it on.`);
-  } else {
-    logInfo(abideLine);
+  const abideLine = `abide rule hooks: ${abideResult.status}`
+    + `${abideResult.packageDir ? ` (${abide.ABIDE_PACKAGE} at ${abideResult.packageDir})` : ''}`
+    + `${abideResult.note ? ` (${abideResult.note})` : ''}`;
+  if (abideResult.status === 'failed' || abideResult.note) logWarn(abideLine);
+  else logInfo(abideLine);
+  if (compileResult) {
+    const compileLine = `abide rubric: ${compileResult.status}`
+      + `${compileResult.rules !== undefined ? ` (${compileResult.rules} rules)` : ''}`
+      + `${compileResult.note ? ` (${compileResult.note})` : ''}`
+      + `${compileResult.status === 'no-key' ? ` (run 'abide login' first)` : ''}`;
+    if (compileResult.status === 'failed' || compileResult.status === 'no-key') logWarn(compileLine);
+    else logInfo(compileLine);
   }
 
   if (opts.json) {
@@ -835,6 +846,7 @@ function runInstall(rawArgs) {
       mcp: mcpResult,
       symlink: symlinkResult,
       abide: abideResult,
+      ...(compileResult ? { abideCompile: compileResult } : {}),
       dryRun: opts.dryRun,
     }, null, 2) + '\n');
     return;
@@ -919,33 +931,90 @@ function runCheck(rawArgs) {
 
   // Abide check: hooks present, hook script still on this machine, key on hand.
   if (!opts.noAbide) {
-    const abide = abideHooksStatus(repoRoot);
-    if (abide.present.length === 0) {
+    const hooks = abideHooksStatus(repoRoot);
+    const install = `run '${SHORT_TOOL_NAME} claude install'`;
+    if (hooks.present.length === 0) {
       issues.push({
         severity: 'warning',
         kind: 'abide-missing',
-        message: `${SETTINGS_REL} has no abide rule hooks (run '${SHORT_TOOL_NAME} claude install', or check --no-abide to skip).`,
+        message: `${SETTINGS_REL} has no abide rule hooks (${install}, or check --no-abide to skip).`,
       });
-    } else if (abide.missingEvents.length > 0) {
+    } else if (hooks.shimEvents.length === 0 && hooks.legacyScripts.length > 0) {
+      issues.push({
+        severity: 'warning',
+        kind: 'abide-hook-legacy',
+        message: `abide hooks point at an absolute path from abide's own installer (${hooks.legacyScripts[0]}); ${install} to migrate them to the portable shim.`,
+      });
+    } else if (hooks.missingEvents.length > 0) {
       issues.push({
         severity: 'warning',
         kind: 'abide-hook-missing',
-        message: `abide hook missing for: ${abide.missingEvents.join(', ')} (run '${SHORT_TOOL_NAME} claude install').`,
+        message: `abide hook missing for: ${hooks.missingEvents.join(', ')} (${install}).`,
       });
     }
-    for (const script of abide.staleScripts) {
+    for (const script of hooks.staleScripts) {
       issues.push({
         severity: 'error',
         kind: 'abide-hook-stale',
-        message: `abide hook points at ${script}, which does not exist here (run '${SHORT_TOOL_NAME} claude install' to relink).`,
+        message: `abide hook points at ${script}, which does not exist here (${install} to migrate to the shim).`,
       });
     }
-    if (abide.present.length > 0 && !abideKeySource(repoRoot)) {
+    if (hooks.shimEvents.length > 0 && !hooks.shimFileExists) {
+      issues.push({
+        severity: 'error',
+        kind: 'abide-shim-missing',
+        message: `${abide.ABIDE_SHIM_REL} is referenced by hooks but missing (${install}).`,
+      });
+    }
+    const wired = hooks.shimEvents.length > 0 || hooks.legacyScripts.length > 0;
+    if (hooks.shimEvents.length > 0 && hooks.shimFileExists && !abide.resolveShimPackageDir(repoRoot)) {
+      issues.push({
+        severity: 'warning',
+        kind: 'abide-unresolved',
+        message: `${abide.ABIDE_PACKAGE} is not installed on this machine, so the hooks run silent; 'npm i -g ${abide.ABIDE_PACKAGE}' or ${install} to fetch it.`,
+      });
+    }
+    const keySource = abide.abideKeySource(repoRoot);
+    if (wired && !keySource) {
       issues.push({
         severity: 'warning',
         kind: 'abide-no-key',
-        message: `no ${ABIDE_KEY_NAMES.join(' / ')} in the environment, .env.local, .env, or ~/.abide/.env; abide hooks stay silent until 'abide login'.`,
+        message: `no ${abide.ABIDE_KEY_NAMES.join(' / ')} in the environment, .env.local, .env, or ~/.abide/.env; abide hooks stay silent until 'abide login'.`,
       });
+    }
+    if (wired && keySource) {
+      const rubric = abide.rubricStatus(repoRoot);
+      if (rubric.status === 'missing') {
+        issues.push({
+          severity: 'warning',
+          kind: 'abide-rubric-missing',
+          message: `${abide.ABIDE_RUBRIC_REL} not compiled yet; the next Claude session compiles it, or run '${SHORT_TOOL_NAME} claude install --compile' now.`,
+        });
+      } else if (rubric.status === 'invalid') {
+        issues.push({ severity: 'error', kind: 'abide-rubric-invalid', message: `${abide.ABIDE_RUBRIC_REL} is not valid JSON.` });
+      } else if (rubric.status === 'stale') {
+        const what = [...rubric.changed.map((f) => `${f} changed`), ...rubric.removed.map((f) => `${f} removed`)].join(', ');
+        issues.push({
+          severity: 'warning',
+          kind: 'abide-rubric-stale',
+          message: `${abide.ABIDE_RUBRIC_REL} predates its sources (${what}); the next session recompiles it, or run '${SHORT_TOOL_NAME} claude install --compile'.`,
+        });
+      }
+      if (opts.calibrate && rubric.status === 'fresh') {
+        const calibrated = calibrateAbideRules(repoRoot);
+        if (calibrated.status === 'failed') {
+          issues.push({ severity: 'warning', kind: 'abide-calibrate-failed', message: calibrated.note });
+        } else {
+          for (const [kind, ids] of [['weak', calibrated.weak], ['noisy', calibrated.noisy]]) {
+            if (ids.length === 0) continue;
+            issues.push({
+              severity: 'warning',
+              kind: `abide-rules-${kind}`,
+              message: `${ids.length} rule(s) ${kind} against ${calibrated.hunks} hunks of git history: ${ids.join(', ')} ('abide tune' rewrites them).`,
+            });
+          }
+        }
+      }
     }
   }
 
@@ -1057,6 +1126,8 @@ function parseInstallArgs(rawArgs) {
     fix: false,
     noMcp: false,
     noAbide: false,
+    compile: false,
+    calibrate: false,
   };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
@@ -1068,6 +1139,8 @@ function parseInstallArgs(rawArgs) {
     if (arg === '--fix') { opts.fix = true; continue; }
     if (arg === '--no-mcp') { opts.noMcp = true; continue; }
     if (arg === '--no-abide') { opts.noAbide = true; continue; }
+    if (arg === '--compile') { opts.compile = true; continue; }
+    if (arg === '--calibrate') { opts.calibrate = true; continue; }
   }
   return opts;
 }
@@ -1087,6 +1160,8 @@ Flags:
   --force           Overwrite existing managed entries instead of merging.
   --no-mcp          Skip registering gx and CodeGraph MCP servers in .mcp.json.
   --no-abide        Skip the abide rule hooks (install) / their diagnostics (check).
+  --compile         For 'install': compile .abide/rubric.json now (headless Claude turn; needs a key).
+  --calibrate       For 'check': score the rubric's rules against git history (spends Jev calls).
   --dry-run         Report what would change without writing.
   --json            Emit JSON output.
   --yes / -y        Required for uninstall.
@@ -1139,14 +1214,10 @@ module.exports = {
   MANAGED_AGENT_SKILLS,
   TEMPLATE_DEFAULT_SETTINGS,
   EXPECTED_HOOK_MATCHERS,
-  ABIDE_HOOK_MARKER,
-  ABIDE_HOOK_EVENTS,
-  ABIDE_VERSION,
-  ABIDE_KEY_NAMES,
-  abideHookEntries,
   abideHooksStatus,
-  abideKeySource,
-  resolveAbideCommand,
   installAbide,
   uninstallAbide,
+  compileAbideRubric,
+  calibrateAbideRules,
+  ensureAbideGitignore,
 };
