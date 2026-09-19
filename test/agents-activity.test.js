@@ -8,6 +8,46 @@ const tmux = require('../src/terminal/tmux');
 const kitty = require('../src/terminal/kitty');
 const { parseAgentsArgs } = require('../src/cli/args');
 
+test('opt-in surface deduplication persists receipts but renews every heartbeat', () => {
+  let session = { id: 'one', createdAt: 'one', branch: 'agent/test', tmux: { target: '%1' }, metadata: { keep: true } };
+  let writes = 0;
+  let heartbeats = 0;
+  let failed = false;
+  const deps = {
+    readAgentSession: () => session,
+    updateAgentSession: (_root, _id, patch) => {
+      if (patch.activity) heartbeats++;
+      session = { ...session, ...patch, updatedAt: heartbeats };
+      return session;
+    },
+    applyWindowStatus: () => { writes++; return !failed; }
+  };
+  const options = { sessionId: 'one', activity: 'busy', dedupeSurface: true };
+  for (let i = 0; i < 100; i++) activity.setAgentActivity('/repo', options, deps);
+  assert.equal(writes, 1);
+  assert.equal(heartbeats, 100);
+  assert.equal(session.updatedAt, 100);
+  assert.equal(session.metadata.keep, true);
+  session.tmux = { target: '%2' };
+  failed = true;
+  activity.setAgentActivity('/repo', options, deps);
+  activity.setAgentActivity('/repo', options, deps);
+  assert.equal(writes, 3, 'failed writes retry');
+  failed = false;
+  activity.setAgentActivity('/repo', options, deps);
+  activity.setAgentActivity('/repo', options, deps);
+  assert.equal(writes, 4);
+  session.createdAt = 'new-session';
+  activity.setAgentActivity('/repo', options, deps);
+  assert.equal(writes, 5);
+  activity.setAgentActivity('/repo', { ...options, activity: 'done' }, deps);
+  assert.equal(writes, 6);
+  activity.setAgentActivity('/repo', { ...options, activity: 'done', dedupeSurface: false }, deps);
+  assert.equal(writes, 7, 'default always writes');
+  assert.equal(parseAgentsArgs(['set-status', '--activity', 'done', '--dedupe-surface']).dedupeSurface, true);
+  assert.throws(() => parseAgentsArgs(['status', '--dedupe-surface']), /only supported/);
+});
+
 test('normalizeActivity maps aliases and rejects unknowns', () => {
   assert.equal(activity.normalizeActivity('complete'), 'done');
   assert.equal(activity.normalizeActivity('BUSY'), 'working');
