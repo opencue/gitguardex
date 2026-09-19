@@ -7,6 +7,34 @@ const path = require('node:path');
 
 const collect = require('../src/mcp/collect');
 
+test('bounded context preserves mandatory conflicts/errors and prioritizes relevant peers', () => {
+  const context = { repo: 'r', worktree: '/r', branch: 'agent/me', protected: false,
+    onPrimaryCheckout: false, ownership: [{ file: 'é.js', conflict: true, owners: [{ branch: 'relevant' }] },
+      { file: 'bad', error: 'unknown owner' }],
+    otherAgents: [{ branch: 'unrelated', task: 'x'.repeat(2000) }, { branch: 'relevant', task: '✓' }] };
+  const result = collect.boundContext(context, 650);
+  assert.deepEqual(result.ownership, context.ownership);
+  assert.equal(result.otherAgents[0].branch, 'relevant');
+  assert.equal(result.complete, false);
+  assert.equal(result.omitted.otherAgents, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 650);
+  assert.equal(collect.boundContext(context, 10000).complete, true);
+  assert.throws(() => collect.boundContext(context, 100), /budget-too-small/);
+  for (const invalid of [0, -1, 1.5, Infinity, '650']) assert.throws(() => collect.boundContext(context, invalid), /max_bytes/);
+});
+
+test('bounded context rejects oversized/invalid file batches instead of dropping ownership', () => {
+  for (const files of [Array(201).fill('x'), [null], [''], ['  '], 'src/x.js']) {
+    assert.throws(() => collect.editContext({ files, maxBytes: 1000 }), /file paths/);
+  }
+  const result = collect.boundContext({ error: 'not a git repo' }, 1000);
+  assert.equal(result.error, 'not a git repo');
+  assert.equal(result.complete, true);
+  const bytes = Buffer.byteLength(JSON.stringify(result));
+  assert.deepEqual(collect.boundContext({ error: 'not a git repo' }, bytes), result);
+  assert.throws(() => collect.boundContext({ error: 'not a git repo' }, bytes - 1), /budget-too-small/);
+});
+
 function git(dir, args) {
   const r = cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: dir, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr || r.stdout}`);
