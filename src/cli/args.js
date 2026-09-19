@@ -301,6 +301,10 @@ function parsePrReviewArgs(rawArgs) {
 
   for (let index = 0; index < parsed.args.length; index += 1) {
     const arg = parsed.args[index];
+    if (arg === '--pr-lens' || arg === '--no-pr-lens') {
+      options.prLens = arg === '--pr-lens';
+      continue;
+    }
     if (arg === '--provider') {
       const next = requireValue(parsed.args, index, '--provider');
       if (!['codex', 'claude'].includes(next)) {

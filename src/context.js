@@ -689,6 +689,8 @@ const CLI_COMMAND_HELP = {
     flags: [
       ['--pr <number>', 'Review this PR instead of the current branch\'s'],
       ['--provider <name>', 'Choose the review backend'],
+      ['--pr-lens', 'Validate/render local PR Lens diagrams alongside findings (optional CLI)'],
+      ['--no-pr-lens', 'Disable diagrams even when GUARDEX_REVIEW_PR_LENS=1'],
       ['--post', 'Post the findings as inline GitHub comments'],
       ['--no-post', 'Do not post anything (the default when writing an artifact)'],
       ['--artifact <path>', 'Write the findings to a file'],
@@ -701,6 +703,8 @@ const CLI_COMMAND_HELP = {
     notes: [
       'Exits 0 even when it finds something — read the printed findings, not the exit code.',
       'To watch a PR with the review bot instead, that is `gx review --only-pr <n> --once`.',
+      'PR Lens: install @coldtea/pr-lens-cli@0.6.1 (Node >=20.11); GUARDEX_PR_LENS_BIN overrides its path.',
+      'GUARDEX_REVIEW_PR_LENS=1 enables diagrams for review gates too. Diagrams stay local even with --post.',
     ],
   },
 
