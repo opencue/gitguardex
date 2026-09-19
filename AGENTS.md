@@ -47,7 +47,11 @@ If you are a Claude Code session arriving in this repo for the first time:
    session. `gx claude check` diagnoses drift without writing (legacy absolute
    hook paths, an unresolvable package, a missing key, a rubric older than its
    sources; `--calibrate` scores the rules against git history);
-   `gx claude doctor` diagnoses and repairs.
+   `gx claude doctor` diagnoses and repairs. The same rules judge the PR:
+   `gx pr-review` and `gx branch finish --gate-review` run `abide check` on
+   the PR diff and post its verdicts beside the AI review (`act` blocks like a
+   high finding, `flag` is advisory); `--no-abide` / `--no-gate-abide` or
+   `GUARDEX_REVIEW_ABIDE=0` turn that off.
 
 ## ExecPlans
 

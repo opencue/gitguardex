@@ -423,7 +423,6 @@ function abideFindings(check, diff) {
         severity: verdict.band === 'act' ? 'high' : 'medium',
         category: 'abide',
         message: `Rule "${verdict.ruleId}" from ${source}${scope}: "${rule.text || verdict.ruleId}" (p=${Number(verdict.probability || 0).toFixed(2)})`,
-        suggestion: `Repair ${file} so it follows the rule, then re-run the review.`,
         abide: {
           ruleId: verdict.ruleId,
           band: verdict.band,

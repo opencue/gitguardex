@@ -50,6 +50,7 @@ VERIFICATION
   --gate-autofix              Repair blocking review findings and review again
   --gate-autofix-rounds <n>   Limit repair rounds to 1-5 (default: 1)
   --gate-baseline             Ignore failures already present on the base branch
+  --no-gate-abide             Skip abide's AGENTS.md rule verdicts in the review gate
   --review-provider <name>    Review provider: codex|claude
   --review-model <name>       Model used by the review provider
   --review-timeout-ms <n>     Positive review timeout in milliseconds
@@ -82,6 +83,7 @@ function splitGateReviewFlags(args) {
   let gateAutofix = false;
   let gateAutofixRounds = 1;
   let gateBaseline = false;
+  let gateAbide = true;
   let gateSerialCi = true;
   let reviewModel;
   let reviewTimeoutMs;
@@ -125,6 +127,10 @@ function splitGateReviewFlags(args) {
       gateBaseline = true;
     } else if (arg === '--no-gate-baseline') {
       gateBaseline = false;
+    } else if (arg === '--gate-abide') {
+      gateAbide = true;
+    } else if (arg === '--no-gate-abide') {
+      gateAbide = false;
     } else if (arg === '--gate-autofix') {
       gateAutofix = true;
     } else if (arg === '--no-gate-autofix') {
@@ -224,6 +230,7 @@ function splitGateReviewFlags(args) {
     gateAutofix,
     gateAutofixRounds,
     gateBaseline,
+    gateAbide,
     gateSerialCi,
     noAutoCommit,
     commitMessage,
@@ -340,6 +347,7 @@ function branch(rawArgs) {
       gateAutofix,
       gateAutofixRounds,
       gateBaseline,
+      gateAbide,
       gateSerialCi,
       noAutoCommit,
       commitMessage,
@@ -398,6 +406,7 @@ function branch(rawArgs) {
           gateAutofix,
           gateAutofixRounds,
           gateBaseline,
+          gateAbide,
           gateSerialCi,
           agentQuiet,
         },

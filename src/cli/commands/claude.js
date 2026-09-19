@@ -693,10 +693,19 @@ function installAbide(repoRoot, { dryRun, noAbide }) {
   const wire = before.missingEvents.length > 0 || migrate;
   const gitignoreChange = ensureAbideGitignore(repoRoot, { dryRun: true });
   if (!wire && !gitignoreChange) {
+    // Already wired (a fresh clone of a wired repo, or a rerun): the only
+    // thing that can still be missing is the package on this machine.
     const packageDir = abide.resolveShimPackageDir(repoRoot);
-    return packageDir
-      ? { status: 'unchanged', dest: settingsPath, packageDir }
-      : { status: 'unchanged', dest: settingsPath, packageDir: null, note: `${abide.ABIDE_PACKAGE} not found on this machine; run install again once it is` };
+    if (packageDir) return { status: 'unchanged', dest: settingsPath, packageDir };
+    if (dryRun) return { status: 'would-fetch', dest: settingsPath, packageDir: null };
+    const pkg = ensureAbidePackage(repoRoot);
+    return {
+      status: pkg.packageDir ? 'fetched' : 'unchanged',
+      dest: settingsPath,
+      packageDir: pkg.packageDir,
+      ...(pkg.via ? { via: pkg.via } : {}),
+      ...(pkg.note ? { note: pkg.note } : {}),
+    };
   }
   if (dryRun) return { status: migrate ? 'would-migrate' : wire ? 'would-install' : 'would-update', dest: settingsPath };
 

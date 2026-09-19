@@ -410,6 +410,9 @@ function runReviewGate({
         post: true,
         model: options.reviewModel,
         timeoutMs: options.reviewTimeoutMs,
+        // abide's AGENTS.md verdicts ride along with the AI review; `act`
+        // verdicts block like a high finding. --no-gate-abide turns them off.
+        abide: options.gateAbide !== false,
       });
     } catch (err) {
       reportProgress(progress, 'fail', 'review', err.message);
