@@ -35,8 +35,15 @@ If you are a Claude Code session arriving in this repo for the first time:
    hooks, slash commands, the gitguardex skill, and a `.mcp.json` that registers
    the read-only `gx` MCP server (the cross-repo agent radar: `list_agents`,
    `who_owns`, `my_context`) into a target repo. Opt out with `--no-mcp`.
-   `gx claude check` diagnoses drift without writing; `gx claude doctor`
-   diagnoses and repairs.
+   It also installs [abide](https://github.com/coldteadotai/abide) rule hooks
+   (`abide init claude --project`), which compile the repo's `AGENTS.md` /
+   `CLAUDE.md` into `.abide/rubric.json` and judge every edit against those
+   rules from outside the context window. Abide needs a TypeSafe key
+   (`abide login`, or `TYPESAFE_AI_API_KEY` in the env / `.env.local`); without
+   one the install still succeeds and reports the hooks as not enabled. Opt
+   out with `--no-abide`. `gx claude check` diagnoses drift without writing
+   (including an abide hook whose script path is not on this machine and a
+   missing key); `gx claude doctor` diagnoses and repairs.
 
 ## ExecPlans
 
