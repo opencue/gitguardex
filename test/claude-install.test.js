@@ -718,7 +718,30 @@ test('abideHookEntries reads the script path out of abide-shaped hook commands',
   };
   const entries = claudeModule.abideHookEntries(settings);
   assert.deepEqual(Object.keys(entries).sort(), ['PostToolUse', 'SessionStart']);
-  assert.equal(entries.SessionStart.script, '/opt/abide/dist/abide-hook.js');
+  assert.equal(entries.SessionStart[0].script, '/opt/abide/dist/abide-hook.js');
+});
+
+test('abideHooksStatus sees a dead abide entry sitting beside a live one', () => {
+  const repoRoot = makeRepo();
+  try {
+    const live = path.join(repoRoot, 'abide-hook.js');
+    fs.writeFileSync(live, '');
+    const dead = path.join(repoRoot, 'gone', 'abide-hook.js');
+    fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, '.claude/settings.json'), JSON.stringify({
+      hooks: {
+        SessionStart: [{ hooks: [
+          { type: 'command', command: `node "${dead}" session-start` },
+          { type: 'command', command: `node "${live}" session-start` },
+        ] }],
+      },
+    }));
+    const status = claudeModule.abideHooksStatus(repoRoot);
+    assert.deepEqual(status.present, ['SessionStart']);
+    assert.deepEqual(status.staleScripts, [dead]);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test('installAbide skips with --no-abide and reports would-install on dry-run', () => {
@@ -795,6 +818,11 @@ test('installAbide relinks when the hook script vanished from this machine', () 
     const result = withEnv({ GUARDEX_ABIDE_BIN: bin }, () => claudeModule.installAbide(repoRoot, { dryRun: false, noAbide: false }));
     assert.equal(result.status, 'relinked');
     assert.deepEqual(claudeModule.abideHooksStatus(repoRoot).staleScripts, []);
+    // The fake installer appends; the dead entries must have been pruned first.
+    const settings = JSON.parse(fs.readFileSync(path.join(repoRoot, '.claude/settings.json'), 'utf8'));
+    const all = Object.values(settings.hooks).flat().flatMap((g) => g.hooks.map((h) => h.command));
+    assert.equal(all.filter((cmd) => cmd.includes('abide-hook.js')).length, 4);
+    assert.ok(!all.some((cmd) => cmd.includes(stale)));
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -832,6 +860,8 @@ test('abideKeySource finds a key in the environment or a repo .env file, ignorin
         assert.equal(claudeModule.abideKeySource(repoRoot), null);
         fs.writeFileSync(path.join(repoRoot, '.env'), 'TYPESAFE_AI_API_KEY=\nOTHER=1\n');
         assert.equal(claudeModule.abideKeySource(repoRoot), null);
+        fs.writeFileSync(path.join(repoRoot, '.env'), 'TYPESAFE_AI_API_KEY=""\nAI_GATEWAY_API_KEY=\'\'\n');
+        assert.equal(claudeModule.abideKeySource(repoRoot), null);
         fs.writeFileSync(path.join(repoRoot, '.env.local'), 'export AI_GATEWAY_API_KEY="abc"\n');
         assert.equal(claudeModule.abideKeySource(repoRoot), '.env.local');
         assert.equal(claudeModule.abideKeySource(repoRoot, { TYPESAFE_AI_API_KEY: 'k' }), 'environment');
@@ -846,4 +876,81 @@ test('abideKeySource finds a key in the environment or a repo .env file, ignorin
 test('resolveAbideCommand honours GUARDEX_ABIDE_BIN before PATH lookup', () => {
   const resolved = claudeModule.resolveAbideCommand({ GUARDEX_ABIDE_BIN: '/opt/bin/abide' });
   assert.deepEqual(resolved, { command: '/opt/bin/abide', args: [], via: 'GUARDEX_ABIDE_BIN' });
+});
+
+test('resolveAbideCommand pins the npx fallback to ABIDE_VERSION', () => {
+  const resolved = withEnv({ GUARDEX_ABIDE_BIN: undefined, PATH: path.dirname(process.execPath) }, () => claudeModule.resolveAbideCommand());
+  if (!resolved || resolved.via !== 'npx') return; // no npx next to node on this box
+  assert.deepEqual(resolved.args, ['--yes', `@coldtea/abide@${claudeModule.ABIDE_VERSION}`]);
+  assert.match(claudeModule.ABIDE_VERSION, /^\d+\.\d+\.\d+$/);
+});
+
+// Runs `gx claude <args>` in-process with its output captured and returned.
+function runClaudeQuiet(args) {
+  const chunks = [];
+  const write = process.stdout.write;
+  const log = console.log;
+  process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+  console.log = (...parts) => { chunks.push(`${parts.join(' ')}\n`); };
+  const exitCode = process.exitCode;
+  try {
+    claudeModule.claude(args);
+  } finally {
+    process.stdout.write = write;
+    console.log = log;
+    process.exitCode = exitCode;
+  }
+  return chunks.join('');
+}
+
+// install logs its human summary before the JSON blob; take the blob only.
+const runClaudeJson = (args) => {
+  const output = runClaudeQuiet([...args, '--json']);
+  return JSON.parse(output.slice(output.indexOf('{')));
+};
+
+const abideIssueKinds = (report) => report.issues.filter((i) => i.kind.startsWith('abide')).map((i) => `${i.severity}:${i.kind}`).sort();
+
+test('gx claude check reports abide-missing, and --no-abide silences it', () => {
+  const repoRoot = makeRepo();
+  try {
+    withEnv({ GUARDEX_ABIDE_BIN: path.join(repoRoot, 'no-abide-here') }, () => {
+      const install = runClaudeJson(['install', '--target', repoRoot, '--no-mcp', '--no-abide']);
+      assert.equal(install.abide.status, 'skipped');
+    });
+    assert.deepEqual(abideIssueKinds(runClaudeJson(['check', '--target', repoRoot])), ['warning:abide-missing']);
+    assert.deepEqual(abideIssueKinds(runClaudeJson(['check', '--target', repoRoot, '--no-abide'])), []);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('gx claude check reports a partial abide install, a stale script, and a missing key; doctor relinks', () => {
+  const repoRoot = makeRepo();
+  try {
+    withEnv({ ...ABIDE_ENV_CLEAR, HOME: repoRoot }, () => {
+      const stale = path.join(repoRoot, 'gone', 'abide-hook.js');
+      fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(repoRoot, '.claude/settings.json'), JSON.stringify({
+        hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `node "${stale}" session-start` }] }] },
+      }));
+      assert.deepEqual(
+        abideIssueKinds(runClaudeJson(['check', '--target', repoRoot])),
+        ['error:abide-hook-stale', 'warning:abide-hook-missing', 'warning:abide-no-key'],
+      );
+
+      const fresh = path.join(repoRoot, 'abide-hook.js');
+      fs.writeFileSync(fresh, '');
+      fs.writeFileSync(path.join(repoRoot, '.env.local'), 'TYPESAFE_AI_API_KEY=k\n');
+      withEnv({ GUARDEX_ABIDE_BIN: makeFakeAbide(repoRoot, { script: fresh }) }, () => {
+        // doctor == check --fix: diagnoses, then runs install, which relinks.
+        const output = runClaudeQuiet(['doctor', '--target', repoRoot, '--no-mcp']);
+        assert.match(output, /\[abide-hook-stale\]/);
+        assert.match(output, /abide rule hooks: relinked/);
+      });
+      assert.deepEqual(abideIssueKinds(runClaudeJson(['check', '--target', repoRoot])), []);
+    });
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
 });

@@ -38,6 +38,10 @@ const MCP_SERVER_SPECS = {
 // own installer (`abide init claude --project`): it self-tests the hook before
 // enabling it and writes `.abide/.gitignore`. Opt out with --no-abide.
 const ABIDE_PACKAGE = '@coldtea/abide';
+// Pinned: the npx fallback must not execute whatever the registry calls
+// latest, and a new version lands in a new npx cache dir, which would turn
+// the absolute hook path abide writes stale on every upstream release.
+const ABIDE_VERSION = '0.0.5';
 const ABIDE_HOOK_MARKER = 'abide-hook.js';
 const ABIDE_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'];
 // Where abide itself looks for a key, in order: process env, .env.local and
@@ -617,8 +621,9 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   return { status: removeConfig ? 'removed' : changed ? 'pruned' : 'preserved', dest: filePath };
 }
 
-// The abide hook entries currently in a settings file, keyed by event. Each
-// entry carries the absolute hook script path abide wrote (`node "<script>" <event>`).
+// Every abide hook entry in a settings file, keyed by event. Each entry carries
+// the absolute hook script path abide wrote (`node "<script>" <event>`). All
+// matches are kept, so a dead entry beside a live one is still seen.
 function abideHookEntries(settings) {
   const out = {};
   const hooks = (settings && settings.hooks) || {};
@@ -628,7 +633,7 @@ function abideHookEntries(settings) {
         const cmd = hook.command || '';
         if (!cmd.includes(ABIDE_HOOK_MARKER)) continue;
         const match = cmd.match(/"([^"]*abide-hook\.js)"/);
-        out[eventName] = { command: cmd, script: match ? match[1] : null };
+        (out[eventName] ||= []).push({ command: cmd, script: match ? match[1] : null });
       }
     }
   }
@@ -641,7 +646,7 @@ function abideHooksStatus(repoRoot) {
   const present = Object.keys(entries);
   const missingEvents = ABIDE_HOOK_EVENTS.filter((e) => !entries[e]);
   const staleScripts = [...new Set(present
-    .map((e) => entries[e].script)
+    .flatMap((e) => entries[e].map((entry) => entry.script))
     .filter((script) => script && !fs.existsSync(script)))];
   return { present, missingEvents, staleScripts };
 }
@@ -656,7 +661,10 @@ function readEnvFileKeys(filePath) {
   const found = new Set();
   for (const line of raw.split(/\r?\n/)) {
     const match = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)$/);
-    if (!match || !match[2].trim()) continue;
+    if (!match) continue;
+    // KEY="" and KEY='' are as empty as KEY=.
+    const value = match[2].trim().replace(/^(["'])(.*)\1$/, '$2').trim();
+    if (!value) continue;
     if (ABIDE_KEY_NAMES.includes(match[1])) found.add(match[1]);
   }
   return found;
@@ -690,7 +698,7 @@ function resolveAbideCommand(env = process.env) {
   if (override) return { command: override, args: [], via: 'GUARDEX_ABIDE_BIN' };
   if (commandOnPath('abide')) return { command: 'abide', args: [], via: 'PATH' };
   if (commandOnPath('npx')) {
-    return { command: 'npx', args: ['--yes', `${ABIDE_PACKAGE}@latest`], via: 'npx' };
+    return { command: 'npx', args: ['--yes', `${ABIDE_PACKAGE}@${ABIDE_VERSION}`], via: 'npx' };
   }
   return null;
 }
@@ -714,11 +722,16 @@ function installAbide(repoRoot, { dryRun, noAbide }) {
       note: `neither 'abide' nor 'npx' found on PATH; install with 'npm i -g ${ABIDE_PACKAGE}'`,
     };
   }
+  // Clear the dead entries first so the outcome does not depend on whether
+  // the installer replaces its own entries or appends beside them.
+  if (relink) uninstallAbide(repoRoot, { dryRun: false });
   const result = cp.spawnSync(abide.command, [...abide.args, 'init', 'claude', '--project'], {
     cwd: repoRoot,
     encoding: 'utf8',
     timeout: ABIDE_INIT_TIMEOUT_MS,
     env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
+    // npx / abide are .cmd shims on Windows and only resolve through a shell.
+    shell: process.platform === 'win32',
   });
   const label = [abide.command, ...abide.args, 'init', 'claude', '--project'].join(' ');
   if (result.error || result.status !== 0) {
@@ -735,12 +748,15 @@ function installAbide(repoRoot, { dryRun, noAbide }) {
     };
   }
   const after = abideHooksStatus(repoRoot);
-  if (after.missingEvents.length > 0) {
+  if (after.missingEvents.length > 0 || after.staleScripts.length > 0) {
+    const what = after.missingEvents.length > 0
+      ? `still lacks: ${after.missingEvents.join(', ')}`
+      : `still points at missing script(s): ${after.staleScripts.join(', ')}`;
     return {
       status: 'failed',
       dest: settingsPath,
       via: abide.via,
-      note: `abide reported success but ${SETTINGS_REL} still lacks: ${after.missingEvents.join(', ')}`,
+      note: `abide reported success but ${SETTINGS_REL} ${what}`,
     };
   }
   return { status: relink ? 'relinked' : 'installed', dest: settingsPath, via: abide.via };
@@ -1125,6 +1141,7 @@ module.exports = {
   EXPECTED_HOOK_MATCHERS,
   ABIDE_HOOK_MARKER,
   ABIDE_HOOK_EVENTS,
+  ABIDE_VERSION,
   ABIDE_KEY_NAMES,
   abideHookEntries,
   abideHooksStatus,
