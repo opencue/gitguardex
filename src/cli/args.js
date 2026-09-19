@@ -495,6 +495,10 @@ function parseAgentsArgs(rawArgs) {
       index += 1;
       continue;
     }
+    if (arg === '--dedupe-surface') {
+      options.dedupeSurface = true;
+      continue;
+    }
     if (arg === '--worktree') {
       const next = rest[index + 1];
       if (!next) {
@@ -753,6 +757,9 @@ function parseAgentsArgs(rawArgs) {
   }
   if (options.subcommand === 'set-status' && !options.activity) {
     throw new Error('gx agents set-status requires --activity <working|waiting|done|idle>');
+  }
+  if (options.dedupeSurface && options.subcommand !== 'set-status') {
+    throw new Error('--dedupe-surface is only supported with `gx agents set-status`');
   }
   if (
     options.json &&

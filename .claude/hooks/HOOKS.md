@@ -6,6 +6,9 @@
 - `skill_activation.py`
 - `skill_guard.py`
 - `skill_tracker.py`
+- `abide_hook.js` — portable launcher for [abide](https://github.com/coldteadotai/abide)'s
+  rule hooks; finds the `@coldtea/abide` package at run time so the committed
+  settings entry carries no machine path (`--resolve` prints what it found).
 
 `.codex/hooks/` contains relative symlinks back to the canonical files so
 both harnesses execute the same code. Edit only the files under

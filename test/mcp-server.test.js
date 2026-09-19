@@ -4,6 +4,18 @@ const { PassThrough } = require('node:stream');
 
 const server = require('../src/mcp/server');
 
+test('my_context alone exposes and forwards the opt-in JSON byte budget', () => {
+  const collect = require('../src/mcp/collect');
+  const original = collect.editContext;
+  const tools = server.dispatch({ jsonrpc: '2.0', id: 1, method: 'tools/list' }).result.tools;
+  assert.equal(tools.find((tool) => tool.name === 'my_context').inputSchema.properties.max_bytes.type, 'integer');
+  assert.equal(tools.find((tool) => tool.name === 'repo_state').inputSchema.properties.max_bytes, undefined);
+  collect.editContext = (args) => args;
+  try {
+    assert.deepEqual(server.callTool('my_context', { max_bytes: 1000 }), { files: [], includePrs: false, maxBytes: 1000 });
+  } finally { collect.editContext = original; }
+});
+
 test('initialize returns serverInfo and echoes the protocol version', () => {
   const r = server.dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
   assert.equal(r.id, 1);

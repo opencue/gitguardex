@@ -77,6 +77,7 @@ const TOOLS = [
           description: 'Files intended for editing.',
         },
         include_prs: { type: 'boolean', description: 'Fetch PRs. Default false.' },
+        max_bytes: { type: 'integer', minimum: 1, maximum: 1048576, description: 'Optional JSON text byte budget. Mandatory safety data never truncated.' },
       },
     },
   },
@@ -140,6 +141,9 @@ function callTool(name, args = {}) {
       return collect.whoOwns(args.file, { repoPath: args.repo });
     case 'my_context': {
       const includePrs = args.include_prs === true;
+      if (args.max_bytes !== undefined) {
+        return collect.editContext({ files: args.files || [], includePrs, maxBytes: args.max_bytes });
+      }
       if (Array.isArray(args.files) && args.files.length > 0) {
         return collect.editContext({ files: args.files, includePrs });
       }

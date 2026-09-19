@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { readEventPage, waitForEvents, finishEvents } = require('../src/finish/events');
+const { readEventPage, readStatePage, waitForEvents, finishEvents } = require('../src/finish/events');
 const { runHumanCmd, runNodeWithEnv } = require('./helpers/install-test-helpers');
 
 const runId = 'finish-abc-123-abcdef12';
@@ -17,6 +17,63 @@ function fixture(t) {
   return { root, file };
 }
 const event = (state) => JSON.stringify({ schemaVersion: 1, runId, stage: 'cleanup', state });
+
+test('state pages coalesce heartbeats, retain alerts and advance cursor across duplicates', (t) => {
+  const { root, file } = fixture(t);
+  fs.writeFileSync(file, `${event('running')}\n`.repeat(1000));
+  const first = readStatePage(root, runId);
+  assert.equal(first.stages.length, 1);
+  assert.equal(first.snapshotComplete, true);
+  fs.appendFileSync(file, `${JSON.stringify({ ...JSON.parse(event('running')), kind: 'heartbeat', timestamp: 'later', elapsedMs: 500 })}\n`);
+  const next = readStatePage(root, runId, first.cursor);
+  assert.deepEqual(next.stages, []);
+  assert.notEqual(next.cursor, first.cursor);
+  fs.appendFileSync(file, `${event('failed')}\n${event('finished')}\n`);
+  const final = readStatePage(root, runId, next.cursor);
+  assert.equal(final.stages[0].state, 'finished');
+  assert.equal(final.alerts[0].state, 'failed');
+  assert.throws(() => readStatePage(root, runId, 'bad'), /Invalid state cursor/);
+  fs.truncateSync(file, 0);
+  assert.throws(() => readStatePage(root, runId, final.cursor), /truncated/);
+});
+
+test('state CLI, detail warnings, replaced files and edited cursor anchors are explicit', async (t) => {
+  const { root, file } = fixture(t);
+  assert.equal(runHumanCmd('git', ['init', '-b', 'main'], root).status, 0);
+  const warning = { ...JSON.parse(event('finished')), detail: 'warning: retained active lane' };
+  fs.writeFileSync(file, `${JSON.stringify(warning)}\n${event('finished')}\n`);
+  const cli = runNodeWithEnv(['finish', 'events', '--run', runId, '--view', 'state', '--target', root], root, {});
+  assert.equal(cli.status, 0, cli.stderr);
+  const page = JSON.parse(cli.stdout);
+  assert.equal(page.view, 'state');
+  assert.deepEqual(page.alerts, [warning]);
+  assert.equal(page.stages[0].detail, undefined);
+  const empty = await waitForEvents(root, runId, { view: 'state', cursor: page.cursor, waitMs: 1 });
+  assert.equal(empty.status, 'timeout');
+  await assert.rejects(waitForEvents(root, runId, { view: 'bogus' }), /--view/);
+  const original = fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(file, original.replace(/finished/g, 'finishXd'));
+  assert.throws(() => readStatePage(root, runId, page.cursor), /anchor changed/);
+  fs.renameSync(file, `${file}.old`);
+  fs.writeFileSync(file, original, { mode: 0o600 });
+  assert.throws(() => readStatePage(root, runId, page.cursor), /replaced/);
+  const many = Array.from({ length: 65 }, (_, i) => JSON.stringify({ ...JSON.parse(event('running')), stage: `stage${i}` })).join('\n');
+  fs.writeFileSync(file, many + '\n');
+  assert.throws(() => readStatePage(root, runId), /Too many/);
+});
+
+test('paged snapshot watermark does not lose concurrent append or a partial UTF-8 event', (t) => {
+  const { root, file } = fixture(t);
+  fs.writeFileSync(file, `${event('running')}\n`.repeat(6000) + event('✓'));
+  let page = readStatePage(root, runId);
+  assert.equal(page.snapshotComplete, false);
+  fs.appendFileSync(file, `\n${event('finished')}\n`);
+  for (let i = 0; !page.snapshotComplete && i < 10; i++) page = readStatePage(root, runId, page.cursor);
+  assert.equal(page.snapshotComplete, true);
+  const next = readStatePage(root, runId, page.cursor);
+  assert.equal(next.stages[0].state, 'finished');
+  assert.equal(readEventPage(root, runId).events.length > 1, true, 'raw remains unchanged');
+});
 
 test('finish events CLI emits parseable JSON and resumes without replay', (t) => {
   const { root, file } = fixture(t);

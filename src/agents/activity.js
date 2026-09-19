@@ -140,7 +140,10 @@ function applySurface(context, deps = {}) {
   const apply = deps.applyWindowStatus;
   if (typeof apply !== 'function') return { applied: false, reason: 'no-surface' };
   try {
-    apply({ target, label, backend: sessionBackendName(context.session), activity: context.activity });
+    const result = apply({ target, label, backend: sessionBackendName(context.session), activity: context.activity });
+    if (result === false || result?.applied === false || (result?.status != null && result.status !== 0)) {
+      return { applied: false, reason: 'surface-error' };
+    }
     return { applied: true };
   } catch (error) {
     return { applied: false, reason: 'surface-error', error: error && error.message };
@@ -163,10 +166,25 @@ function setAgentActivity(repoRoot, options = {}, deps = {}) {
   }
 
   const update = deps.updateAgentSession || updateAgentSession;
-  const updated = update(repoRoot, session.id, { activity }) || session;
+  const fingerprint = (record) => JSON.stringify([record.id, record.createdAt,
+    options.backend || sessionBackendName(record), record.tmux,
+    sessionPaneTarget(record), activity, windowLabel(record, activity, options.icons)]);
+  const unchanged = options.dedupeSurface && session.metadata?.activitySurface === fingerprint(session);
+  // Always renew activity/updatedAt, including duplicate notifications. Clear a
+  // receipt before a different attempted write so failures cannot become hits.
+  const patch = { activity };
+  if (!unchanged && session.metadata?.activitySurface) {
+    patch.metadata = { ...session.metadata, activitySurface: null };
+  }
+  const updated = update(repoRoot, session.id, patch) || session;
   const label = windowLabel(updated, activity, options.icons);
   const target = sessionPaneTarget(updated);
-  const surface = applySurface({ session: updated, label, target, activity }, deps);
+  const surface = unchanged && fingerprint(updated) === fingerprint(session)
+    ? { applied: false, reason: 'unchanged' }
+    : applySurface({ session: updated, label, target, activity }, deps);
+  if (options.dedupeSurface && surface.applied) {
+    update(repoRoot, session.id, { metadata: { ...updated.metadata, activitySurface: fingerprint(updated) } });
+  }
 
   return { ok: true, activity, sessionId: session.id, label, target, surface };
 }
@@ -212,8 +230,9 @@ function runSetStatusCommand(repoRoot, options = {}, deps = {}) {
       const backendName = options.backend || sessionBackend || 'auto';
       if (!backend) backend = (deps.selectTerminalBackend || selectTerminalBackend)(backendName);
       if (backend && typeof backend.setWindowStatus === 'function') {
-        backend.setWindowStatus(target, label);
+        return backend.setWindowStatus(target, label);
       }
+      return false;
     },
   });
 

@@ -36,14 +36,18 @@ If you are a Claude Code session arriving in this repo for the first time:
    the read-only `gx` MCP server (the cross-repo agent radar: `list_agents`,
    `who_owns`, `my_context`) into a target repo. Opt out with `--no-mcp`.
    It also installs [abide](https://github.com/coldteadotai/abide) rule hooks
-   (`abide init claude --project`), which compile the repo's `AGENTS.md` /
-   `CLAUDE.md` into `.abide/rubric.json` and judge every edit against those
-   rules from outside the context window. Abide needs a TypeSafe key
-   (`abide login`, or `TYPESAFE_AI_API_KEY` in the env / `.env.local`); without
-   one the install still succeeds and reports the hooks as not enabled. Opt
-   out with `--no-abide`. `gx claude check` diagnoses drift without writing
-   (including an abide hook whose script path is not on this machine and a
-   missing key); `gx claude doctor` diagnoses and repairs.
+   through the in-repo shim `.claude/hooks/abide_hook.js`, which compile the
+   repo's `AGENTS.md` / `CLAUDE.md` into `.abide/rubric.json` and judge every
+   edit against those rules from outside the context window. The shim finds
+   `@coldtea/abide` at run time (global install, or the npx cache `gx claude
+   install` warms), so the committed hook entry is the same on every machine.
+   Abide needs a TypeSafe key (`abide login`, or `TYPESAFE_AI_API_KEY` in the
+   env / `.env.local`); without one the hooks are wired but silent. Opt out
+   with `--no-abide`; `--compile` builds the rubric now instead of at the next
+   session. `gx claude check` diagnoses drift without writing (legacy absolute
+   hook paths, an unresolvable package, a missing key, a rubric older than its
+   sources; `--calibrate` scores the rules against git history);
+   `gx claude doctor` diagnoses and repairs.
 
 ## ExecPlans
 
