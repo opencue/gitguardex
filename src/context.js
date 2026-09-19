@@ -691,6 +691,7 @@ const CLI_COMMAND_HELP = {
       ['--provider <name>', 'Choose the review backend'],
       ['--pr-lens', 'Validate/render local PR Lens diagrams alongside findings (optional CLI)'],
       ['--no-pr-lens', 'Disable diagrams even when GUARDEX_REVIEW_PR_LENS=1'],
+      ['--pr-lens-publish <url>', 'With --post, publish/update an existing GitHub Actions artifact link only; no review run'],
       ['--post', 'Post the findings as inline GitHub comments'],
       ['--no-post', 'Do not post anything (the default when writing an artifact)'],
       ['--artifact <path>', 'Write the findings to a file'],

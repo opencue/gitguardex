@@ -98,6 +98,8 @@ function setup(t, changes = {}) {
   const calls = [];
   const posted = [];
   let reads = 0;
+  let validations = 0;
+  let providerCalls = 0;
   const runner = (bin, args, options) => {
     calls.push({ bin, args, options });
     const ok = (stdout) => ({ status: 0, stdout, stderr: '' });
@@ -108,7 +110,9 @@ function setup(t, changes = {}) {
       reads += 1;
       return ok(
         JSON.stringify(
-          reads > 1 && changes.moved ? { ...METADATA, headRefOid: 'c'.repeat(40) } : METADATA
+          (reads > 1 && changes.moved) || (reads > 2 && changes.repairMoved)
+            ? { ...METADATA, headRefOid: 'c'.repeat(40) }
+            : METADATA
         )
       );
     }
@@ -121,9 +125,20 @@ function setup(t, changes = {}) {
       return ok('');
     }
     if (args[0] === '--help' || args[0] === 'validate' || args[0] === 'render') {
+      if (args[0] === 'validate') {
+        validations += 1;
+        if (changes.invalid && (validations === 1 || changes.invalid === 'always')) {
+          return {
+            status: 1,
+            stderr:
+              '✗ graph is not valid [INVALID_DOCUMENT]\nnodes: must not be empty\n✗ 1 document did not validate [INVALID_DOCUMENT]'
+          };
+        }
+      }
       if (changes.realBin)
         return spawnSync(changes.realBin, args, { ...options, encoding: 'utf8' });
-      if (changes.fail === args[0]) return { status: 1, stderr: 'fixture failure' };
+      if (changes.fail === args[0])
+        return changes.failure || { status: 1, stderr: 'fixture failure' };
       if (args[0] === 'render') {
         const directory = args[args.indexOf('--out') + 1];
         fs.writeFileSync(path.join(directory, 'diagram.svg'), '<svg/>');
@@ -137,10 +152,17 @@ function setup(t, changes = {}) {
       return ok('');
     }
     if (args[0] === 'exec' || args[0] === '--safe-mode') {
+      providerCalls += 1;
+      if (providerCalls > 1 && changes.repairError) return changes.repairError;
       return ok(
         JSON.stringify({
-          findings: [{ path: 'a.js', line: 1, severity: 'high', message: 'Test finding' }],
-          graph: changes.missing ? undefined : changes.graph || GRAPH
+          findings:
+            providerCalls > 1
+              ? []
+              : [{ path: 'a.js', line: 1, severity: 'high', message: 'Test finding' }],
+          graph: changes.missing
+            ? undefined
+            : (providerCalls > 1 && changes.repairedGraph) || changes.graph || GRAPH
         })
       );
     }
@@ -148,6 +170,112 @@ function setup(t, changes = {}) {
   };
   return { repo, runner, calls, posted };
 }
+
+for (const fail of ['validate', 'render']) {
+  test(`retains original findings and failed diagram status when ${fail} fails`, (t) => {
+    const fixture = setup(t, { fail });
+    const artifact = path.join(fixture.repo, 'saved-review.md');
+    assert.throws(
+      () => review(fixture, { post: true, artifact }),
+      (error) => {
+        assert.equal(error.artifactPath, artifact);
+        return true;
+      }
+    );
+    assert.match(fs.readFileSync(artifact, 'utf8'), /Test finding/);
+    assert.match(fs.readFileSync(artifact, 'utf8'), /PR Lens: failed/);
+    assert.equal(fixture.posted.length, 0);
+    assert.equal(fixture.calls.filter((call) => call.options.input).length, 1);
+  });
+}
+
+for (const provider of ['codex', 'claude']) {
+  test(`${provider} repairs only the graph once and keeps the original findings`, (t) => {
+    const fixture = setup(t, { invalid: true });
+    const result = review(fixture, { provider, timeoutMs: 90_000 });
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].severity, 'high');
+    const calls = fixture.calls.filter((call) => call.options.input);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].options.input, /nodes: must not be empty/);
+    assert.match(calls[1].options.input, /untrusted data/);
+    assert.match(calls[1].options.input, /Return only.*graph/);
+    assert.ok(calls[1].options.timeout <= 60_000);
+    assert.notEqual(calls[1].options.cwd, fixture.repo);
+    assert.equal(fs.existsSync(calls[1].options.cwd), false);
+    const graph = JSON.parse(fs.readFileSync(result.prLens.graphPath, 'utf8'));
+    assert.equal(graph.stats.additions, 1);
+    assert.equal(graph.provenance.head.sha, METADATA.headRefOid);
+    assert.equal(fixture.calls.filter((call) => call.args[0] === 'validate').length, 2);
+  });
+}
+
+test('an invalid repair fails closed after exactly one extra model call with durable findings', (t) => {
+  const fixture = setup(t, { invalid: 'always' });
+  assert.throws(
+    () => review(fixture, { post: true }),
+    (error) => {
+      assert.match(fs.readFileSync(error.artifactPath, 'utf8'), /Test finding/);
+      return /validate failed/.test(error.message);
+    }
+  );
+  assert.equal(fixture.calls.filter((call) => call.options.input).length, 2);
+  assert.equal(
+    fixture.calls.some((call) => call.args[0] === 'render'),
+    false
+  );
+  assert.equal(fixture.posted.length, 0);
+});
+
+test('graph repair timeout is not retried and preserves findings', (t) => {
+  const fixture = setup(t, {
+    invalid: true,
+    repairError: { status: null, error: { code: 'ETIMEDOUT' } }
+  });
+  assert.throws(
+    () => review(fixture),
+    (error) => {
+      assert.match(fs.readFileSync(error.artifactPath, 'utf8'), /Test finding/);
+      return /timed out/.test(error.message);
+    }
+  );
+  assert.equal(fixture.calls.filter((call) => call.options.input).length, 2);
+});
+
+test('PR movement during repair stops rendering and posting', (t) => {
+  const fixture = setup(t, { invalid: true, repairMoved: true });
+  assert.throws(() => review(fixture, { post: true }), /PR changed during PR Lens repair/);
+  assert.equal(
+    fixture.calls.some((call) => call.args[0] === 'render'),
+    false
+  );
+  assert.equal(fixture.posted.length, 0);
+});
+
+for (const failure of [
+  {
+    status: 1,
+    stderr: '✗ cannot read file [UNREADABLE_FILE]\n✗ 1 document did not validate [INVALID_DOCUMENT]'
+  },
+  {
+    status: 1,
+    error: { code: 'ENOENT', message: 'not installed' },
+    stderr: '✗ invalid [INVALID_DOCUMENT]'
+  },
+  { status: null, error: { code: 'ETIMEDOUT' }, stderr: '' }
+]) {
+  test(`validator infrastructure failures never spend repair tokens: ${JSON.stringify(failure)}`, (t) => {
+    const fixture = setup(t, { fail: 'validate', failure });
+    assert.throws(() => review(fixture), /validate failed/);
+    assert.equal(fixture.calls.filter((call) => call.options.input).length, 1);
+  });
+}
+
+test('repair input limit prevents oversized graph from causing another model call', (t) => {
+  const fixture = setup(t, { invalid: true, graph: { ...GRAPH, summary: 'x'.repeat(64_000) } });
+  assert.throws(() => review(fixture), /repair input limit/);
+  assert.equal(fixture.calls.filter((call) => call.options.input).length, 1);
+});
 
 function review(fixture, options = {}) {
   return runPrReview(
@@ -273,8 +401,26 @@ test('renderer cannot return an asset outside its artifact directory', (t) => {
   assert.throws(() => review(fixture), /invalid diagram path/);
 });
 
-// Optional offline contract smoke: install the pinned upstream CLI outside the
-// checkout, then set GUARDEX_TEST_PR_LENS_BIN. Normal CI needs no extra package.
+// Offline contract smoke: optional locally, mandatory in pr-lens.yml CI.
+// Install the pinned upstream CLI outside the checkout and set this path.
+test(
+  'real PR Lens schema errors are repaired once and revalidated',
+  {
+    skip: !process.env.GUARDEX_TEST_PR_LENS_BIN
+  },
+  (t) => {
+    const fixture = setup(t, {
+      realBin: process.env.GUARDEX_TEST_PR_LENS_BIN,
+      graph: { ...GRAPH, nodes: [] },
+      repairedGraph: GRAPH
+    });
+    const result = review(fixture, { timeoutMs: 30_000 });
+    assert.equal(result.prLens.diagrams.length, 2);
+    assert.equal(result.findings[0].severity, 'high');
+    assert.equal(fixture.calls.filter((call) => call.options.input).length, 2);
+  }
+);
+
 test(
   'real PR Lens 0.6.1 validates and renders the graph contract',
   {

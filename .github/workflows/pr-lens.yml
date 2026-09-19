@@ -1,0 +1,38 @@
+name: PR Lens contract
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-lens-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: PR Lens CLI 0.6.1
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+      - run: npm ci --ignore-scripts
+      - name: Install pinned renderer outside checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/pr-lens"
+          cp .github/pr-lens-runtime/package*.json "$RUNNER_TEMP/pr-lens/"
+          npm ci --prefix "$RUNNER_TEMP/pr-lens" --ignore-scripts --no-audit --no-fund
+      - name: Real CLI contract tests (no model calls)
+        env:
+          GUARDEX_TEST_PR_LENS_BIN: ${{ runner.temp }}/pr-lens/node_modules/.bin/pr-lens
+        run: |
+          test -x "$GUARDEX_TEST_PR_LENS_BIN"
+          node --test test/pr-lens*.test.js
