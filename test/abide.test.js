@@ -371,3 +371,75 @@ test('the shim resolves the package dir, runs the hook, and exits 0 when abide i
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+test('abideSummary and renderAbideSummary describe wiring, rubric, key and recent activity in one line', () => {
+  const repoRoot = tmpRepo();
+  try {
+    const env = {
+      HOME: repoRoot,
+      GUARDEX_ABIDE_PACKAGE_DIR: path.join(repoRoot, 'nope'),
+      npm_config_cache: path.join(repoRoot, 'nocache')
+    };
+    const bare = abide.abideSummary(repoRoot, { env });
+    assert.equal(bare.hooks, 'none');
+    assert.equal(bare.codexHooks, 'none');
+    assert.equal(abide.renderAbideSummary(bare, 'gx'), 'abide: not wired (gx claude install)');
+
+    fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoRoot, '.claude/settings.json'),
+      JSON.stringify(abide.abideSettingsTemplate())
+    );
+    fs.mkdirSync(path.join(repoRoot, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoRoot, '.codex/hooks.json'),
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            { hooks: [{ type: 'command', command: 'node "/opt/abide/dist/abide-hook.js" stop' }] }
+          ]
+        }
+      })
+    );
+    writeRubric(repoRoot, {
+      sources: [],
+      rules: [
+        { id: 'a', check: { type: 'model' } },
+        { id: 'b', check: { type: 'model' } }
+      ]
+    });
+    fs.writeFileSync(
+      path.join(repoRoot, '.abide/events.jsonl'),
+      `${JSON.stringify({
+        kind: 'check',
+        at: new Date().toISOString(),
+        phase: 'edit',
+        files: ['x.js'],
+        blocked: true,
+        verdicts: [{ ruleId: 'a', band: 'act', probability: 0.8 }]
+      })}\n`
+    );
+    fs.writeFileSync(path.join(repoRoot, '.env.local'), 'TYPESAFE_AI_API_KEY=k\n');
+    const wired = abide.abideSummary(repoRoot, { env });
+    assert.equal(wired.hooks, 'shim');
+    assert.equal(wired.codexHooks, 'legacy');
+    assert.equal(wired.package, null, 'shim present but the package is nowhere on this machine');
+    assert.equal(wired.key, '.env.local');
+    assert.deepEqual(wired.rubric, {
+      status: 'fresh',
+      rules: 2,
+      modelRules: 2,
+      changed: [],
+      removed: []
+    });
+    assert.deepEqual(wired.last7d, { checks: 1, blocked: 1, violations: 1 });
+    assert.equal(wired.violations[0].ruleId, 'a');
+    assert.equal(
+      abide.renderAbideSummary(wired, 'gx'),
+      'abide: hooks=shim+codex:legacy · package=missing · rubric=fresh (2 rules) · key=.env.local · 7d: 1 checks, 1 violation(s)'
+    );
+    assert.equal(abide.hooksState(path.join(repoRoot, '.claude/settings.json')), 'shim');
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});

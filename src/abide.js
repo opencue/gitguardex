@@ -435,6 +435,72 @@ function abideFindings(check, diff) {
   return findings;
 }
 
+// How the hooks are wired in a settings file: through the shim, through
+// abide's own absolute-path entries, or not at all.
+function hooksState(settingsPath) {
+  let settings;
+  try {
+    settings = readJsonIfExists(settingsPath);
+  } catch (_error) {
+    return 'invalid';
+  }
+  const entries = abideHookEntries(settings);
+  const events = Object.keys(entries);
+  if (events.length === 0) return 'none';
+  const shim = events.filter((e) => entries[e].some((entry) => entry.shim));
+  if (shim.length === ABIDE_HOOK_EVENTS.length) return 'shim';
+  if (shim.length > 0) return 'partial';
+  return 'legacy';
+}
+
+// One compact object for every status surface (gx status, MCP my_context).
+function abideSummary(repoRoot, { env = process.env, now = Date.now() } = {}) {
+  const hooks = hooksState(path.join(repoRoot, '.claude', 'settings.json'));
+  const codexHooks = hooksState(path.join(repoRoot, '.codex', 'hooks.json'));
+  const rubric = rubricStatus(repoRoot);
+  const recent = readRecentEvents(repoRoot, { now });
+  return {
+    hooks,
+    codexHooks,
+    package: hooks === 'none' ? null : resolveShimPackageDir(repoRoot, env),
+    key: abideKeySource(repoRoot, env),
+    rubric: {
+      status: rubric.status,
+      rules: rubric.rules,
+      modelRules: rubric.modelRules,
+      changed: rubric.changed,
+      removed: rubric.removed
+    },
+    last7d: {
+      checks: recent.checks,
+      blocked: recent.blocked,
+      violations: recent.violations.length
+    },
+    violations: recent.violations
+      .slice(0, 5)
+      .map((v) => ({ ruleId: v.ruleId, band: v.band, at: v.at, files: v.files.slice(0, 3) }))
+  };
+}
+
+// One line for humans: `abide: hooks=shim · rubric=fresh (12 rules) · key=~/.abide/.env · 7d: 14 checks, 2 violations`.
+function renderAbideSummary(summary, shortToolName = 'gx') {
+  if (summary.hooks === 'none' && summary.codexHooks === 'none') {
+    return `abide: not wired (${shortToolName} claude install)`;
+  }
+  const parts = [];
+  parts.push(
+    `hooks=${summary.hooks}${summary.codexHooks !== 'none' ? `+codex:${summary.codexHooks}` : ''}`
+  );
+  if (summary.hooks !== 'none' && !summary.package) parts.push('package=missing');
+  const rules = summary.rubric.rules ? ` (${summary.rubric.rules} rules)` : '';
+  parts.push(`rubric=${summary.rubric.status}${rules}`);
+  parts.push(`key=${summary.key || 'none'}`);
+  if (summary.last7d.checks > 0) {
+    parts.push(`7d: ${summary.last7d.checks} checks, ${summary.last7d.violations} violation(s)`);
+  }
+  return `abide: ${parts.join(' · ')}`;
+}
+
 module.exports = {
   ABIDE_PACKAGE,
   ABIDE_VERSION,
@@ -461,5 +527,8 @@ module.exports = {
   readRecentEvents,
   runAbideCheck,
   firstAddedLines,
-  abideFindings
+  abideFindings,
+  hooksState,
+  abideSummary,
+  renderAbideSummary
 };
