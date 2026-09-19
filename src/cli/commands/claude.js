@@ -2,8 +2,8 @@
 //
 // Subcommands:
 //   gx claude install     install/update .claude/settings.json, hooks, slash
-//                         commands, and the gitguardex agent skill in the
-//                         target repo. Idempotent.
+//                         commands, the gitguardex agent skill, and the abide
+//                         rule hooks in the target repo. Idempotent.
 //   gx claude check       diagnose Claude Code wiring (no mutations).
 //   gx claude uninstall   remove gitguardex-managed Claude Code wiring.
 //   gx claude doctor      alias for `check --fix`.
@@ -11,7 +11,9 @@
 // This command makes a repo "Claude Code-ready" so the agent can pivot, claim
 // files, open PRs, and follow the gitguardex contract without manual setup.
 
+const cp = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { isDeepStrictEqual } = require('util');
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
@@ -29,6 +31,19 @@ const MCP_SERVER_SPECS = {
   [MCP_SERVER_KEY]: { command: SHORT_TOOL_NAME, args: ['mcp', 'serve'] },
   codegraph: { type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'] },
 };
+
+// Abide (github.com/coldteadotai/abide) compiles the repo's AGENTS.md /
+// CLAUDE.md into a rubric and judges every edit against it from outside the
+// agent's context window. `gx claude install` hands the hook wiring to abide's
+// own installer (`abide init claude --project`): it self-tests the hook before
+// enabling it and writes `.abide/.gitignore`. Opt out with --no-abide.
+const ABIDE_PACKAGE = '@coldtea/abide';
+const ABIDE_HOOK_MARKER = 'abide-hook.js';
+const ABIDE_HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'];
+// Where abide itself looks for a key, in order: process env, .env.local and
+// .env at the repo root, then ~/.abide/.env.
+const ABIDE_KEY_NAMES = ['TYPESAFE_AI_API_KEY', 'AI_GATEWAY_API_KEY'];
+const ABIDE_INIT_TIMEOUT_MS = 120_000;
 
 const MANAGED_AGENT_SKILLS = [
   { name: 'gitguardex', source: ['.claude', 'skills', 'gitguardex'] },
@@ -602,6 +617,156 @@ function uninstallMcpServer(repoRoot, { dryRun }) {
   return { status: removeConfig ? 'removed' : changed ? 'pruned' : 'preserved', dest: filePath };
 }
 
+// The abide hook entries currently in a settings file, keyed by event. Each
+// entry carries the absolute hook script path abide wrote (`node "<script>" <event>`).
+function abideHookEntries(settings) {
+  const out = {};
+  const hooks = (settings && settings.hooks) || {};
+  for (const eventName of ABIDE_HOOK_EVENTS) {
+    for (const group of hooks[eventName] || []) {
+      for (const hook of group.hooks || []) {
+        const cmd = hook.command || '';
+        if (!cmd.includes(ABIDE_HOOK_MARKER)) continue;
+        const match = cmd.match(/"([^"]*abide-hook\.js)"/);
+        out[eventName] = { command: cmd, script: match ? match[1] : null };
+      }
+    }
+  }
+  return out;
+}
+
+function abideHooksStatus(repoRoot) {
+  const settings = readJsonIfExists(path.join(repoRoot, SETTINGS_REL));
+  const entries = abideHookEntries(settings);
+  const present = Object.keys(entries);
+  const missingEvents = ABIDE_HOOK_EVENTS.filter((e) => !entries[e]);
+  const staleScripts = [...new Set(present
+    .map((e) => entries[e].script)
+    .filter((script) => script && !fs.existsSync(script)))];
+  return { present, missingEvents, staleScripts };
+}
+
+function readEnvFileKeys(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (_error) {
+    return new Set();
+  }
+  const found = new Set();
+  for (const line of raw.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)$/);
+    if (!match || !match[2].trim()) continue;
+    if (ABIDE_KEY_NAMES.includes(match[1])) found.add(match[1]);
+  }
+  return found;
+}
+
+// Mirrors abide's own credential lookup so `check` can say up front whether
+// the hooks will have a key to call Jev with.
+function abideKeySource(repoRoot, env = process.env) {
+  if (ABIDE_KEY_NAMES.some((name) => (env[name] || '').trim() !== '')) return 'environment';
+  const places = [
+    ['.env.local', path.join(repoRoot, '.env.local')],
+    ['.env', path.join(repoRoot, '.env')],
+    ['~/.abide/.env', path.join(os.homedir(), '.abide', '.env')],
+  ];
+  for (const [label, filePath] of places) {
+    if (readEnvFileKeys(filePath).size > 0) return label;
+  }
+  return null;
+}
+
+function commandOnPath(bin) {
+  const probe = process.platform === 'win32' ? 'where' : 'which';
+  return cp.spawnSync(probe, [bin], { stdio: 'ignore' }).status === 0;
+}
+
+// `abide` on PATH wins (a global install keeps the hook script at a stable
+// path). Otherwise npx fetches the package, which is how abide's own README
+// installs it. GUARDEX_ABIDE_BIN points at a specific executable instead.
+function resolveAbideCommand(env = process.env) {
+  const override = (env.GUARDEX_ABIDE_BIN || '').trim();
+  if (override) return { command: override, args: [], via: 'GUARDEX_ABIDE_BIN' };
+  if (commandOnPath('abide')) return { command: 'abide', args: [], via: 'PATH' };
+  if (commandOnPath('npx')) {
+    return { command: 'npx', args: ['--yes', `${ABIDE_PACKAGE}@latest`], via: 'npx' };
+  }
+  return null;
+}
+
+function installAbide(repoRoot, { dryRun, noAbide }) {
+  const settingsPath = path.join(repoRoot, SETTINGS_REL);
+  if (noAbide) return { status: 'skipped', dest: settingsPath };
+
+  const before = abideHooksStatus(repoRoot);
+  if (before.missingEvents.length === 0 && before.staleScripts.length === 0) {
+    return { status: 'unchanged', dest: settingsPath };
+  }
+  const relink = before.staleScripts.length > 0;
+  if (dryRun) return { status: relink ? 'would-relink' : 'would-install', dest: settingsPath };
+
+  const abide = resolveAbideCommand();
+  if (!abide) {
+    return {
+      status: 'unavailable',
+      dest: settingsPath,
+      note: `neither 'abide' nor 'npx' found on PATH; install with 'npm i -g ${ABIDE_PACKAGE}'`,
+    };
+  }
+  const result = cp.spawnSync(abide.command, [...abide.args, 'init', 'claude', '--project'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: ABIDE_INIT_TIMEOUT_MS,
+    env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
+  });
+  const label = [abide.command, ...abide.args, 'init', 'claude', '--project'].join(' ');
+  if (result.error || result.status !== 0) {
+    // abide renders an Ink box; keep the words, drop the frame.
+    const output = `${result.stdout || ''}\n${result.stderr || ''}`
+      .replace(/[─-╿]/g, ' ')
+      .split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 3).join(' ');
+    const reason = result.error ? result.error.message : output || `exit ${result.status}`;
+    return {
+      status: 'failed',
+      dest: settingsPath,
+      via: abide.via,
+      note: `'${label}' failed: ${reason}`,
+    };
+  }
+  const after = abideHooksStatus(repoRoot);
+  if (after.missingEvents.length > 0) {
+    return {
+      status: 'failed',
+      dest: settingsPath,
+      via: abide.via,
+      note: `abide reported success but ${SETTINGS_REL} still lacks: ${after.missingEvents.join(', ')}`,
+    };
+  }
+  return { status: relink ? 'relinked' : 'installed', dest: settingsPath, via: abide.via };
+}
+
+// Drop only the entries abide wrote; rubric files stay, exactly like
+// `abide uninstall claude --project`.
+function uninstallAbide(repoRoot, { dryRun }) {
+  const settingsPath = path.join(repoRoot, SETTINGS_REL);
+  const settings = readJsonIfExists(settingsPath);
+  if (!settings || !settings.hooks) return { status: 'absent', dest: settingsPath };
+  let removed = 0;
+  for (const eventName of Object.keys(settings.hooks)) {
+    const groups = (settings.hooks[eventName] || []).map((group) => {
+      const kept = (group.hooks || []).filter((h) => !(h.command || '').includes(ABIDE_HOOK_MARKER));
+      removed += (group.hooks || []).length - kept.length;
+      return { ...group, hooks: kept };
+    }).filter((group) => group.hooks.length > 0);
+    if (groups.length === 0) delete settings.hooks[eventName];
+    else settings.hooks[eventName] = groups;
+  }
+  if (removed === 0) return { status: 'absent', dest: settingsPath };
+  if (!dryRun) writeJson(settingsPath, settings, { dryRun: false });
+  return { status: 'pruned', dest: settingsPath, removed };
+}
+
 function runInstall(rawArgs) {
   const opts = parseInstallArgs(rawArgs);
   const repoRoot = resolveRepoRoot(opts.target);
@@ -615,6 +780,9 @@ function runInstall(rawArgs) {
     ? { status: 'skipped', dest: path.join(repoRoot, MCP_REL) }
     : installMcpServer(repoRoot, opts);
   const symlinkResult = ensureSpeckitMarkers(repoRoot, opts);
+  // After settings + symlink: abide merges into the settings file we just
+  // wrote and needs AGENTS.md / CLAUDE.md on disk to find any rules.
+  const abideResult = installAbide(repoRoot, opts);
 
   // Summary
   const summarize = (label, items, key) => {
@@ -633,6 +801,13 @@ function runInstall(rawArgs) {
   }
   logInfo(`mcp server (${MCP_REL}): ${mcpResult.status}`);
   logInfo(`CLAUDE.md symlink: ${symlinkResult.status}${symlinkResult.note ? ` (${symlinkResult.note})` : ''}`);
+  const abideLine = `abide rule hooks: ${abideResult.status}${abideResult.via ? ` via ${abideResult.via}` : ''}${abideResult.note ? ` (${abideResult.note})` : ''}`;
+  if (abideResult.status === 'failed' || abideResult.status === 'unavailable') {
+    logWarn(abideLine);
+    logInfo(`abide is non-blocking: a TypeSafe key ('abide login') and 'gx claude install' again turn it on.`);
+  } else {
+    logInfo(abideLine);
+  }
 
   if (opts.json) {
     process.stdout.write(JSON.stringify({
@@ -643,6 +818,7 @@ function runInstall(rawArgs) {
       skill: skillResult,
       mcp: mcpResult,
       symlink: symlinkResult,
+      abide: abideResult,
       dryRun: opts.dryRun,
     }, null, 2) + '\n');
     return;
@@ -723,6 +899,38 @@ function runCheck(rawArgs) {
       kind: 'mcp-missing',
       message: `${MCP_REL} does not register managed MCP server(s): ${missingMcpServers.join(', ')} (run '${SHORT_TOOL_NAME} claude install', or install --no-mcp to skip).`,
     });
+  }
+
+  // Abide check: hooks present, hook script still on this machine, key on hand.
+  if (!opts.noAbide) {
+    const abide = abideHooksStatus(repoRoot);
+    if (abide.present.length === 0) {
+      issues.push({
+        severity: 'warning',
+        kind: 'abide-missing',
+        message: `${SETTINGS_REL} has no abide rule hooks (run '${SHORT_TOOL_NAME} claude install', or check --no-abide to skip).`,
+      });
+    } else if (abide.missingEvents.length > 0) {
+      issues.push({
+        severity: 'warning',
+        kind: 'abide-hook-missing',
+        message: `abide hook missing for: ${abide.missingEvents.join(', ')} (run '${SHORT_TOOL_NAME} claude install').`,
+      });
+    }
+    for (const script of abide.staleScripts) {
+      issues.push({
+        severity: 'error',
+        kind: 'abide-hook-stale',
+        message: `abide hook points at ${script}, which does not exist here (run '${SHORT_TOOL_NAME} claude install' to relink).`,
+      });
+    }
+    if (abide.present.length > 0 && !abideKeySource(repoRoot)) {
+      issues.push({
+        severity: 'warning',
+        kind: 'abide-no-key',
+        message: `no ${ABIDE_KEY_NAMES.join(' / ')} in the environment, .env.local, .env, or ~/.abide/.env; abide hooks stay silent until 'abide login'.`,
+      });
+    }
   }
 
   // Symlink check
@@ -808,6 +1016,11 @@ function runUninstall(rawArgs) {
     if (!opts.dryRun) writeJson(settingsPath, settings, { dryRun: false });
     removed.push(`${SETTINGS_REL} (managed entries pruned)`);
   }
+  // Remove abide's hook entries (its rubric under .abide/ stays, as abide itself leaves it)
+  const abideRemoval = uninstallAbide(repoRoot, opts);
+  if (abideRemoval.status === 'pruned') {
+    removed.push(`${SETTINGS_REL} (${abideRemoval.removed} abide hook entries pruned)`);
+  }
   // Remove managed MCP servers from .mcp.json (drop the file if it only held ours)
   const mcpRemoval = uninstallMcpServer(repoRoot, opts);
   if (mcpRemoval.status === 'removed' || mcpRemoval.status === 'pruned') {
@@ -827,6 +1040,7 @@ function parseInstallArgs(rawArgs) {
     yes: false,
     fix: false,
     noMcp: false,
+    noAbide: false,
   };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
@@ -837,6 +1051,7 @@ function parseInstallArgs(rawArgs) {
     if (arg === '--yes' || arg === '-y') { opts.yes = true; continue; }
     if (arg === '--fix') { opts.fix = true; continue; }
     if (arg === '--no-mcp') { opts.noMcp = true; continue; }
+    if (arg === '--no-abide') { opts.noAbide = true; continue; }
   }
   return opts;
 }
@@ -845,7 +1060,8 @@ function printUsage() {
   console.log(`Usage: ${SHORT_TOOL_NAME} claude <subcommand> [flags]
 
 Subcommands:
-  install     install/update .claude/settings.json + hooks + slash commands + .mcp.json.
+  install     install/update .claude/settings.json + hooks + slash commands + .mcp.json
+              + abide rule hooks (AGENTS.md / CLAUDE.md enforced on every edit).
   check       diagnose Claude Code wiring (read-only by default).
   doctor      alias: 'check --fix'.
   uninstall   remove gitguardex-managed Claude Code wiring (--yes required).
@@ -854,6 +1070,7 @@ Flags:
   --target <path>   Operate in a different repo directory.
   --force           Overwrite existing managed entries instead of merging.
   --no-mcp          Skip registering gx and CodeGraph MCP servers in .mcp.json.
+  --no-abide        Skip the abide rule hooks (install) / their diagnostics (check).
   --dry-run         Report what would change without writing.
   --json            Emit JSON output.
   --yes / -y        Required for uninstall.
@@ -906,4 +1123,13 @@ module.exports = {
   MANAGED_AGENT_SKILLS,
   TEMPLATE_DEFAULT_SETTINGS,
   EXPECTED_HOOK_MATCHERS,
+  ABIDE_HOOK_MARKER,
+  ABIDE_HOOK_EVENTS,
+  ABIDE_KEY_NAMES,
+  abideHookEntries,
+  abideHooksStatus,
+  abideKeySource,
+  resolveAbideCommand,
+  installAbide,
+  uninstallAbide,
 };

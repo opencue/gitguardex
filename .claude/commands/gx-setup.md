@@ -18,6 +18,8 @@ What it does:
 5. Runs a final scan and prints any remaining safety findings.
 
 After `gx setup`, also run `gx claude install` (or `/gx-setup --claude`) to
-wire up Claude Code hooks, slash commands, and the agent skill.
+wire up Claude Code hooks, slash commands, the agent skill, and the abide rule
+hooks that enforce this repo's `AGENTS.md` / `CLAUDE.md` on every edit (needs a
+TypeSafe key via `abide login`; `--no-abide` skips it).
 
 Then: `gx pivot "<task>" "<agent>"` to start work, or `gx status` to verify.
