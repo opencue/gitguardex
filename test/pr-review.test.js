@@ -597,3 +597,145 @@ printf '%s\\n' '{"findings":[]}'
 });
 
 });
+
+// --- abide verdicts in the review gate ---------------------------------------
+
+const ABIDE_DIFF = [
+  'diff --git a/src/a.js b/src/a.js',
+  '--- a/src/a.js',
+  '+++ b/src/a.js',
+  '@@ -1 +1 @@',
+  '+const broken = true',
+  '',
+].join('\n');
+
+function abideCheckStub(sections) {
+  return () => ({
+    sections,
+    spendUsd: 0.0002,
+    rubric: {
+      modelRules: 3,
+      rulesById: new Map([['no-globals', { id: 'no-globals', text: 'No module-level mutable state', source: { path: 'AGENTS.md', line: 12 } }]]),
+    },
+  });
+}
+
+test('collectAbideFindings: disabled by option or env, skipped and failed never produce findings', () => {
+  const never = () => { throw new Error('must not run'); };
+  assert.deepEqual(prReview.collectAbideFindings('/repo', ABIDE_DIFF, { abide: false }, { runAbideCheck: never }), { status: 'disabled', findings: [] });
+  assert.deepEqual(prReview.collectAbideFindings('/repo', ABIDE_DIFF, {}, { runAbideCheck: never, env: { GUARDEX_REVIEW_ABIDE: '0' } }), { status: 'disabled', findings: [] });
+  assert.equal(prReview.abideReviewEnabled({}, { GUARDEX_REVIEW_ABIDE: 'off' }), false);
+  assert.equal(prReview.abideReviewEnabled({}, {}), true);
+
+  const skipped = prReview.collectAbideFindings('/repo', ABIDE_DIFF, {}, { runAbideCheck: () => ({ skipped: 'no rubric' }) });
+  assert.deepEqual(skipped, { status: 'skipped', reason: 'no rubric', findings: [] });
+  assert.equal(prReview.abideSummaryLine(skipped), 'abide: skipped (no rubric)');
+  const failed = prReview.collectAbideFindings('/repo', ABIDE_DIFF, {}, { runAbideCheck: () => ({ failed: 'abide check produced no JSON' }) });
+  assert.equal(failed.status, 'failed');
+  assert.match(prReview.abideSummaryLine(failed), /⚠️ abide: did not run \(abide check produced no JSON\)/);
+});
+
+test('collectAbideFindings: act blocks as high, flag is advisory medium, clear is dropped', () => {
+  const result = prReview.collectAbideFindings('/repo', ABIDE_DIFF, {}, {
+    runAbideCheck: abideCheckStub([
+      { phase: 'edit', files: ['src/a.js'], verdicts: [
+        { ruleId: 'no-globals', band: 'act', probability: 0.91 },
+        { ruleId: 'other', band: 'flag', probability: 0.6 },
+        { ruleId: 'fine', band: 'clear', probability: 0.02 },
+      ] },
+    ]),
+  });
+  assert.equal(result.status, 'ran');
+  assert.deepEqual(result.findings.map((f) => [f.path, f.line, f.severity, f.category]), [
+    ['src/a.js', 1, 'high', 'abide'],
+    ['src/a.js', 1, 'medium', 'abide'],
+  ]);
+  assert.match(result.findings[0].message, /Rule "no-globals" from AGENTS.md line 12: "No module-level mutable state" \(p=0\.91\)/);
+  assert.equal(prReview.abideSummaryLine(result), 'abide: 3 rule(s) × 1 file(s) → 1 act, 1 flag · $0.0002');
+  const gate = prReview.evaluateReviewGate(result.findings);
+  assert.equal(gate.clean, false);
+  assert.equal(gate.blocking.length, 1);
+});
+
+test('renderReviewSummary carries the abide line in its footer', () => {
+  const body = prReview.renderReviewSummary({
+    provider: 'codex',
+    findings: [],
+    gate: { clean: true, blocking: [], blockSeverities: ['high', 'critical'] },
+    abide: { status: 'skipped', reason: 'no TYPESAFE_AI_API_KEY / AI_GATEWAY_API_KEY found' },
+  });
+  assert.match(body, /abide: skipped \(no TYPESAFE_AI_API_KEY/);
+  const none = prReview.renderReviewSummary({ provider: 'codex', findings: [], abide: { status: 'disabled' } });
+  assert.ok(!none.includes('abide'));
+});
+
+test('gx pr-review posts an abide rule verdict inline and blocks the gate on it; --no-abide skips it', () => {
+  const repoDir = initRepo();
+  fs.mkdirSync(path.join(repoDir, '.abide'));
+  fs.writeFileSync(path.join(repoDir, '.abide/rubric.json'), JSON.stringify({
+    sources: [],
+    rules: [{ id: 'no-globals', text: 'No module-level mutable state', source: { path: 'AGENTS.md', line: 12 }, check: { type: 'model' }, when: 'edit' }],
+  }));
+  seedCommit(repoDir);
+  const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-pr-review-abide-'));
+  const apiPayload = path.join(markerDir, 'api-payload.json');
+  const abideArgs = path.join(markerDir, 'abide-args.log');
+  const fakeGh = createFakeBin('gh', `
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then
+  printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
+  printf '%s\\n' '--- a/src/a.js'
+  printf '%s\\n' '+++ b/src/a.js'
+  printf '%s\\n' '@@ -1 +1 @@'
+  printf '%s\\n' '+const broken = true'
+  exit 0
+fi
+if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then printf '%s\\n' 'deadbeefcafe0000'; exit 0; fi
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then exit 0; fi
+if [[ "$1" == "api" ]]; then
+  while [[ "$#" -gt 0 ]]; do
+    if [[ "$1" == "--input" ]]; then cp "$2" "${apiPayload}"; exit 0; fi
+    shift
+  done
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+  const fakeCodex = createFakeBin('codex', `
+printf '%s\\n' '{"findings":[]}'
+`);
+  // abide check --diff <file> --json --phase all: one act verdict; exits 1 like abide does on act.
+  const fakeAbide = createFakeBin('abide', `
+printf '%s\\n' "$*" > "${abideArgs}"
+printf '%s\\n' 'abide · check'
+printf '%s\\n' '{"root":".","sections":[{"phase":"edit","files":["src/a.js"],"modelRules":1,"calls":1,"latencyMs":300,"verdicts":[{"ruleId":"no-globals","probability":0.93,"band":"act"}]}],"spendUsd":0.0001,"all":false}'
+exit 1
+`);
+  const env = {
+    PATH: `${fakeGh.fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}`,
+    GUARDEX_ABIDE_BIN: path.join(fakeAbide.fakeBin, 'abide'),
+    TYPESAFE_AI_API_KEY: 'test-key',
+  };
+
+  const result = runNodeWithEnv(['pr-review', '--provider', 'codex', '--pr', '21', '--post', '--target', repoDir], repoDir, env);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Posted PR review: 1 finding\(s\), 1 new inline comment\(s\)/);
+  assert.match(fs.readFileSync(abideArgs, 'utf8'), /^check --diff \S+ --json --phase all$/m);
+  const payload = JSON.parse(fs.readFileSync(apiPayload, 'utf8'));
+  assert.equal(payload.comments.length, 1);
+  assert.equal(payload.comments[0].path, 'src/a.js');
+  assert.equal(payload.comments[0].line, 1);
+  assert.match(payload.comments[0].body, /🟠 \*\*HIGH\*\* · abide/);
+  assert.ok(!payload.comments[0].body.includes('```suggestion'), 'a rule verdict is not an apply-able code suggestion');
+  assert.match(payload.comments[0].body, /Rule "no-globals" from AGENTS.md line 12/);
+  assert.match(payload.body, /Merge gate: blocked/);
+  assert.match(payload.body, /abide: 1 rule\(s\) × 1 file\(s\) → 1 act, 0 flag/);
+
+  fs.rmSync(apiPayload, { force: true });
+  const skipped = runNodeWithEnv(['pr-review', '--provider', 'codex', '--pr', '21', '--post', '--no-abide', '--target', repoDir], repoDir, env);
+  assert.equal(skipped.status, 0, skipped.stderr || skipped.stdout);
+  const quiet = JSON.parse(fs.readFileSync(apiPayload, 'utf8'));
+  assert.equal(quiet.comments.length, 0);
+  assert.match(quiet.body, /No findings/);
+  assert.ok(!quiet.body.includes('abide'));
+});

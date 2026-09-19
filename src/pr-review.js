@@ -9,6 +9,7 @@ const { run } = require('./core/runtime');
 const { repoApiPath, repoNameWithOwner } = require('./github-api');
 const { codexReviewEffort, resolveProviderBin } = require('./provider-binary');
 const { partitionByAnchor } = require('./review-diff');
+const abide = require('./abide');
 const { createRun, writeRunFile, completeRun, pruneDisposable } = require('./storage/run-artifacts');
 const { GRAPH_PROMPT, prLensEnabled, preparePrLens, renderPrLens } = require('./pr-lens');
 
@@ -298,6 +299,7 @@ function renderReviewSummary({
   truncated = false,
   gate,
   degraded = false,
+  abide: abideResult,
 }) {
   const lines = [MARKER, '### 🛡️ GitGuardex code-assist', ''];
 
@@ -332,12 +334,14 @@ function renderReviewSummary({
   if (duplicates > 0) footer.push(`${duplicates} already reported`);
   if (truncated) footer.push('⚠️ diff truncated — review is partial');
   if (degraded) footer.push('⚠️ inline anchoring rejected by GitHub — reported in this summary instead');
+  const abideLine = abideSummaryLine(abideResult);
+  if (abideLine) footer.push(abideLine);
   lines.push('', '---', footer.join(' · '));
 
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
-function renderMarkdownReview({ pr, provider, findings, unanchored = [], truncated = false, prLens }) {
+function renderMarkdownReview({ pr, provider, findings, unanchored = [], truncated = false, prLens, abide: abideResult }) {
   const lines = [
     `# GitGuardex PR Review`,
     '',
@@ -347,6 +351,8 @@ function renderMarkdownReview({ pr, provider, findings, unanchored = [], truncat
     `- Severity: ${severityLine(findings)}`,
   ];
   if (truncated) lines.push('- ⚠️ Diff truncated — review is partial');
+  const abideLine = abideSummaryLine(abideResult);
+  if (abideLine) lines.push(`- ${abideLine}`);
   if (prLens) lines.push(`- PR Lens manifest (local only): ${prLens.manifestPath}`);
   lines.push('');
   if (findings.length === 0) {
@@ -597,7 +603,7 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
   }
 
   const summaryArgs = {
-    provider, findings, unanchored, duplicates, commit, truncated, gate,
+    provider, findings, unanchored, duplicates, commit, truncated, gate, abide: context.abide,
   };
   const payload = {
     event: 'COMMENT',
@@ -706,6 +712,48 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
   throw parseError;
 }
 
+/**
+ * Judge the PR diff against the repo's own AGENTS.md / CLAUDE.md rules with
+ * abide, alongside the AI review. `act` verdicts block like a high finding;
+ * `flag` verdicts are advisory. Nothing here can block on its own failure:
+ * a missing rubric or key is a normal skip, and an abide crash is reported in
+ * the summary so it stays auditable, while the AI review remains the gate's
+ * primary judge. Off with `--no-abide` or GUARDEX_REVIEW_ABIDE=0.
+ */
+function abideReviewEnabled(options, env = process.env) {
+  if (options.abide === false) return false;
+  const flag = String(env.GUARDEX_REVIEW_ABIDE || '').trim().toLowerCase();
+  return !['0', 'false', 'off', 'no'].includes(flag);
+}
+
+function collectAbideFindings(repoRoot, diff, options, deps = {}) {
+  if (!abideReviewEnabled(options, deps.env)) return { status: 'disabled', findings: [] };
+  const runCheck = deps.runAbideCheck || abide.runAbideCheck;
+  const check = runCheck(repoRoot, diff, { env: deps.env });
+  if (check.skipped) return { status: 'skipped', reason: check.skipped, findings: [] };
+  if (check.failed) return { status: 'failed', reason: check.failed, findings: [] };
+  const findings = abide.abideFindings(check, diff);
+  const verdicts = check.sections.flatMap((section) => section.verdicts || []);
+  return {
+    status: 'ran',
+    findings,
+    rules: check.rubric ? check.rubric.modelRules : 0,
+    files: new Set(check.sections.flatMap((section) => section.files || [])).size,
+    verdicts: verdicts.length,
+    act: verdicts.filter((v) => v.band === 'act').length,
+    flag: verdicts.filter((v) => v.band === 'flag').length,
+    spendUsd: check.spendUsd || 0,
+  };
+}
+
+function abideSummaryLine(result) {
+  if (!result || result.status === 'disabled') return '';
+  if (result.status === 'skipped') return `abide: skipped (${result.reason})`;
+  if (result.status === 'failed') return `⚠️ abide: did not run (${result.reason})`;
+  const cost = result.spendUsd > 0 ? ` · $${result.spendUsd.toFixed(4)}` : '';
+  return `abide: ${result.rules} rule(s) × ${result.files} file(s) → ${result.act} act, ${result.flag} flag${cost}`;
+}
+
 function runPrReview(options, deps = {}) {
   const runner = deps.run || run;
   const repoRoot = path.resolve(options.target || process.cwd());
@@ -716,10 +764,13 @@ function runPrReview(options, deps = {}) {
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
   const { diff, truncated } = capDiff(rawDiff);
   if (lensContext && truncated) throw new Error('PR Lens requires a complete diff; review diff is truncated');
-  const { findings, graph } = runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
+  const { findings: providerFindings, graph } = runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
     model: options.model,
     prLens: Boolean(lensContext),
   });
+  const abideResult = collectAbideFindings(repoRoot, rawDiff, options, deps);
+  if (abideResult.status === 'failed') console.log(`${TOOL_PREFIX} ${abideSummaryLine(abideResult)}`);
+  const findings = [...providerFindings, ...abideResult.findings];
   const prLens = lensContext
     ? renderPrLens(graph, lensContext, pr, repoRoot, resolveReviewTimeoutMs(options.timeoutMs), runner) : undefined;
   if (prLens) console.log(`${TOOL_PREFIX} PR Lens diagrams (local only): ${prLens.manifestPath}`);
@@ -730,6 +781,7 @@ function runPrReview(options, deps = {}) {
   };
   const payload = {
     pr, provider, findings, anchored, unanchored, truncated, gate, prLens,
+    abide: abideResult,
     reviewedHeadSha: lensContext?.metadata.provenance.head.sha,
   };
 
@@ -798,6 +850,9 @@ function printPrReviewResult(result) {
 
 module.exports = {
   MARKER,
+  abideReviewEnabled,
+  collectAbideFindings,
+  abideSummaryLine,
   capDiff,
   compactReviewPrompt,
   commandForProvider,

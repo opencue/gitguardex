@@ -327,6 +327,10 @@ function parsePrReviewArgs(rawArgs) {
       options.post = false;
       continue;
     }
+    if (arg === '--abide' || arg === '--no-abide') {
+      options.abide = arg === '--abide';
+      continue;
+    }
     if (arg === '--fix') {
       options.fix = true;
       continue;

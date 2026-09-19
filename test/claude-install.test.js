@@ -791,6 +791,39 @@ test('installAbide still wires the hooks when abide is not on this machine, and 
   }
 });
 
+test('installAbide fetches the package for an already-wired repo that lacks it', () => {
+  const repoRoot = makeRepo();
+  try {
+    const pkg = makeFakeAbidePackage(repoRoot);
+    claudeModule.installHooks(repoRoot, { dryRun: false });
+    withEnv({ GUARDEX_ABIDE_PACKAGE_DIR: pkg }, () => claudeModule.installAbide(repoRoot, { dryRun: false, noAbide: false }));
+
+    // Same repo on a machine without abide: nothing resolvable, and the fetch fails.
+    const absent = {
+      GUARDEX_ABIDE_PACKAGE_DIR: path.join(repoRoot, 'nope'),
+      HOME: repoRoot,
+      npm_config_cache: path.join(repoRoot, 'nocache'),
+      GUARDEX_ABIDE_BIN: path.join(repoRoot, 'no-such-abide'),
+    };
+    const dry = withEnv(absent, () => claudeModule.installAbide(repoRoot, { dryRun: true, noAbide: false }));
+    assert.equal(dry.status, 'would-fetch');
+    const failed = withEnv(absent, () => claudeModule.installAbide(repoRoot, { dryRun: false, noAbide: false }));
+    assert.equal(failed.status, 'unchanged');
+    assert.equal(failed.packageDir, null);
+    assert.match(failed.note, /could not fetch @coldtea\/abide/);
+
+    // A "fetch" that makes the package appear (stand-in for npx warming its cache).
+    const fetcher = path.join(repoRoot, 'fake-fetch.sh');
+    fs.writeFileSync(fetcher, `#!/usr/bin/env bash\nmkdir -p "${path.join(repoRoot, 'late')}"\ncp -r "${pkg}" "${path.join(repoRoot, 'late', 'abide')}"\n`);
+    fs.chmodSync(fetcher, 0o755);
+    const fetched = withEnv({ ...absent, GUARDEX_ABIDE_PACKAGE_DIR: path.join(repoRoot, 'late', 'abide'), GUARDEX_ABIDE_BIN: fetcher }, () => claudeModule.installAbide(repoRoot, { dryRun: false, noAbide: false }));
+    assert.equal(fetched.status, 'fetched');
+    assert.equal(fetched.packageDir, path.join(repoRoot, 'late', 'abide'));
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test('uninstallAbide prunes shim and legacy entries but nothing else', () => {
   const repoRoot = makeRepo();
   try {
