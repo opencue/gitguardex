@@ -379,6 +379,7 @@ function shouldSweepOrphans(options, failed) {
 }
 
 function finish(rawArgs, defaults = {}) {
+  if (rawArgs[0] === 'events') return require('./events').finishEvents(rawArgs.slice(1));
   const activeCwd = process.cwd();
   const options = parseFinishArgs(rawArgs, defaults);
   if (options.gateReview && options.mergeMode !== 'pr') {

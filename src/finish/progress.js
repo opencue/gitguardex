@@ -130,6 +130,9 @@ function createFinishProgress({
     : heartbeat;
   const clock = typeof now === 'function' ? now : Date.now;
   const eventStream = persistEvents ? createEventStream(repoRoot, branch, baseBranch) : null;
+  if (quiet && eventStream) {
+    sink(`[gx:finish] ${JSON.stringify({ runId: eventStream.runId, eventFile: eventStream.relativePath })}`);
+  }
   const stageMap = new Map(STAGES.map(([id, label], index) => [id, {
     index: index + 1,
     label,
@@ -267,6 +270,26 @@ function readFinishEvents(filePath) {
   }
 }
 
+function persistFinishOutput(eventFile, stdout, stderr) {
+  const name = path.basename(eventFile);
+  if (!/^finish-[a-z0-9]+-[0-9]+-[a-f0-9]{8}\.jsonl$/.test(name)) {
+    throw new Error('unsafe finish log name');
+  }
+  const root = path.resolve(path.dirname(eventFile), '../../..');
+  const directory = createPrivateDirectory(root, ['.omx', 'state', 'finish-runs']);
+  if (path.resolve(eventFile) !== path.join(directory, name)) throw new Error('unsafe finish log path');
+  const file = path.join(directory, `${name}.output.log`);
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT
+    | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+  try {
+    fs.fchmodSync(fd, 0o600);
+    fs.writeFileSync(fd, `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return file;
+}
+
 /** Build one bounded machine-readable result from a captured finish run. */
 function summarizeFinishRun({
   eventFile,
@@ -296,6 +319,19 @@ function summarizeFinishRun({
     stages,
   };
   if (pr) result.pr = pr;
+  const warnings = combined.split('\n').map((line) => line.trim())
+    .filter((line) => /\bwarn(?:ing)?\b|⚠|retained|manual (?:cleanup|repair)/i.test(line));
+  if (warnings.length) {
+    result.warningCount = warnings.length;
+    result.warnings = warnings.slice(-10).map((line) => line.slice(0, 500));
+  }
+  if (eventFile && (status !== 0 || warnings.length)) {
+    try {
+      result.logFile = persistFinishOutput(eventFile, stdout, stderr);
+    } catch (_error) {
+      result.logWarning = 'Could not persist full finish output; bounded diagnostics follow';
+    }
+  }
   if (status !== 0) {
     const lines = combined.split('\n').map((line) => line.trim()).filter(Boolean);
     const tail = lines.slice(-12).join('\n');

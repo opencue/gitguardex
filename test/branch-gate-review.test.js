@@ -79,6 +79,14 @@ function loadBranchWithStubs({ gateThrows = false, gateResult } = {}) {
   return { branch, ship, calls };
 }
 
+test('branch finish passes agent-quiet to the review gate without disabling it', () => {
+  const { branch, calls } = loadBranchWithStubs();
+  branch(['finish', '--gate-review', '--agent-quiet']);
+  assert.equal(calls.gate.length, 1);
+  assert.equal(calls.gate[0].options.agentQuiet, true);
+  assert.equal(calls.script.length, 1);
+});
+
 test('branch finish --help prints usage before resolving or mutating the repository', () => {
   const { branch, calls } = loadBranchWithStubs();
   const output = [];

@@ -8,7 +8,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, execFile } = require('child_process');
+const { setTimeout: delay } = require('node:timers/promises');
 const { resolveRepoRoot } = require('../../git');
 
 const ALT_SCREEN_ON = '\x1b[?1049h';
@@ -44,17 +45,22 @@ function parseWatchArgs(rawArgs) {
   return options;
 }
 
-function gitCapture(repoRoot, args, timeoutMs = 4000) {
-  const r = spawnSync('git', ['-C', repoRoot, ...args], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: timeoutMs,
+function capture(command, args, cwd, timeout, signal) {
+  return new Promise((resolve) => {
+    execFile(command, args, {
+      cwd, timeout, signal, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
+      encoding: 'utf8',
+    }, (error, stdout) => resolve(error ? null : stdout));
   });
-  if (r.status !== 0) return null;
-  return (r.stdout || '').toString();
 }
 
-function listAgentWorktrees(repoRoot) {
-  const out = gitCapture(repoRoot, ['worktree', 'list', '--porcelain']);
+function gitCapture(repoRoot, args, signal) {
+  return capture('git', ['-C', repoRoot, ...args], repoRoot, 4000, signal);
+}
+
+async function listAgentWorktrees(repoRoot, signal) {
+  const out = await gitCapture(repoRoot, ['worktree', 'list', '--porcelain'], signal);
+  if (out === null) throw new Error('Could not read worktrees');
   if (!out) return [];
   const entries = [];
   let current = {};
@@ -72,15 +78,15 @@ function listAgentWorktrees(repoRoot) {
   return entries.filter((e) => e.branch && e.branch.startsWith('agent/'));
 }
 
-function lastCommit(worktreePath) {
-  const out = gitCapture(worktreePath, ['log', '-1', '--format=%h%x09%cr%x09%s']);
+async function lastCommit(worktreePath, signal) {
+  const out = await gitCapture(worktreePath, ['log', '-1', '--format=%h%x09%cr%x09%s'], signal);
   if (!out) return null;
   const [sha, age, ...rest] = out.trim().split('\t');
   return { sha, age, subject: rest.join('\t') };
 }
 
-function dirtyCount(worktreePath) {
-  const out = gitCapture(worktreePath, ['status', '--porcelain']);
+async function dirtyCount(worktreePath, signal) {
+  const out = await gitCapture(worktreePath, ['status', '--porcelain'], signal);
   if (out === null) return null;
   return out.split('\n').filter(Boolean).length;
 }
@@ -109,19 +115,46 @@ function readPortFromEnvLocal(worktreePath) {
   return ports;
 }
 
-function ghPrStatus(repoRoot, branch) {
-  const r = spawnSync(
+async function ghPrStatus(repoRoot, branch, signal) {
+  const out = await capture(
     'gh',
     ['pr', 'list', '--head', branch, '--state', 'all', '--limit', '1', '--json', 'number,state,url'],
-    { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000 },
+    repoRoot, 3000, signal,
   );
-  if (r.error || r.status !== 0) return null;
+  if (out === null) return { state: 'UNKNOWN' };
   try {
-    const arr = JSON.parse((r.stdout || '').toString());
-    return arr[0] || null;
+    const arr = JSON.parse(out);
+    if (!Array.isArray(arr)) return { state: 'UNKNOWN' };
+    if (arr.length === 0) return null;
+    const pr = arr[0];
+    return pr && Number.isInteger(pr.number) && ['OPEN', 'MERGED', 'CLOSED'].includes(pr.state)
+      ? pr : { state: 'UNKNOWN' };
   } catch {
-    return null;
+    return { state: 'UNKNOWN' };
   }
+}
+
+async function collectWatchRows(repoRoot, hasGh, { signal, concurrency = 4, ...deps } = {}) {
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) {
+    throw new Error('Watch concurrency must be between 1 and 4');
+  }
+  const worktrees = await (deps.listAgentWorktrees || listAgentWorktrees)(repoRoot, signal);
+  const rows = new Array(worktrees.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, worktrees.length) }, async () => {
+    while (next < worktrees.length) {
+      signal?.throwIfAborted();
+      const index = next++;
+      const wt = worktrees[index];
+      const commit = await (deps.lastCommit || lastCommit)(wt.path, signal)
+        || { sha: '—', age: '—', subject: '(no commits)' };
+      const dirty = await (deps.dirtyCount || dirtyCount)(wt.path, signal);
+      const ports = (deps.readPortFromEnvLocal || readPortFromEnvLocal)(wt.path);
+      const pr = hasGh ? await (deps.ghPrStatus || ghPrStatus)(repoRoot, wt.branch, signal) : null;
+      rows[index] = { ...wt, commit, dirty, ports, pr };
+    }
+  }));
+  return rows;
 }
 
 function paintStatus(state) {
@@ -132,7 +165,7 @@ function paintStatus(state) {
   return dim('—');
 }
 
-function render(repoRoot, hasGh) {
+async function render(repoRoot, hasGh, options = {}) {
   const lines = [];
   const now = new Date().toLocaleTimeString();
   lines.push(
@@ -141,26 +174,23 @@ function render(repoRoot, hasGh) {
   );
   lines.push(dim('─'.repeat(78)));
 
-  const worktrees = listAgentWorktrees(repoRoot);
-  if (worktrees.length === 0) {
+  const rows = await collectWatchRows(repoRoot, hasGh, options);
+  if (rows.length === 0) {
     lines.push(dim('  (no agent/* worktrees — use `gx pivot` or `gx branch start` to spawn one)'));
     lines.push('');
     lines.push(dim('Press Ctrl+C to exit'));
     return lines.join('\n');
   }
 
-  for (const wt of worktrees) {
-    const commit = lastCommit(wt.path) || { sha: '—', age: '—', subject: '(no commits)' };
-    const dirty = dirtyCount(wt.path);
-    const ports = readPortFromEnvLocal(wt.path);
-    const pr = hasGh ? ghPrStatus(repoRoot, wt.branch) : null;
+  for (const wt of rows) {
+    const { commit, dirty, ports, pr } = wt;
     const dirtyTag = dirty == null
       ? dim('—')
       : dirty === 0
         ? green('clean')
         : yellow(`${dirty} dirty`);
     const prTag = hasGh
-      ? (pr ? `${paintStatus(pr.state)} #${pr.number}` : dim('no PR'))
+      ? (pr?.state === 'UNKNOWN' ? yellow('PR unknown') : pr ? `${paintStatus(pr.state)} #${pr.number}` : dim('no PR'))
       : dim('gh n/a');
     const portsTag = ports.length
       ? ports.map((p) => `${p.app}:${cyan(String(p.port))}`).join(' · ')
@@ -199,7 +229,7 @@ Options:
 `);
 }
 
-function watch(rawArgs) {
+async function watch(rawArgs) {
   const options = parseWatchArgs(rawArgs);
   if (options.help) {
     printHelp();
@@ -208,27 +238,36 @@ function watch(rawArgs) {
   const repoRoot = resolveRepoRoot(options.target);
   const hasGh = detectGh();
 
-  if (options.once) {
-    process.stdout.write(render(repoRoot, hasGh) + '\n');
-    return;
-  }
-
-  process.stdout.write(ALT_SCREEN_ON + CURSOR_HIDE);
+  if (!options.once) process.stdout.write(ALT_SCREEN_ON + CURSOR_HIDE);
   const restore = () => {
-    process.stdout.write(CURSOR_SHOW + ALT_SCREEN_OFF);
+    if (!options.once) process.stdout.write(CURSOR_SHOW + ALT_SCREEN_OFF);
   };
-  const onExit = () => { restore(); process.exit(0); };
+  const controller = new AbortController();
+  const onExit = () => controller.abort();
   process.on('SIGINT', onExit);
   process.on('SIGTERM', onExit);
   process.on('exit', restore);
 
-  const tick = () => {
-    process.stdout.write(CLEAR_HOME + render(repoRoot, hasGh));
-  };
-  tick();
-  const id = setInterval(tick, options.intervalMs);
-  // Keep the process alive; clearInterval happens via SIGINT only.
-  void id;
+  try {
+    // Schedule after collection: a slow refresh must never overlap the next one.
+    while (!controller.signal.aborted) {
+      const output = await render(repoRoot, hasGh, { signal: controller.signal });
+      if (controller.signal.aborted) break;
+      if (options.once) {
+        process.stdout.write(output + '\n');
+        break;
+      }
+      process.stdout.write(CLEAR_HOME + output);
+      await delay(options.intervalMs, undefined, { signal: controller.signal });
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) throw error;
+  } finally {
+    restore();
+    process.removeListener('SIGINT', onExit);
+    process.removeListener('SIGTERM', onExit);
+    process.removeListener('exit', restore);
+  }
 }
 
-module.exports = { watch, parseWatchArgs };
+module.exports = { watch, parseWatchArgs, collectWatchRows, render, ghPrStatus };
