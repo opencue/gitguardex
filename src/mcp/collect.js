@@ -17,6 +17,7 @@ const path = require('node:path');
 const { findProjects } = require('../cockpit/projects-finder');
 const { findOpenPrForBranch, listOpenPrsForRepo } = require('../pr');
 const sharedGitState = require('../shared-git-state');
+const abide = require('../abide');
 
 const PROTECTED_BRANCHES = new Set(['main', 'master', 'dev']);
 const LOCK_FILE_RELATIVE = path.join('.omx', 'state', 'agent-file-locks.json');
@@ -522,7 +523,20 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
     sharedGitState: shared.enabled ? { enabled: true, remote: shared.remote } : { enabled: false },
     pr: includePr && branch ? safePr(mainRoot, branch) : null,
     lastCommit: lc,
-    ageDays: lc ? daysSince(lc.date, Date.now()) : null
+    ageDays: lc ? daysSince(lc.date, Date.now()) : null,
+    // The repo's own AGENTS.md rules: are they enforced here, and what fired lately.
+    abide: compactAbide(abide.abideSummary(here))
+  };
+}
+
+function compactAbide(summary) {
+  return {
+    hooks: summary.hooks,
+    rubric: summary.rubric.status,
+    rules: summary.rubric.rules,
+    key: Boolean(summary.key),
+    violations7d: summary.last7d.violations,
+    recent: summary.violations.map((v) => `${v.ruleId} (${v.band}) ${v.files.join(', ')}`)
   };
 }
 

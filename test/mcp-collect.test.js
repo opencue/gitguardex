@@ -195,6 +195,30 @@ test('myContext resolves the real repo name + this lane from inside a worktree',
     assert.equal(ctx.onPrimaryCheckout, false);
     assert.equal(ctx.protected, false);
     assert.deepEqual(ctx.locks, ['src/x.js']);
+    // No abide wiring in this lane: the agent can see the rules are not enforced here.
+    assert.deepEqual(ctx.abide, { hooks: 'none', rubric: 'missing', rules: 0, key: false, violations7d: 0, recent: [] });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('myContext reports abide wiring, rubric state and recent violations for the lane', () => {
+  const { root, wtA } = makeRepoWithLanes();
+  try {
+    fs.mkdirSync(path.join(wtA, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(wtA, '.claude', 'settings.json'), JSON.stringify(require('../src/abide').abideSettingsTemplate()));
+    fs.mkdirSync(path.join(wtA, '.abide'), { recursive: true });
+    fs.writeFileSync(path.join(wtA, '.abide', 'rubric.json'), JSON.stringify({ sources: [], rules: [{ id: 'r1', check: { type: 'model' } }] }));
+    fs.writeFileSync(path.join(wtA, '.abide', 'events.jsonl'), `${JSON.stringify({
+      kind: 'check', at: new Date().toISOString(), phase: 'edit', files: ['src/x.js'], blocked: true,
+      verdicts: [{ ruleId: 'r1', band: 'act', probability: 0.9 }],
+    })}\n`);
+    const ctx = collect.myContext({ cwd: wtA, includePr: false });
+    assert.equal(ctx.abide.hooks, 'shim');
+    assert.equal(ctx.abide.rubric, 'fresh');
+    assert.equal(ctx.abide.rules, 1);
+    assert.equal(ctx.abide.violations7d, 1);
+    assert.deepEqual(ctx.abide.recent, ['r1 (act) src/x.js']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

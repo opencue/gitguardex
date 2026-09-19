@@ -51,6 +51,7 @@ const { doctor } = require('./commands/doctor');
 const { review, prReview } = require('./commands/review');
 const { pr: prCommand } = require('./commands/pr');
 const { claude: claudeCommand } = require('./commands/claude');
+const { codex: codexCommand } = require('./commands/codex');
 const { agents } = require('./commands/agents');
 const { mcp } = require('./commands/mcp');
 const { report } = require('./commands/report');
@@ -363,6 +364,7 @@ async function main() {
   if (command === 'pr-review') return prReview(rest);
   if (command === 'pr') return prCommand(rest);
   if (command === 'claude') return claudeCommand(rest);
+  if (command === 'codex') return codexCommand(rest);
   if (command === 'doctor') return doctor(rest);
   if (command === 'branch') return branch(rest);
   if (command === 'pivot') return pivot(rest);

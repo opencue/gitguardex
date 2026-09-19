@@ -92,6 +92,33 @@ test('default invocation runs non-mutating status output', () => {
 });
 
 
+test('status reports whether abide enforces the repo rules, in text and JSON', () => {
+  const repoDir = initRepo();
+  const unwired = runNode(['status', '--target', repoDir], repoDir);
+  assert.equal(unwired.status, 0, unwired.stderr || unwired.stdout);
+  assert.match(unwired.stdout, /\[gitguardex\] abide: not wired \(\S+ claude install\)/);
+
+  fs.mkdirSync(path.join(repoDir, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, '.claude', 'settings.json'), JSON.stringify(require('../src/abide').abideSettingsTemplate()));
+  fs.mkdirSync(path.join(repoDir, '.abide'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, '.abide', 'rubric.json'), JSON.stringify({ sources: [], rules: [{ id: 'r1', check: { type: 'model' } }, { id: 'r2', check: { type: 'lint' } }] }));
+  const wired = runNodeWithEnv(['status', '--target', repoDir, '--json'], repoDir, {
+    HOME: repoDir, TYPESAFE_AI_API_KEY: '', AI_GATEWAY_API_KEY: '',
+    GUARDEX_ABIDE_PACKAGE_DIR: path.join(repoDir, 'nope'), npm_config_cache: path.join(repoDir, 'nocache'),
+  });
+  assert.equal(wired.status, 0, wired.stderr || wired.stdout);
+  const payload = JSON.parse(wired.stdout.slice(wired.stdout.indexOf('{')));
+  assert.equal(payload.repo.abide.hooks, 'shim');
+  assert.equal(payload.repo.abide.rubric.status, 'fresh');
+  assert.equal(payload.repo.abide.rubric.rules, 2);
+  assert.equal(payload.repo.abide.key, null);
+  const text = runNodeWithEnv(['status', '--target', repoDir], repoDir, {
+    HOME: repoDir, TYPESAFE_AI_API_KEY: '', AI_GATEWAY_API_KEY: '',
+    GUARDEX_ABIDE_PACKAGE_DIR: path.join(repoDir, 'nope'), npm_config_cache: path.join(repoDir, 'nocache'),
+  });
+  assert.match(text.stdout, /\[gitguardex\] abide: hooks=shim · package=missing · rubric=fresh \(2 rules\) · key=none/);
+});
+
 test('status suppresses the full help tree by default and emits a Next hint', () => {
   const repoDir = initRepo();
 

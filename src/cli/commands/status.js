@@ -9,6 +9,7 @@ const {
   envFlagIsTruthy,
 } = require('../../context');
 const { isGitRepo } = require('../../git');
+const abide = require('../../abide');
 const toolchainModule = require('../../toolchain');
 const {
   runtimeVersion,
@@ -179,6 +180,8 @@ function status(rawArgs) {
           findings: scanResult.findings.length,
         }
         : null,
+      // Whether this repo's AGENTS.md / CLAUDE.md rules are being enforced.
+      abide: scanResult ? abide.abideSummary(scanResult.repoRoot) : null,
     },
     detectionError: toolchain.ok ? null : toolchain.error,
     compression: describeCompressor(),
@@ -323,6 +326,7 @@ function status(rawArgs) {
   printStatusRepairHint(scanResult);
   console.log(`[${TOOL_NAME}] Repo: ${scanResult.repoRoot}`);
   console.log(`[${TOOL_NAME}] Branch: ${scanResult.branch}`);
+  console.log(`[${TOOL_NAME}] ${abide.renderAbideSummary(payload.repo.abide, invokedBasename)}`);
   const worktreeCountActive = countAgentWorktrees(scanResult.repoRoot);
   if (worktreeCountActive > 0) {
     const plural = worktreeCountActive === 1 ? 'worktree' : 'worktrees';
