@@ -725,7 +725,8 @@ exit 1
   assert.equal(payload.comments.length, 1);
   assert.equal(payload.comments[0].path, 'src/a.js');
   assert.equal(payload.comments[0].line, 1);
-  assert.match(payload.comments[0].body, /🔴 \*\*HIGH\*\* · abide/);
+  assert.match(payload.comments[0].body, /🟠 \*\*HIGH\*\* · abide/);
+  assert.ok(!payload.comments[0].body.includes('```suggestion'), 'a rule verdict is not an apply-able code suggestion');
   assert.match(payload.comments[0].body, /Rule "no-globals" from AGENTS.md line 12/);
   assert.match(payload.body, /Merge gate: blocked/);
   assert.match(payload.body, /abide: 1 rule\(s\) × 1 file\(s\) → 1 act, 0 flag/);
