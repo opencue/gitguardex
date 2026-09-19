@@ -1,0 +1,1 @@
+../../.claude/hooks/abide_hook.js
