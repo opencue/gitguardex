@@ -302,6 +302,8 @@ function resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings) {
 function runReviewGate({
   repoRoot, worktreePath, branch, baseBranch, options = {}, progress,
 }, deps = {}) {
+  // Quiet mode suppresses successful narration, never warnings or blocking errors.
+  const logProgress = options.agentQuiet ? () => {} : gateLog;
   const openPullRequest = deps.openPullRequest || pr.openPullRequest;
   const runPrReview = deps.runPrReview || prReview.runPrReview;
   const markReady = deps.markPullRequestReady || pr.markPullRequestReady;
@@ -354,7 +356,7 @@ function runReviewGate({
     );
   }
   reportProgress(progress, 'complete', 'pr', `PR #${prNumber}`);
-  gateLog(`PR #${prNumber}: enforcing review + CI gate before merge`);
+  logProgress(`PR #${prNumber}: enforcing review + CI gate before merge`);
 
   // 1b. The default keeps the PR draft while review is pending. The explicit
   //     `--no-gate-serial-ci` fast mode promotes first so CI overlaps the review:
@@ -367,14 +369,14 @@ function runReviewGate({
       markDraft(repoRoot, prNumber),
       `review gate: could not hold PR #${prNumber} as draft before review. Refusing to merge.`,
     );
-    gateLog(`PR #${prNumber}: held as draft while the review runs`);
+    logProgress(`PR #${prNumber}: held as draft while the review runs`);
   }
   if (!serialCi) {
     requireGhAction(
       markReady(repoRoot, prNumber),
       `review gate: could not promote PR #${prNumber} before review. Refusing to merge.`,
     );
-    gateLog(`PR #${prNumber}: promoted to ready — CI runs alongside the review`);
+    logProgress(`PR #${prNumber}: promoted to ready — CI runs alongside the review`);
   }
 
   // 2. AI review — FAIL CLOSED. A provider error / timeout / unparseable output
@@ -441,7 +443,7 @@ function runReviewGate({
     }
     if (verdict.clean || round === maxFixRounds) break;
 
-    gateLog(`PR #${prNumber}: ${verdict.blocking.length} blocking finding(s) — auto-fix round ${round + 1}/${maxFixRounds}`);
+    logProgress(`PR #${prNumber}: ${verdict.blocking.length} blocking finding(s) — auto-fix round ${round + 1}/${maxFixRounds}`);
     autofixAttempted = true;
     reportProgress(
       progress,
@@ -465,7 +467,7 @@ function runReviewGate({
       break;
     }
     for (const changed of fix.changedFiles) repairedPaths.add(changed);
-    gateLog(`auto-fix committed ${fix.changedFiles.length} file(s): ${fix.changedFiles.slice(0, 5).join(', ')}`);
+    logProgress(`auto-fix committed ${fix.changedFiles.length} file(s): ${fix.changedFiles.slice(0, 5).join(', ')}`);
     const pushed = pushBranch(fixCwd, branch);
     if (!pushed.ok) {
       reportProgress(progress, 'fail', 'autofix', 'push failed');
@@ -526,7 +528,7 @@ function runReviewGate({
       + `${threadResolution.output ? ` (${threadResolution.output})` : ''}; merge-state gate remains authoritative`,
     );
   } else if (threadResolution.resolved > 0) {
-    gateLog(`PR #${prNumber}: resolved ${threadResolution.resolved} outdated GitGuardex review thread(s)`);
+    logProgress(`PR #${prNumber}: resolved ${threadResolution.resolved} outdated GitGuardex review thread(s)`);
   }
   reportProgress(
     progress,
@@ -537,7 +539,7 @@ function runReviewGate({
   if (!autofixAttempted) {
     reportProgress(progress, 'skip', 'autofix', 'not needed');
   }
-  gateLog(
+  logProgress(
     `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`,
   );
 
@@ -548,7 +550,7 @@ function runReviewGate({
       markReady(repoRoot, prNumber),
       `review gate: could not promote PR #${prNumber} after a clean review. Refusing to merge.`,
     );
-    gateLog(`PR #${prNumber}: promoted to ready after a clean review`);
+    logProgress(`PR #${prNumber}: promoted to ready after a clean review`);
   }
 
   // 4. Wait for CI to settle green + GitHub to report mergeable. waitForGreenCi
@@ -645,7 +647,7 @@ function runReviewGate({
     return { prNumber, ...revision, billingChecksWaived };
   }
   reportProgress(progress, 'complete', 'ci', `green${mss ? `, mergeStateStatus=${mss}` : ''}`);
-  gateLog(`PR #${prNumber}: review clean + CI green${mss ? ` + mergeStateStatus=${mss}` : ''} — proceeding to merge`);
+  logProgress(`PR #${prNumber}: review clean + CI green${mss ? ` + mergeStateStatus=${mss}` : ''} — proceeding to merge`);
   return { prNumber, ...revision };
 }
 

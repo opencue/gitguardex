@@ -12,6 +12,7 @@ function cleanGateDeps() {
     readBaseSha: () => 'base-sha',
     waitForPullRequestHead: () => ({ status: 'current', pr: { headSha: 'head-sha' } }),
     runPrReview: () => ({ findings: [], posted: true }),
+    resolveOutdatedReviewThreads: () => ({ ok: true, resolved: 0 }),
     markPullRequestReady: () => ({ ok: true }),
     waitForGreenCi: () => ({ status: 'green', pr: { mergeStateStatus: 'CLEAN' } }),
   };
@@ -88,7 +89,10 @@ test('agent-quiet finish suppresses narrative transitions but keeps structured e
   progress.start('review', 'round 1/2');
   progress.complete('review', 'clean');
 
-  assert.deepEqual(lines, []);
+  assert.equal(lines.length, 1, 'quiet mode exposes its run once, without a narrative checklist');
+  const started = JSON.parse(lines[0].replace('[gx:finish] ', ''));
+  assert.equal(started.runId, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  assert.equal(started.eventFile, path.relative(repoRoot, progress.eventEnv.GUARDEX_FINISH_EVENT_FILE));
   assert.equal(heartbeatCalls, 0, 'quiet mode must not create transcript heartbeats');
   const events = fs.readFileSync(progress.eventEnv.GUARDEX_FINISH_EVENT_FILE, 'utf8')
     .trim()
@@ -126,6 +130,49 @@ test('agent-quiet failure summaries keep only a bounded output tail', () => {
   assert.equal(summary.error.startsWith('line-8'), true);
   assert.equal(summary.error.endsWith('line-19'), true);
   assert.ok(summary.error.length <= 2_000);
+});
+
+test('quiet successful cleanup preserves warnings with a private full output log', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-quiet-warnings-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const progress = createFinishProgress({ repoRoot, quiet: true, write: () => {} });
+  const warning = 'Warning: cleanup retained active worktree';
+  const stdout = `${warning}\n${'successful detail\n'.repeat(30)}`;
+  const result = summarizeFinishRun({
+    eventFile: progress.eventEnv.GUARDEX_FINISH_EVENT_FILE, stdout, status: 0,
+  });
+  assert.equal(result.result, 'success');
+  assert.deepEqual(result.warnings, [warning]);
+  assert.equal(result.warningCount, 1);
+  assert.ok(fs.readFileSync(result.logFile, 'utf8').includes(stdout));
+  assert.equal(fs.statSync(result.logFile).mode & 0o777, 0o600);
+});
+
+test('agent-quiet gate removes only successful narration, not decisions or blockers', () => {
+  const output = [];
+  const originalLog = console.log;
+  console.log = (...args) => output.push(args.join(' '));
+  try {
+    const input = { repoRoot: '/tmp', branch: 'agent/test/quiet', baseBranch: 'main' };
+    const normal = runReviewGate(input, cleanGateDeps());
+    assert.ok(output.length > 0);
+    output.length = 0;
+    assert.deepEqual(runReviewGate({ ...input, options: { agentQuiet: true } }, cleanGateDeps()), normal);
+    assert.deepEqual(output, []);
+    assert.throws(() => runReviewGate({ ...input, options: { agentQuiet: true } }, {
+      ...cleanGateDeps(),
+      runPrReview: () => ({
+        posted: true,
+        findings: [{ severity: 'critical', path: 'auth.js', line: 1, message: 'missing check' }],
+      }),
+    }), /missing check/);
+    assert.throws(() => runReviewGate({ ...input, options: { agentQuiet: true } }, {
+      ...cleanGateDeps(),
+      runPrReview: () => ({ posted: false, findings: [] }),
+    }), /not posted/);
+  } finally {
+    console.log = originalLog;
+  }
 });
 
 test('review gate reports PR, review, autofix, and CI checklist transitions', () => {

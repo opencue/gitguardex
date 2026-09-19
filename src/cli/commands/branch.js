@@ -55,6 +55,7 @@ VERIFICATION
   --review-timeout-ms <n>     Positive review timeout in milliseconds
   --no-preflight              Skip the repository preflight script
   --preflight                 Run the repository preflight script
+  --agent-quiet               Compact output; retain warnings and gate failures
 
 COMMIT
   --no-auto-commit            Refuse to auto-commit pending work
@@ -398,6 +399,7 @@ function branch(rawArgs) {
           gateAutofixRounds,
           gateBaseline,
           gateSerialCi,
+          agentQuiet,
         },
         progress,
       });

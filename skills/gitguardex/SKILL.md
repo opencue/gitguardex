@@ -112,6 +112,18 @@ Treat `🏁 Cleanup` as finished-but-best-effort, not as unconditional success: 
 
 Structured phase events are persisted privately under `.omx/state/finish-runs/*.jsonl` (`0700` directory, `0600` files). Prefer that JSONL stream over parsing narrative logs when exact state is needed; the visual output prints the active event-file path.
 
+For agent transcripts, opt into `gx branch finish --agent-quiet` (or `gx finish --agent-quiet`)
+alongside the same required finish flags and gates. It prints one run ID/event-file pointer,
+retains warnings and blockers, and ends with a bounded summary; it does not skip verification.
+Read only new observations with `gx finish events --run <run-id> --wait-ms 30000`, then
+pass the returned `--cursor <cursor>` on the next read. Use the same repository target as
+the finish invocation. Let this bounded CLI wait do the polling instead of repeatedly
+asking the model to reread the whole log. Events are observations, never merge authority.
+
+For setup guidance, use `gx prompt --list-parts` then `gx prompt --part <name>` for the
+needed slice; use `--exec --part <name>` only for command-capable slices. Do not repeatedly
+load the full setup prompt or remove the mandatory safety contract to save tokens.
+
 When inspecting or verifying, prefer `rtk` compact wrappers if available (`rtk git status`, `rtk grep`, `rtk test <cmd>`, and noisy gx reads like `rtk gx status` / `rtk gx doctor`). Do not wrap commands whose stdout is parsed by scripts (`--json`, `--porcelain`, exact stdout contracts) or shell-ready output (`gx prompt --exec`).
 
 To shrink gx's own large narrative output (e.g. `gx prompt`, `gx prompt --snippet`) before it lands in your context, set `GUARDEX_COMPRESS_CMD="<stdin->stdout filter>"`; gx routes that output through the filter (terse/non-TTY mode, fail-open, JSON skipped). Unset = byte-for-byte unchanged. Confirm it is wired with `gx status` or `gx doctor` — both print a `Token compression` line and flag a configured-but-missing binary (doctor's warning is advisory and never changes its safe/unsafe exit code).
