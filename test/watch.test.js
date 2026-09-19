@@ -1,4 +1,75 @@
 const test = require('node:test');
+const { createPrObservationCache } = require('../src/cli/commands/watch');
+
+test('PR observations share in-flight requests, expire and do not cache unknown/error', async () => {
+  let now = 0;
+  let calls = 0;
+  const cache = createPrObservationCache(50, () => now);
+  const load = async () => { calls++; await new Promise((resolve) => setTimeout(resolve, 5)); return null; };
+  const [first, shared] = await Promise.all([cache.get('same', load), cache.get('same', load)]);
+  assert.deepEqual(first, shared);
+  assert.equal(calls, 1);
+  now = 20;
+  assert.equal((await cache.get('same', load)).ageMs, 20);
+  assert.equal(calls, 1);
+  now = 50;
+  await cache.get('same', load);
+  assert.equal(calls, 2);
+  let unknownCalls = 0;
+  const unknown = async () => { unknownCalls++; return { state: 'UNKNOWN' }; };
+  await cache.get('unknown', unknown);
+  await cache.get('unknown', unknown);
+  assert.equal(unknownCalls, 2);
+  await assert.rejects(cache.get('error', async () => { throw new Error('offline'); }), /offline/);
+  assert.equal((await cache.get('error', load)).value, null);
+});
+
+test('a subscriber abort cannot cancel another consumer; the last abort cancels the probe', async () => {
+  const cache = createPrObservationCache(50);
+  let aborted = false;
+  let complete;
+  const load = (signal) => new Promise((resolve) => {
+    complete = resolve;
+    signal.addEventListener('abort', () => { aborted = true; resolve(null); });
+  });
+  const a = new AbortController();
+  const b = new AbortController();
+  const one = cache.get('shared', load, a.signal);
+  const two = cache.get('shared', load, b.signal);
+  await Promise.resolve();
+  a.abort();
+  await assert.rejects(one, { name: 'AbortError' });
+  assert.equal(aborted, false);
+  complete(null);
+  await two;
+  const c = new AbortController();
+  const last = cache.get('last', load, c.signal);
+  await Promise.resolve();
+  c.abort();
+  await assert.rejects(last, { name: 'AbortError' });
+  assert.equal(aborted, true);
+});
+
+test('watch cache invalidates on HEAD/remote change and still reads dirty state', async () => {
+  let head = 'a'.repeat(40);
+  let remote = 'origin-one';
+  let calls = 0;
+  let dirty = 0;
+  const deps = { prCache: createPrObservationCache(10000), cacheIdentity: async () => remote,
+    listAgentWorktrees: async () => [{ path: '/wt', branch: 'agent/test', head }],
+    lastCommit: async () => ({ sha: head }), dirtyCount: async () => ++dirty,
+    readPortFromEnvLocal: () => [], ghPrStatus: async () => { calls++; return { state: 'OPEN', number: 1 }; } };
+  await collectWatchRows('/repo', true, deps);
+  const second = await collectWatchRows('/repo', true, deps);
+  assert.equal(calls, 1);
+  assert.equal(second[0].dirty, 2);
+  assert.equal(second[0].prObservation.stale, false);
+  head = 'b'.repeat(40);
+  await collectWatchRows('/repo', true, deps);
+  remote = 'origin-two';
+  await collectWatchRows('/repo', true, deps);
+  assert.equal(calls, 3);
+});
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
