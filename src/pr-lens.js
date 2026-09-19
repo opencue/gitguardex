@@ -38,10 +38,26 @@ function prLensCommand(repoRoot, env = process.env) {
 function runLens(bin, args, cwd, timeout, runner) {
   const result = runner(bin, args, { cwd, timeout });
   if (result.error || result.status !== 0) {
-    throw new Error(
+    const error = new Error(
       `PR Lens ${args[0]} failed: ${result.error?.message || result.stderr || 'non-zero exit'}. ` +
         'Install @coldtea/pr-lens-cli@0.6.1 (Node >=20.11) or set GUARDEX_PR_LENS_BIN.'
     );
+    // validate also reports INVALID_DOCUMENT after file I/O failures. Only
+    // schema failures (all diagnostic codes match) are repairable by a model.
+    const codes = [...String(result.stderr || '').matchAll(/^✗ .* \[([A-Z_]+)\]$/gm)].map(
+      (match) => match[1]
+    );
+    if (
+      args[0] === 'validate' &&
+      !result.error &&
+      result.status === 1 &&
+      codes.length > 0 &&
+      codes.every((code) => code === 'INVALID_DOCUMENT')
+    ) {
+      error.code = 'PR_LENS_INVALID_DOCUMENT';
+      error.validationErrors = String(result.stderr).slice(0, 8000);
+    }
+    throw error;
   }
 }
 
@@ -91,7 +107,7 @@ function preparePrLens(pr, repoRoot, timeout, runner) {
   return { bin, metadata: readPrLensMetadata(pr, repoRoot, runner) };
 }
 
-function renderPrLens(graph, context, pr, repoRoot, timeout, runner) {
+function renderPrLens(graph, context, pr, repoRoot, timeout, runner, repair) {
   if (!graph || typeof graph !== 'object' || Array.isArray(graph)) {
     throw new Error('PR Lens graph missing from review response; rerun or use --no-pr-lens');
   }
@@ -114,7 +130,30 @@ function renderPrLens(graph, context, pr, repoRoot, timeout, runner) {
   const directory = path.dirname(graphPath);
   // Explicit output and no-config avoid modifying .gitignore or loading config
   // from the reviewed checkout. Never call analyze or canvas (external uploads).
-  runLens(context.bin, ['validate', graphPath], directory, timeout, runner);
+  try {
+    runLens(context.bin, ['validate', graphPath], directory, timeout, runner);
+  } catch (error) {
+    if (error.code !== 'PR_LENS_INVALID_DOCUMENT' || !repair) throw error;
+    const repaired = repair(graph, error.validationErrors);
+    if (!repaired || typeof repaired !== 'object' || Array.isArray(repaired)) {
+      throw new Error('PR Lens repair returned no graph');
+    }
+    fs.writeFileSync(
+      graphPath,
+      JSON.stringify({
+        ...repaired,
+        schemaVersion: '0.2.0',
+        kind: 'graph',
+        ...context.metadata
+      })
+    );
+    runLens(context.bin, ['validate', graphPath], directory, timeout, runner);
+    if (
+      JSON.stringify(readPrLensMetadata(pr, repoRoot, runner)) !== JSON.stringify(context.metadata)
+    ) {
+      throw new Error('PR changed during PR Lens repair; rerun against the current diff');
+    }
+  }
   runLens(
     context.bin,
     ['render', graphPath, '--out', directory, '--no-config'],
@@ -142,4 +181,4 @@ function renderPrLens(graph, context, pr, repoRoot, timeout, runner) {
   return { graphPath, manifestPath, diagrams };
 }
 
-module.exports = { GRAPH_PROMPT, prLensEnabled, preparePrLens, renderPrLens };
+module.exports = { GRAPH_PROMPT, prLensEnabled, preparePrLens, renderPrLens, readPrLensMetadata };

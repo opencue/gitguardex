@@ -305,6 +305,11 @@ function parsePrReviewArgs(rawArgs) {
       options.prLens = arg === '--pr-lens';
       continue;
     }
+    if (arg === '--pr-lens-publish') {
+      options.prLensPublish = requireValue(parsed.args, index, arg);
+      index += 1;
+      continue;
+    }
     if (arg === '--provider') {
       const next = requireValue(parsed.args, index, '--provider');
       if (!['codex', 'claude'].includes(next)) {
