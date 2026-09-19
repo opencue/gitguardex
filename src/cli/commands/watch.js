@@ -38,6 +38,10 @@ function parseWatchArgs(rawArgs) {
       i += 1;
     } else if (arg === '--once') {
       options.once = true;
+    } else if (arg === '--pr-cache-ms') {
+      const ttl = Number(rawArgs[++i]);
+      if (!Number.isInteger(ttl) || ttl < 0 || ttl > 60000) throw new Error('--pr-cache-ms must be between 0 and 60000');
+      options.prCacheMs = ttl;
     } else if (arg === '--help' || arg === '-h') {
       options.help = true;
     }
@@ -134,11 +138,72 @@ async function ghPrStatus(repoRoot, branch, signal) {
   }
 }
 
-async function collectWatchRows(repoRoot, hasGh, { signal, concurrency = 4, ...deps } = {}) {
+// Observation only. This cache is never used by merge/preflight gates.
+function createPrObservationCache(ttlMs, now = Date.now) {
+  if (!Number.isInteger(ttlMs) || ttlMs < 1 || ttlMs > 60000) throw new Error('Invalid PR cache TTL');
+  const entries = new Map();
+  const observation = (entry) => ({ value: entry.value, observedAt: entry.observedAt,
+    ageMs: Math.max(0, now() - entry.observedAt), stale: false });
+  return {
+    get(key, load, signal) {
+      signal?.throwIfAborted();
+      for (const [id, item] of entries) {
+        if (!item.pending && (now() - item.observedAt >= ttlMs || entries.size >= 256)) entries.delete(id);
+      }
+      let entry = entries.get(key);
+      if (entry && !entry.pending) return Promise.resolve(observation(entry));
+      if (!entry) {
+        entry = { controller: new AbortController(), users: 0, pending: true };
+        entries.set(key, entry);
+        entry.promise = Promise.resolve().then(() => load(entry.controller.signal)).then((value) => {
+          entry.value = value;
+          entry.observedAt = now();
+          entry.pending = false;
+          if (value?.state === 'UNKNOWN' || entry.controller.signal.aborted) {
+            if (entries.get(key) === entry) entries.delete(key);
+          }
+          return observation(entry);
+        }, (error) => {
+          if (entries.get(key) === entry) entries.delete(key);
+          throw error;
+        });
+      }
+      entry.users++;
+      return new Promise((resolve, reject) => {
+        let finished = false;
+        const finish = (callback, value) => {
+          if (finished) return;
+          finished = true;
+          signal?.removeEventListener('abort', abort);
+          entry.users--;
+          callback(value);
+        };
+        const abort = () => {
+          finish(reject, signal.reason);
+          if (entry.pending && entry.users === 0) {
+            if (entries.get(key) === entry) entries.delete(key);
+            entry.controller.abort();
+          }
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+        if (signal?.aborted) abort();
+      });
+    }
+  };
+}
+
+async function watchCacheIdentity(repoRoot, signal) {
+  const remote = await gitCapture(repoRoot, ['remote', 'get-url', 'origin'], signal);
+  return remote ? JSON.stringify([fs.realpathSync(repoRoot), remote.trim(), process.env.GH_HOST || '', process.env.GH_REPO || '']) : null;
+}
+
+async function collectWatchRows(repoRoot, hasGh, { signal, concurrency = 4, prCache, ...deps } = {}) {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) {
     throw new Error('Watch concurrency must be between 1 and 4');
   }
   const worktrees = await (deps.listAgentWorktrees || listAgentWorktrees)(repoRoot, signal);
+  const identity = hasGh && prCache ? await (deps.cacheIdentity || watchCacheIdentity)(repoRoot, signal) : null;
   const rows = new Array(worktrees.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(concurrency, worktrees.length) }, async () => {
@@ -150,8 +215,12 @@ async function collectWatchRows(repoRoot, hasGh, { signal, concurrency = 4, ...d
         || { sha: '—', age: '—', subject: '(no commits)' };
       const dirty = await (deps.dirtyCount || dirtyCount)(wt.path, signal);
       const ports = (deps.readPortFromEnvLocal || readPortFromEnvLocal)(wt.path);
-      const pr = hasGh ? await (deps.ghPrStatus || ghPrStatus)(repoRoot, wt.branch, signal) : null;
-      rows[index] = { ...wt, commit, dirty, ports, pr };
+      const probe = (probeSignal) => (deps.ghPrStatus || ghPrStatus)(repoRoot, wt.branch, probeSignal);
+      const observation = hasGh && identity && wt.head && prCache
+        ? await prCache.get(JSON.stringify([identity, wt.branch, wt.head, 'pr-list']), probe, signal) : null;
+      const pr = observation ? observation.value : hasGh ? await probe(signal) : null;
+      rows[index] = { ...wt, commit, dirty, ports, pr,
+        ...(observation ? { prObservation: { observedAt: observation.observedAt, ageMs: observation.ageMs, stale: observation.stale } } : {}) };
     }
   }));
   return rows;
@@ -201,7 +270,7 @@ async function render(repoRoot, hasGh, options = {}) {
       `  ${cyan(commit.sha)} ${dim(commit.age)} — ${commit.subject.slice(0, 60)}`,
     );
     lines.push(
-      `  ${dirtyTag} · ${portsTag} · ${prTag}`,
+      `  ${dirtyTag} · ${portsTag} · ${prTag}${wt.prObservation ? dim(` · observed ${wt.prObservation.ageMs}ms ago`) : ''}`,
     );
     lines.push(dim(`  ${wt.path}`));
     lines.push('');
@@ -226,6 +295,7 @@ Options:
   --interval N   Refresh interval in seconds (default 2)
   --target PATH  Repo root (default: current dir)
   --once         Render once and exit (good for scripting)
+  --pr-cache-ms N Opt-in PR observation TTL, 1–60000ms (default: disabled)
 `);
 }
 
@@ -237,6 +307,7 @@ async function watch(rawArgs) {
   }
   const repoRoot = resolveRepoRoot(options.target);
   const hasGh = detectGh();
+  const prCache = options.prCacheMs ? createPrObservationCache(options.prCacheMs) : undefined;
 
   if (!options.once) process.stdout.write(ALT_SCREEN_ON + CURSOR_HIDE);
   const restore = () => {
@@ -251,7 +322,7 @@ async function watch(rawArgs) {
   try {
     // Schedule after collection: a slow refresh must never overlap the next one.
     while (!controller.signal.aborted) {
-      const output = await render(repoRoot, hasGh, { signal: controller.signal });
+      const output = await render(repoRoot, hasGh, { signal: controller.signal, prCache });
       if (controller.signal.aborted) break;
       if (options.once) {
         process.stdout.write(output + '\n');
@@ -270,4 +341,4 @@ async function watch(rawArgs) {
   }
 }
 
-module.exports = { watch, parseWatchArgs, collectWatchRows, render, ghPrStatus };
+module.exports = { watch, parseWatchArgs, collectWatchRows, render, ghPrStatus, createPrObservationCache };

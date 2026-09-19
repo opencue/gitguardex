@@ -8,6 +8,13 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { runReviewGate, waitForGreenCi } = require('../src/finish/review-gate');
 const { collectWatchRows } = require('../src/cli/commands/watch');
 const { summarizeFinishRun } = require('../src/finish/progress');
+const { boundContext } = require('../src/mcp/collect');
+const { createPrObservationCache } = require('../src/cli/commands/watch');
+const { setAgentActivity } = require('../src/agents/activity');
+const { readEventPage, readStatePage } = require('../src/finish/events');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const rounds = 10;
 function gateFixture(scenario, agentQuiet) {
@@ -124,6 +131,175 @@ function percentiles(values) {
   };
 }
 
+async function adoptionFixtures() {
+  const contexts = [];
+  for (const agents of [1, 5, 20]) {
+    for (const files of [0, 10, 200]) {
+      const context = {
+        repo: 'fixture',
+        worktree: '/fixture',
+        branch: 'agent/self',
+        protected: false,
+        ownership: Array.from({ length: files }, (_, i) => ({
+          file: `src/${i}.js`,
+          owner: { branch: 'agent/0' }
+        })),
+        otherAgents: Array.from({ length: agents }, (_, i) => ({
+          branch: `agent/${i}`,
+          task: '✓'.repeat(800)
+        }))
+      };
+      const timings = [];
+      let bounded;
+      for (let round = 0; round < rounds; round++) {
+        const start = performance.now();
+        bounded = boundContext(context, 20000);
+        timings.push(performance.now() - start);
+        assert.deepEqual(bounded.ownership, context.ownership);
+        assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 20000);
+      }
+      contexts.push({
+        agents,
+        files,
+        rawBytes: Buffer.byteLength(JSON.stringify(context)),
+        boundedBytes: Buffer.byteLength(JSON.stringify(bounded)),
+        omitted: bounded.omitted,
+        elapsedMs: percentiles(timings)
+      });
+    }
+  }
+  const surface = {};
+  for (const dedupeSurface of [false, true]) {
+    let session = { id: 'fixture', branch: 'agent/fixture', tmux: { target: '%1' } };
+    let writes = 0;
+    let heartbeats = 0;
+    const start = performance.now();
+    for (let i = 0; i < 1000; i++)
+      setAgentActivity(
+        '/fixture',
+        { sessionId: 'fixture', activity: 'working', dedupeSurface },
+        {
+          readAgentSession: () => session,
+          updateAgentSession: (_root, _id, patch) => {
+            if (patch.activity) heartbeats++;
+            session = { ...session, ...patch };
+            return session;
+          },
+          applyWindowStatus: () => {
+            writes++;
+          }
+        }
+      );
+    assert.equal(heartbeats, 1000);
+    assert.equal(writes, dedupeSurface ? 1 : 1000);
+    surface[dedupeSurface ? 'deduplicated' : 'default'] = {
+      writes,
+      heartbeats,
+      elapsedMs: performance.now() - start
+    };
+  }
+  const cache = {};
+  for (const count of [1, 5, 20]) {
+    const samples = { fresh: [], cached: [] };
+    for (let round = 0; round < rounds; round++) {
+      for (const cached of round % 2 ? [true, false] : [false, true]) {
+        let calls = 0;
+        let dirtyReads = 0;
+        let head = 'a'.repeat(40);
+        const options = {
+          prCache: cached ? createPrObservationCache(60000) : undefined,
+          cacheIdentity: async () => 'repo:origin:github',
+          listAgentWorktrees: async () =>
+            Array.from({ length: count }, (_, i) => ({
+              path: `/wt/${i}`,
+              branch: `agent/${i}`,
+              head
+            })),
+          lastCommit: async () => ({ sha: head }),
+          dirtyCount: async () => {
+            dirtyReads++;
+            return 0;
+          },
+          readPortFromEnvLocal: () => [],
+          ghPrStatus: async () => {
+            calls++;
+            await delay(1);
+            return null;
+          }
+        };
+        const start = performance.now();
+        for (let i = 0; i < 3; i++) {
+          if (i === 2) head = 'b'.repeat(40);
+          await collectWatchRows('/fixture', true, options);
+        }
+        assert.equal(calls, count * (cached ? 2 : 3));
+        assert.equal(dirtyReads, count * 3);
+        samples[cached ? 'cached' : 'fresh'].push({
+          elapsed: performance.now() - start,
+          prCalls: calls,
+          dirtyReads
+        });
+      }
+    }
+    cache[count] = Object.fromEntries(
+      Object.entries(samples).map(([mode, values]) => [
+        mode,
+        {
+          prCalls: values[0].prCalls,
+          dirtyReads: values[0].dirtyReads,
+          elapsedMs: percentiles(values.map((v) => v.elapsed))
+        }
+      ])
+    );
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-benchmark-events-'));
+  const runId = 'finish-bench-123-abcdef12';
+  const directory = path.join(root, '.omx', 'state', 'finish-runs');
+  const events = {};
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const event = { schemaVersion: 1, runId, stage: 'review', state: 'running' };
+    fs.writeFileSync(
+      path.join(directory, `${runId}.jsonl`),
+      `${JSON.stringify(event)}\n`.repeat(10000),
+      { mode: 0o600 }
+    );
+    for (const [mode, read] of [
+      ['raw', readEventPage],
+      ['state', readStatePage]
+    ]) {
+      let cursor = '';
+      let totalBytes = 0;
+      let maxPageBytes = 0;
+      let pages = 0;
+      const start = performance.now();
+      while (true) {
+        const page = read(root, runId, cursor);
+        const bytes = Buffer.byteLength(JSON.stringify(page));
+        totalBytes += bytes;
+        maxPageBytes = Math.max(maxPageBytes, bytes);
+        pages++;
+        if (page.cursor === cursor || (mode === 'state' && page.snapshotComplete)) break;
+        cursor = page.cursor;
+      }
+      events[mode] = { totalBytes, maxPageBytes, pages, elapsedMs: performance.now() - start };
+    }
+    assert.ok(events.state.totalBytes < events.raw.totalBytes);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  return {
+    contexts,
+    surface,
+    cache,
+    events,
+    sampledHeapUsedBytes: process.memoryUsage().heapUsed,
+    providerTokens: null,
+    actualGitGhCalls: null,
+    note: 'Fixture counts, not real git/gh or provider costs; heap sample is not peak memory.'
+  };
+}
+
 async function main() {
   const gate = {};
   for (const scenario of ['success', 'blocked-review', 'autofix', 'late-ci']) {
@@ -190,6 +366,7 @@ async function main() {
       Object.entries(runs).map(([mode, values]) => [mode, percentiles(values)])
     );
   }
+  const adoption = await adoptionFixtures();
   console.log(
     JSON.stringify(
       {
@@ -204,6 +381,7 @@ async function main() {
         providerTokens: null,
         agentToolTurns: null,
         gate,
+        adoption,
         watchMs: watch
       },
       null,

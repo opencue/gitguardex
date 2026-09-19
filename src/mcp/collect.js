@@ -547,18 +547,51 @@ function compactOwnership(result) {
 }
 
 /** One compact, repo-scoped snapshot for an agent about to edit files. */
-function editContext({ cwd = process.cwd(), files = [], includePrs = false } = {}) {
+function editContext({ cwd = process.cwd(), files = [], includePrs = false, maxBytes } = {}) {
+  if (maxBytes !== undefined && (!Array.isArray(files) || files.length > 200 || files.some((file) => typeof file !== 'string' || !file.trim()))) {
+    throw new Error('Bounded context requires at most 200 file paths; split the file batch');
+  }
   const context = myContext({ cwd, includePr: includePrs });
-  if (context.error) return context;
+  if (context.error) return maxBytes === undefined ? context : boundContext(context, maxBytes);
   const otherAgents = collectRepoAgents(context.repoPath, { includePrs })
     .filter((agent) => agent.branch !== context.branch)
     .map(radarRecord);
   const ownership = whoOwnsMany(files, { repoPath: context.repoPath })
-    .map(compactOwnership);
-  return { ...context, otherAgents, ownership };
+    .map((result) => ({ ...compactOwnership(result), ...(maxBytes !== undefined && result.error ? { error: result.error } : {}) }));
+  const result = { ...context, otherAgents, ownership };
+  return maxBytes === undefined ? result : boundContext(result, maxBytes);
+}
+
+// Budget the JSON tool text, not the JSON-RPC envelope. Safety data is never
+// truncated: only optional peer summaries may be omitted.
+function boundContext(context, maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1048576) {
+    throw new Error('max_bytes must be an integer between 1 and 1048576');
+  }
+  const { otherAgents = [], ...required } = context;
+  const relevant = new Set((context.ownership || []).flatMap((item) =>
+    [item.owner, ...(item.owners || [])].filter(Boolean).map((owner) => owner.branch)));
+  const peers = [...otherAgents].sort((a, b) => Number(relevant.has(b.branch)) - Number(relevant.has(a.branch)));
+  const result = { ...required, otherAgents: [], complete: peers.length === 0,
+    omitted: { otherAgents: peers.length }, details: 'Use repo_state for peers; omit max_bytes for full context.' };
+  const size = () => Buffer.byteLength(JSON.stringify(result), 'utf8');
+  if (size() > maxBytes) throw new Error('budget-too-small: mandatory context exceeds max_bytes; raise budget or split the file batch');
+  for (const peer of peers) {
+    result.otherAgents.push(peer);
+    result.omitted.otherAgents--;
+    result.complete = result.omitted.otherAgents === 0;
+    if (size() > maxBytes) {
+      result.otherAgents.pop();
+      result.omitted.otherAgents++;
+      result.complete = false;
+    }
+  }
+  result.complete = result.omitted.otherAgents === 0;
+  return result;
 }
 
 module.exports = {
+  boundContext,
   collectAllAgents,
   collectRepoAgents,
   repoState,

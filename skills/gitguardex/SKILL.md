@@ -120,6 +120,22 @@ pass the returned `--cursor <cursor>` on the next read. Use the same repository 
 the finish invocation. Let this bounded CLI wait do the polling instead of repeatedly
 asking the model to reread the whole log. Events are observations, never merge authority.
 
+Opt-in bounded observations (defaults remain unchanged):
+- MCP `my_context`: pass `max_bytes` to bound UTF-8 JSON tool text. Ownership,
+  conflicts and safety fields are mandatory; `budget-too-small` requires a larger
+  budget or smaller file batch. Check `complete`/`omitted`; fetch full peers only
+  when needed. This budgets bytes, not model tokens.
+- `gx watch --pr-cache-ms 5000` shares PR probes with a short in-process TTL keyed
+  by repository, remote, branch and HEAD. Observation age is shown; dirty state
+  stays fresh. The cache is never used by merge gates.
+- `gx finish events --run <id> --view state`: merge `stages` patches by stage,
+  retain every `alerts` record, and resume with the opaque cursor. Paginated
+  snapshots are incomplete until `snapshotComplete: true`. Raw view remains the
+  default; reset explicitly on invalid/replaced/truncated cursors.
+- `gx agents set-status --activity working --dedupe-surface`: skip identical
+  successful pane-label writes, but still renew session activity on every call.
+  Changed targets and failed writes retry. This never infers agent completion.
+
 For setup guidance, use `gx prompt --list-parts` then `gx prompt --part <name>` for the
 needed slice; use `--exec --part <name>` only for command-capable slices. Do not repeatedly
 load the full setup prompt or remove the mandatory safety contract to save tokens.
