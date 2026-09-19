@@ -76,6 +76,7 @@ jobs:
         run: npm --prefix frontend run verify
 
       - name: Audit dependencies
+        # Retries registry outages only; a real finding fails on the first try.
         run: |
-          npm audit --audit-level=high
-          npm audit --prefix frontend --audit-level=high
+          scripts/npm-audit-retry.sh --audit-level=high
+          scripts/npm-audit-retry.sh --prefix frontend --audit-level=high

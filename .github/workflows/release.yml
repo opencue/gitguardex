@@ -54,7 +54,7 @@ jobs:
         run: npm run verify
 
       - name: Audit dependencies
-        run: npm audit --audit-level=high
+        run: scripts/npm-audit-retry.sh --audit-level=high
 
       - name: Resolve package metadata
         id: pkg
