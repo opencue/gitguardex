@@ -136,6 +136,31 @@ npm test
 gx branch finish --via-pr --wait-for-merge --cleanup
 ```
 
+### One-call agent context
+
+`gx context` exposes the existing MCP context collector as compact JSON, scoped
+to the current repository. Read the current lane, peer agents, and ownership of
+multiple files without separate per-file calls:
+
+```bash
+gx context src/auth.ts test/auth.test.ts
+gx context --target /path/to/worktree --max-bytes 20000 --json
+```
+
+PR lookup is opt-in with `--include-prs`. The default limit is 20,000 UTF-8 bytes
+of JSON, excluding the trailing newline; this is a byte budget, not a token
+count. Up to 200 file paths are accepted. Use `--` before dash-prefixed filenames.
+Only optional peer summaries may be omitted, with `complete: false` and an
+omission count. Required safety data, including ownership conflicts, is never
+truncated: an insufficient budget fails. Raise `--max-bytes` (up to 1 MiB) or
+split the file batch. This read-only snapshot does not claim files or grant edit
+permission; existing locks, approvals and merge gates still apply.
+
+Run `node scripts/benchmark-context-cli.js` for a repeated local comparison of
+separate MCP requests, the already-available batched MCP call, and this CLI.
+It checks equivalent safety facts and reports timings and output bytes, not
+provider-token counts or universal performance savings.
+
 For a small change that you already verified locally, use the explicit fast
 profile:
 

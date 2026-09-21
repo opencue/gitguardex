@@ -360,6 +360,7 @@ const COMMAND_TYPO_ALIASES = new Map([
   ['scna', 'scan'],
 ]);
 const SUGGESTIBLE_COMMANDS = [
+  'context',
   'status',
   'setup',
   'onboard',
@@ -434,6 +435,7 @@ const CLI_COMMAND_GROUPS = [
     label: 'Coordination',
     description: 'File locks, worktrees, hooks, and protected-branch policy.',
     commands: [
+      ['context', 'Compact repo context, peer agents, and batched file ownership (JSON, read-only)'],
       ['locks', 'CLI-owned file lock surface (claim/allow-delete/release/status/validate)'],
       ['worktree', 'CLI-owned worktree cleanup surface (prune)'],
       ['hook', 'Hook dispatch/install surface used by managed shims'],
@@ -482,6 +484,7 @@ const CLI_COMMAND_GROUPS = [
 // here must exist as a literal in src/, so the help cannot invent a flag.
 // It does not require every parsed flag to be documented.
 const CLI_COMMAND_HELP = {
+  context: { nativeHelp: true },
   onboard: { nativeHelp: true },
   pivot: { nativeHelp: true },
   switch: { nativeHelp: true },

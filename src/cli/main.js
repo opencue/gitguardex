@@ -366,6 +366,7 @@ async function main() {
   if (command === 'claude') return claudeCommand(rest);
   if (command === 'codex') return codexCommand(rest);
   if (command === 'doctor') return doctor(rest);
+  if (command === 'context') return require('./commands/context').agentContext(rest);
   if (command === 'branch') return branch(rest);
   if (command === 'switch') return require('./commands/worktree-navigation').switchWorktree(rest);
   if (command === 'shell-init') return require('./commands/worktree-navigation').shellInit(rest);
