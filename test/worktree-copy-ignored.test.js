@@ -219,3 +219,107 @@ test('CLI reports failed copies with nonzero status and supports explicit copyin
     process.exitCode = previous;
   }
 });
+
+test('runtime state never copies, including an included symlink alias to state', (t) => {
+  const { source, target, write } = fixture(t);
+  write('.gitignore', '*\n');
+  write('.worktreeinclude', '*\n');
+  write('.omx/state/agent-file-locks.json', '{"locks":{}}');
+  for (const file of [
+    '.omc/state/session',
+    '.codex/state/session',
+    '.claude/state/session',
+    'nested/.omx/state/session'
+  ])
+    write(file);
+  write('.codex/settings.json', '{}');
+  fs.symlinkSync('.omx/state/agent-file-locks.json', path.join(source, 'alias.env'));
+  for (const dryRun of [true, false]) {
+    const result = copyIgnoredFiles(source, target, { dryRun });
+    assert.ok(
+      result.operations
+        .filter((op) => op.file.includes('/state/') || op.file === 'alias.env')
+        .every((op) => op.status === 'skipped')
+    );
+    for (const directory of ['.omx', '.omc', '.codex/state', '.claude/state', 'nested/.omx'])
+      assert.equal(fs.existsSync(path.join(target, directory)), false);
+    assert.equal(fs.existsSync(path.join(target, 'alias.env')), false);
+  }
+  assert.equal(fs.existsSync(path.join(target, '.codex/settings.json')), true);
+});
+
+test('foreign branch claims in any worktree block copies but matching target claims permit them', (t) => {
+  const { source, target, write } = fixture(t);
+  write('.env');
+  write(
+    '.omx/state/agent-file-locks.json',
+    JSON.stringify({ locks: { '.env': { branch: 'main' } } })
+  );
+  for (const dryRun of [true, false]) {
+    const result = copyIgnoredFiles(source, target, { dryRun });
+    assert.equal(result.operations.find((op) => op.file === '.env').status, 'failed');
+    assert.equal(fs.existsSync(path.join(target, '.env')), false);
+  }
+  write(
+    '.omx/state/agent-file-locks.json',
+    JSON.stringify({ locks: { '.env': { branch: 'agent/copy-test' } } })
+  );
+  assert.equal(copyIgnoredFiles(source, target).operations[0].status, 'copied');
+});
+
+test('named agents cannot copy files claimed by a different agent on the target branch', (t) => {
+  const { source, target, write } = fixture(t);
+  const previous = process.env.GUARDEX_AGENT_ID;
+  t.after(() => {
+    if (previous === undefined) delete process.env.GUARDEX_AGENT_ID;
+    else process.env.GUARDEX_AGENT_ID = previous;
+  });
+  process.env.GUARDEX_AGENT_ID = 'alice';
+  write('.env');
+  write(
+    '.omx/state/agent-file-locks.json',
+    JSON.stringify({ locks: { '.env': { branch: 'agent/copy-test', agent: 'bob' } } })
+  );
+  assert.equal(copyIgnoredFiles(source, target).operations[0].status, 'failed');
+  assert.equal(fs.existsSync(path.join(target, '.env')), false);
+  process.env.GUARDEX_AGENT_ID = 'bob';
+  assert.equal(copyIgnoredFiles(source, target).operations[0].status, 'copied');
+});
+
+test('malformed lock registries fail closed before any copying', (t) => {
+  const { source, target, write } = fixture(t);
+  write('.env');
+  for (const registry of ['not json', '{"locks":[]}', '{"locks":{"other":null}}']) {
+    write('.omx/state/agent-file-locks.json', registry);
+    assert.throws(() => copyIgnoredFiles(source, target), /lock registry/i);
+    assert.equal(fs.existsSync(path.join(target, '.env')), false);
+  }
+});
+
+test('destination symlink aliases cannot write runtime state or foreign-claimed paths', (t) => {
+  const { source, target, write } = fixture(t);
+  write('cache/new');
+  fs.mkdirSync(path.join(target, '.omc'));
+  fs.symlinkSync('.omc', path.join(target, 'cache'));
+  assert.equal(copyIgnoredFiles(source, target).operations[0].status, 'failed');
+  assert.equal(fs.existsSync(path.join(target, '.omc/new')), false);
+  fs.unlinkSync(path.join(target, 'cache'));
+  fs.mkdirSync(path.join(target, 'private'));
+  fs.symlinkSync('private', path.join(target, 'cache'));
+  write(
+    '.omx/state/agent-file-locks.json',
+    JSON.stringify({ locks: { 'private/new': { branch: 'main' } } })
+  );
+  assert.equal(copyIgnoredFiles(source, target).operations[0].status, 'failed');
+  assert.equal(fs.existsSync(path.join(target, 'private/new')), false);
+});
+
+test('shared remote mode fails closed rather than fetching or ignoring remote claims', (t) => {
+  const { source, target, write, git } = fixture(t);
+  write('.env');
+  git('config', 'multiagent.sharedState', 'git');
+  const before = fs.readdirSync(target);
+  for (const dryRun of [true, false])
+    assert.throws(() => copyIgnoredFiles(source, target, { dryRun }), /shared remote claims/);
+  assert.deepEqual(fs.readdirSync(target), before);
+});
