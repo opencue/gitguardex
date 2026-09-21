@@ -136,6 +136,32 @@ npm test
 gx branch finish --via-pr --wait-for-merge --cleanup
 ```
 
+### Agent token usage
+
+`gx usage` delegates to [ccusage](https://github.com/ccusage/ccusage), reading the
+token usage already recorded by supported coding-agent CLIs. Install ccusage
+once with `npm install -g ccusage`; GX never silently downloads it.
+
+```bash
+gx usage                                      # daily totals across detected agents
+gx usage codex session --json --offline        # Codex sessions, machine-readable
+gx usage claude daily --since 20260921         # Claude Code date filter
+gx usage codex session --help                  # ccusage's report-specific options
+```
+
+Reports cover ccusage's configured local log roots, **not just the current GX
+repository**. `CODEX_HOME` and other ccusage environment/config settings pass
+through unchanged. Use `GUARDEX_CCUSAGE_BIN` to select an executable or JS entry
+point. GX preserves the backend output and exit status, without recounting
+tokens or treating missing ccusage as a successful empty report.
+
+Costs are API-equivalent estimates, not invoices or subscription balances.
+Pricing may require network access; `--offline` uses ccusage's offline pricing.
+Missing logs cannot be measured, and Codex log support is experimental.
+For A/B comparisons, use separate sessions with the same tasks/model and check
+task success before comparing input, output, cached tokens and elapsed time.
+This command reports usage; it does not itself run an A/B experiment.
+
 ### One-call agent context
 
 `gx context` exposes the existing MCP context collector as compact JSON, scoped

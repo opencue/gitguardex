@@ -360,6 +360,7 @@ const COMMAND_TYPO_ALIASES = new Map([
   ['scna', 'scan'],
 ]);
 const SUGGESTIBLE_COMMANDS = [
+  'usage',
   'context',
   'status',
   'setup',
@@ -446,6 +447,7 @@ const CLI_COMMAND_GROUPS = [
     label: 'Agents & reports',
     description: 'Review / cleanup bots, AI setup prompts, and safety reports.',
     commands: [
+      ['usage', 'Agent token and estimated cost reports through the installed ccusage CLI'],
       ['agents', 'Start/stop repo-scoped review + cleanup bots'],
       ['pr-review', 'Run local Codex/Claude PR review; post inline GitHub comments, write an artifact, or --fix the findings'],
       ['cockpit', 'Create or attach to a repo tmux cockpit session'],
@@ -484,6 +486,7 @@ const CLI_COMMAND_GROUPS = [
 // here must exist as a literal in src/, so the help cannot invent a flag.
 // It does not require every parsed flag to be documented.
 const CLI_COMMAND_HELP = {
+  usage: { nativeHelp: true },
   context: { nativeHelp: true },
   onboard: { nativeHelp: true },
   pivot: { nativeHelp: true },
