@@ -1,5 +1,42 @@
 # Changelog
 
+## [8.5.0](https://github.com/opencue/gitguardex/compare/v8.4.0...v8.5.0) (2026-09-21)
+
+
+### Features
+
+* **abide:** portable hook shim, --compile, rubric freshness and calibration checks ([#795](https://github.com/opencue/gitguardex/issues/795)) ([bd0fcaa](https://github.com/opencue/gitguardex/commit/bd0fcaa98559e8477f55749ea329ee4ca02c7fa4))
+* **abide:** show rule enforcement in gx status and my_context; gx codex install ([#798](https://github.com/opencue/gitguardex/issues/798)) ([b1708c1](https://github.com/opencue/gitguardex/commit/b1708c17cfdf975624f40b2999994b70d7f8e6cb))
+* bound worktree starts and preserve live agent ownership ([#780](https://github.com/opencue/gitguardex/issues/780)) ([1f13278](https://github.com/opencue/gitguardex/commit/1f13278b96c747ea93ab87897a5560295dceef28))
+* **context:** expose batched agent context in one CLI call ([#803](https://github.com/opencue/gitguardex/issues/803)) ([02bd5df](https://github.com/opencue/gitguardex/commit/02bd5df586393cea07f1a8b67c3bd14a04cc3551))
+* **help:** every command answers --help, and the catalog is machine-readable ([#789](https://github.com/opencue/gitguardex/issues/789)) ([f9808b5](https://github.com/opencue/gitguardex/commit/f9808b55a189be17d318272ef3156ceb83c6239c))
+* integrate native worktree navigation and guarded lifecycle hooks ([#802](https://github.com/opencue/gitguardex/issues/802)) ([ec9a6bd](https://github.com/opencue/gitguardex/commit/ec9a6bdfacb12afc8295bce9c02a07aa3e888ea5))
+* isolate dependency snapshots and honor provisioning modes ([#778](https://github.com/opencue/gitguardex/issues/778)) ([ec22788](https://github.com/opencue/gitguardex/commit/ec227887c3597a2d0202e760b8b39085e3264a52))
+* **review:** add local PR Lens diagrams to code-assist ([#791](https://github.com/opencue/gitguardex/issues/791)) ([0094748](https://github.com/opencue/gitguardex/commit/00947488ce88bf5f7dd5e2223f771a8b8ab2e54a))
+* **review:** judge the PR diff against AGENTS.md with abide inside the review gate ([#797](https://github.com/opencue/gitguardex/issues/797)) ([0a00ea0](https://github.com/opencue/gitguardex/commit/0a00ea0f129fd092f73f9331b5da373d384ed731))
+* **toolchain:** wire CodeGraph and OpenSrc by default ([#762](https://github.com/opencue/gitguardex/issues/762)) ([9125fb3](https://github.com/opencue/gitguardex/commit/9125fb356c950e34459dba6501817b9ab0a7f0da))
+* **usage:** expose ccusage token reports through GX ([#804](https://github.com/opencue/gitguardex/issues/804)) ([f57a01a](https://github.com/opencue/gitguardex/commit/f57a01a1385815eb9d51c269b07f2112d417d615))
+* **worktree:** require hook consent and support isolated provisioning ([#773](https://github.com/opencue/gitguardex/issues/773)) ([80ddab5](https://github.com/opencue/gitguardex/commit/80ddab5fad31198c7a8b931845f5d0c575737a57))
+* **worktrees:** avoid duplicate checkouts and retain cleanup retries ([#777](https://github.com/opencue/gitguardex/issues/777)) ([6825ecd](https://github.com/opencue/gitguardex/commit/6825ecd09d7b48fc2efc589618358c1fec6601a1))
+* **worktrees:** avoid materializing excluded bulk data ([#775](https://github.com/opencue/gitguardex/issues/775)) ([02ddf2c](https://github.com/opencue/gitguardex/commit/02ddf2cfc22e872f4ed78f8b59d29eac3e209eb4))
+
+
+### Bug Fixes
+
+* **finish:** infer PR base from git history when guardexBase is unset ([#776](https://github.com/opencue/gitguardex/issues/776)) ([7876b5b](https://github.com/opencue/gitguardex/commit/7876b5bbe4d442fa94ba0ac476a0a651e9b20ac1))
+* **help:** six defects review found in [#789](https://github.com/opencue/gitguardex/issues/789), and a gate that cannot rot ([#790](https://github.com/opencue/gitguardex/issues/790)) ([1f05ca4](https://github.com/opencue/gitguardex/commit/1f05ca4e4672dafb89c71ac3f1af4e206868ab11))
+* **hooks:** let git config turn off the post-merge sweep, not just an env var ([#788](https://github.com/opencue/gitguardex/issues/788)) ([41d2928](https://github.com/opencue/gitguardex/commit/41d292886d59b4ef7302b7b83711bf40e3f5eb6d))
+* preserve reviewed revision through gated finish ([#772](https://github.com/opencue/gitguardex/issues/772)) ([46d5af9](https://github.com/opencue/gitguardex/commit/46d5af9f826725790ee9a78ffb0e5abef4a77344))
+* **worktrees:** prevent nested lane accumulation ([#774](https://github.com/opencue/gitguardex/issues/774)) ([2afafe7](https://github.com/opencue/gitguardex/commit/2afafe7f433c0bbf97dff0299ec7fa32cb50343e))
+
+
+### Performance
+
+* **agents:** reduce finish output and bound watch latency ([#792](https://github.com/opencue/gitguardex/issues/792)) ([6399937](https://github.com/opencue/gitguardex/commit/6399937065c37d2a765ee30c7e40ff7b411bd312))
+* **prune:** batch the open-PR lookup; document the hooks in gx hook --help ([#785](https://github.com/opencue/gitguardex/issues/785)) ([bdc2ee2](https://github.com/opencue/gitguardex/commit/bdc2ee23c53ae3e505fb8b2d823e29480b351f2a))
+* **prune:** memoize the worktree list and branch tips instead of re-asking git ([#787](https://github.com/opencue/gitguardex/issues/787)) ([d174496](https://github.com/opencue/gitguardex/commit/d1744967ff8ccbe770a6eea8edfe42b94bf2c96d))
+* **prune:** one readlink for the whole live-cwd scan, not one per process ([#786](https://github.com/opencue/gitguardex/issues/786)) ([725a3ed](https://github.com/opencue/gitguardex/commit/725a3ed005df50263e1c0c168754272b78dbf574))
+
 ## [8.4.0](https://github.com/opencue/gitguardex/compare/v8.3.0...v8.4.0) (2026-09-01)
 
 
