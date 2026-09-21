@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
+const { once } = require('node:events');
 const { copyIgnoredFiles } = require('../src/worktree-copy-ignored');
 const { copyIgnored } = require('../src/cli/commands/worktree-copy-ignored');
 const { applyCopy } = require('../src/scaffold/provision-config');
@@ -322,4 +323,79 @@ test('shared remote mode fails closed rather than fetching or ignoring remote cl
   for (const dryRun of [true, false])
     assert.throws(() => copyIgnoredFiles(source, target, { dryRun }), /shared remote claims/);
   assert.deepEqual(fs.readdirSync(target), before);
+});
+
+test(
+  'copy waits for the claims lock and honors a claim made while waiting',
+  { timeout: 10000 },
+  async (t) => {
+    const { source, target, write } = fixture(t);
+    write('.env');
+    const holder = spawn('python3', [
+      '-c',
+      "import fcntl,sys; f=open(sys.argv[1],'a+'); fcntl.flock(f,fcntl.LOCK_EX); print('ready',flush=True); sys.stdin.read()",
+      path.join(source, '.git/agent-file-locks.lock')
+    ]);
+    t.after(() => holder.kill());
+    const holderExit = once(holder, 'exit');
+    await once(holder.stdout, 'data');
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `
+    const cp = require('node:child_process');
+    const original = cp.execFileSync;
+    cp.execFileSync = function(command, ...args) {
+      if (command === 'python3') process.send('locking');
+      return original.call(this, command, ...args);
+    };
+    const { copyIgnoredFiles } = require(process.argv[1]);
+    process.stdout.write(JSON.stringify(copyIgnoredFiles(process.argv[2], process.argv[3])));
+  `,
+        require.resolve('../src/worktree-copy-ignored'),
+        source,
+        target
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }
+    );
+    t.after(() => child.kill());
+    let output = '';
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    const childExit = once(child, 'exit');
+    const outcome = await Promise.race([
+      once(child, 'message').then(() => 'waiting'),
+      childExit.then(() => 'exited')
+    ]);
+    assert.equal(outcome, 'waiting', 'copy must acquire the shared claims lock before proceeding');
+    assert.equal(fs.existsSync(path.join(target, '.env')), false);
+    write(
+      '.omx/state/agent-file-locks.json',
+      JSON.stringify({ locks: { '.env': { branch: 'main' } } })
+    );
+    holder.stdin.end();
+    await holderExit;
+    assert.equal((await childExit)[0], 0);
+    const result = JSON.parse(output);
+    assert.equal(result.operations[0].status, 'failed');
+    assert.match(result.operations[0].note, /claimed/);
+    assert.equal(fs.existsSync(path.join(target, '.env')), false);
+  }
+);
+
+test('dry-run creates no advisory lock and unsafe lock files block actual copying', (t) => {
+  const { root, source, target, write } = fixture(t);
+  write('.env');
+  const lock = path.join(source, '.git/agent-file-locks.lock');
+  assert.equal(copyIgnoredFiles(source, target, { dryRun: true }).operations[0].status, 'planned');
+  assert.equal(fs.existsSync(lock), false);
+  assert.equal(fs.existsSync(path.join(target, '.env')), false);
+  const outside = path.join(root, 'outside');
+  fs.writeFileSync(outside, 'unchanged');
+  fs.symlinkSync(outside, lock);
+  assert.throws(() => copyIgnoredFiles(source, target), /Command failed/);
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'unchanged');
+  assert.equal(fs.existsSync(path.join(target, '.env')), false);
 });

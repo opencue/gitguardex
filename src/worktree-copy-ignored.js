@@ -83,7 +83,7 @@ function foreignClaimedFiles(target) {
   return foreign;
 }
 
-function copyIgnoredFiles(sourceDirectory, targetDirectory, options = {}) {
+function copyIgnoredUnlocked(sourceDirectory, targetDirectory, options = {}) {
   const source = worktreeRoot(sourceDirectory);
   const target = worktreeRoot(targetDirectory);
   const common = (root) =>
@@ -159,6 +159,42 @@ function copyIgnoredFiles(sourceDirectory, targetDirectory, options = {}) {
     }
   }
   return { source, target, dryRun: Boolean(options.dryRun), operations };
+}
+
+function copyIgnoredFiles(sourceDirectory, targetDirectory, options = {}) {
+  if (options.dryRun) return copyIgnoredUnlocked(sourceDirectory, targetDirectory, options);
+  const target = worktreeRoot(targetDirectory);
+  const common = fs.realpathSync(
+    path.resolve(target, git(target, ['rev-parse', '--git-common-dir']).trim())
+  );
+  const output = execFileSync(
+    'python3',
+    [
+      path.join(__dirname, 'finish/with-claims-lock.py'),
+      path.join(common, 'agent-file-locks.lock'),
+      process.execPath,
+      __filename,
+      '--locked-copy',
+      path.resolve(sourceDirectory),
+      target
+    ],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+  const response = JSON.parse(output);
+  if (response.error) throw new Error(response.error);
+  return response.result;
+}
+
+// Internal child entrypoint: invoked by the advisory-lock runner above. Keep
+// ownership inspection and all copy writes in this same locked subprocess.
+if (require.main === module && process.argv[2] === '--locked-copy') {
+  try {
+    process.stdout.write(
+      JSON.stringify({ result: copyIgnoredUnlocked(process.argv[3], process.argv[4]) })
+    );
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ error: error.message }));
+  }
 }
 
 module.exports = { copyIgnoredFiles };
