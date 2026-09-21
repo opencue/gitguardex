@@ -6,7 +6,7 @@ const hooks = require('../../worktree-hooks');
 async function runWorktreeHooksCommand(args, deps = {}) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(
-      'gx hook <event>|approve <event>|logs [--event <event>] [--source <repo>]\n' +
+      'gx worktree hook <event>|approve <event>|logs [--event <event>] [--source <repo>]\n' +
         '  --revoke (approve only), --dry-run, --worktree <path>, --branch <name>, --mode minimal|docs|full, --json'
     );
     return;

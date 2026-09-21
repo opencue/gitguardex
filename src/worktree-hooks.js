@@ -302,7 +302,13 @@ function runLifecycleHookSync(repoRoot, event, context = {}, deps = {}) {
   );
   if (child.error) throw child.error;
   if (!child.stdout.trim()) throw new Error(child.stderr.trim() || 'Lifecycle worker failed');
-  return JSON.parse(child.stdout);
+  const result = JSON.parse(child.stdout);
+  if (!result.ok && event.startsWith('pre-')) {
+    const error = new Error(`Lifecycle hook ${event}: ${result.status}`);
+    error.result = result;
+    throw error;
+  }
+  return result;
 }
 
 module.exports = {

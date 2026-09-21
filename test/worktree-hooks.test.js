@@ -209,11 +209,11 @@ test('disabled hooks ignore approved config and CLI rejects automatic approval',
   );
 });
 
-test('sync adapter blocks on pre hooks and returns non-ok failures', async (t) => {
+test('sync adapter blocks on pre hooks and throws non-ok failures', async (t) => {
   const { repo, deps, writeConfig } = fixture(t, {
     hooks: { 'pre-merge': write('sync-ran') }
   });
-  assert.equal(hooks.runLifecycleHookSync(repo, 'pre-merge', {}, deps).ok, false);
+  assert.throws(() => hooks.runLifecycleHookSync(repo, 'pre-merge', {}, deps), /approval-required/);
   await hooks.approveLifecycleHooks(repo, 'pre-merge', deps);
   assert.equal(hooks.runLifecycleHookSync(repo, 'pre-merge', {}, deps).ok, true);
   assert.equal(fs.readFileSync(path.join(repo, 'sync-ran'), 'utf8'), 'yes');
