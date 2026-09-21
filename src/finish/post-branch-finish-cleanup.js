@@ -370,6 +370,17 @@ function retryPendingFinishedCleanup(repoRoot, options = {}) {
 function cleanupFinishedDetachedWorktree(input) {
   const plan = input?.expectedHead ? input : persistFinishedCleanup(input);
   if (!validCleanupPlan(plan)) return false;
+  if (!worktreeIdentityMatches(plan) || probeWorktreeOwnership(plan.worktreePath).active)
+    return false;
+  try {
+    require('../worktree-hooks').runLifecycleHookSync(plan.repoRoot, 'pre-remove', {
+      worktreePath: plan.worktreePath,
+      branch: plan.branch
+    });
+  } catch (error) {
+    console.error(`[${TOOL_NAME}] pre-remove preserved finished worktree: ${error.message}`);
+    return false;
+  }
   // Same OS mutex as claims writers and prune; never release anyone's claims.
   const result = run(
     'python3',
@@ -387,6 +398,14 @@ function cleanupFinishedDetachedWorktree(input) {
   if (result.status === 0) {
     if (result.stdout) process.stdout.write(result.stdout);
     retireCleanupJob(plan);
+    try {
+      require('../worktree-hooks').runLifecycleHookSync(plan.repoRoot, 'post-remove', {
+        worktreePath: plan.worktreePath,
+        branch: plan.branch
+      });
+    } catch (error) {
+      console.error(`[${TOOL_NAME}] Worktree removed; post-remove hook failed: ${error.message}`);
+    }
   }
   return result.status === 0;
 }

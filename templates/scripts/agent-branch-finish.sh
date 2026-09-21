@@ -1117,6 +1117,24 @@ assert_reviewed_revision() {
   fi
 }
 
+pre_merge_hook_ran=0
+run_pre_merge_hook() {
+  [[ "$pre_merge_hook_ran" -eq 0 ]] || return 0
+  local before after status before_status before_diff after_diff
+  before="$(git -C "$source_worktree" rev-parse HEAD)" || return 1
+  before_status="$(git -C "$source_worktree" status --porcelain)" || return 1
+  before_diff="$(git -C "$source_worktree" diff --no-ext-diff --binary HEAD -- | git hash-object --stdin)" || return 1
+  run_guardex_cli worktree hook pre-merge --source "$repo_root" --worktree "$source_worktree" --branch "$SOURCE_BRANCH" || return 1
+  after="$(git -C "$source_worktree" rev-parse HEAD)" || return 1
+  status="$(git -C "$source_worktree" status --porcelain)" || return 1
+  after_diff="$(git -C "$source_worktree" diff --no-ext-diff --binary HEAD -- | git hash-object --stdin)" || return 1
+  if [[ "$before" != "$after" || "$before_status" != "$status" || "$before_diff" != "$after_diff" ]]; then
+    echo "[agent-branch-finish] pre-merge changed the source revision or worktree; rerun verification before merging." >&2
+    return 1
+  fi
+  pre_merge_hook_ran=1
+}
+
 assert_synchronous_merge() {
   [[ "$FINISH_GATE_DONE" -eq 1 ]] || return 0
   local id queue_enabled
@@ -1339,6 +1357,7 @@ if [[ "$MERGE_MODE" == "pr" && "$PUSH_ENABLED" -eq 1 ]]; then
 fi
 
 if [[ "$should_create_integration_helper" -eq 1 ]]; then
+  run_pre_merge_hook || exit 1
   existing_base_worktree=""
   if [[ "$PUSH_ENABLED" -eq 0 ]]; then
     existing_base_worktree="$(get_worktree_for_branch "$BASE_BRANCH")"
@@ -1675,6 +1694,7 @@ wait_for_pr_merge() {
   local merge_output=""
 
   while true; do
+    run_pre_merge_hook || return 1
     assert_synchronous_merge || return 1
     if merge_output="$("$GH_BIN" pr merge "$SOURCE_BRANCH" --squash --delete-branch "${merge_head_args[@]}" 2>&1)"; then
       return 0
@@ -1865,6 +1885,7 @@ run_pr_flow() {
 
   finish_progress running merge "waiting for GitHub merge readiness"
   merge_output=""
+  run_pre_merge_hook || return 1
   assert_synchronous_merge || return 1
   if merge_output="$("$GH_BIN" pr merge "$SOURCE_BRANCH" --squash --delete-branch "${merge_head_args[@]}" 2>&1)"; then
     return 0
@@ -1984,6 +2005,8 @@ fi
 # the merge scrolls away. Everything below this line is cleanup: it can warn,
 # it must not fail the run, because the work is already in the base branch.
 finish_progress complete merge "landed in ${BASE_BRANCH}"
+run_guardex_cli worktree hook post-merge --source "$repo_root" --worktree "$repo_root" --branch "$SOURCE_BRANCH" \
+  || echo "[agent-branch-finish] Warning: merge succeeded but post-merge hook could not be queued." >&2
 echo "[agent-branch-finish] ✅ MERGED  ${SOURCE_BRANCH} -> ${BASE_BRANCH} (${merge_status} flow)"
 if [[ -n "$pr_url" ]]; then
   echo "[agent-branch-finish] ✅ PR: ${pr_url}"
@@ -2031,8 +2054,11 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
     git -C "$source_worktree" checkout --detach >/dev/null 2>&1 || true
   fi
 
+  # Source worktree removal goes through the guarded prune path below, so
+  # active ownership, dirty state and lifecycle vetoes cannot be bypassed.
   if [[ "$source_worktree" != "$current_worktree" && "$source_worktree" == "${agent_worktree_root}"/* ]]; then
-    git -C "$repo_root" worktree remove "$source_worktree" --force >/dev/null 2>&1 || true
+    run_guardex_prune --base "$BASE_BRANCH" --branch "$SOURCE_BRANCH" --delete-branches --only-dirty-worktrees \
+      || echo "[agent-branch-finish] Warning: guarded source cleanup deferred." >&2
   fi
 
   # The merge already landed (see the MERGED banner above), so a branch that

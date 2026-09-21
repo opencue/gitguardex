@@ -367,6 +367,8 @@ async function main() {
   if (command === 'codex') return codexCommand(rest);
   if (command === 'doctor') return doctor(rest);
   if (command === 'branch') return branch(rest);
+  if (command === 'switch') return require('./commands/worktree-navigation').switchWorktree(rest);
+  if (command === 'shell-init') return require('./commands/worktree-navigation').shellInit(rest);
   if (command === 'pivot') return pivot(rest);
   if (command === 'ship') return ship(rest);
   if (command === 'locks') return locks(rest);

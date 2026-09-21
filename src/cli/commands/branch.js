@@ -527,6 +527,9 @@ function ship(rawArgs) {
 function worktree(rawArgs) {
   const activeCwd = process.cwd();
   const [subcommand, ...rest] = rawArgs;
+  if (subcommand === 'switch') return require('./worktree-navigation').switchWorktree(rest);
+  if (subcommand === 'hook') return require('./worktree-hooks').runWorktreeHooksCommand(rest);
+  if (subcommand === 'copy-ignored') return require('./worktree-copy-ignored').worktreeCopyIgnored(rest);
   if (subcommand === 'estimate') return require('./worktree-estimate').worktreeEstimate(rest);
   if (subcommand === 'prune-artifacts') return require('./storage').pruneArtifacts(rest);
   if (subcommand === 'retry-cleanup') {
@@ -554,7 +557,7 @@ function worktree(rawArgs) {
     });
     return;
   }
-  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <prune|provision|approve-hooks|estimate|retry-cleanup|prune-artifacts> [options]`);
+  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <switch|hook|copy-ignored|prune|provision|approve-hooks|estimate|retry-cleanup|prune-artifacts> [options]`);
 }
 
 module.exports = {

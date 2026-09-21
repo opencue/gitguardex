@@ -234,7 +234,11 @@ function applyCopy(repoRoot, worktreePath, patterns, deps = {}) {
   const repoReal = safeRealpath(repoRoot);
   const worktreeReal = safeRealpath(worktreePath);
   for (const pattern of patterns) {
-    const rels = expandGlob(repoRoot, pattern, deps);
+    const rels = deps.literalPaths
+      ? isUnsafePattern(pattern)
+        ? []
+        : [pattern]
+      : expandGlob(repoRoot, pattern, deps);
     if (rels.length === 0) {
       operations.push({ status: 'skipped', file: pattern, note: 'no match in repo root' });
       continue;

@@ -1191,6 +1191,12 @@ if ! initialize_openspec_plan_workspace "$repo_root" "$worktree_path" "$openspec
   exit 1
 fi
 
+if [[ "$PROVISION_MODE" == "full" ]]; then
+  # A failed setup gate leaves the newly created worktree intact for repair,
+  # but never marks it ready or launches a worker into it.
+  run_guardex_cli worktree hook pre-start --source "$repo_root" --worktree "$worktree_path" --branch "$branch_name"
+fi
+
 if [[ -n "$TASK_ID" ]]; then
   git -C "$repo_root" config "branch.${branch_name}.guardexStartReady" true
 fi
@@ -1216,5 +1222,9 @@ elif [[ "$OPENSPEC_SKIP_PLAN" -eq 1 ]]; then
   echo "[agent-branch-start] OpenSpec plan: skipped by tier ${OPENSPEC_TIER}"
 else
   echo "[agent-branch-start] OpenSpec plan: openspec/plan/${openspec_plan_slug}"
+fi
+if [[ "$PROVISION_MODE" == "full" ]]; then
+  run_guardex_cli worktree hook post-start --source "$repo_root" --worktree "$worktree_path" --branch "$branch_name" \
+    || echo "[agent-branch-start] Warning: post-start hook could not be queued." >&2
 fi
 print_agent_next_steps "$branch_name" "$worktree_path" "implement + commit" "$BASE_BRANCH"
