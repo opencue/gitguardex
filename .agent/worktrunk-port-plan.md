@@ -50,10 +50,20 @@ integration. Existing worktrees and unrelated changes must remain untouched.
 ## Progress
 
 - [x] Read current code, scope, licensing, and isolate the integration worktree.
-- [ ] Complete the three independent worker lanes.
-- [ ] Integrate actual CLI and lifecycle calls; document scope and attribution.
-- [ ] Verify focused and repository delivery checks.
+- [x] Complete the three independent worker lanes.
+- [x] Integrate actual CLI and lifecycle calls; document scope and attribution.
+- [x] Verify focused tests, formatting, lint, packaging, and full coverage.
 - [ ] Commit and finish via PR, wait for merge, clean up only this task's lanes.
+
+## Verification results
+
+- Full suite: 1444 tests, 1439 passed, 5 skipped, no failures.
+- Coverage gate passed: lines 71.50%, branches 76.93%, functions 76.82%.
+- Changed-file formatting, repository lint, and package checks passed.
+- Added regression checks for detached cleanup, source changes in pre-merge,
+  foreign-repository hook targets, and claims appearing while copying waits.
+- Remote-shared-claim mode intentionally refuses explicit ignored copying;
+  ordinary branch provisioning is unchanged. No performance savings claimed.
 
 ## Decisions and deviations
 

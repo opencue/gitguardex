@@ -38,19 +38,33 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
     );
   const entries = (deps.listWorktrees || listWorktrees)(repoRoot);
   if (!entries.length) throw new Error('No worktrees available');
-  entries.forEach((entry, index) =>
-    output.write(
-      `${index + 1}. ${terminalText(entry.branch || '(detached)')}  ${terminalText(entry.path)}\n`
-    )
-  );
+  let visible = entries;
+  const display = () =>
+    visible.forEach((entry, index) =>
+      output.write(
+        `${index + 1}. ${terminalText(entry.branch || '(detached)')}  ${terminalText(entry.path)}\n`
+      )
+    );
+  display();
   const rl = deps.question ? null : readline.createInterface({ input, output });
   const question = deps.question || ((prompt) => rl.question(prompt));
   try {
     while (true) {
-      const answer = (await question('Worktree number (p N previews, q cancels): ')).trim();
+      const answer = (
+        await question('Worktree number (/text filters, p N previews, q cancels): ')
+      ).trim();
       if (!answer || /^(?:q|quit|cancel)$/i.test(answer)) return null;
+      if (answer.startsWith('/')) {
+        const query = answer.slice(1).toLowerCase();
+        visible = entries.filter((entry) =>
+          `${entry.branch} ${entry.path}`.toLowerCase().includes(query)
+        );
+        display();
+        if (!visible.length) output.write('No matches. Use / to clear the filter.\n');
+        continue;
+      }
       const match = answer.match(/^(p\s+)?([1-9]\d*)$/i);
-      const entry = match && entries[Number(match[2]) - 1];
+      const entry = match && visible[Number(match[2]) - 1];
       if (!entry) {
         output.write('Choose a listed number.\n');
         continue;

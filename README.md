@@ -203,6 +203,89 @@ not implemented by adding a second worktree manager. Reproduce the local copy
 comparison with `node scripts/benchmark-provision.js`; it reports repeated-run
 timings and allocation accounting, not universal performance or storage savings.
 
+### Native worktree navigation
+
+```bash
+eval "$(gx shell-init bash)"       # zsh supported too; fish: gx shell-init fish | source
+gx switch agent/bot/my-task       # registered branch, worktree path, or "-" for previous
+gx switch pr:123 --create         # GitHub PR (requires gh); creation uses GX safety gates
+gx switch                        # terminal picker with diff-stat and PR preview
+gx switch agent/bot/my-task --json
+```
+
+Without shell integration, `gx switch` prints the destination; it cannot change
+the parent shell's directory. `--print` is path-only and `--json` is structured
+output. Navigation does not change the primary checkout. `--create` provisions
+a GX agent lane from an existing branch or PR head, retaining quotas and claims,
+not a second worktree manager. PR URLs must match this repository; fork PR heads
+are fetched through the origin repository's numbered PR ref and verified by SHA.
+
+### Approved lifecycle hooks
+
+Alongside the existing `provision.postCreate`, configure named lifecycle events:
+
+```json
+{
+  "hooks": {
+    "pre-start": ["npm ci", { "build": "npm run build", "lint": "npm run lint" }],
+    "pre-merge": "npm test",
+    "post-start": "echo Ready"
+  },
+  "hookTimeoutMs": 600000
+}
+```
+
+An array is an ordered pipeline; commands in a named object run concurrently,
+and the next stage waits for all of them to succeed. Pre hooks block; post hooks
+run in the background with per-run output and status files.
+
+```bash
+gx worktree hook approve pre-start --source /path/to/repo
+gx worktree hook approve pre-merge --source /path/to/repo
+gx worktree hook approve post-start --source /path/to/repo
+gx worktree hook pre-start --source /path/to/repo --worktree /path/to/lane --dry-run
+gx worktree hook logs --source /path/to/repo --json
+gx worktree hook approve pre-start --source /path/to/repo --revoke
+```
+
+Consent is interactive and local, bound to the repository, event, exact ordered
+commands and timeout. Changes require approval again. These approvals are separate
+from legacy `postCreate`; `--yes` cannot approve shell execution. State lives under
+the Guardex user's `.config/gitguardex/lifecycle-hooks/`, outside the repository.
+Approved commands are arbitrary shell code, not sandboxed; invoked scripts can
+change independently of the approved command text.
+
+Events are `pre-*` and `post-*` for `start`, `switch`, `commit`, `merge`,
+and `remove`. Start hooks run after provisioning but before readiness, then
+after successful initialization; reduced provisioning modes skip them. Switch
+hooks surround destination selection, before the shell consumes its path.
+Commit hooks surround GX finish's auto-commit (not unrelated manual Git commits).
+Merge hooks supplement, never replace, existing PR/merge gates: a pre-merge hook
+that changes the source revision or leaves changes aborts the merge.
+Removal hooks apply to guarded prune and deferred finish cleanup, not internal
+temporary integration/probe trees. A failed pre-remove preserves the worktree;
+post-remove runs from the surviving repository, with `GUARDEX_WORKTREE` retaining
+the removed path. Hooks also receive `GUARDEX_REPO_ROOT`, `GUARDEX_BRANCH` and
+`GUARDEX_HOOK_EVENT`. `GUARDEX_PROVISION_HOOKS=0` disables hooks explicitly.
+
+### Explicit ignored-file copy
+
+```bash
+gx worktree copy-ignored --source /path/to/repo --target /path/to/lane --dry-run --json
+gx worktree copy-ignored --source /path/to/repo --target /path/to/lane
+```
+
+Only ignored files are eligible. Optional source `.worktreeinclude` narrows the
+selection using Git's ignore-pattern syntax, for example `node_modules/**`
+followed by `!node_modules/private/`. Existing or tracked target files are never
+overwritten, and symlink escapes and nested repositories are rejected. This
+explicit command does not broaden the normal branch-start copy policy.
+GX runtime/ownership directories are excluded, including aliases pointing into
+them. Foreign file claims and malformed lock registries block copying. Shared
+remote-lock mode currently refuses this command rather than bypassing remote
+ownership or fetching state during a read-only dry-run.
+See [third-party attribution](THIRD-PARTY-NOTICES.md).
+
 ## Code-assist review gate
 
 Add `--gate-review` to review the PR before merge. Add `--gate-autofix` to let

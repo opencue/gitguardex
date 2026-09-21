@@ -58,6 +58,12 @@ async function switchWorktree(args = [], deps = {}) {
 }
 
 function shellInit(args = []) {
+  if (args.length === 1 && ['--help', '-h'].includes(args[0])) {
+    console.log(
+      'Usage: gx shell-init [bash|zsh|fish]\nPrint a shell function for gx switch; evaluate it in your interactive shell.'
+    );
+    return;
+  }
   if (args.length > 1) throw new Error('Usage: gx shell-init [bash|zsh|fish]');
   process.stdout.write(shellIntegration(args[0] || 'bash'));
 }

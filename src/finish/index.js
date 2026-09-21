@@ -167,6 +167,9 @@ function autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options) {
     return { changed: true, committed: false, dryRun: true };
   }
 
+  const { runLifecycleHookSync } = require('../worktree-hooks');
+  runLifecycleHookSync(repoRoot, 'pre-commit', { worktreePath, branch });
+  // Hooks may generate files; claim through GX before staging.
   claimLocksForAutoCommit(repoRoot, worktreePath, branch);
 
   const addResult = run('git', ['-C', worktreePath, 'add', '-A'], { stdio: 'pipe' });
@@ -198,6 +201,11 @@ function autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options) {
     );
   }
 
+  try {
+    runLifecycleHookSync(repoRoot, 'post-commit', { worktreePath, branch });
+  } catch (error) {
+    console.error(`[${TOOL_NAME}] Commit succeeded; post-commit hook failed: ${error.message}`);
+  }
   return { changed: true, committed: true, message: commitMessage };
 }
 

@@ -53,7 +53,8 @@ async function runWorktreeHooksCommand(args, deps = {}) {
       },
       deps
     );
-  console.log(JSON.stringify(result, null, options.json ? undefined : 2));
+  if (options.json || result.status !== 'skipped')
+    console.log(JSON.stringify(result, null, options.json ? undefined : 2));
   if (result.ok === false) throw new Error(`Lifecycle hook ${result.event}: ${result.status}`);
   return result;
 }

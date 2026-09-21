@@ -225,6 +225,18 @@ async function runLifecycleHook(repoRoot, event, context = {}, deps = {}) {
   const approved = isApproved(repoRoot, plan, deps);
   if (context.dryRun) return { ok: true, status: 'dry-run', event, approved, plan };
   if (!approved) return { ok: false, status: 'approval-required', event };
+  const cwd = fs.realpathSync(
+    event === 'post-remove' ? repoRoot : context.worktreePath || repoRoot
+  );
+  const commonDirectory = (root) => {
+    const result = spawnSync('git', ['-C', root, 'rev-parse', '--git-common-dir'], {
+      encoding: 'utf8'
+    });
+    if (result.status !== 0) throw new Error('Lifecycle worktree is not a Git repository');
+    return fs.realpathSync(path.resolve(root, result.stdout.trim()));
+  };
+  if (commonDirectory(cwd) !== commonDirectory(repoRoot))
+    throw new Error('Lifecycle worktree must belong to the approved repository');
   const directory = path.join(stateDirectory(repoRoot, deps), 'runs');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const runId = randomUUID();
@@ -232,9 +244,7 @@ async function runLifecycleHook(repoRoot, event, context = {}, deps = {}) {
     repoRoot: path.resolve(repoRoot),
     plan,
     context: { worktreePath: context.worktreePath, branch: context.branch, mode: context.mode },
-    cwd: path.resolve(
-      context.cwd || (event === 'post-remove' ? repoRoot : context.worktreePath) || repoRoot
-    ),
+    cwd,
     runId,
     logFile: path.join(directory, `${runId}.log`),
     resultFile: path.join(directory, `${runId}.json`)

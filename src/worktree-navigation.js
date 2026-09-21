@@ -228,7 +228,7 @@ function shellIntegration(shell = 'bash') {
 end
 `;
   return `gx() {
-  if [ "$1" = switch ]; then
+  if [ "\${1-}" = switch ]; then
     case " $* " in
       *" --print "*|*" --json "*|*" --help "*|*" -h "*) command gx "$@"; return $? ;;
     esac

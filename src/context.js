@@ -366,6 +366,8 @@ const SUGGESTIBLE_COMMANDS = [
   'doctor',
   'branch',
   'pivot',
+  'switch',
+  'shell-init',
   'ship',
   'locks',
   'worktree',
@@ -419,6 +421,8 @@ const CLI_COMMAND_GROUPS = [
     commands: [
       ['pivot', 'Auto-pivot from a protected branch into a fresh agent worktree (single tool call for AI agents)'],
       ['branch', 'CLI-owned branch workflow surface (start/finish/merge)'],
+      ['switch', 'Navigate by branch, path or PR, with searchable worktree picker'],
+      ['shell-init', 'Print shell integration for gx switch (bash, zsh, fish)'],
       ['ship', 'Stage + commit + push + PR + auto-merge + cleanup (alias for `finish --via-pr --wait-for-merge --cleanup`)'],
       ['finish', 'Commit + PR + merge completed agent branches (--all, --branch)'],
       ['merge', 'Create/reuse an integration lane and merge overlapping agent branches'],
@@ -480,6 +484,8 @@ const CLI_COMMAND_GROUPS = [
 const CLI_COMMAND_HELP = {
   onboard: { nativeHelp: true },
   pivot: { nativeHelp: true },
+  switch: { nativeHelp: true },
+  'shell-init': { nativeHelp: true },
   cleanup: { nativeHelp: true },
   locks: { nativeHelp: true },
   hook: { nativeHelp: true },
@@ -636,9 +642,12 @@ const CLI_COMMAND_HELP = {
   },
 
   worktree: {
-    usage: 'gx worktree <prune|provision|approve-hooks|estimate|retry-cleanup|prune-artifacts> [options]',
+    usage: 'gx worktree <switch|hook|copy-ignored|prune|provision|approve-hooks|estimate|retry-cleanup|prune-artifacts> [options]',
     summary: 'The worktree surface: prune stale lanes, provision a new one, or measure disk cost.',
     subcommands: [
+      ['switch', 'Select a worktree by branch, path or PR, or open the picker'],
+      ['hook', 'Approve, run and inspect native worktree lifecycle hooks'],
+      ['copy-ignored', 'Explicitly copy selected ignored files without overwriting targets'],
       ['prune', 'Remove worktrees whose branch is merged or abandoned'],
       ['provision', 'Provision a worktree for an existing branch'],
       ['approve-hooks', 'Approve the managed hooks inside a provisioned worktree'],

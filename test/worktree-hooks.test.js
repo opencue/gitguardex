@@ -31,6 +31,18 @@ function command(code) {
 const write = (name, value = 'yes') =>
   command(`require("fs").writeFileSync(${JSON.stringify(name)}, ${JSON.stringify(value)})`);
 
+test('approved hooks cannot execute in a different repository', async (t) => {
+  const { root, repo, deps } = fixture(t, { hooks: { 'pre-start': write('ran') } });
+  const foreign = path.join(root, 'foreign');
+  assert.equal(spawnSync('git', ['init', foreign]).status, 0);
+  await hooks.approveLifecycleHooks(repo, 'pre-start', deps);
+  await assert.rejects(
+    hooks.runLifecycleHook(repo, 'pre-start', { worktreePath: foreign }, deps),
+    /approved repository/
+  );
+  assert.equal(fs.existsSync(path.join(foreign, 'ran')), false);
+});
+
 test('events normalize ordered stages and concurrent names, rejecting malformed stages', (t) => {
   const { repo, writeConfig } = fixture(t, {
     hooks: { 'pre-start': ['echo first', { build: 'echo build', lint: 'echo lint' }] }

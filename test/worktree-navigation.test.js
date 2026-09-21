@@ -152,7 +152,7 @@ test('shell wrapper changes directory without evaluating path text and remembers
       '--noprofile',
       '--norc',
       '-c',
-      `${shellIntegration('bash')}\ngx switch feature\nprintf '%s\\n%s\\n' "$PWD" "$GX_PREVIOUS_WORKTREE"`
+      `${shellIntegration('bash')}\nset -u\ngx >/dev/null\ngx switch feature\nprintf '%s\\n%s\\n' "$PWD" "$GX_PREVIOUS_WORKTREE"`
     ],
     {
       cwd: repo,

@@ -50,6 +50,20 @@ WORKTREE_ROOT_RELS=(
   ".omc/.tmp-worktrees"
 )
 
+run_lifecycle_hook() {
+  local event="$1" worktree="$2" branch="$3"
+  local args=(worktree hook "$event" --source "$repo_root" --worktree "$worktree")
+  [[ -z "$branch" ]] || args+=(--branch "$branch")
+  if [[ -n "${GUARDEX_CLI_ENTRY:-}" ]]; then
+    "${GUARDEX_NODE_BIN:-node}" "$GUARDEX_CLI_ENTRY" "${args[@]}"
+  elif command -v gx >/dev/null 2>&1; then
+    gx "${args[@]}"
+  else
+    echo "[agent-worktree-prune] Lifecycle runner unavailable; preserving worktree." >&2
+    return 1
+  fi
+}
+
 if [[ -n "$BASE_BRANCH" ]]; then
   BASE_BRANCH_EXPLICIT=1
 fi
@@ -1028,10 +1042,33 @@ process_entry() {
   fi
 
   local remove_status=0
+  if [[ "$DRY_RUN" -ne 1 && "$remove_reason" != "temporary-worktree" ]]; then
+    local before_hook_head after_hook_head
+    before_hook_head="$(git -C "$wt" rev-parse HEAD)" || return
+    if ! run_lifecycle_hook pre-remove "$wt" "$branch"; then
+      echo "[agent-worktree-prune] pre-remove vetoed removal: ${wt}" >&2
+      return
+    fi
+    after_hook_head="$(git -C "$wt" rev-parse HEAD)" || return
+    # Hooks run outside the claims mutex to avoid deadlocking GX commands.
+    # Re-check mutable eligibility before the mutex-protected removal.
+    if [[ "$before_hook_head" != "$after_hook_head" ]] || has_live_process_in_worktree "$wt"; then
+      echo "[agent-worktree-prune] Worktree changed or became active during pre-remove: ${wt}" >&2
+      return
+    fi
+    if [[ "$FORCE_DIRTY" -ne 1 ]] && ! is_clean_worktree "$wt"; then
+      echo "[agent-worktree-prune] pre-remove left changes; preserving: ${wt}" >&2
+      return
+    fi
+  fi
   if remove_worktree_with_lock_guard "$wt" "$remove_reason" "$branch"; then
     # The worktree list just changed; branch_has_worktree must re-read it.
     invalidate_worktree_branches
     removed_worktrees=$((removed_worktrees + 1))
+    if [[ "$DRY_RUN" -ne 1 && "$remove_reason" != "temporary-worktree" ]]; then
+      run_lifecycle_hook post-remove "$wt" "$branch" \
+        || echo "[agent-worktree-prune] Warning: post-remove hook could not be queued." >&2
+    fi
   else
     remove_status=$?
     if [[ "$remove_status" -eq 11 ]]; then

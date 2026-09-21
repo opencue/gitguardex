@@ -49,3 +49,26 @@ test('preview disables external diff execution and degrades when gh is unavailab
   assert.ok(calls[0][1].includes('--no-ext-diff'));
   assert.equal(terminalText('\x1b[31munsafe\n'), '[31munsafe');
 });
+
+test('picker filters branch and path without changing selection identities', async () => {
+  const entries = [
+    { branch: 'main', path: '/repo' },
+    { branch: 'agent/search', path: '/lane' }
+  ];
+  const answers = ['/missing', '/', '/SEARCH', '1', 'y'];
+  const output = [];
+  const selected = await pickWorktree(
+    '/repo',
+    {
+      input: { isTTY: true },
+      output: { isTTY: true, write: (text) => output.push(text) }
+    },
+    {
+      listWorktrees: () => entries,
+      question: async () => answers.shift(),
+      worktreePreview: () => ({ diff: 'clean', pr: null })
+    }
+  );
+  assert.equal(selected, entries[1]);
+  assert.match(output.join(''), /No matches/);
+});
