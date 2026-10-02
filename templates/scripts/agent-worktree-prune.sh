@@ -1057,6 +1057,7 @@ process_entry() {
   fi
 
   if [[ "$linked_merged_only" -eq 1 ]]; then
+    [[ "$branch" == agent/* ]] || return 0
     case "$remove_reason" in
       merged-agent-branch|merged-agent-pr|merged-pr:*) ;;
       *) return 0 ;;
