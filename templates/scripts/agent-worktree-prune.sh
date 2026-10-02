@@ -294,24 +294,29 @@ branch_has_merged_pr() {
   load_merged_pr_branches || return 1
   local merged_oids="${MERGED_PR_BRANCHES[$branch]:-}"
   [[ -n "$merged_oids" ]] || return 1
-  # Merged only if the branch tip IS a merged PR's head, or is contained in
-  # it. Anything newer on the branch (post-merge commits, a reused name) is
-  # unmerged work — fail closed. A PR head we do not have locally cannot
-  # prove containment, so only the exact-SHA match applies then.
-  local tip=""
-  tip="$(git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
-  if [[ -z "$tip" ]]; then
-    tip="$(git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}^{commit}" 2>/dev/null || true)"
-  fi
-  [[ -n "$tip" ]] || return 1
-  local oid
-  for oid in $merged_oids; do
-    [[ "$tip" == "$oid" ]] && return 0
-    if git -C "$repo_root" merge-base --is-ancestor "$tip" "$oid" >/dev/null 2>&1; then
-      return 0
-    fi
+  # Merged only if every tip we can see — the local branch AND origin's —
+  # IS a merged PR's head or is contained in one. Anything newer (commits
+  # pushed after the merge, locally or to origin; a reused name) is unmerged
+  # work — fail closed. A PR head we do not have locally cannot prove
+  # containment, so only the exact-SHA match applies then.
+  local tips=() ref resolved
+  for ref in "refs/heads/${branch}" "refs/remotes/origin/${branch}"; do
+    resolved="$(git -C "$repo_root" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null || true)"
+    [[ -n "$resolved" ]] && tips+=("$resolved")
   done
-  return 1
+  [[ ${#tips[@]} -gt 0 ]] || return 1
+  local tip oid contained
+  for tip in "${tips[@]}"; do
+    contained=0
+    for oid in $merged_oids; do
+      if [[ "$tip" == "$oid" ]] || git -C "$repo_root" merge-base --is-ancestor "$tip" "$oid" >/dev/null 2>&1; then
+        contained=1
+        break
+      fi
+    done
+    [[ "$contained" -eq 1 ]] || return 1
+  done
+  return 0
 }
 
 load_lane_pr_metadata() {

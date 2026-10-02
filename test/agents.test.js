@@ -412,6 +412,17 @@ test('gx cleanup treats a lane as PR-merged only when its tip matches the merged
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(`merged PR branch: ${lane}`));
 
+  // Local branch at the PR head, but origin moved past it after the merge:
+  // the remote carries unmerged work — keep it.
+  execGit(repoDir, ['branch', '-f', lane, prHead]);
+  const laterOnOrigin = execGit(repoDir, ['rev-parse', `${lane}@{1}`]);
+  execGit(repoDir, ['update-ref', `refs/remotes/origin/${lane}`, laterOnOrigin]);
+  result = dryRun(fakeGhFor(prHead));
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(`merged PR branch: ${lane}`));
+  execGit(repoDir, ['update-ref', '-d', `refs/remotes/origin/${lane}`]);
+  execGit(repoDir, ['branch', '-f', lane, laterOnOrigin]);
+
   // A reused name whose merged PR head is unrelated to this tip — keep it.
   result = dryRun(fakeGhFor('0123456789abcdef0123456789abcdef01234567'));
   assert.equal(result.status, 0, result.stderr || result.stdout);
