@@ -363,6 +363,61 @@ test('gx cleanup consults merged PRs by default and skips them under --no-includ
   assert.doesNotMatch(optOut, /--state merged/, 'opt-out must not query merged PRs');
 });
 
+test('gx cleanup treats a lane as PR-merged only when its tip matches the merged PR head', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const execGit = (dir, args) => {
+    const out = runCmd('git', args, dir);
+    assert.equal(out.status, 0, out.stderr || out.stdout);
+    return String(out.stdout || '').trim();
+  };
+  const base = execGit(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const lane = 'agent/claude/squashed-lane';
+  execGit(repoDir, ['checkout', '-q', '-b', lane]);
+  fs.writeFileSync(path.join(repoDir, 'lane.txt'), 'lane\n', 'utf8');
+  execGit(repoDir, ['add', 'lane.txt']);
+  execGit(repoDir, ['commit', '-q', '-m', 'lane work']);
+  const prHead = execGit(repoDir, ['rev-parse', 'HEAD']);
+  execGit(repoDir, ['checkout', '-q', base]);
+
+  const fakeGhFor = (oid) => {
+    const fakeGh = path.join(repoDir, 'fake-gh.sh');
+    fs.writeFileSync(
+      fakeGh,
+      '#!/usr/bin/env bash\n' +
+        `if [[ "$*" == *"--state merged"* ]]; then echo "${lane} ${oid}"; fi\n` +
+        'exit 0\n',
+      'utf8',
+    );
+    fs.chmodSync(fakeGh, 0o755);
+    return fakeGh;
+  };
+  const dryRun = (fakeGh) =>
+    runNodeWithEnv(['cleanup', '--target', repoDir, '--base', base, '--dry-run'], repoDir, {
+      GUARDEX_GH_BIN: fakeGh,
+    });
+
+  // Tip == merged PR head: the squash-merged lane is reclaimed.
+  let result = dryRun(fakeGhFor(prHead));
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(`${result.stdout}${result.stderr}`, new RegExp(`merged PR branch: ${lane}`));
+
+  // Work pushed after the PR merged: the tip is past the PR head — keep it.
+  execGit(repoDir, ['checkout', '-q', lane]);
+  fs.writeFileSync(path.join(repoDir, 'later.txt'), 'later\n', 'utf8');
+  execGit(repoDir, ['add', 'later.txt']);
+  execGit(repoDir, ['commit', '-q', '-m', 'work after merge']);
+  execGit(repoDir, ['checkout', '-q', base]);
+  result = dryRun(fakeGhFor(prHead));
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(`merged PR branch: ${lane}`));
+
+  // A reused name whose merged PR head is unrelated to this tip — keep it.
+  result = dryRun(fakeGhFor('0123456789abcdef0123456789abcdef01234567'));
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(`merged PR branch: ${lane}`));
+});
+
 test('agents start reuses running review bot when only cleanup bot is missing', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);

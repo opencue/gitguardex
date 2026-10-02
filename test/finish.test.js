@@ -1834,9 +1834,11 @@ test('cleanup command can remove squash-merged agent branches via merged PR dete
   result = runCmd('git', ['-C', worktreePath, 'commit', '-m', 'feature commit'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
+  // A squash-merged PR's head is the lane tip; gh reports name + head SHA.
+  const laneTip = runCmd('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], repoDir).stdout.trim();
   const { fakePath: fakeGhPath } = createFakeGhScript(
     'if [[ "$1" == "pr" && "$2" == "list" ]]; then\n' +
-      '  printf \'%s\\n\' "agent/test-cleanup-pr-merged"\n' +
+      `  printf '%s %s\\n' "agent/test-cleanup-pr-merged" "${laneTip}"\n` +
       '  exit 0\n' +
       'fi\n' +
       'exit 1',

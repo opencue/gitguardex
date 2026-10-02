@@ -358,7 +358,9 @@ function agents(rawArgs) {
     console.log(
       reviewWanted
         ? `[${TOOL_NAME}] Started repo agents in ${repoRoot} (review pid=${reviewPid}, cleanup pid=${cleanupPid}).`
-        : `[${TOOL_NAME}] Started the cleanup bot in ${repoRoot} (cleanup pid=${cleanupPid}; review bot not started: --cleanup-only).`,
+        : reviewRunning
+          ? `[${TOOL_NAME}] Started the cleanup bot in ${repoRoot} (cleanup pid=${cleanupPid}); the review bot already running (pid=${existingReviewPid}) is left as is.`
+          : `[${TOOL_NAME}] Started the cleanup bot in ${repoRoot} (cleanup pid=${cleanupPid}; review bot not started: --cleanup-only).`,
     );
     if (reusedAny && startedAny) {
       console.log(`[${TOOL_NAME}] Reused healthy bot process(es) and started only missing ones.`);

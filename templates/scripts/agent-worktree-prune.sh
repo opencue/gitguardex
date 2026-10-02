@@ -228,14 +228,18 @@ load_merged_pr_branches() {
     return 1
   fi
 
+  # Name -> space-separated merged PR head SHAs. The SHA is what makes the
+  # name match safe: a reused branch name, or commits pushed after the PR
+  # merged, must not read as "merged" (see branch_has_merged_pr).
   local merged_branches=""
   merged_branches="$(
-    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" --limit 200 --json headRefName --jq '.[].headRefName' 2>/dev/null || true
+    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" --limit 200 --json headRefName,headRefOid --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
   )"
   if [[ -n "$merged_branches" ]]; then
-    while IFS= read -r merged_branch; do
-      [[ -z "$merged_branch" ]] && continue
-      MERGED_PR_BRANCHES["$merged_branch"]=1
+    local merged_branch merged_oid
+    while IFS=' ' read -r merged_branch merged_oid; do
+      [[ -z "$merged_branch" || -z "$merged_oid" ]] && continue
+      MERGED_PR_BRANCHES["$merged_branch"]="${MERGED_PR_BRANCHES[$merged_branch]:-} ${merged_oid}"
     done <<< "$merged_branches"
   fi
   PR_MERGED_LOOKUP_LOADED=1
@@ -288,7 +292,26 @@ branch_has_merged_pr() {
     return 1
   fi
   load_merged_pr_branches || return 1
-  [[ -n "${MERGED_PR_BRANCHES[$branch]:-}" ]]
+  local merged_oids="${MERGED_PR_BRANCHES[$branch]:-}"
+  [[ -n "$merged_oids" ]] || return 1
+  # Merged only if the branch tip IS a merged PR's head, or is contained in
+  # it. Anything newer on the branch (post-merge commits, a reused name) is
+  # unmerged work — fail closed. A PR head we do not have locally cannot
+  # prove containment, so only the exact-SHA match applies then.
+  local tip=""
+  tip="$(git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${branch}^{commit}" 2>/dev/null || true)"
+  if [[ -z "$tip" ]]; then
+    tip="$(git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}^{commit}" 2>/dev/null || true)"
+  fi
+  [[ -n "$tip" ]] || return 1
+  local oid
+  for oid in $merged_oids; do
+    [[ "$tip" == "$oid" ]] && return 0
+    if git -C "$repo_root" merge-base --is-ancestor "$tip" "$oid" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 load_lane_pr_metadata() {
