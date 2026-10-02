@@ -390,6 +390,7 @@ function parseAgentsArgs(rawArgs) {
     dryRun: false,
     reviewIntervalSeconds: 30,
     cleanupIntervalSeconds: 60,
+    cleanupOnly: false,
     idleMinutes: DEFAULT_SHADOW_CLEANUP_IDLE_MINUTES,
     staleAgeMinutes: 24 * 60,
     pid: null,
@@ -549,6 +550,10 @@ function parseAgentsArgs(rawArgs) {
       }
       options.reviewIntervalSeconds = parsedValue;
       index += 1;
+      continue;
+    }
+    if (arg === '--cleanup-only') {
+      options.cleanupOnly = true;
       continue;
     }
     if (arg === '--cleanup-interval') {
@@ -1029,7 +1034,11 @@ function parseCleanupArgs(rawArgs) {
     keepRemote: false,
     keepCleanWorktrees: true,
     includeCleanLinkedWorktrees: false,
-    includePrMerged: false,
+    // Squash/rebase merges leave the branch tip off the base's history, so
+    // ancestry alone reports a merged PR's branch as unmerged and cleanup
+    // never reclaims it. Consult merged PRs by default; `gh` missing or failing
+    // disables the lookup (fail-closed: nothing is treated as merged).
+    includePrMerged: true,
     idleMinutes: 0,
     watch: false,
     intervalSeconds: 60,
@@ -1092,6 +1101,10 @@ function parseCleanupArgs(rawArgs) {
     }
     if (arg === '--include-pr-merged') {
       options.includePrMerged = true;
+      continue;
+    }
+    if (arg === '--no-include-pr-merged') {
+      options.includePrMerged = false;
       continue;
     }
     if (arg === '--idle-minutes') {

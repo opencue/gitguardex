@@ -275,6 +275,94 @@ test('agents command starts review+cleanup bots for the target repo and stops th
 });
 
 
+test('agents start --cleanup-only starts only the cleanup bot', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const scriptsDir = path.join(repoDir, 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  const reviewScriptPath = path.join(scriptsDir, 'review-bot-watch.sh');
+  fs.writeFileSync(reviewScriptPath, fakeReviewBotDaemonScript(), 'utf8');
+  fs.chmodSync(reviewScriptPath, 0o755);
+  const pruneScriptPath = path.join(scriptsDir, 'agent-worktree-prune.sh');
+  fs.writeFileSync(
+    pruneScriptPath,
+    '#!/usr/bin/env bash\n' +
+      'set -euo pipefail\n' +
+      'exit 0\n',
+    'utf8',
+  );
+  fs.chmodSync(pruneScriptPath, 0o755);
+
+  let result = runNode(
+    ['agents', 'start', '--target', repoDir, '--cleanup-only', '--cleanup-interval', '47', '--idle-minutes', '12'],
+    repoDir,
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Started the cleanup bot/);
+  assert.match(result.stdout, /review bot not started: --cleanup-only/);
+
+  const statePath = path.join(repoDir, '.omx', 'state', 'agents-bots.json');
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  assert.equal(state.review.pid, null, 'no review bot under --cleanup-only');
+  assert.equal(isPidAlive(state.cleanup.pid), true, 'cleanup bot pid should be alive after start');
+  assert.equal(
+    fs.existsSync(path.join(repoDir, '.omx', 'logs', 'agent-review.log')),
+    false,
+    'no review log under --cleanup-only',
+  );
+
+  // A second start is a no-op while the cleanup bot runs.
+  result = runNode(['agents', 'start', '--target', repoDir, '--cleanup-only'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Cleanup bot already running/);
+
+  result = runNode(['agents', 'stop', '--target', repoDir], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(waitForPidExit(state.cleanup.pid), true, 'cleanup bot pid should exit after stop');
+});
+
+test('gx cleanup consults merged PRs by default and skips them under --no-include-pr-merged', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const execGit = (dir, args) => {
+    const out = runCmd('git', args, dir);
+    assert.equal(out.status, 0, out.stderr || out.stdout);
+    return String(out.stdout || '').trim();
+  };
+  const base = execGit(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  // An agent lane whose tip is NOT an ancestor of the base — what a squash
+  // merge leaves behind — so only the PR lookup can call it merged.
+  execGit(repoDir, ['checkout', '-q', '-b', 'agent/claude/squashed-lane']);
+  fs.writeFileSync(path.join(repoDir, 'lane.txt'), 'lane\n', 'utf8');
+  execGit(repoDir, ['add', 'lane.txt']);
+  execGit(repoDir, ['commit', '-q', '-m', 'lane work']);
+  execGit(repoDir, ['checkout', '-q', base]);
+
+  const ghLog = path.join(repoDir, '.gh-calls.log');
+  const fakeGh = path.join(repoDir, 'fake-gh.sh');
+  fs.writeFileSync(fakeGh, `#!/usr/bin/env bash\necho "$*" >> ${JSON.stringify(ghLog)}\nexit 0\n`, 'utf8');
+  fs.chmodSync(fakeGh, 0o755);
+
+  let result = runNodeWithEnv(
+    ['cleanup', '--target', repoDir, '--base', base, '--dry-run'],
+    repoDir,
+    { GUARDEX_GH_BIN: fakeGh },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const calls = fs.existsSync(ghLog) ? fs.readFileSync(ghLog, 'utf8') : '';
+  assert.match(calls, /pr list --state merged/, 'default cleanup must ask for merged PRs');
+
+  fs.rmSync(ghLog, { force: true });
+  result = runNodeWithEnv(
+    ['cleanup', '--target', repoDir, '--base', base, '--dry-run', '--no-include-pr-merged'],
+    repoDir,
+    { GUARDEX_GH_BIN: fakeGh },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const optOut = fs.existsSync(ghLog) ? fs.readFileSync(ghLog, 'utf8') : '';
+  assert.doesNotMatch(optOut, /--state merged/, 'opt-out must not query merged PRs');
+});
+
 test('agents start reuses running review bot when only cleanup bot is missing', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);

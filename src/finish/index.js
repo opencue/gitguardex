@@ -235,7 +235,8 @@ OPTIONS
   --keep-clean-worktrees   Preserve clean, unmerged agent worktrees (default)
   --include-clean-linked-worktrees
                            Also prune clean linked worktrees outside managed agent directories
-  --include-pr-merged      Treat branches from merged PRs as merged
+  --include-pr-merged      Treat branches from merged PRs as merged (default; needs gh)
+  --no-include-pr-merged   Judge merged by git ancestry only (misses squash merges)
   --idle-minutes <n>       Only consider worktrees idle for at least n minutes
   --watch                  Repeat cleanup cycles (defaults idle threshold to 60)
   --interval <seconds>     Watch interval in seconds (minimum: 5; default: 60)

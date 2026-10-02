@@ -254,7 +254,15 @@ function agents(rawArgs) {
     const reviewRunning = processAlive(existingReviewPid);
     const cleanupRunning = processAlive(existingCleanupPid);
 
-    if (reviewRunning && cleanupRunning) {
+    // --cleanup-only: run just the cleanup bot. The review bot spends model
+    // tokens on every PR; reclaiming merged lanes should not require it.
+    const reviewWanted = !options.cleanupOnly;
+    if ((reviewRunning || !reviewWanted) && cleanupRunning) {
+      if (!reviewWanted) {
+        console.log(`[${TOOL_NAME}] Cleanup bot already running (pid=${existingCleanupPid}).`);
+        process.exitCode = 0;
+        return;
+      }
       console.log(
         `[${TOOL_NAME}] Repo agents already running (review pid=${existingReviewPid}, cleanup pid=${existingCleanupPid}).`,
       );
@@ -271,7 +279,7 @@ function agents(rawArgs) {
     let reusedAny = false;
 
     const mainScriptPath = require.resolve('../main.js');
-    if (!reviewRunning) {
+    if (reviewWanted && !reviewRunning) {
       reviewPid = spawnDetachedAgentProcess({
         command: process.execPath,
         args: [
@@ -288,7 +296,7 @@ function agents(rawArgs) {
         logPath: reviewLogPath,
       });
       startedAny = true;
-    } else {
+    } else if (reviewRunning) {
       reusedAny = true;
     }
 
@@ -333,7 +341,7 @@ function agents(rawArgs) {
       repoRoot,
       startedAt: new Date().toISOString(),
       review: {
-        pid: reviewPid,
+        pid: reviewWanted || reviewRunning ? reviewPid : null,
         intervalSeconds: reviewIntervalSeconds,
         script: mainScriptPath,
         logPath: reviewLogPath,
@@ -348,12 +356,16 @@ function agents(rawArgs) {
     });
 
     console.log(
-      `[${TOOL_NAME}] Started repo agents in ${repoRoot} (review pid=${reviewPid}, cleanup pid=${cleanupPid}).`,
+      reviewWanted
+        ? `[${TOOL_NAME}] Started repo agents in ${repoRoot} (review pid=${reviewPid}, cleanup pid=${cleanupPid}).`
+        : `[${TOOL_NAME}] Started the cleanup bot in ${repoRoot} (cleanup pid=${cleanupPid}; review bot not started: --cleanup-only).`,
     );
     if (reusedAny && startedAny) {
       console.log(`[${TOOL_NAME}] Reused healthy bot process(es) and started only missing ones.`);
     }
-    console.log(`[${TOOL_NAME}] Logs: ${reviewLogPath}, ${cleanupLogPath}`);
+    console.log(
+      `[${TOOL_NAME}] Logs: ${reviewWanted ? `${reviewLogPath}, ` : ''}${cleanupLogPath}`,
+    );
     process.exitCode = 0;
     return;
   }

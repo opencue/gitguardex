@@ -674,7 +674,7 @@ const CLI_COMMAND_HELP = {
     summary: 'Repo-scoped review and cleanup bots, plus the agent inbox and lane inspection.',
     subcommands: [
       ['status', 'Show the running bots and the agent lanes (the default with no subcommand)'],
-      ['start', 'Start the review + cleanup bots for this repo'],
+      ['start', 'Start the review + cleanup bots for this repo (--cleanup-only: just the cleanup bot)'],
       ['stop', 'Stop them'],
       ['finish', 'Finish an agent lane by session or branch'],
       ['files', 'Show which files each lane has touched'],
@@ -693,8 +693,9 @@ const CLI_COMMAND_HELP = {
       ['--session <id>', 'Address one agent session'],
       ['--branch <agent/...>', 'Address one agent branch'],
       ['--dry-run', 'Print actions without applying them'],
+      ['--cleanup-only', 'start: run only the cleanup bot (no token-spending review bot)'],
     ],
-    examples: ['gx agents status --json', 'gx agents files --branch agent/claude/my-lane'],
+    examples: ['gx agents status --json', 'gx agents start --cleanup-only', 'gx agents files --branch agent/claude/my-lane'],
   },
 
   'pr-review': {
