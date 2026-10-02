@@ -567,6 +567,22 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) ->
         print('[agent-file-locks] Cannot claim files already locked by another owner:', file=sys.stderr)
         for file_path, owner in conflicts:
             print(f'  - {file_path} (locked by {owner_description(owner)})', file=sys.stderr)
+        # Taking a lock over is an owner decision, so spell out the command
+        # rather than leave the next agent to discover where the claim lives.
+        owners: dict[str, list[str]] = {}
+        for file_path, owner in conflicts:
+            owner_agent = str(owner.get('agent', '')).strip()
+            owner_args = f"--branch {owner.get('branch', '')}"
+            if owner_agent:
+                owner_args += f' --agent {owner_agent}'
+            owners.setdefault(owner_args, []).append(file_path)
+        print(
+            '[agent-file-locks] If the owner agreed to hand them over, release them '
+            '(works from any worktree), then claim again:',
+            file=sys.stderr,
+        )
+        for owner_args, owned in owners.items():
+            print(f'  gx locks release {owner_args} {" ".join(owned)}', file=sys.stderr)
         if any_stale:
             print(
                 '[agent-file-locks] Some blocking locks are past the staleness TTL; if their '
@@ -635,24 +651,37 @@ def cmd_allow_delete(args: argparse.Namespace, repo_root: Path) -> int:
 
 
 def cmd_release(args: argparse.Namespace, repo_root: Path) -> int:
-    # Local-only, like allow-delete: releases claims recorded in THIS worktree's
-    # lock file. Run it from the worktree that made the claim.
-    state = load_state(repo_root)
-    locks: dict[str, dict[str, Any]] = state['locks']
+    # Spans EVERY worktree of the repo, like claim/validate: a claim lives in the
+    # lock file of the worktree that made it, so a release run anywhere else used
+    # to report "Released 0" while the claim kept blocking. Naming the owner
+    # branch (+ agent) is the explicit intent; only its entries are removed.
     agent = resolve_agent(args)
+    requested = {normalize_repo_path(repo_root, p) for p in args.files} if args.files else None
 
-    to_release: set[str]
-    if args.files:
-        requested = {normalize_repo_path(repo_root, p) for p in args.files}
-        to_release = {p for p in requested if owner_matches(locks.get(p, {}), args.branch, agent)}
-    else:
-        to_release = {p for p, entry in locks.items() if owner_matches(entry, args.branch, agent)}
+    released: list[tuple[Path, int]] = []
+    for root in list_worktree_roots(repo_root):
+        try:
+            state = load_state(root)
+        except LockError as exc:
+            raise LockError(
+                f'cannot safely inspect sibling lock registry in {root}; '
+                'release operation blocked'
+            ) from exc
+        locks: dict[str, dict[str, Any]] = state['locks']
+        candidates = requested if requested is not None else set(locks)
+        to_release = {p for p in candidates if p in locks and owner_matches(locks[p], args.branch, agent)}
+        if not to_release:
+            continue
+        for file_path in to_release:
+            locks.pop(file_path, None)
+        write_state(root, state)
+        released.append((root, len(to_release)))
 
-    for file_path in to_release:
-        locks.pop(file_path, None)
-
-    write_state(repo_root, state)
-    print(f"[agent-file-locks] Released {len(to_release)} file(s) for {args.branch}.")
+    total = sum(count for _, count in released)
+    print(f"[agent-file-locks] Released {total} file(s) for {args.branch}.")
+    for root, count in released:
+        if root != repo_root:
+            print(f'  - {count} from worktree {root}')
     return 0
 
 

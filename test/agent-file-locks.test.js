@@ -397,6 +397,36 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.equal(v.status, 0, `validate must see the claim it just wrote: ${v.stderr}`);
   });
 
+  test('release from ANY worktree frees a sibling claim, and the conflict names the command', () => {
+    // A claim lives in the lock file of the worktree that made it. release used
+    // to read only the caller's file, so taking a lock over from your own
+    // worktree printed "Released 0" and the claim kept blocking.
+    const repoDir = makeRepo();
+    writeFile(repoDir, 'handover.txt');
+    const wt2 = path.join(repoDir, '..', 'wt2-release');
+    assert.equal(runHumanCmd('git', ['worktree', 'add', '-q', '-b', 'agent/two/lane', wt2], repoDir).status, 0);
+    assert.equal(locksAt(wt2, ['claim', '--branch', 'agent/two/lane', 'handover.txt']).status, 0);
+
+    const blocked = locksAt(repoDir, ['claim', '--branch', 'agent/one/lane', 'handover.txt']);
+    assert.equal(blocked.status, 1);
+    assert.match(blocked.stderr, /gx locks release --branch agent\/two\/lane handover\.txt/);
+
+    const released = locksAt(repoDir, ['release', '--branch', 'agent/two/lane', 'handover.txt']);
+    assert.equal(released.status, 0, released.stderr);
+    assert.match(released.stdout, /Released 1 file\(s\) for agent\/two\/lane/);
+    assert.match(released.stdout, /from worktree .*wt2-release/);
+
+    assert.equal(
+      locksAt(repoDir, ['claim', '--branch', 'agent/one/lane', 'handover.txt']).status,
+      0,
+      'the file is claimable once its owner lock is released',
+    );
+    // Releasing a branch that owns nothing anywhere stays a harmless no-op.
+    const none = locksAt(repoDir, ['release', '--branch', 'agent/none/lane', 'handover.txt']);
+    assert.equal(none.status, 0);
+    assert.match(none.stdout, /Released 0 file\(s\)/);
+  });
+
   test('a lane can still claim + commit a file no other worktree owns', () => {
     const repoDir = makeRepo();
     writeFile(repoDir, 'mine.txt');
