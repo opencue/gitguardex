@@ -366,7 +366,7 @@ function agents(rawArgs) {
       console.log(`[${TOOL_NAME}] Reused healthy bot process(es) and started only missing ones.`);
     }
     console.log(
-      `[${TOOL_NAME}] Logs: ${reviewWanted ? `${reviewLogPath}, ` : ''}${cleanupLogPath}`,
+      `[${TOOL_NAME}] Logs: ${reviewWanted || reviewRunning ? `${reviewLogPath}, ` : ''}${cleanupLogPath}`,
     );
     process.exitCode = 0;
     return;
