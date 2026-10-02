@@ -363,9 +363,12 @@ fi
 
 trap 'echo "[review-bot-watch] Stopped."; exit 0' INT TERM
 
+only_pr_warned=0
+
 while true; do
   found=0
   only_pr_seen=0
+  only_pr_draft=0
   while IFS=$'\t' read -r pr head_branch sha is_draft title url; do
     if [[ -z "${pr:-}" ]]; then
       continue
@@ -376,11 +379,14 @@ while true; do
     if [[ -n "$ONLY_PR" && "$pr" != "$ONLY_PR" ]]; then
       continue
     fi
-    only_pr_seen=1
 
     if [[ "$INCLUDE_DRAFT" != "1" && "$is_draft" == "true" ]]; then
+      if [[ -n "$ONLY_PR" ]]; then
+        only_pr_draft=1
+      fi
       continue
     fi
+    only_pr_seen=1
 
     if ! should_process_pr "$pr" "$sha"; then
       continue
@@ -396,8 +402,16 @@ while true; do
   # A single requested PR that was never seen was not reviewed: say so and,
   # for --once, fail, so a caller gating a merge on this run cannot read
   # silence as a clean review.
+  # The watch loop says it once, not on every poll.
   if [[ -n "$ONLY_PR" && "$only_pr_seen" -eq 0 ]]; then
-    echo "[review-bot-watch] PR #${ONLY_PR} is not an open PR against base '${BASE_BRANCH}'; nothing was reviewed." >&2
+    if [[ "$ONCE" -eq 1 || "$only_pr_warned" -eq 0 ]]; then
+      if [[ "$only_pr_draft" -eq 1 ]]; then
+        echo "[review-bot-watch] PR #${ONLY_PR} is a draft (pass --include-draft to review it); nothing was reviewed." >&2
+      else
+        echo "[review-bot-watch] PR #${ONLY_PR} is not an open PR against base '${BASE_BRANCH}'; nothing was reviewed." >&2
+      fi
+      only_pr_warned=1
+    fi
     if [[ "$ONCE" -eq 1 ]]; then
       exit 1
     fi
