@@ -114,6 +114,40 @@ exit 1
 });
 
 
+test('review-bot-watch --only-pr reviews against the PR base, not the current branch', () => {
+  // Run from an agent branch, `--only-pr <n> --once` used to watch PRs based on
+  // that branch, print "No open PRs" and exit 0 without reviewing anything.
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const listArgs = path.join(repoDir, '.gh-pr-list-args');
+  const fakeGh = createFakeGhScript(`
+if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" && "$3" == "813" ]]; then echo "main"; exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then exit 0; fi
+if [[ "$1" == "pr" && "$2" == "list" ]]; then printf '%s\\n' "$*" >> "${listArgs}"; exit 0; fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+  const fakeCodex = createFakeBin('codex', 'exit 0');
+  const env = { PATH: `${fakeGh.fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}` };
+
+  const result = runReviewBot(['--only-pr', '813', '--once'], repoDir, env);
+  assert.match(result.stdout, /Base branch : main/);
+  assert.match(fs.readFileSync(listArgs, 'utf8'), /--base main/);
+  // The PR was not in the open list, so nothing was reviewed: fail, never a silent 0.
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /PR #813 is not an open PR against base 'main'; nothing was reviewed/);
+
+  const closed = runReviewBot(['--only-pr', '900', '--once'], repoDir, env);
+  assert.equal(closed.status, 1);
+  assert.match(closed.stderr, /PR #900 is not an open PR in this repository/);
+
+  // An explicit --base still wins over the PR lookup.
+  const explicit = runReviewBot(['--only-pr', '813', '--base', 'dev', '--once'], repoDir, env);
+  assert.match(explicit.stdout, /Base branch : dev/);
+});
+
+
 test('review command launches local review-bot script and accepts legacy start token', () => {
   const repoDir = initRepo();
   const scriptsDir = path.join(repoDir, 'scripts');

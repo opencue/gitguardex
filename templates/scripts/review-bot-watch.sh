@@ -165,6 +165,14 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 repo_root="$(git rev-parse --show-toplevel)"
 
+# Remember whether the caller named a base: with --only-pr and no --base the
+# PR itself decides it (resolved below, once gh is available). Defaulting to
+# the current branch watched the agent's OWN branch, found "No open PRs" and
+# exited 0 without reviewing anything.
+BASE_EXPLICIT=0
+if [[ -n "$BASE_BRANCH" ]]; then
+  BASE_EXPLICIT=1
+fi
 if [[ -z "$BASE_BRANCH" ]]; then
   BASE_BRANCH="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 fi
@@ -185,6 +193,15 @@ fi
 
 if ! ensure_gh_auth_or_explain; then
   exit 1
+fi
+
+if [[ -n "$ONLY_PR" && "$BASE_EXPLICIT" -eq 0 ]]; then
+  pr_base="$(gh pr view "$ONLY_PR" --json baseRefName,state --jq 'select(.state == "OPEN") | .baseRefName' 2>/dev/null || true)"
+  if [[ -z "$pr_base" ]]; then
+    echo "[review-bot-watch] PR #${ONLY_PR} is not an open PR in this repository." >&2
+    exit 1
+  fi
+  BASE_BRANCH="$pr_base"
 fi
 
 run_codex_agent() {
@@ -348,6 +365,7 @@ trap 'echo "[review-bot-watch] Stopped."; exit 0' INT TERM
 
 while true; do
   found=0
+  only_pr_seen=0
   while IFS=$'\t' read -r pr head_branch sha is_draft title url; do
     if [[ -z "${pr:-}" ]]; then
       continue
@@ -358,6 +376,7 @@ while true; do
     if [[ -n "$ONLY_PR" && "$pr" != "$ONLY_PR" ]]; then
       continue
     fi
+    only_pr_seen=1
 
     if [[ "$INCLUDE_DRAFT" != "1" && "$is_draft" == "true" ]]; then
       continue
@@ -372,6 +391,16 @@ while true; do
 
   if [[ "$found" -eq 0 ]]; then
     echo "[review-bot-watch] No open PRs for base '${BASE_BRANCH}'."
+  fi
+
+  # A single requested PR that was never seen was not reviewed: say so and,
+  # for --once, fail, so a caller gating a merge on this run cannot read
+  # silence as a clean review.
+  if [[ -n "$ONLY_PR" && "$only_pr_seen" -eq 0 ]]; then
+    echo "[review-bot-watch] PR #${ONLY_PR} is not an open PR against base '${BASE_BRANCH}'; nothing was reviewed." >&2
+    if [[ "$ONCE" -eq 1 ]]; then
+      exit 1
+    fi
   fi
 
   if [[ "$ONCE" -eq 1 ]]; then
