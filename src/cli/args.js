@@ -1034,6 +1034,7 @@ function parseCleanupArgs(rawArgs) {
     keepRemote: false,
     keepCleanWorktrees: true,
     includeCleanLinkedWorktrees: false,
+    includeMergedLinkedWorktrees: false,
     // Squash/rebase merges leave the branch tip off the base's history, so
     // ancestry alone reports a merged PR's branch as unmerged and cleanup
     // never reclaims it. Consult merged PRs by default; `gh` missing or failing
@@ -1097,6 +1098,10 @@ function parseCleanupArgs(rawArgs) {
     }
     if (arg === '--include-clean-linked-worktrees') {
       options.includeCleanLinkedWorktrees = true;
+      continue;
+    }
+    if (arg === '--include-merged-linked-worktrees') {
+      options.includeMergedLinkedWorktrees = true;
       continue;
     }
     if (arg === '--include-pr-merged') {

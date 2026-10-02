@@ -9,6 +9,9 @@ DELETE_BRANCHES=0
 DELETE_REMOTE_BRANCHES=0
 ONLY_DIRTY_WORKTREES=0
 INCLUDE_CLEAN_LINKED_WORKTREES=0
+# Linked worktrees outside the managed agent dirs, but ONLY merged agent lanes
+# (never clean-but-unmerged, detached or non-agent ones) — safe for the bot.
+INCLUDE_MERGED_LINKED_WORKTREES=0
 INCLUDE_PR_MERGED=0
 PRESERVE_OPEN_PRS=0
 PRUNE_STALE_LANES=0
@@ -99,6 +102,10 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_CLEAN_LINKED_WORKTREES=1
       shift
       ;;
+    --include-merged-linked-worktrees)
+      INCLUDE_MERGED_LINKED_WORKTREES=1
+      shift
+      ;;
     --include-pr-merged)
       INCLUDE_PR_MERGED=1
       shift
@@ -126,7 +133,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[agent-worktree-prune] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-pr-merged] [--preserve-open-prs] [--prune-stale-lanes] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
+      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-merged-linked-worktrees] [--include-pr-merged] [--preserve-open-prs] [--prune-stale-lanes] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
       exit 1
       ;;
   esac
@@ -957,8 +964,18 @@ process_entry() {
 
   [[ -z "$wt" ]] && return
   [[ "$wt" == "$repo_root" ]] && return
-  if ! is_managed_worktree_path "$wt" && [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -ne 1 ]]; then
-    return
+  # A linked worktree outside the managed dirs is only considered when asked
+  # for. Under --include-merged-linked-worktrees alone it may go ONLY as a
+  # merged agent lane (checked after the reason is known, below).
+  local linked_merged_only=0
+  if ! is_managed_worktree_path "$wt"; then
+    if [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 ]]; then
+      :
+    elif [[ "$INCLUDE_MERGED_LINKED_WORKTREES" -eq 1 ]]; then
+      linked_merged_only=1
+    else
+      return 0
+    fi
   fi
 
   local branch=""
@@ -1037,6 +1054,13 @@ process_entry() {
     remove_reason="temporary-worktree"
   elif [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
     remove_reason="clean-linked-worktree"
+  fi
+
+  if [[ "$linked_merged_only" -eq 1 ]]; then
+    case "$remove_reason" in
+      merged-agent-branch|merged-agent-pr|merged-pr:*) ;;
+      *) return 0 ;;
+    esac
   fi
 
   if [[ -z "$remove_reason" ]]; then
