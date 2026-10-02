@@ -142,6 +142,17 @@ exit 1
   assert.equal(closed.status, 1);
   assert.match(closed.stderr, /PR #900 is not an open PR in this repository/);
 
+  // A draft the run skipped was not reviewed either: never a silent 0.
+  const draftEnv = { ...env, PATH: `${createFakeGhScript(`
+if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then echo "main"; exit 0; fi
+if [[ "$1" == "pr" && "$2" == "list" ]]; then printf '813\\tagent/x\\tabc123\\ttrue\\tWIP\\thttps://example.test/813\\n'; exit 0; fi
+exit 1
+`).fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}` };
+  const draft = runReviewBot(['--only-pr', '813', '--once'], repoDir, draftEnv);
+  assert.equal(draft.status, 1, draft.stderr || draft.stdout);
+  assert.match(draft.stderr, /PR #813 is a draft \(pass --include-draft to review it\); nothing was reviewed/);
+
   // An explicit --base still wins over the PR lookup.
   const explicit = runReviewBot(['--only-pr', '813', '--base', 'dev', '--once'], repoDir, env);
   assert.match(explicit.stdout, /Base branch : dev/);
