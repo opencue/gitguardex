@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -572,9 +573,9 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) ->
         owners: dict[str, list[str]] = {}
         for file_path, owner in conflicts:
             owner_agent = str(owner.get('agent', '')).strip()
-            owner_args = f"--branch {owner.get('branch', '')}"
+            owner_args = f"--branch {shlex.quote(str(owner.get('branch', '')))}"
             if owner_agent:
-                owner_args += f' --agent {owner_agent}'
+                owner_args += f' --agent {shlex.quote(owner_agent)}'
             owners.setdefault(owner_args, []).append(file_path)
         print(
             '[agent-file-locks] If the owner agreed to hand them over, release them '
@@ -582,7 +583,7 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) ->
             file=sys.stderr,
         )
         for owner_args, owned in owners.items():
-            print(f'  gx locks release {owner_args} {" ".join(owned)}', file=sys.stderr)
+            print(f'  gx locks release {owner_args} {" ".join(shlex.quote(p) for p in owned)}', file=sys.stderr)
         if any_stale:
             print(
                 '[agent-file-locks] Some blocking locks are past the staleness TTL; if their '
