@@ -262,7 +262,7 @@ test('agents command starts review+cleanup bots for the target repo and stops th
   const cleanupLog = fs.readFileSync(state.cleanup.logPath, 'utf8');
   assert.match(
     cleanupLog,
-    / cleanup .*--watch .*--idle-minutes 12 --prune-clean-worktrees/,
+    / cleanup .*--watch .*--idle-minutes 12 --prune-clean-worktrees --include-merged-linked-worktrees/,
     'cleanup bot should close idle clean worktrees while leaving unmerged branch refs intact',
   );
 

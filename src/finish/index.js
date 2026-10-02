@@ -235,6 +235,9 @@ OPTIONS
   --keep-clean-worktrees   Preserve clean, unmerged agent worktrees (default)
   --include-clean-linked-worktrees
                            Also prune clean linked worktrees outside managed agent directories
+  --include-merged-linked-worktrees
+                           Also prune linked worktrees outside managed agent directories,
+                           but only merged agent lanes (what the cleanup bot uses)
   --include-pr-merged      Treat branches from merged PRs as merged (default; needs gh)
   --no-include-pr-merged   Judge merged by git ancestry only (misses squash merges)
   --idle-minutes <n>       Only consider worktrees idle for at least n minutes
@@ -269,6 +272,9 @@ OPTIONS
   }
   if (options.includeCleanLinkedWorktrees) {
     args.push('--include-clean-linked-worktrees');
+  }
+  if (options.includeMergedLinkedWorktrees) {
+    args.push('--include-merged-linked-worktrees');
   }
   if (options.includePrMerged) {
     args.push('--include-pr-merged');

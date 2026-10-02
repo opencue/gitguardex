@@ -1866,6 +1866,111 @@ test('cleanup command can remove squash-merged agent branches via merged PR dete
 });
 
 
+test('cleanup --include-merged-linked-worktrees reclaims only MERGED agent lanes outside the managed dirs', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const git = (args, cwd = repoDir) => {
+    const out = runCmd('git', args, cwd);
+    assert.equal(out.status, 0, out.stderr || out.stdout);
+    return String(out.stdout || '').trim();
+  };
+  // Sibling dirs, like agents' ../repo-wt-* lanes — outside .omx/agent-worktrees.
+  const sibling = (name) => path.join(path.dirname(repoDir), `${path.basename(repoDir)}-${name}`);
+  const mergedWt = sibling('wt-merged');
+  const unmergedWt = sibling('wt-unmerged');
+  const foreignWt = sibling('wt-foreign');
+  // Merged by ancestry: the lane tip is already on dev.
+  git(['worktree', 'add', '-b', 'agent/test-linked-merged', mergedWt, 'dev']);
+  // Clean but NOT merged: one commit dev does not have.
+  git(['worktree', 'add', '-b', 'agent/test-linked-unmerged', unmergedWt, 'dev']);
+  fs.writeFileSync(path.join(unmergedWt, 'wip.txt'), 'wip\n', 'utf8');
+  git(['add', 'wip.txt'], unmergedWt);
+  git(['commit', '-m', 'unmerged work'], unmergedWt);
+  // Merged but not an agent lane (a person's own worktree).
+  git(['worktree', 'add', '-b', 'feature/test-linked-foreign', foreignWt, 'dev']);
+
+  const run = (extra) =>
+    runNode(
+      ['cleanup', '--target', repoDir, '--base', 'dev', '--keep-remote', '--no-include-pr-merged', ...extra],
+      repoDir,
+    );
+
+  // Without the flag nothing outside the managed dirs is touched.
+  result = run(['--prune-clean-worktrees']);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(mergedWt), true, 'linked lanes are ignored without the flag');
+
+  result = run(['--prune-clean-worktrees', '--include-merged-linked-worktrees']);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(mergedWt), false, 'a merged linked agent lane is reclaimed');
+  assert.equal(fs.existsSync(unmergedWt), true, 'a clean but unmerged linked lane is kept');
+  assert.equal(fs.existsSync(foreignWt), true, 'a non-agent linked worktree is kept');
+
+  for (const wt of [unmergedWt, foreignWt]) {
+    runCmd('git', ['worktree', 'remove', '--force', wt], repoDir);
+  }
+});
+
+test('cleanup --include-merged-linked-worktrees with PR detection reclaims a squash-merged agent lane, never a PR-merged non-agent worktree', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const git = (args, cwd = repoDir) => {
+    const out = runCmd('git', args, cwd);
+    assert.equal(out.status, 0, out.stderr || out.stdout);
+    return String(out.stdout || '').trim();
+  };
+  const sibling = (name) => path.join(path.dirname(repoDir), `${path.basename(repoDir)}-${name}`);
+  const agentWt = sibling('wt-squashed');
+  const foreignWt = sibling('wt-foreign-pr');
+  // Both carry a commit dev lacks, so only PR detection can call them merged.
+  for (const [branch, wt] of [
+    ['agent/test-linked-squashed', agentWt],
+    ['feature/test-linked-foreign-pr', foreignWt],
+  ]) {
+    git(['worktree', 'add', '-b', branch, wt, 'dev']);
+    fs.writeFileSync(path.join(wt, 'work.txt'), `${branch}\n`, 'utf8');
+    git(['add', 'work.txt'], wt);
+    git(['commit', '-m', `work on ${branch}`], wt);
+  }
+  const agentTip = git(['rev-parse', 'HEAD'], agentWt);
+  const foreignTip = git(['rev-parse', 'HEAD'], foreignWt);
+  const { fakePath: fakeGhPath } = createFakeGhScript(
+    'if [[ "$1" == "pr" && "$2" == "list" ]]; then\n' +
+      `  printf '%s %s\\n' "agent/test-linked-squashed" "${agentTip}"\n` +
+      `  printf '%s %s\\n' "feature/test-linked-foreign-pr" "${foreignTip}"\n` +
+      '  exit 0\n' +
+      'fi\n' +
+      'exit 1',
+  );
+
+  result = runNodeWithEnv(
+    [
+      'cleanup',
+      '--target',
+      repoDir,
+      '--base',
+      'dev',
+      '--keep-remote',
+      '--include-pr-merged',
+      '--prune-clean-worktrees',
+      '--include-merged-linked-worktrees',
+    ],
+    repoDir,
+    { GUARDEX_GH_BIN: fakeGhPath },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(agentWt), false, 'a squash-merged linked agent lane is reclaimed');
+  assert.equal(fs.existsSync(foreignWt), true, 'a PR-merged non-agent linked worktree is kept');
+
+  runCmd('git', ['worktree', 'remove', '--force', foreignWt], repoDir);
+});
+
 test('cleanup command watch mode defaults to 60-minute idle threshold and supports one-cycle execution', () => {
   const repoDir = initRepo();
   const resultSetup = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
