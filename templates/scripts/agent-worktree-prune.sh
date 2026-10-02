@@ -228,14 +228,18 @@ load_merged_pr_branches() {
     return 1
   fi
 
+  # Name -> space-separated merged PR head SHAs. The SHA is what makes the
+  # name match safe: a reused branch name, or commits pushed after the PR
+  # merged, must not read as "merged" (see branch_has_merged_pr).
   local merged_branches=""
   merged_branches="$(
-    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" --limit 200 --json headRefName --jq '.[].headRefName' 2>/dev/null || true
+    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" --limit 200 --json headRefName,headRefOid --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
   )"
   if [[ -n "$merged_branches" ]]; then
-    while IFS= read -r merged_branch; do
-      [[ -z "$merged_branch" ]] && continue
-      MERGED_PR_BRANCHES["$merged_branch"]=1
+    local merged_branch merged_oid
+    while IFS=' ' read -r merged_branch merged_oid; do
+      [[ -z "$merged_branch" || -z "$merged_oid" ]] && continue
+      MERGED_PR_BRANCHES["$merged_branch"]="${MERGED_PR_BRANCHES[$merged_branch]:-} ${merged_oid}"
     done <<< "$merged_branches"
   fi
   PR_MERGED_LOOKUP_LOADED=1
@@ -288,7 +292,31 @@ branch_has_merged_pr() {
     return 1
   fi
   load_merged_pr_branches || return 1
-  [[ -n "${MERGED_PR_BRANCHES[$branch]:-}" ]]
+  local merged_oids="${MERGED_PR_BRANCHES[$branch]:-}"
+  [[ -n "$merged_oids" ]] || return 1
+  # Merged only if every tip we can see — the local branch AND origin's —
+  # IS a merged PR's head or is contained in one. Anything newer (commits
+  # pushed after the merge, locally or to origin; a reused name) is unmerged
+  # work — fail closed. A PR head we do not have locally cannot prove
+  # containment, so only the exact-SHA match applies then.
+  local tips=() ref resolved
+  for ref in "refs/heads/${branch}" "refs/remotes/origin/${branch}"; do
+    resolved="$(git -C "$repo_root" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null || true)"
+    [[ -n "$resolved" ]] && tips+=("$resolved")
+  done
+  [[ ${#tips[@]} -gt 0 ]] || return 1
+  local tip oid contained
+  for tip in "${tips[@]}"; do
+    contained=0
+    for oid in $merged_oids; do
+      if [[ "$tip" == "$oid" ]] || git -C "$repo_root" merge-base --is-ancestor "$tip" "$oid" >/dev/null 2>&1; then
+        contained=1
+        break
+      fi
+    done
+    [[ "$contained" -eq 1 ]] || return 1
+  done
+  return 0
 }
 
 load_lane_pr_metadata() {

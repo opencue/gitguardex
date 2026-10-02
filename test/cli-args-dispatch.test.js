@@ -136,6 +136,7 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
     dryRun: false,
     reviewIntervalSeconds: 15,
     cleanupIntervalSeconds: 45,
+    cleanupOnly: false,
     idleMinutes: 12,
     staleAgeMinutes: 1440,
     pid: null,
@@ -326,6 +327,18 @@ test('parseCleanupArgs defaults idle minutes when watch mode is enabled', () => 
   const options = parseCleanupArgs(['--watch']);
   assert.equal(options.watch, true);
   assert.equal(options.idleMinutes, DEFAULT_SHADOW_CLEANUP_IDLE_MINUTES);
+});
+
+test('parseCleanupArgs consults merged PRs by default so squash-merged lanes are reclaimed', () => {
+  assert.equal(parseCleanupArgs([]).includePrMerged, true);
+  assert.equal(parseCleanupArgs(['--include-pr-merged']).includePrMerged, true);
+  assert.equal(parseCleanupArgs(['--no-include-pr-merged']).includePrMerged, false);
+  assert.equal(parseCleanupArgs(['--watch']).includePrMerged, true);
+});
+
+test('parseAgentsArgs accepts --cleanup-only for a cleanup bot without the review bot', () => {
+  assert.equal(parseAgentsArgs(['start']).cleanupOnly, false);
+  assert.equal(parseAgentsArgs(['start', '--cleanup-only']).cleanupOnly, true);
 });
 
 test('parseCleanupArgs preserves clean worktrees unless pruning is explicitly requested', () => {
