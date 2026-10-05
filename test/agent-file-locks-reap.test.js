@@ -3,6 +3,11 @@
 // their lock file lives inside them; this targets the lingering-but-idle lane
 // that otherwise blocks a file forever. The caller's own worktree is always
 // "live" (a running process sits in it), so reap never clears active locks.
+//
+// Additional reap triggers (beyond TTL):
+//   - merged-branch: the owning branch has a merged PR; stale regardless of TTL.
+//   - branch-switched: the worktree holding the lock has checked out a different
+//     branch than the lock's owner branch.
 
 const {
   test,
@@ -13,17 +18,18 @@ const {
   initRepo,
   seedCommit,
   runHumanCmd,
+  createFakeBin,
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
 
 const LOCK_PY = path.resolve(__dirname, '..', 'scripts', 'agent-file-locks.py');
 const T0 = 1_700_000_000; // fixed base epoch for deterministic claim ages
 
-function lockTool(args, cwd, nowEpoch) {
+function lockTool(args, cwd, nowEpoch, extraEnv = {}) {
   return cp.spawnSync('python3', [LOCK_PY, ...args], {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, GUARDEX_LOCK_NOW_EPOCH: String(nowEpoch) },
+    env: { ...process.env, GUARDEX_LOCK_NOW_EPOCH: String(nowEpoch), ...extraEnv },
   });
 }
 
@@ -97,5 +103,106 @@ defineSpawnSuite('agent-file-locks reap', () => {
     assert.equal(res.status, 1, 'conflicting claim must fail');
     assert.match(res.stderr, /locked by/);
     assert.match(res.stderr, /gx locks reap/, 'should hint reap for a stale blocking lock');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Merged-branch and branch-switched reap criteria (beyond TTL).
+// ---------------------------------------------------------------------------
+
+defineSpawnSuite('agent-file-locks reap — merged-branch and branch-switched', () => {
+  test('reaps a lock whose owning branch has a merged PR (via gh)', () => {
+    // gh says ≥1 merged PR exists → reap even well within TTL.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const branch = 'agent/test/merged-pr';
+    const wt = makeLaneWithClaim(repoDir, branch, 'fileA.txt', T0);
+    assert.ok(lockEntries(wt)['fileA.txt'], 'precondition: lock recorded');
+
+    // Fake gh always reports 1 merged PR for any branch.
+    const { fakeBin } = createFakeBin('gh', 'echo 1');
+    const res = lockTool(
+      ['reap', '--ttl-hours', '168'],  // well within TTL
+      repoDir,
+      T0 + 1800,
+      { GUARDEX_GH_BIN: path.join(fakeBin, 'gh') },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /reaped 1 stale lock\(s\)/);
+    assert.match(res.stdout, /merged PR/);
+    assert.equal(lockEntries(wt)['fileA.txt'], undefined, 'merged-branch lock must be removed');
+  });
+
+  test('reaps a lock when the worktree has switched to a different branch', () => {
+    // The worktree originally on branch A switches to branch B.
+    // Locks for branch A in that worktree are orphaned → reap.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const originalBranch = 'agent/test/old-branch';
+    const wt = makeLaneWithClaim(repoDir, originalBranch, 'fileB.txt', T0);
+
+    // Switch the worktree to a different branch.
+    const newBranch = 'agent/test/new-branch';
+    assert.equal(
+      runHumanCmd('git', ['checkout', '-b', newBranch], wt).status,
+      0,
+      'git checkout to new branch must succeed',
+    );
+
+    // Use a fake gh that fails so that merged-branch is not triggered; only
+    // the branch-switched criterion should fire.
+    const { fakeBin } = createFakeBin('gh', 'exit 1');
+    const res = lockTool(
+      ['reap', '--ttl-hours', '168'],  // well within TTL
+      repoDir,
+      T0 + 1800,
+      { GUARDEX_GH_BIN: path.join(fakeBin, 'gh') },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /reaped 1 stale lock\(s\)/);
+    assert.match(res.stdout, /branch-switched/);
+    assert.equal(lockEntries(wt)['fileB.txt'], undefined, 'branch-switched lock must be removed');
+  });
+
+  test('does not reap an unmerged active lock (gh confirms not merged)', () => {
+    // gh returns 0 (no merged PR) → lock is active; only TTL can trigger reap,
+    // and TTL has not expired.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const branch = 'agent/test/active-unmerged';
+    const wt = makeLaneWithClaim(repoDir, branch, 'fileC.txt', T0);
+
+    // Fake gh reports no merged PRs.
+    const { fakeBin } = createFakeBin('gh', 'echo 0');
+    const res = lockTool(
+      ['reap', '--ttl-hours', '168'],
+      repoDir,
+      T0 + 1800,
+      { GUARDEX_GH_BIN: path.join(fakeBin, 'gh') },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /no stale locks/);
+    assert.ok(lockEntries(wt)['fileC.txt'], 'unmerged active lock must survive');
+  });
+
+  test('gh failure keeps lock intact (fail-safe)', () => {
+    // gh exits non-zero AND git merge-base has no origin/main to fall back to
+    // → merged status is unknown → lock is preserved (fail-closed).
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const branch = 'agent/test/gh-fails';
+    const wt = makeLaneWithClaim(repoDir, branch, 'fileD.txt', T0);
+
+    // Fake gh always fails.
+    const { fakeBin } = createFakeBin('gh', 'exit 1');
+    const res = lockTool(
+      ['reap', '--ttl-hours', '168'],  // within TTL, no git fallback available
+      repoDir,
+      T0 + 1800,
+      { GUARDEX_GH_BIN: path.join(fakeBin, 'gh') },
+    );
+    assert.equal(res.status, 0, 'reap must not crash on gh failure');
+    // Lock must be preserved because merged status is unknown.
+    assert.ok(lockEntries(wt)['fileD.txt'], 'lock must be kept when gh fails and git fallback is unavailable');
   });
 });
