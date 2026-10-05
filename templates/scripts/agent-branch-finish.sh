@@ -2019,6 +2019,11 @@ else
 fi
 
 run_guardex_cli locks release --branch "$SOURCE_BRANCH" >/dev/null 2>&1 || true
+# Sweep any other orphaned locks from previously-merged branches. This catches
+# locks held by branches whose PRs landed before the current finish run
+# (e.g. branches merged days ago whose worktrees were never cleaned up).
+# Fail-safe: best-effort, never blocks a successful merge.
+run_guardex_cli locks reap >/dev/null 2>&1 || true
 
 base_worktree="$(get_worktree_for_branch "$BASE_BRANCH")"
 refresh_clean_base_worktree "$base_worktree"
@@ -2091,7 +2096,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
   # after we deliberately kept a branch with unlanded commits would force-delete
   # exactly what we just protected. Skip branch deletion for this run; the next
   # finish or an explicit `gx cleanup` sweeps the rest.
-  prune_args=(--base "$BASE_BRANCH" --only-dirty-worktrees)
+  prune_args=(--base "$BASE_BRANCH" --only-dirty-worktrees --include-pr-merged)
   if [[ "$local_branch_cleaned" -eq 1 ]]; then
     prune_args+=(--delete-branches)
     if [[ "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then

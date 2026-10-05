@@ -60,6 +60,10 @@ LOCK_NOW_EPOCH_ENV = 'GUARDEX_LOCK_NOW_EPOCH'
 DEFAULT_LOCK_TTL_HOURS = 168.0  # 7 days
 ADAPTIVE_SESSION_LEASE_SECONDS_ENV = 'GUARDEX_ADAPTIVE_SESSION_LEASE_SEC'
 DEFAULT_ADAPTIVE_SESSION_LEASE_SECONDS = 900.0
+# Override the `gh` binary path for testing or non-PATH installations.
+LOCK_GH_BIN_ENV = 'GUARDEX_GH_BIN'
+# Set to '0' to disable the gh/merge-base merged-branch check entirely.
+LOCK_MERGED_CHECK_ENV = 'GUARDEX_LOCK_MERGED_CHECK'
 
 
 @dataclass
@@ -288,6 +292,120 @@ def resolve_ttl_hours(args: argparse.Namespace) -> float:
         except ValueError:
             pass
     return DEFAULT_LOCK_TTL_HOURS
+
+
+def get_worktree_branch(worktree: Path) -> str | None:
+    """Return the branch name currently checked out in `worktree`, or None on error or detached HEAD."""
+    try:
+        branch = run_git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd=worktree)
+        return branch if branch and branch != 'HEAD' else None
+    except LockError:
+        return None
+
+
+def is_branch_merged_via_gh(branch: str, gh_bin: str) -> bool | None:
+    """Ask the forge whether `branch` has at least one merged PR.
+
+    Returns True  — forge confirmed ≥1 merged PR for this branch.
+    Returns False — forge confirmed no merged PR.
+    Returns None  — gh unavailable, not authenticated, network error, or
+                    unexpected output: caller must treat as "unknown" (fail safe).
+    """
+    try:
+        result = subprocess.run(
+            [gh_bin, 'pr', 'list', '--head', branch, '--state', 'merged',
+             '--json', 'state', '--jq', 'length'],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    txt = result.stdout.strip()
+    if txt.isdigit():
+        return int(txt) > 0
+    return None
+
+
+def is_branch_merged_via_git(branch: str, repo_root: Path) -> bool | None:
+    """Fall back to git merge-base when gh is unavailable.
+
+    Returns True  — the branch tip is an ancestor of the inferred base
+                    (origin/<base>), meaning it has been merged.
+    Returns False — the branch tip is NOT an ancestor of the base.
+    Returns None  — cannot determine (missing refs, error).
+    """
+    # Resolve branch tip.
+    try:
+        tip = run_git(['rev-parse', '--verify', f'refs/heads/{branch}'], cwd=repo_root)
+    except LockError:
+        tip = None
+    if not tip:
+        # Try the remote ref instead.
+        try:
+            tip = run_git(['rev-parse', '--verify', f'refs/remotes/origin/{branch}'], cwd=repo_root)
+        except LockError:
+            return None
+
+    # Discover base: respect GUARDEX_BASE_BRANCH, then origin/HEAD, then 'main'.
+    base = os.environ.get('GUARDEX_BASE_BRANCH', '').strip()
+    if not base:
+        try:
+            head = run_git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd=repo_root)
+            if head.startswith('origin/'):
+                base = head[len('origin/'):]
+        except LockError:
+            pass
+    if not base:
+        base = 'main'
+
+    base_ref = f'origin/{base}'
+    try:
+        run_git(['rev-parse', '--verify', base_ref], cwd=repo_root)
+    except LockError:
+        return None  # base ref doesn't exist locally
+
+    try:
+        result = subprocess.run(
+            ['git', 'merge-base', '--is-ancestor', tip, base_ref],
+            cwd=str(repo_root),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+    except OSError:
+        pass
+    return None
+
+
+def is_branch_merged(branch: str, repo_root: Path, gh_bin: str, gh_warned: list[bool]) -> bool | None:
+    """Determine whether `branch` is merged, using gh then git as fallback.
+
+    Fail safe: returns None (unknown / keep lock) on any error.
+    Warns once per reap run when gh is unavailable or fails.
+    """
+    # Try gh first.
+    merged = is_branch_merged_via_gh(branch, gh_bin)
+    if merged is not None:
+        return merged
+
+    # gh failed or is unavailable — warn once, then try git fallback.
+    if not gh_warned[0]:
+        print(
+            '[agent-file-locks] reap: gh unavailable or failed; '
+            'falling back to git merge-base for merged-branch detection.',
+            file=sys.stderr,
+        )
+        gh_warned[0] = True
+
+    return is_branch_merged_via_git(branch, repo_root)
 
 
 def staged_changes(repo_root: Path) -> list[tuple[str, str]]:
@@ -687,38 +805,100 @@ def cmd_release(args: argparse.Namespace, repo_root: Path) -> int:
 
 
 def cmd_reap(args: argparse.Namespace, repo_root: Path) -> int:
-    # Clear locks held by ABANDONED worktrees: present on disk, idle past the
-    # TTL, and with no live process inside. Dead worktrees self-clean (their lock
-    # file lives inside them), so this targets the lingering-but-idle case where
-    # a crashed or forgotten lane keeps blocking a file forever. The caller's own
-    # worktree always has a live process, so reap never clears its active locks.
+    # Clear locks that are stale by any of three criteria:
+    #
+    # 1. TTL-expired (existing): worktree has no live process AND the lock is
+    #    older than the TTL.  This handles crashed/forgotten idle lanes.
+    #
+    # 2. Merged-branch (new): the owning branch has a merged PR (detected via
+    #    `gh pr list --head <branch> --state merged`, falling back to
+    #    `git merge-base --is-ancestor`).  Stale regardless of TTL or live
+    #    process — the branch landed; the lock is obsolete.  Fails safe: a
+    #    network/gh error keeps the lock and prints one warning per run.
+    #
+    # 3. Worktree-branch-mismatch (new): the worktree that holds the lock is
+    #    now checked out on a DIFFERENT branch than the lock's owner branch.
+    #    The agent that made the claim has left; the lock is orphaned.  Stale
+    #    regardless of TTL or live process.  Only triggered when the current
+    #    branch is determinable — unknown branch means fail safe (keep lock).
     ttl_hours = resolve_ttl_hours(args)
     ttl_seconds = ttl_hours * 3600.0
     now = now_epoch()
     roots = list_worktree_roots(repo_root)
-    reaped: list[tuple[str, str, str, int]] = []  # worktree, file, branch, age_hours
+
+    # Load every worktree's state once so we can collect all unique branches
+    # before issuing any forge calls (one gh call per branch, not per entry).
+    worktree_states: dict[Path, dict[str, Any]] = {}
+    all_branches: set[str] = set()
     for root in roots:
         try:
             state = load_state(root)
+            worktree_states[root] = state
+            for entry in state['locks'].values():
+                b = str(entry.get('branch', ''))
+                if b:
+                    all_branches.add(b)
         except LockError as exc:
             raise LockError(
                 f'cannot safely inspect sibling lock registry in {root}; '
                 'reap operation blocked'
             ) from exc
+
+    # Determine which branches are merged (batch: one gh call per branch).
+    # Disabled when --no-merged-check is passed or GUARDEX_LOCK_MERGED_CHECK=0.
+    merged_check_disabled = (
+        getattr(args, 'no_merged_check', False)
+        or not env_truthy(os.environ.get(LOCK_MERGED_CHECK_ENV, '1'))
+    )
+    merged_branches: set[str] = set()
+    if not merged_check_disabled and all_branches:
+        gh_bin = os.environ.get(LOCK_GH_BIN_ENV, '').strip() or shutil.which('gh') or 'gh'
+        gh_warned: list[bool] = [False]
+        for branch in sorted(all_branches):  # sorted for deterministic output
+            result = is_branch_merged(branch, repo_root, gh_bin, gh_warned)
+            if result is True:
+                merged_branches.add(branch)
+
+    # Process each worktree.
+    reaped: list[tuple[str, str, str, int, str]] = []  # root, file, branch, age_h, reason
+    for root in roots:
+        state = worktree_states.get(root)
+        if state is None:
+            continue
         locks = state['locks']
         if not locks:
             continue
-        if has_live_process_in_worktree(root):
-            continue
+
+        worktree_has_live = has_live_process_in_worktree(root)
+        wt_branch = get_worktree_branch(root)  # None if indeterminate
+
         survivors: dict[str, Any] = {}
         changed = False
         for file_path, entry in locks.items():
+            branch = str(entry.get('branch', ''))
             claimed = parse_iso_epoch(str(entry.get('claimed_at', '')))
-            if claimed is not None and (now - claimed) >= ttl_seconds:
-                reaped.append((str(root), file_path, str(entry.get('branch', '')), int((now - claimed) // 3600)))
+            age_hours = int((now - claimed) // 3600) if claimed is not None else 0
+
+            reason: str | None = None
+
+            # Criterion 2: merged branch — stale regardless of TTL or live process.
+            if branch and branch in merged_branches:
+                reason = 'merged-branch'
+
+            # Criterion 3: worktree switched to a different branch — orphaned lock.
+            elif wt_branch is not None and branch and wt_branch != branch:
+                reason = 'branch-switched'
+
+            # Criterion 1 (original): TTL expired with no live process.
+            elif not worktree_has_live and claimed is not None and (now - claimed) >= ttl_seconds:
+                reason = 'ttl'
+
+            if reason:
+                reaped.append((str(root), file_path, branch, age_hours, reason))
                 changed = True
             else:
                 survivors[file_path] = entry
+
         if changed and not args.dry_run:
             write_state(root, {**state, 'locks': survivors})
 
@@ -727,8 +907,14 @@ def cmd_reap(args: argparse.Namespace, repo_root: Path) -> int:
         return 0
     label = '[agent-file-locks] [dry-run] would reap' if args.dry_run else '[agent-file-locks] reaped'
     print(f'{label} {len(reaped)} stale lock(s) (ttl={int(ttl_hours)}h):')
-    for root, file_path, branch, age_hours in reaped:
-        print(f'  - {file_path} | {branch} | idle {age_hours}h | {root}')
+    for root, file_path, branch, age_hours, reason in reaped:
+        if reason == 'ttl':
+            detail = f'idle {age_hours}h'
+        elif reason == 'merged-branch':
+            detail = 'merged PR'
+        else:
+            detail = reason  # branch-switched or future reasons
+        print(f'  - {file_path} | {branch} | {detail} | {root}')
     return 0
 
 
@@ -902,7 +1088,14 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument('--branch', help='Filter by branch')
     add_agent_arg(status)
 
-    reap = sub.add_parser('reap', help='Clear stale locks from abandoned (idle past TTL, no live process) worktrees')
+    reap = sub.add_parser(
+        'reap',
+        help=(
+            'Clear stale locks: TTL-expired idle lanes, merged-branch locks '
+            '(branch PR merged regardless of TTL), and worktrees switched to a '
+            'different branch.'
+        ),
+    )
     reap.add_argument(
         '--ttl-hours',
         type=float,
@@ -910,6 +1103,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f'Idle hours before a lock is stale (default {int(DEFAULT_LOCK_TTL_HOURS)}h or ${LOCK_TTL_HOURS_ENV})',
     )
     reap.add_argument('--dry-run', action='store_true', help='Report stale locks without removing them')
+    reap.add_argument(
+        '--no-merged-check',
+        action='store_true',
+        help='Skip merged-branch and branch-switched checks; only apply the TTL criterion',
+    )
 
     validate = sub.add_parser('validate', help='Validate staged files are locked by branch')
     validate.add_argument('--branch', required=True, help='Owner branch name')
