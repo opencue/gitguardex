@@ -314,6 +314,10 @@ function agents(rawArgs) {
           '--idle-minutes',
           String(options.idleMinutes),
           '--prune-clean-worktrees',
+          // Agents often open lanes as sibling dirs (../repo-wt-*) instead of
+          // the managed agent dirs; reclaim those too once MERGED. Never
+          // clean-but-unmerged, detached or non-agent ones.
+          '--include-merged-linked-worktrees',
         ],
         cwd: repoRoot,
         logPath: cleanupLogPath,
