@@ -85,6 +85,7 @@ function splitGateReviewFlags(args) {
   let gateBaseline = false;
   let gateAbide = true;
   let gateSerialCi = true;
+  let allowNoChecks = false;
   let reviewModel;
   let reviewTimeoutMs;
   let noAutoCommit = false;
@@ -123,6 +124,10 @@ function splitGateReviewFlags(args) {
       // The shell script does not know this gx-level gate flag either.
       reviewTimeoutMs = arg.includes('=') ? arg.slice('--review-timeout-ms='.length) : (args[index + 1] ?? '');
       if (!arg.includes('=')) index += 1;
+    } else if (arg === '--allow-no-checks') {
+      // The gate's own escape hatch for a repo with no CI; the shell script
+      // does not know it, and dropping it made the gate refuse forever.
+      allowNoChecks = true;
     } else if (arg === '--gate-baseline') {
       gateBaseline = true;
     } else if (arg === '--no-gate-baseline') {
@@ -232,6 +237,7 @@ function splitGateReviewFlags(args) {
     gateBaseline,
     gateAbide,
     gateSerialCi,
+    allowNoChecks,
     noAutoCommit,
     commitMessage,
     agentQuiet,
@@ -349,6 +355,7 @@ function branch(rawArgs) {
       gateBaseline,
       gateAbide,
       gateSerialCi,
+      allowNoChecks,
       noAutoCommit,
       commitMessage,
       agentQuiet,
@@ -408,6 +415,7 @@ function branch(rawArgs) {
           gateBaseline,
           gateAbide,
           gateSerialCi,
+          allowNoChecks,
           agentQuiet,
         },
         progress,
@@ -561,6 +569,7 @@ function worktree(rawArgs) {
 }
 
 module.exports = {
+  splitGateReviewFlags,
   branch,
   pivot,
   ship,
