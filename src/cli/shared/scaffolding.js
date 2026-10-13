@@ -23,6 +23,19 @@ const {
   readBranchDisplayName,
   lockRegistryStatus,
 } = require('../../git');
+
+// Repo-level opt-out: `git config --add multiagent.managedSkip <path>` names a
+// managed file the repo removed on purpose. setup/fix never recreate it and
+// scan does not report it missing.
+function readManagedSkip(repoRoot) {
+  const result = gitRun(repoRoot, ['config', '--get-all', 'multiagent.managedSkip'], { allowFailure: true });
+  if (result.status !== 0) return new Set();
+  return new Set(String(result.stdout || '').split('\n').map((entry) => entry.trim()).filter(Boolean));
+}
+
+function managedSkipOperation(relativePath) {
+  return { status: 'skipped', file: relativePath, note: 'multiagent.managedSkip' };
+}
 const {
   toDestinationPath,
   ensureGeneratedScriptShim,
@@ -137,7 +150,13 @@ function runInstallInternal(options) {
 
   operations.push(...ensureOmxScaffold(repoRoot, Boolean(options.dryRun)));
 
+  const managedSkip = readManagedSkip(repoRoot);
+  const templateFiles = TEMPLATE_FILES.filter((entry) => !managedSkip.has(toDestinationPath(entry)));
   for (const templateFile of TEMPLATE_FILES) {
+    if (managedSkip.has(toDestinationPath(templateFile))) {
+      operations.push(managedSkipOperation(toDestinationPath(templateFile)));
+      continue;
+    }
     operations.push(
       copyTemplateFile(
         repoRoot,
@@ -147,7 +166,7 @@ function runInstallInternal(options) {
       ),
     );
   }
-  operations.push(...materializePackageRepoTemplateFiles(repoRoot, TEMPLATE_FILES, Boolean(options.dryRun)));
+  operations.push(...materializePackageRepoTemplateFiles(repoRoot, templateFiles, Boolean(options.dryRun)));
   operations.push(...ensureTargetedLegacyWorkflowShims(repoRoot, options));
   for (const hookName of HOOK_NAMES) {
     const hookRelativePath = path.posix.join('.githooks', hookName);
@@ -199,14 +218,20 @@ function runFixInternal(options) {
 
   operations.push(...ensureOmxScaffold(repoRoot, Boolean(options.dryRun)));
 
+  const managedSkip = readManagedSkip(repoRoot);
+  const templateFiles = TEMPLATE_FILES.filter((entry) => !managedSkip.has(toDestinationPath(entry)));
   for (const templateFile of TEMPLATE_FILES) {
+    if (managedSkip.has(toDestinationPath(templateFile))) {
+      operations.push(managedSkipOperation(toDestinationPath(templateFile)));
+      continue;
+    }
     if (shouldForceManagedPath(options, toDestinationPath(templateFile))) {
       operations.push(copyTemplateFile(repoRoot, templateFile, true, Boolean(options.dryRun)));
       continue;
     }
     operations.push(ensureTemplateFilePresent(repoRoot, templateFile, Boolean(options.dryRun)));
   }
-  operations.push(...materializePackageRepoTemplateFiles(repoRoot, TEMPLATE_FILES, Boolean(options.dryRun)));
+  operations.push(...materializePackageRepoTemplateFiles(repoRoot, templateFiles, Boolean(options.dryRun)));
   operations.push(...ensureTargetedLegacyWorkflowShims(repoRoot, options));
   for (const hookName of HOOK_NAMES) {
     const hookRelativePath = path.posix.join('.githooks', hookName);
@@ -280,7 +305,9 @@ function runScanInternal(options) {
     ...REQUIRED_MANAGED_REPO_FILES,
   ];
 
+  const managedSkip = readManagedSkip(repoRoot);
   for (const relativePath of requiredPaths) {
+    if (managedSkip.has(relativePath)) continue;
     const absolutePath = path.join(repoRoot, relativePath);
     if (!fs.existsSync(absolutePath)) {
       findings.push({
@@ -294,7 +321,8 @@ function runScanInternal(options) {
 
   const hooksPathResult = gitRun(repoRoot, ['config', '--get', 'core.hooksPath'], { allowFailure: true });
   const hooksPath = hooksPathResult.status === 0 ? hooksPathResult.stdout.trim() : '';
-  if (hooksPath !== '.githooks') {
+  // An absolute path to this repo's own .githooks is the same setting.
+  if (hooksPath !== '.githooks' && path.resolve(repoRoot, hooksPath || '.') !== path.join(repoRoot, '.githooks')) {
     findings.push({
       level: 'warn',
       code: 'hooks-path-mismatch',
