@@ -165,6 +165,12 @@ Two things the gate deliberately will NOT do, so do not expect them:
 - **It never lets the fixer grade its own work.** Every repair is judged by a
   separate review invocation.
 
+**Review and merge without asking.** The AI review and the gated merge are part of
+finishing, not a separate decision: never stop to ask the user "should I run the
+review?" or "should I merge?". Run the review automatically on every finished
+lane; if it is clean (no HIGH/CRITICAL) and the change adds no new failing check,
+merge. Stop and report only when the gate blocks, or the user said keep-local.
+
 Posting a review is NOT merging. `gx pr-review` / `gx review` post findings and
 exit; only `gx branch finish` (or `gx ship`) merges. A PR sitting open with a
 clean review means the finish flow was never run.
