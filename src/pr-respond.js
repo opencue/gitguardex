@@ -125,7 +125,7 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     'repository(owner:$owner,name:$name){pullRequest(number:$pr){',
     'reviews(last:50){nodes{author{login}state}}',
     'reviewThreads(first:100){nodes{',
-    'id isResolved isOutdated path line startLine',
+    'id isResolved isOutdated diffSide path line startLine',
     'comments(first:3){nodes{id body author{login}}}',
     '}pageInfo{hasNextPage}}',
     '}}}'
@@ -180,7 +180,11 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
   for (const review of payload?.data?.repository?.pullRequest?.reviews?.nodes || []) {
     const login = String(review?.author?.login || '').toLowerCase();
     const state = String(review?.state || '');
-    if (login && state) latestStateByReviewer.set(login, state);
+    // COMMENTED and PENDING do not represent a review decision — skip them so a
+    // comment-only interaction cannot clear an active CHANGES_REQUESTED state.
+    if (login && state && state !== 'COMMENTED' && state !== 'PENDING') {
+      latestStateByReviewer.set(login, state);
+    }
   }
   // Only treat a reviewer as "blocking" when their most recent review is CHANGES_REQUESTED.
   const humanReviewers = new Set(
@@ -203,6 +207,10 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     if (!thread || thread.isResolved || thread.isOutdated) return false;
     if (!Array.isArray(thread.comments?.nodes) || thread.comments.nodes.length === 0) return false;
     if (!thread.path || !thread.line) return false;
+    // LEFT-side threads reference deleted lines that no longer exist in the
+    // current file; applying a suggestion to LEFT coordinates would target
+    // unrelated surviving code. Skip them — the reviewer must re-thread.
+    if (thread.diffSide === 'LEFT') return false;
 
     const firstComment = thread.comments.nodes[0];
     const body = String(firstComment?.body || '');
@@ -405,7 +413,7 @@ function prRespond(options = {}, deps = {}) {
     };
   }
 
-  // 3. Verify the worktree is clean.
+  // 3. Verify the worktree is on the expected branch and its HEAD matches origin.
   const wtBranch = currentBranchName(worktreePath);
   if (wtBranch !== branch) {
     return {
@@ -413,6 +421,29 @@ function prRespond(options = {}, deps = {}) {
       reason: `worktree at '${worktreePath}' is on '${wtBranch}', expected '${branch}'`
     };
   }
+
+  // If we can reach origin, verify the local HEAD matches to prevent applying the fix
+  // to a stale worktree (a diverged push would fail non-fast-forward, but checking here
+  // gives a clearer error sooner).
+  const fetchResult = gitRun(worktreePath, ['fetch', 'origin', branch], { allowFailure: true });
+  if (fetchResult.status === 0) {
+    const localHead = String(
+      gitRun(worktreePath, ['rev-parse', 'HEAD'], { allowFailure: true }).stdout || ''
+    ).trim();
+    const remoteHead = String(
+      gitRun(worktreePath, ['rev-parse', `refs/remotes/origin/${branch}`], { allowFailure: true })
+        .stdout || ''
+    ).trim();
+    if (localHead && remoteHead && localHead !== remoteHead) {
+      return {
+        status: 'skipped',
+        reason:
+          `worktree HEAD (${localHead.slice(0, 8)}) does not match origin/${branch} ` +
+          `(${remoteHead.slice(0, 8)}) — pull or push the branch first`
+      };
+    }
+  }
+
   const statusResult = gitRun(worktreePath, ['status', '--porcelain', '-z'], {
     allowFailure: true
   });
@@ -513,8 +544,18 @@ function prRespond(options = {}, deps = {}) {
   }
 
   // 8. Reply + resolve threads whose files were touched by the fix.
-  // Only resolve when re-review succeeded: a null result means re-review threw,
-  // so we cannot confirm the defect was addressed — leave threads open for human review.
+  // Resolve a thread only when BOTH conditions hold:
+  //   a) re-review succeeded (null means it threw; leave all threads open), AND
+  //   b) the re-review no longer reports any blocking finding at that file —
+  //      if two threads target the same file and only one was fixed, the remaining
+  //      re-review finding on that file prevents premature resolution.
+  const reReviewRemainingPaths = new Set(
+    reReviewResult && Array.isArray(reReviewResult.findings)
+      ? reReviewResult.findings
+          .filter((f) => BLOCKING_SEVERITIES.has(String(f && f.severity).toLowerCase()))
+          .map((f) => f.path)
+      : []
+  );
   const resolved = [];
   const skippedReply = [];
   for (let index = 0; index < threads.length; index += 1) {
@@ -525,6 +566,11 @@ function prRespond(options = {}, deps = {}) {
     }
     if (reReviewResult === null) {
       // Re-review failed: cannot confirm fix; leave thread open.
+      skippedReply.push(thread.id);
+      continue;
+    }
+    if (reReviewRemainingPaths.has(thread.path)) {
+      // Re-review still reports a blocking finding on this file; leave thread open.
       skippedReply.push(thread.id);
       continue;
     }
