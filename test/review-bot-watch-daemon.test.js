@@ -277,12 +277,17 @@ test('describeReviewDaemon returns running for live pid', () => {
 
   // Spawn a background process whose argv includes 'review-bot-watch' so that
   // the /proc/<pid>/cmdline check in describeReviewDaemon passes on Linux.
-  // `bash -c 'sleep 30' review-bot-watch` puts 'review-bot-watch' as argv[3]
-  // in the cmdline null-separated string, which is what includes() checks.
-  const child = cp.spawn('bash', ['-c', 'sleep 30', 'review-bot-watch'], {
-    detached: true,
-    stdio: 'ignore'
-  });
+  // Use `node -e 'setTimeout(…)' review-bot-watch` instead of bash: bash can
+  // exec-replace itself with the inner command (losing argv[3] from cmdline),
+  // while Node never exec-replaces itself so the marker stays stable.
+  const child = cp.spawn(
+    process.execPath,
+    ['-e', 'setTimeout(() => {}, 30000)', 'review-bot-watch'],
+    {
+      detached: true,
+      stdio: 'ignore'
+    }
+  );
   child.unref();
   const childPid = child.pid;
 
