@@ -113,8 +113,9 @@ test('installSpeckit throws when runSpecifyInit exits non-zero', () => {
 test('installSpeckit throws with timeout message when specify hangs', () => {
   const target = makeTmpDir('init-timeout');
   const fakeBin = makeTmpDir('fake-specify-hang');
-  // Hangs until killed
-  makeFakeSpecify(fakeBin, 'read -t 9999 _');
+  // Hangs until killed; exec sleep is used because `read` exits immediately
+  // when stdin is closed (common in CI), which would fail the timeout assertion.
+  makeFakeSpecify(fakeBin, 'exec sleep 9999');
 
   const savedOverride = process.env.SPECIFY_INIT_TIMEOUT_MS_OVERRIDE;
   // 250 ms is enough to confirm timeout without slowing the suite
