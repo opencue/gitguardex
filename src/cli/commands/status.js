@@ -1,12 +1,13 @@
 // `gx status` — service/repo health summary + companion-tool prompts.
 // Pure code-motion from src/cli/main.js — no behavior changes.
 const {
+  fs,
   path,
   packageJson,
   TOOL_NAME,
   SHORT_TOOL_NAME,
   GLOBAL_TOOLCHAIN_PACKAGES,
-  envFlagIsTruthy,
+  envFlagIsTruthy
 } = require('../../context');
 const { isGitRepo } = require('../../git');
 const abide = require('../../abide');
@@ -16,7 +17,7 @@ const {
   statusDot,
   describeCompressor,
   printToolLogsSummary,
-  getInvokedCliName,
+  getInvokedCliName
 } = require('../../output');
 const { parseCommonArgs } = require('../args');
 const { extractFlag } = require('../dispatch');
@@ -24,9 +25,33 @@ const {
   runScanInternal,
   countAgentWorktrees,
   deriveNextStepHint,
-  printStatusRepairHint,
+  printStatusRepairHint
 } = require('../shared/scaffolding');
 const { describeGuardexRepoToggle } = require('../shared/repo-env');
+
+/**
+ * Read the review-watcher daemon's pidfile (written by review-bot-watch.sh
+ * --daemon) and return its live status.  Returns { state: 'running', pid } or
+ * { state: 'stopped', pid: null }.  Never throws.
+ */
+function describeReviewDaemon(repoRoot) {
+  const pidfile = path.join(repoRoot, '.omx', 'state', 'review-bot-watch.pid');
+  try {
+    const raw = fs.readFileSync(pidfile, 'utf8').trim();
+    const pid = parseInt(raw, 10);
+    if (!pid || Number.isNaN(pid)) {
+      return { state: 'stopped', pid: null };
+    }
+    try {
+      process.kill(pid, 0);
+      return { state: 'running', pid };
+    } catch {
+      return { state: 'stopped', pid: null };
+    }
+  } catch {
+    return { state: 'stopped', pid: null };
+  }
+}
 
 function collectServicesSnapshot() {
   const toolchain = toolchainModule.detectGlobalToolchainPackages();
@@ -38,7 +63,7 @@ function collectServicesSnapshot() {
         displayName: service.name,
         packageName: pkg,
         dependencyUrl: service.dependencyUrl || null,
-        status: 'unknown',
+        status: 'unknown'
       };
     }
     return {
@@ -46,30 +71,32 @@ function collectServicesSnapshot() {
       displayName: service.name,
       packageName: pkg,
       dependencyUrl: service.dependencyUrl || null,
-      status: toolchain.installed.includes(pkg) ? 'active' : 'inactive',
+      status: toolchain.installed.includes(pkg) ? 'active' : 'inactive'
     };
   });
-  const localCompanionServices = toolchainModule.detectOptionalLocalCompanionTools().map((tool) => ({
-    name: tool.name,
-    displayName: tool.displayName || tool.name,
-    installCommand: tool.installCommand,
-    installArgs: Array.isArray(tool.installArgs) ? [...tool.installArgs] : [],
-    status: tool.status,
-  }));
+  const localCompanionServices = toolchainModule
+    .detectOptionalLocalCompanionTools()
+    .map((tool) => ({
+      name: tool.name,
+      displayName: tool.displayName || tool.name,
+      installCommand: tool.installCommand,
+      installArgs: Array.isArray(tool.installArgs) ? [...tool.installArgs] : [],
+      status: tool.status
+    }));
   const requiredSystemTools = toolchainModule.detectRequiredSystemTools();
   const services = [
     ...npmServices,
     ...localCompanionServices.map((tool) => ({
       name: tool.name,
       displayName: tool.displayName,
-      status: tool.status,
+      status: tool.status
     })),
     ...requiredSystemTools.map((tool) => ({
       name: tool.name,
       displayName: tool.displayName || tool.name,
       command: tool.command,
-      status: tool.status,
-    })),
+      status: tool.status
+    }))
   ];
   return { toolchain, npmServices, localCompanionServices, requiredSystemTools, services };
 }
@@ -90,26 +117,29 @@ function maybePromptInstallMissingCompanions(snapshot) {
   const missingPackages = snapshot.npmServices
     .filter((service) => service.status !== 'active')
     .map((service) => service.packageName);
-  const missingLocalTools = snapshot.localCompanionServices.filter((tool) => tool.status !== 'active');
+  const missingLocalTools = snapshot.localCompanionServices.filter(
+    (tool) => tool.status !== 'active'
+  );
   if (missingPackages.length === 0 && missingLocalTools.length === 0) {
     return { handled: false, installed: false };
   }
 
   const missingNames = [
     ...missingPackages.map((pkg) => toolchainModule.formatGlobalToolchainServiceName(pkg)),
-    ...missingLocalTools.map((tool) => tool.displayName || tool.name),
+    ...missingLocalTools.map((tool) => tool.displayName || tool.name)
   ];
   console.log(`[${TOOL_NAME}] Missing companion tools: ${missingNames.join(', ')}.`);
 
-  const promptText = toolchainModule.buildMissingCompanionInstallPrompt(missingPackages, missingLocalTools);
-  const approved = interactive
-    ? toolchainModule.promptYesNoStrict(promptText)
-    : autoApproval;
+  const promptText = toolchainModule.buildMissingCompanionInstallPrompt(
+    missingPackages,
+    missingLocalTools
+  );
+  const approved = interactive ? toolchainModule.promptYesNoStrict(promptText) : autoApproval;
 
   if (!approved) {
     console.log(
       `[${TOOL_NAME}] Skipped companion install. Set GUARDEX_SKIP_COMPANION_PROMPT=1 to silence this prompt, ` +
-      `or run '${getInvokedCliName()} setup --install-only' later to install manually.`,
+        `or run '${getInvokedCliName()} setup --install-only' later to install manually.`
     );
     return { handled: true, installed: false };
   }
@@ -117,14 +147,14 @@ function maybePromptInstallMissingCompanions(snapshot) {
   const result = toolchainModule.performCompanionInstall(missingPackages, missingLocalTools);
   if (result.status === 'installed') {
     console.log(
-      `[${TOOL_NAME}] ✅ Companion tools installed (${(result.packages || []).join(', ')}).`,
+      `[${TOOL_NAME}] ✅ Companion tools installed (${(result.packages || []).join(', ')}).`
     );
     return { handled: true, installed: true };
   }
   if (result.status === 'failed') {
     console.log(
       `[${TOOL_NAME}] ⚠️ Companion install failed: ${result.reason}. ` +
-      `Retry with '${getInvokedCliName()} setup --install-only'.`,
+        `Retry with '${getInvokedCliName()} setup --install-only'.`
     );
     return { handled: true, installed: false };
   }
@@ -135,7 +165,7 @@ function status(rawArgs) {
   const { found: verboseFlag, remaining: afterVerbose } = extractFlag(rawArgs, '--verbose');
   const options = parseCommonArgs(afterVerbose, {
     target: process.cwd(),
-    json: false,
+    json: false
   });
   const forceExpand = envFlagIsTruthy(process.env.GUARDEX_VERBOSE_STATUS) || verboseFlag;
   const invokedBasename = getInvokedCliName();
@@ -153,16 +183,18 @@ function status(rawArgs) {
   const inGitRepo = isGitRepo(targetPath);
   const scanResult = inGitRepo ? runScanInternal({ target: targetPath, json: false }) : null;
   const repoServiceStatus = scanResult
-    ? (scanResult.guardexEnabled === false
+    ? scanResult.guardexEnabled === false
       ? 'disabled'
-      : (scanResult.errors === 0 && scanResult.warnings === 0 ? 'active' : 'degraded'))
+      : scanResult.errors === 0 && scanResult.warnings === 0
+        ? 'active'
+        : 'degraded'
     : 'inactive';
 
   const payload = {
     cli: {
       name: packageJson.name,
       version: packageJson.version,
-      runtime: runtimeVersion(),
+      runtime: runtimeVersion()
     },
     services,
     repo: {
@@ -173,18 +205,19 @@ function status(rawArgs) {
       guardexToggle: scanResult ? scanResult.guardexToggle || null : null,
       scan: scanResult
         ? {
-          repoRoot: scanResult.repoRoot,
-          branch: scanResult.branch,
-          errors: scanResult.errors,
-          warnings: scanResult.warnings,
-          findings: scanResult.findings.length,
-        }
+            repoRoot: scanResult.repoRoot,
+            branch: scanResult.branch,
+            errors: scanResult.errors,
+            warnings: scanResult.warnings,
+            findings: scanResult.findings.length
+          }
         : null,
       // Whether this repo's AGENTS.md / CLAUDE.md rules are being enforced.
       abide: scanResult ? abide.abideSummary(scanResult.repoRoot) : null,
+      reviewDaemon: scanResult ? describeReviewDaemon(scanResult.repoRoot) : null
     },
     detectionError: toolchain.ok ? null : toolchain.error,
-    compression: describeCompressor(),
+    compression: describeCompressor()
   };
 
   if (options.json) {
@@ -200,18 +233,19 @@ function status(rawArgs) {
   console.log(`[${TOOL_NAME}] CLI: ${payload.cli.runtime}`);
   if (!toolchain.ok) {
     const detectionError = compact
-      ? String(toolchain.error || '').split(/\r?\n/).find(Boolean) || 'unknown error'
+      ? String(toolchain.error || '')
+          .split(/\r?\n/)
+          .find(Boolean) || 'unknown error'
       : toolchain.error;
     console.log(`[${TOOL_NAME}] ⚠️ Could not detect global services: ${detectionError}`);
   }
 
   if (compact) {
-    const serviceSummary = inactiveServiceCount === 0
-      ? `${activeServiceCount}/${services.length} ${statusDot('active')} active`
-      : `${activeServiceCount}/${services.length} ${statusDot('degraded')} active (${inactiveServiceCount} inactive)`;
-    console.log(
-      `[${TOOL_NAME}] Global services: ${serviceSummary}`,
-    );
+    const serviceSummary =
+      inactiveServiceCount === 0
+        ? `${activeServiceCount}/${services.length} ${statusDot('active')} active`
+        : `${activeServiceCount}/${services.length} ${statusDot('degraded')} active (${inactiveServiceCount} inactive)`;
+    console.log(`[${TOOL_NAME}] Global services: ${serviceSummary}`);
   } else {
     console.log(`[${TOOL_NAME}] Global services:`);
     for (const service of services) {
@@ -223,7 +257,7 @@ function status(rawArgs) {
     const { command, available } = payload.compression;
     if (available === false) {
       console.log(
-        `[${TOOL_NAME}] Token compression: ${statusDot('degraded')} ${command} — not found on PATH (gx output is not compressed)`,
+        `[${TOOL_NAME}] Token compression: ${statusDot('degraded')} ${command} — not found on PATH (gx output is not compressed)`
       );
     } else {
       console.log(`[${TOOL_NAME}] Token compression: ${statusDot('active')} ${command}`);
@@ -235,29 +269,27 @@ function status(rawArgs) {
   if (inactiveOptionalCompanions.length > 0) {
     if (compact) {
       console.log(
-        `[${TOOL_NAME}] Optional companion tools inactive: ${inactiveOptionalCompanions.length} (run '${SHORT_TOOL_NAME} setup')`,
+        `[${TOOL_NAME}] Optional companion tools inactive: ${inactiveOptionalCompanions.length} (run '${SHORT_TOOL_NAME} setup')`
       );
     } else {
       console.log(
-        `[${TOOL_NAME}] Optional companion tools inactive: ${inactiveOptionalCompanions.join(', ')}`,
+        `[${TOOL_NAME}] Optional companion tools inactive: ${inactiveOptionalCompanions.join(', ')}`
       );
       for (const warning of toolchainModule.describeMissingGlobalDependencyWarnings(
         npmServices
           .filter((service) => service.status === 'inactive')
-          .map((service) => service.packageName),
+          .map((service) => service.packageName)
       )) {
         console.log(`[${TOOL_NAME}] ${warning}`);
       }
       console.log(
-        `[${TOOL_NAME}] Run '${SHORT_TOOL_NAME} setup' to install missing companions with an explicit Y/N prompt.`,
+        `[${TOOL_NAME}] Run '${SHORT_TOOL_NAME} setup' to install missing companions with an explicit Y/N prompt.`
       );
     }
   }
   const missingSystemTools = requiredSystemTools.filter((tool) => tool.status !== 'active');
   if (missingSystemTools.length > 0) {
-    const tools = missingSystemTools
-      .map((tool) => tool.displayName || tool.name)
-      .join(', ');
+    const tools = missingSystemTools.map((tool) => tool.displayName || tool.name).join(', ');
     console.log(`[${TOOL_NAME}] ⚠️ Missing required system tool(s): ${tools}`);
     if (!compact) {
       for (const tool of missingSystemTools) {
@@ -269,13 +301,13 @@ function status(rawArgs) {
 
   if (!scanResult) {
     console.log(
-      `[${TOOL_NAME}] Repo safety service: ${statusDot('inactive')} inactive (no git repository at target).`,
+      `[${TOOL_NAME}] Repo safety service: ${statusDot('inactive')} inactive (no git repository at target).`
     );
     const inactiveHint = deriveNextStepHint({
       scanResult: null,
       worktreeCount: 0,
       invoked: invokedBasename,
-      inGitRepo,
+      inGitRepo
     });
     console.log(`[${TOOL_NAME}] Next: ${inactiveHint}`);
     printToolLogsSummary({ invokedBasename, compact });
@@ -285,7 +317,7 @@ function status(rawArgs) {
 
   if (scanResult.guardexEnabled === false) {
     console.log(
-      `[${TOOL_NAME}] Repo safety service: ${statusDot('disabled')} disabled (${describeGuardexRepoToggle(scanResult.guardexToggle)}).`,
+      `[${TOOL_NAME}] Repo safety service: ${statusDot('disabled')} disabled (${describeGuardexRepoToggle(scanResult.guardexToggle)}).`
     );
     console.log(`[${TOOL_NAME}] Repo: ${scanResult.repoRoot}`);
     console.log(`[${TOOL_NAME}] Branch: ${scanResult.branch}`);
@@ -293,14 +325,14 @@ function status(rawArgs) {
     if (worktreeCountDisabled > 0) {
       const plural = worktreeCountDisabled === 1 ? 'worktree' : 'worktrees';
       console.log(
-        `[${TOOL_NAME}] ⚠ ${worktreeCountDisabled} active agent ${plural} under .omc/agent-worktrees or .omx/agent-worktrees.`,
+        `[${TOOL_NAME}] ⚠ ${worktreeCountDisabled} active agent ${plural} under .omc/agent-worktrees or .omx/agent-worktrees.`
       );
     }
     const disabledHint = deriveNextStepHint({
       scanResult,
       worktreeCount: worktreeCountDisabled,
       invoked: invokedBasename,
-      inGitRepo,
+      inGitRepo
     });
     console.log(`[${TOOL_NAME}] Next: ${disabledHint}`);
     printToolLogsSummary({ invokedBasename, compact });
@@ -312,33 +344,38 @@ function status(rawArgs) {
     console.log(`[${TOOL_NAME}] Repo safety service: ${statusDot('active')} active.`);
   } else if (scanResult.errors === 0) {
     console.log(
-      `[${TOOL_NAME}] Repo safety service: ${statusDot('degraded')} degraded (${scanResult.warnings} warning(s)).`,
+      `[${TOOL_NAME}] Repo safety service: ${statusDot('degraded')} degraded (${scanResult.warnings} warning(s)).`
     );
   } else if (scanResult.warnings === 0) {
     console.log(
-      `[${TOOL_NAME}] Repo safety service: ${statusDot('degraded')} degraded (${scanResult.errors} error(s)).`,
+      `[${TOOL_NAME}] Repo safety service: ${statusDot('degraded')} degraded (${scanResult.errors} error(s)).`
     );
   } else {
     console.log(
-      `[${TOOL_NAME}] Repo safety service: ${statusDot('degraded')} degraded (${scanResult.errors} error(s), ${scanResult.warnings} warning(s)).`,
+      `[${TOOL_NAME}] Repo safety service: ${statusDot('degraded')} degraded (${scanResult.errors} error(s), ${scanResult.warnings} warning(s)).`
     );
   }
   printStatusRepairHint(scanResult);
   console.log(`[${TOOL_NAME}] Repo: ${scanResult.repoRoot}`);
   console.log(`[${TOOL_NAME}] Branch: ${scanResult.branch}`);
   console.log(`[${TOOL_NAME}] ${abide.renderAbideSummary(payload.repo.abide, invokedBasename)}`);
+  if (payload.repo.reviewDaemon && payload.repo.reviewDaemon.state === 'running') {
+    console.log(
+      `[${TOOL_NAME}] Review watcher: ${statusDot('active')} running (pid ${payload.repo.reviewDaemon.pid})`
+    );
+  }
   const worktreeCountActive = countAgentWorktrees(scanResult.repoRoot);
   if (worktreeCountActive > 0) {
     const plural = worktreeCountActive === 1 ? 'worktree' : 'worktrees';
     console.log(
-      `[${TOOL_NAME}] ⚠ ${worktreeCountActive} active agent ${plural} → ${invokedBasename} finish --all`,
+      `[${TOOL_NAME}] ⚠ ${worktreeCountActive} active agent ${plural} → ${invokedBasename} finish --all`
     );
   }
   const activeHint = deriveNextStepHint({
     scanResult,
     worktreeCount: worktreeCountActive,
     invoked: invokedBasename,
-    inGitRepo,
+    inGitRepo
   });
   console.log(`[${TOOL_NAME}] Next: ${activeHint}`);
   printToolLogsSummary({ invokedBasename, compact });
@@ -351,4 +388,5 @@ module.exports = {
   status,
   collectServicesSnapshot,
   maybePromptInstallMissingCompanions,
+  describeReviewDaemon
 };
