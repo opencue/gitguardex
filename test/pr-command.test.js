@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parsePrArgs, renderChecksLine, printUsage } = require('../src/cli/commands/pr');
+const { parsePrArgs, renderChecksLine, buildChecksFailedDetail, buildTimeoutDetail, printUsage } = require('../src/cli/commands/pr');
 
 function captureStdout(run) {
   const originalLog = console.log;
@@ -109,4 +109,29 @@ test('printUsage lists the pr subcommands', () => {
   for (const sub of ['status', 'open', 'sync', 'watch', 'list', 'ready', 'review']) {
     assert.match(out, new RegExp(`\\b${sub}\\b`));
   }
+});
+
+test('buildChecksFailedDetail includes URL and failing check names', () => {
+  assert.equal(
+    buildChecksFailedDetail({ url: 'https://github.com/o/r/pull/42', failedNames: ['lint', 'test'] }),
+    ' (https://github.com/o/r/pull/42)\n  Failed checks: lint, test',
+  );
+  assert.equal(
+    buildChecksFailedDetail({ url: 'https://github.com/o/r/pull/1', failedNames: [] }),
+    ' (https://github.com/o/r/pull/1)',
+  );
+  assert.equal(buildChecksFailedDetail({ failedNames: ['lint'] }), '\n  Failed checks: lint');
+  assert.equal(buildChecksFailedDetail(null), '');
+  assert.equal(buildChecksFailedDetail(undefined), '');
+});
+
+test('buildTimeoutDetail includes URL and current check summary', () => {
+  assert.equal(
+    buildTimeoutDetail({ url: 'https://github.com/o/r/pull/5', checks: { total: 3, success: 2, pending: 1 } }),
+    ' (https://github.com/o/r/pull/5) — 2 ok, 1 pending',
+  );
+  assert.equal(buildTimeoutDetail({ url: 'https://github.com/o/r/pull/6' }), ' (https://github.com/o/r/pull/6)');
+  assert.equal(buildTimeoutDetail({ checks: { total: 2, success: 1, failed: 1 } }), ' — 1 ok, 1 failed');
+  assert.equal(buildTimeoutDetail(null), '');
+  assert.equal(buildTimeoutDetail(undefined), '');
 });

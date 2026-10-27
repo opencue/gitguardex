@@ -87,7 +87,8 @@ function rollbackShared(repoRoot, records, restore) {
   }
   if (failures.length) {
     process.stderr.write(
-      `[${TOOL_NAME}] Warning: shared Git rollback was incomplete: ${failures.join('; ')}\n`
+      `[${TOOL_NAME}] Warning: shared Git rollback was incomplete: ${failures.join('; ')}\n` +
+      `  Run \`gx locks status\` to inspect the current lock state.\n`
     );
   }
 }
@@ -220,6 +221,7 @@ function sharedValidate(repoRoot, args, parsed) {
     }
   } catch (error) {
     if (local.stdout) process.stdout.write(local.stdout);
+    if (local.stderr) process.stderr.write(local.stderr);
     sharedFailure(error);
     return;
   }

@@ -69,40 +69,6 @@ elif value is not None:
 ' "$key" 2>/dev/null || true
 }
 
-resolve_base_branch() {
-  local repo="$1" branch="$2" configured inferred head_ref cand
-  configured="$(git -C "$repo" config --get "branch.${branch}.guardexBase" 2>/dev/null || true)"
-  if [[ -n "$configured" ]]; then
-    printf '%s' "$configured"
-    return 0
-  fi
-  # Infer from git history before trusting the repo-wide configured base.
-  inferred="$(guardex_infer_base_branch "$repo" "$branch" 2>/dev/null || true)"
-  if [[ -n "$inferred" ]]; then
-    printf '[gx] base for '"'"'%s'"'"' not recorded; inferred '"'"'%s'"'"' from git history (set branch.%s.guardexBase to override)\n' \
-      "$branch" "$inferred" "$branch" >&2
-    printf '%s' "$inferred"
-    return 0
-  fi
-  configured="$(git -C "$repo" config --get multiagent.baseBranch 2>/dev/null || true)"
-  if [[ -n "$configured" ]]; then
-    printf '%s' "$configured"
-    return 0
-  fi
-  head_ref="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [[ -n "$head_ref" ]]; then
-    printf '%s' "${head_ref#origin/}"
-    return 0
-  fi
-  for cand in main dev master; do
-    if git -C "$repo" show-ref --verify --quiet "refs/heads/${cand}"; then
-      printf '%s' "$cand"
-      return 0
-    fi
-  done
-  printf 'main'
-}
-
 base_ref_for_count() {
   local repo="$1" base="$2"
   if git -C "$repo" show-ref --verify --quiet "refs/heads/${base}"; then

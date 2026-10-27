@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+_OPENSPEC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=../lib/guardex-base-branch.sh
+source "${_OPENSPEC_SCRIPT_DIR}/../lib/guardex-base-branch.sh"
+
 if [[ $# -lt 1 || $# -gt 3 ]]; then
   echo "Usage: $0 <change-slug> [capability-slug] [agent-branch]"
   echo "Example: $0 add-dashboard-live-usage runtime-migration agent/claude-odin/add-dashboard-live-usage-123456"
@@ -21,27 +25,15 @@ if [[ "$CAPABILITY_SLUG" =~ [^a-z0-9-] ]]; then
   exit 1
 fi
 
-resolve_base_branch() {
-  local branch="$1"
-  local base_branch=""
-
-  if [[ -n "$branch" ]] && [[ "$branch" != "agent/<your-name>/<branch-slug>" ]]; then
-    base_branch="$(git config --get "branch.${branch}.guardexBase" || true)"
-  fi
-  if [[ -z "$base_branch" ]]; then
-    base_branch="$(git config --get multiagent.baseBranch || true)"
-  fi
-  if [[ -z "$base_branch" ]]; then
-    base_branch="dev"
-  fi
-
-  printf '%s' "$base_branch"
-}
-
 CHANGE_DIR="openspec/changes/${CHANGE_SLUG}"
 SPEC_DIR="${CHANGE_DIR}/specs/${CAPABILITY_SLUG}"
 TODAY="$(date -u +%Y-%m-%d)"
-BASE_BRANCH="$(resolve_base_branch "$AGENT_BRANCH")"
+_repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [[ "$AGENT_BRANCH" != "agent/<your-name>/<branch-slug>" ]]; then
+  BASE_BRANCH="$(resolve_base_branch "$_repo_root" "$AGENT_BRANCH")"
+else
+  BASE_BRANCH="$(resolve_base_branch "$_repo_root")"
+fi
 
 MINIMAL_RAW="${GUARDEX_OPENSPEC_MINIMAL:-0}"
 case "$(printf '%s' "$MINIMAL_RAW" | tr '[:upper:]' '[:lower:]')" in

@@ -18,6 +18,10 @@
 
 set -euo pipefail
 
+_AUTOFINISH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/guardex-base-branch.sh
+source "${_AUTOFINISH_SCRIPT_DIR}/lib/guardex-base-branch.sh"
+
 MODE="once"            # once | daemon
 DRY_RUN=0
 AUTO_MERGE=0
@@ -79,23 +83,6 @@ case "$git_common_dir" in
 esac
 repo_root="$(cd "$(dirname "$git_common_dir")" && pwd)"
 
-resolve_base_branch() {
-  [[ -n "$BASE_BRANCH" ]] && return 0
-  local head_ref
-  head_ref="$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [[ -n "$head_ref" ]]; then
-    BASE_BRANCH="${head_ref#origin/}"
-    return 0
-  fi
-  for cand in main master dev; do
-    if git -C "$repo_root" show-ref --verify --quiet "refs/heads/${cand}"; then
-      BASE_BRANCH="$cand"
-      return 0
-    fi
-  done
-  BASE_BRANCH="main"
-}
-
 is_managed_worktree_path() {
   local entry="$1" rel
   for rel in "${WORKTREE_ROOT_RELS[@]}"; do
@@ -120,6 +107,18 @@ now_epoch() {
 
 has_live_process_in_worktree() {
   local wt="$1" proc_cwd live_cwd
+
+  if [[ -d "${git_common_dir}/gx-process-leases" ]]; then
+    local lease_probe="${GUARDEX_CLI_ENTRY:-}"
+    [[ -n "$lease_probe" ]] || return 0
+    lease_probe="$(dirname "$lease_probe")/../src/agents/process-lease.js"
+    [[ -f "$lease_probe" ]] || return 0
+    local lease_status=0
+    "${GUARDEX_NODE_BIN:-node}" "$lease_probe" "$wt" || lease_status=$?
+    # Unknown probes fail closed too; only explicit inactive (1) can continue.
+    [[ "$lease_status" -eq 1 ]] || return 0
+  fi
+
   [[ -d /proc ]] || return 1
   for proc_cwd in /proc/[0-9]*/cwd; do
     [[ -e "$proc_cwd" ]] || continue
@@ -185,7 +184,7 @@ load_pr_state() {
 }
 
 run_once() {
-  resolve_base_branch
+  [[ -z "$BASE_BRANCH" ]] && BASE_BRANCH="$(resolve_base_branch "$repo_root")"
   MERGED_BRANCHES=()
   OPEN_BRANCHES=()
   load_pr_state
