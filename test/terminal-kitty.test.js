@@ -107,3 +107,27 @@ test('Kitty ls and version probes are dry-run command builders', () => {
     args: ['--version'],
   });
 });
+
+test('bootstrapHost throws KITTY_HOST_SOCKET_TIMEOUT_MESSAGE when socket never becomes ready', () => {
+  const backend = kitty.createKittyBackend({});
+  // A mock child: pid is set so unref() is called without error.
+  const mockChild = { pid: 99999, unref: () => {} };
+
+  assert.throws(
+    () => backend.bootstrapHost({
+      // repoRoot is required by buildKittyHostBootstrapCommand.
+      repoRoot: '/fake/repo',
+      socket: '/nonexistent/kitty-test.sock',
+      // 1ms deadline + sleep that burns past it in one call = exactly one poll
+      // iteration before the loop expires and the timeout error is thrown.
+      timeoutMs: 1,
+      intervalMs: 1,
+      sleep: (ms) => { const end = Date.now() + ms + 2; while (Date.now() < end) {} },
+      // Inject a no-op spawn so no real kitty process is launched.
+      spawn: () => mockChild,
+      // The socket never appears on disk.
+      fs: { existsSync: () => false },
+    }),
+    { message: kitty.KITTY_HOST_SOCKET_TIMEOUT_MESSAGE },
+  );
+});
