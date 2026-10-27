@@ -729,12 +729,16 @@ test('resolveThread returns ok=false on GraphQL errors', () => {
 // fetchPrMeta
 // ---------------------------------------------------------------------------
 
-test('fetchPrMeta returns headRefName and isCrossRepository', () => {
+test('fetchPrMeta returns headRefName, headRefOid and isCrossRepository', () => {
   const runner = (_cmd, args) => {
     if (args[0] === 'pr' && args[1] === 'view') {
       return {
         status: 0,
-        stdout: JSON.stringify({ headRefName: 'agent/test/my-fix', isCrossRepository: false }),
+        stdout: JSON.stringify({
+          headRefName: 'agent/test/my-fix',
+          headRefOid: 'abc123def456abc123def456abc123def456abc1',
+          isCrossRepository: false
+        }),
         stderr: ''
       };
     }
@@ -742,6 +746,7 @@ test('fetchPrMeta returns headRefName and isCrossRepository', () => {
   };
   const meta = prRespond.fetchPrMeta('7', '/repo', runner);
   assert.equal(meta.headRefName, 'agent/test/my-fix');
+  assert.equal(meta.headRefOid, 'abc123def456abc123def456abc123def456abc1');
   assert.equal(meta.isCrossRepository, false);
 });
 
