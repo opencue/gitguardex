@@ -130,11 +130,11 @@ test('assignAgentPort writes PORT to .env.local', () => {
   assert.match(envLocal, /^PORT=\d+/m, '.env.local must contain PORT=<n>');
 });
 
-test('assignAgentPort holds the O_EXCL lock until the caller releases it', () => {
-  // The lock must NOT be released inside assignAgentPort — it is held through
-  // the full prepareAgentWorktree loop so concurrent runs cannot claim the
-  // same port for any app in the batch.  The caller is responsible for
-  // releasing via _assignedPort / _lockDir fields on the result.
+test('assignAgentPort holds the O_EXCL lock beyond its return (not released internally)', () => {
+  // The lock must NOT be released by assignAgentPort.  It persists until the
+  // 120-second stale window so that a subsequent preparation cannot claim the
+  // same port before the application binds its socket.  _assignedPort and
+  // _lockDir are exposed for explicit test teardown only.
   const repoRoot = makeTmpDir();
   const worktreePath = makeTmpDir();
   const appDir = path.join(worktreePath, 'apps', 'api');
@@ -146,14 +146,46 @@ test('assignAgentPort holds the O_EXCL lock until the caller releases it', () =>
   const result = assignAgentPort(repoRoot, worktreePath, 'api', takenPorts, lockDir);
 
   assert.equal(result.status, 'wrote');
-  // The lock file must still exist — the caller has not released it yet.
+  // Lock must still be present after the call — the stale cleanup is the
+  // only release mechanism in production.
   const entries = fs.readdirSync(lockDir).filter((e) => e.endsWith('.lock'));
   assert.equal(entries.length, 1, `expected 1 held lock, got: ${entries.join(', ')}`);
 
-  // Simulate the caller's cleanup (mirrors what prepareAgentWorktree does).
+  // Explicit teardown (test-only).
   releasePortLock(result._lockDir, result._assignedPort);
-  const after = fs.readdirSync(lockDir).filter((e) => e.endsWith('.lock'));
-  assert.equal(after.length, 0, `lock must be gone after caller releases it`);
+});
+
+test('two sequential preparations with a shared lockDir receive different ports', () => {
+  // Regression: even after the first preparation completes, its port lock must
+  // block a second preparation from claiming the same port before any process
+  // has bound the socket (the "retire-before-bind" race).
+  const lockDir = makeTmpDir();
+
+  const repoRoot1 = makeTmpDir();
+  const wt1 = makeTmpDir();
+  const appDir1 = path.join(wt1, 'apps', 'backend');
+  fs.mkdirSync(appDir1, { recursive: true });
+  fs.writeFileSync(path.join(appDir1, 'package.json'), '{"name":"backend"}');
+
+  const repoRoot2 = makeTmpDir();
+  const wt2 = makeTmpDir();
+  const appDir2 = path.join(wt2, 'apps', 'backend');
+  fs.mkdirSync(appDir2, { recursive: true });
+  fs.writeFileSync(path.join(appDir2, 'package.json'), '{"name":"backend"}');
+
+  const result1 = assignAgentPort(repoRoot1, wt1, 'backend', new Set(), lockDir);
+  const result2 = assignAgentPort(repoRoot2, wt2, 'backend', new Set(), lockDir);
+
+  assert.equal(result1.status, 'wrote', `wt1: ${result1.note}`);
+  assert.equal(result2.status, 'wrote', `wt2: ${result2.note}`);
+
+  const port1 = Number(result1.note.match(/PORT=(\d+)/)?.[1]);
+  const port2 = Number(result2.note.match(/PORT=(\d+)/)?.[1]);
+  assert.notEqual(port1, port2, `both worktrees must receive distinct ports (got ${port1} twice)`);
+
+  // Teardown.
+  releasePortLock(result1._lockDir, result1._assignedPort);
+  releasePortLock(result2._lockDir, result2._assignedPort);
 });
 
 // ---------------------------------------------------------------------------

@@ -261,12 +261,14 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts, _lockDir) 
     }
   }
   fs.writeFileSync(envLocalPath, next, 'utf8');
-  // Do NOT release the O_EXCL lock here. Writing to .env.local does not
-  // create a listening socket; releasing immediately would allow a concurrent
-  // `gx branch start` to claim the same port before the process binds it.
-  // The caller (prepareAgentWorktree) releases all port locks after every app
-  // has been assigned, keeping the exclusive window as narrow as possible
-  // while still covering the entire batch.
+  // The O_EXCL lock is intentionally NOT released here.  Writing PORT to
+  // .env.local does not create a listening socket; an immediate release would
+  // let a subsequent `gx branch start` claim the same port before the process
+  // binds it.  The lock persists until pruneStaleLocks removes it after the
+  // 120-second stale window — by which time the application should be bound.
+  // The _assignedPort and _lockDir fields are exposed for callers that need
+  // explicit cleanup (e.g. test teardown), but are never deleted by this
+  // module itself.
   return {
     status: 'wrote',
     file: `apps/${appName}/.env.local`,
@@ -301,18 +303,12 @@ function prepareAgentWorktree(repoRoot, worktreePath, deps = {}) {
     operations.push(...symlinkAppEnvFiles(repoRoot, worktreePath, appName));
     operations.push(assignAgentPort(repoRoot, worktreePath, appName, takenPorts, lockDir));
   }
-  // Release all O_EXCL port locks after every app has been assigned.
-  // Holding the locks through the full batch means a concurrent run cannot
-  // claim the same port for any app in this worktree preparation, narrowing
-  // the race window to the gap between this release and each process binding
-  // its socket — which is handled by the lsof-based isPortFree fallback.
-  for (const op of operations) {
-    if (op && op._assignedPort !== undefined) {
-      releasePortLock(op._lockDir, op._assignedPort);
-      delete op._assignedPort;
-      delete op._lockDir;
-    }
-  }
+  // Port locks are intentionally NOT released here.  They persist until
+  // pruneStaleLocks removes them after the 120-second stale window so that
+  // a subsequent preparation cannot claim the same port before each
+  // application has bound its socket.  _assignedPort/_lockDir fields on the
+  // operation results are available to callers that need explicit teardown
+  // (e.g. test teardown that runs before the stale window expires).
   return operations;
 }
 
