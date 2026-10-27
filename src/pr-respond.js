@@ -123,7 +123,7 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     'query($owner:String!,$name:String!,$pr:Int!){',
     'viewer{login}',
     'repository(owner:$owner,name:$name){pullRequest(number:$pr){',
-    'reviews(last:50){nodes{author{login}state}}',
+    'reviews(last:50){nodes{author{login}state}pageInfo{hasNextPage}}',
     'reviewThreads(first:100){nodes{',
     'id isResolved isOutdated diffSide path line startLine',
     'comments(first:3){nodes{id body author{login}}}',
@@ -192,6 +192,17 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
       .filter(([, state]) => state === 'CHANGES_REQUESTED')
       .map(([login]) => login)
   );
+
+  // Guard against a truncated review list: if there are more than 50 reviews, the
+  // oldest ones fall off and an active CHANGES_REQUESTED reviewer could be silently
+  // excluded. Refuse rather than auto-fix with incomplete information.
+  const rawReviews = payload?.data?.repository?.pullRequest?.reviews;
+  if (rawReviews?.pageInfo?.hasNextPage) {
+    throw new Error(
+      'PR has more than 50 reviews; review history is truncated and auto-fix cannot ' +
+        'reliably determine the latest review state per reviewer. Refusing to auto-fix.'
+    );
+  }
 
   const rawThreads = payload?.data?.repository?.pullRequest?.reviewThreads;
   if (!rawThreads || !Array.isArray(rawThreads.nodes)) {
@@ -574,10 +585,22 @@ function prRespond(options = {}, deps = {}) {
       skippedReply.push(thread.id);
       continue;
     }
+
+    // Determine whether this thread was authored by the bot.
+    const threadFirstComment = thread.comments && thread.comments.nodes && thread.comments.nodes[0];
+    const threadAuthor = String(
+      (threadFirstComment && threadFirstComment.author && threadFirstComment.author.login) || ''
+    ).toLowerCase();
+    const isBotThread =
+      threadAuthor === trustedAuthor &&
+      String((threadFirstComment && threadFirstComment.body) || '').includes(MARKER);
+
     const replyBody = [
       `${MARKER}`,
       `Applied fix in ${fixSha ? fixSha.slice(0, 8) : 'latest commit'}.`,
-      'Thread resolved automatically by gitguardex review-responder.'
+      isBotThread
+        ? 'Thread resolved automatically by gitguardex review-responder.'
+        : 'Please review the fix and resolve this thread when satisfied.'
     ].join('\n');
     const replyResult = replyToThread(thread.id, replyBody, repoRoot, runner);
     if (!replyResult.ok) {
@@ -585,6 +608,15 @@ function prRespond(options = {}, deps = {}) {
         `${TOOL_PREFIX} failed to reply to thread ${thread.id}: ${replyResult.output}\n`
       );
     }
+
+    // Only auto-resolve gitguardex-bot threads: the fix provider explicitly targeted
+    // the structured finding. Human reviewer threads stay open for the reviewer to
+    // confirm their specific request was addressed.
+    if (!isBotThread) {
+      skippedReply.push(thread.id);
+      continue;
+    }
+
     const resolveResult = resolveThread(thread.id, repoRoot, runner);
     if (resolveResult.ok) {
       resolved.push(thread.id);
