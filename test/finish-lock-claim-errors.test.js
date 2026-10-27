@@ -15,7 +15,12 @@ const repoRoot = path.resolve(__dirname, '..');
 
 function stub(relPath, stubExports) {
   const resolved = require.resolve(path.join(repoRoot, relPath));
-  require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports: stubExports };
+  require.cache[resolved] = {
+    id: resolved,
+    filename: resolved,
+    loaded: true,
+    exports: stubExports
+  };
 }
 
 function loadFinishWithMocks({ runPackageAsset, gitOutputLines }) {
@@ -26,7 +31,7 @@ function loadFinishWithMocks({ runPackageAsset, gitOutputLines }) {
     runPackageAsset,
     assetStdio: () => 'pipe',
     invokePackageAsset: () => {},
-    extractTargetedArgs: (args) => ({ target: undefined, passthrough: args }),
+    extractTargetedArgs: (args) => ({ target: undefined, passthrough: args })
   });
 
   stub('src/git/index.js', {
@@ -34,13 +39,13 @@ function loadFinishWithMocks({ runPackageAsset, gitOutputLines }) {
     // proceeds past the early-exit check and into claimLocksForAutoCommit.
     worktreeHasLocalChanges: () => true,
     gitOutputLines,
-    uniquePreserveOrder: (arr) => [...new Set(arr)],
+    uniquePreserveOrder: (arr) => [...new Set(arr)]
   });
 
   // Pre-seed worktree-hooks so the inline require() call inside
   // autoCommitWorktreeForFinish finds the stub without loading the real module.
   stub('src/worktree-hooks.js', {
-    runLifecycleHookSync: () => {},
+    runLifecycleHookSync: () => {}
   });
 
   const finishPath = require.resolve(path.join(repoRoot, 'src/finish/index.js'));
@@ -68,25 +73,27 @@ test('autoCommitWorktreeForFinish throws when the lock-claim subprocess exits no
         return { status: 1, stderr: 'lock conflict', stdout: '' };
       }
       return { status: 0, stdout: '', stderr: '' };
-    },
+    }
   });
 
   assert.throws(
-    () => finish.autoCommitWorktreeForFinish(
-      '/fake/repo', '/fake/repo/wt', 'agent/test/branch', {},
-    ),
+    () =>
+      finish.autoCommitWorktreeForFinish('/fake/repo', '/fake/repo/wt', 'agent/test/branch', {}),
     (err) => {
       assert.match(err.message, /Lock claim failed for agent\/test\/branch/);
       assert.match(err.message, /lock conflict/);
       return true;
-    },
+    }
   );
 
   assert.equal(lockCalls.length, 1, 'lockTool must be invoked exactly once');
-  assert.ok(lockCalls[0].args.includes('claim'), 'lockTool must be invoked with the claim sub-command');
+  assert.ok(
+    lockCalls[0].args.includes('claim'),
+    'lockTool must be invoked with the claim sub-command'
+  );
   assert.ok(
     lockCalls[0].args.includes('src/modified.js'),
-    'lockTool must receive the changed file in its argument list',
+    'lockTool must receive the changed file in its argument list'
   );
 });
 
@@ -104,27 +111,26 @@ test('autoCommitWorktreeForFinish throws when the allow-delete grant subprocess 
         return { status: 1, stderr: 'delete denied', stdout: '' };
       }
       return { status: 0, stdout: '', stderr: '' };
-    },
+    }
   });
 
   assert.throws(
-    () => finish.autoCommitWorktreeForFinish(
-      '/fake/repo', '/fake/repo/wt', 'agent/test/branch', {},
-    ),
+    () =>
+      finish.autoCommitWorktreeForFinish('/fake/repo', '/fake/repo/wt', 'agent/test/branch', {}),
     (err) => {
       assert.match(err.message, /Delete-lock grant failed for agent\/test\/branch/);
       assert.match(err.message, /delete denied/);
       return true;
-    },
+    }
   );
 
   assert.equal(lockCalls.length, 1, 'lockTool must be invoked exactly once');
   assert.ok(
     lockCalls[0].args.includes('allow-delete'),
-    'lockTool must be invoked with the allow-delete sub-command',
+    'lockTool must be invoked with the allow-delete sub-command'
   );
   assert.ok(
     lockCalls[0].args.includes('src/removed.js'),
-    'lockTool must receive the deleted file in its argument list',
+    'lockTool must receive the deleted file in its argument list'
   );
 });
