@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
-const cp = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { cachedSpawn } = require('../context');
 
 const SESSION_FIELDS = [
   'id',
@@ -25,7 +25,7 @@ const SESSION_FIELDS = [
 
 function stateRepoRoot(repoRoot) {
   const root = path.resolve(repoRoot);
-  const result = cp.spawnSync('git', ['rev-parse', '--git-common-dir'], {
+  const result = cachedSpawn('git', ['rev-parse', '--git-common-dir'], {
     cwd: root,
     encoding: 'utf8',
     timeout: 3000,
