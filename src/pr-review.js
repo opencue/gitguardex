@@ -911,6 +911,9 @@ function runPrReview(options, deps = {}) {
   // between these calls shows up as a mismatch in the posting guard (the guard
   // checks reviewedHeadSha against the live head at post time).
   const prHeadSha = options.post ? fetchHeadSha(pr, repoRoot, runner) : null;
+  if (options.post && !prHeadSha) {
+    throw new Error('Cannot capture PR head SHA before review; refusing to post an unverified review.');
+  }
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
   const { diff, truncated } = capDiff(rawDiff);
   if (lensContext && truncated)
