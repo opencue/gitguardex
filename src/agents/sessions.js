@@ -197,6 +197,12 @@ function updateAgentSession(repoRoot, sessionId, patch) {
     const session = pickSessionFields({
       ...existing,
       ...patch,
+      // Merge metadata rather than replacing it so callers can add individual
+      // keys without wiping keys set by other concurrent operations.
+      metadata:
+        patch.metadata !== undefined
+          ? { ...(existing.metadata || {}), ...patch.metadata }
+          : existing.metadata,
       id: existing.id,
       createdAt: existing.createdAt,
       updatedAt: now,

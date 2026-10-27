@@ -201,12 +201,15 @@ test('updateAgentSession concurrent writes via child processes do not corrupt th
   });
 
   // Launch all 8 writers asynchronously so they genuinely overlap.
-  // Each writer patches a different field (status + a per-writer key) so
-  // lost updates are detectable in addition to malformed JSON.
+  // Each writer patches metadata: { writerN: true }. Because updateAgentSession
+  // merges metadata rather than replacing it, all 8 keys accumulate only if
+  // every read-modify-write is serialized by the lock. A missing key proves
+  // a lost update (the writer read stale metadata before another writer's
+  // key was written).
   const writerPromises = Array.from({ length: 8 }, (_, i) => {
     const script = `
       const { updateAgentSession } = require(${JSON.stringify(require.resolve('../src/agents/sessions'))});
-      updateAgentSession(${JSON.stringify(repoRoot)}, ${JSON.stringify(created.id)}, { status: 'w${i}', writer${i}: true });
+      updateAgentSession(${JSON.stringify(repoRoot)}, ${JSON.stringify(created.id)}, { status: 'w${i}', metadata: { writer${i}: true } });
     `;
     return new Promise((resolve, reject) => {
       const child = cp.spawn(process.execPath, ['-e', script], { encoding: 'utf8' });
@@ -229,12 +232,10 @@ test('updateAgentSession concurrent writes via child processes do not corrupt th
   ));
   assert.match(final.status, /^w\d$/);
   assert.equal(final.id, created.id);
-  // Note: `writerN: true` patch keys are intentionally not asserted here.
-  // pickSessionFields strips extra keys, so `writerN` never reaches disk.
-  // The meaningful invariants are: (a) all 8 writers exit 0 (no concurrent
-  // throw, no O_EXCL deadlock), (b) the JSON is valid, and (c) the schema
-  // fields are intact. JSON corruption from a missing lock would surface
-  // as a JSON.parse failure in the read above.
+  // All 8 metadata keys must survive — a missing key means a lost update.
+  for (let i = 0; i < 8; i++) {
+    assert.equal(final.metadata?.[`writer${i}`], true, `writer ${i} metadata key must survive`);
+  }
 
   // The lock file must be gone.
   const lockPath = path.join(
