@@ -644,7 +644,7 @@ function finish(rawArgs, defaults = {}) {
         if (finishResult.stderr) process.stderr.write(finishResult.stderr);
       }
       if (finishResult.status !== 0) {
-        throw new Error(`agent-branch-finish exited with status ${finishResult.status}`);
+        throw new Error(`agent-branch-finish exited with status (${finishResult.status}); re-run: gx branch finish --branch "${branch}"`);
       }
 
       succeeded += 1;
@@ -697,6 +697,120 @@ function finish(rawArgs, defaults = {}) {
   }
 
   process.exitCode = 0;
+}
+
+/**
+ * Restore the lock-registry backup after a sync, merging any concurrent
+ * claims that arrived during the operation instead of overwriting them.
+ *
+ * Attempts to hold the same cross-worktree OS advisory lock the Python
+ * claims tool uses (`<common-git-dir>/agent-file-locks.lock`, via
+ * `with-claims-lock.py`) so the read → merge → rename window is serialised
+ * against concurrent `gx locks claim` calls. Falls back to a lock-free merge
+ * when python3 or the helper script is unavailable.
+ *
+ * Merge rule: entries present in the backup are restored as-is; entries that
+ * appear in the current on-disk state but are absent from the backup (i.e.
+ * added concurrently during the sync) are preserved.
+ *
+ * @param {string} repoRoot  Working-tree root of the repository.
+ * @param {string} lockPath  Absolute path to `.omx/state/agent-file-locks.json`.
+ * @param {string} backup    Raw JSON text saved before the sync began.
+ */
+function restoreLockBackupSafe(repoRoot, lockPath, backup) {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+
+  // Resolve the common .git dir so we can find the cross-worktree flock path
+  // (the same mutex scripts/agent-file-locks.py uses via cross_worktree_lock).
+  const commonResult = gitRun(repoRoot, ['rev-parse', '--git-common-dir'], { allowFailure: true });
+  const flockPath =
+    commonResult.status === 0
+      ? path.resolve(repoRoot, String(commonResult.stdout || '').trim(), 'agent-file-locks.lock')
+      : null;
+
+  const withLockScript = path.join(__dirname, 'with-claims-lock.py');
+
+  if (flockPath && fs.existsSync(withLockScript)) {
+    // Write the backup to a temp file so the inline Node script can read it
+    // instead of receiving it as a command-line argument. Embedding it in the
+    // argument would fail with E2BIG once the registry exceeds ~128 KiB on Linux.
+    const backupTmpPath = `${lockPath}.${process.pid}.backup.tmp`;
+    fs.writeFileSync(backupTmpPath, backup, 'utf8');
+
+    // Compact inline Node script executed under the OS flock.
+    // Reads the backup temp file and the current on-disk state, folds in new
+    // concurrent entries (those absent from the backup), then writes via
+    // temp+rename for an atomic replacement. Uses Object.create(null) to avoid
+    // prototype-property false positives on filenames like "constructor".
+    const mergeScript = [
+      'var fs=require("fs"),p=require("path");',
+      `var lp=${JSON.stringify(lockPath)},bkp=${JSON.stringify(backupTmpPath)};`,
+      'var b={},c={};',
+      'b=JSON.parse(fs.readFileSync(bkp,"utf8"));',
+      'try{fs.unlinkSync(bkp);}catch(e){}',
+      'try{c=JSON.parse(fs.readFileSync(lp,"utf8"));}catch(e){if(e.code!=="ENOENT")throw e;}',
+      'var ml=Object.create(null);',
+      'Object.keys(b.locks||{}).forEach(function(k){ml[k]=b.locks[k];});',
+      'Object.keys(c.locks||{}).forEach(function(k){if(!Object.prototype.hasOwnProperty.call(ml,k))ml[k]=c.locks[k];});',
+      'var out=JSON.stringify(Object.assign({},b,{locks:ml}),null,2)+"\\n";',
+      'var tmp=lp+".tmp";',
+      'fs.mkdirSync(p.dirname(lp),{recursive:true});',
+      'fs.writeFileSync(tmp,out,"utf8");',
+      'fs.renameSync(tmp,lp);',
+    ].join('');
+
+    let result;
+    try {
+      result = run('python3', [withLockScript, flockPath, process.execPath, '-e', mergeScript], {
+        cwd: repoRoot,
+      });
+    } finally {
+      // Clean up the backup temp file if python3 did not (e.g. it crashed
+      // before the inline script ran). Ignore ENOENT — the script removed it.
+      try {
+        fs.unlinkSync(backupTmpPath);
+      } catch (_) {}
+    }
+    if (result.status === 0) return;
+    // Distinguish: if python3 could not be spawned at all (e.g. not installed,
+    // result.error is ENOENT), treat it as unavailable and fall through to the
+    // lock-free merge below — the mutex was never acquired so no claims are at
+    // risk. Only throw when python3 was spawned successfully but exited non-zero,
+    // which means the flock may still be held.
+    if (!result.error) {
+      throw new Error(
+        `Lock-registry restore failed while acquiring or holding the claims lock (status ${result.status})`
+      );
+    }
+    // python3 spawn failed — fall through to lock-free fallback
+  }
+
+  // Fallback: merge without flock. Only reached when python3 or the helper
+  // script is unavailable (flockPath resolved but withLockScript absent, no
+  // common .git dir, or python3 could not be spawned). Best-effort — no mutex
+  // protection — but still
+  // preserves new entries instead of silently overwriting them.
+  // Uses Object.create(null) so filenames like "constructor" / "toString"
+  // cannot match inherited properties. Per-process unique temp name prevents
+  // two concurrent fallback restores from clobbering each other's temp file.
+  let merged;
+  try {
+    const backupState = JSON.parse(backup);
+    let currentState = {};
+    try {
+      currentState = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    } catch (_) {}
+    const mergedLocks = Object.assign(Object.create(null), backupState.locks || {});
+    for (const [k, v] of Object.entries(currentState.locks || {})) {
+      if (!Object.prototype.hasOwnProperty.call(mergedLocks, k)) mergedLocks[k] = v;
+    }
+    merged = JSON.stringify({ ...backupState, locks: { ...mergedLocks } }, null, 2) + '\n';
+  } catch (_) {
+    merged = backup; // raw fallback when backup is not valid JSON
+  }
+  const tmpPath = `${lockPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, merged, 'utf8');
+  fs.renameSync(tmpPath, lockPath);
 }
 
 /**
@@ -843,8 +957,7 @@ function sync(rawArgs) {
     syncOperation(repoRoot, strategy, baseRef, options.ffOnly);
   } finally {
     if (lockBackup !== null) {
-      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-      fs.writeFileSync(lockPath, lockBackup, 'utf8');
+      restoreLockBackupSafe(repoRoot, lockPath, lockBackup);
     }
   }
   const after = aheadBehind(repoRoot, branch, baseRef);
@@ -877,4 +990,5 @@ module.exports = {
   autoCommitWorktreeForFinish,
   shouldSweepOrphans,
   shouldSkipBranchPreflight,
+  restoreLockBackupSafe,
 };
