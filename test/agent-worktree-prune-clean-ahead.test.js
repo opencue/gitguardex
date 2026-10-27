@@ -11,10 +11,10 @@
 // committed-but-unpushed work is "clean" in git-status terms (no uncommitted
 // changes) — so it was silently discarded even though it held unmerged work.
 //
-// Fix: in process_entry, gate the clean-agent-worktree removal path on the
-// branch having NO commits ahead of the base branch.  If `git rev-list
-// --count BASE..branch` is non-zero, the worktree holds unmerged work and
-// must be preserved even when the working tree itself is tidy.
+// Fix: the finish sweeps pass --keep-clean-unmerged, and process_entry then
+// takes the clean-agent-worktree path only when `git rev-list --count
+// BASE..branch` is zero. Without the flag, --only-dirty-worktrees keeps its
+// existing single-lane meaning (remove the clean worktree, keep the branch).
 
 const {
   test,
@@ -47,7 +47,7 @@ function fakeGhNoProjects() {
 }
 
 defineSpawnSuite('agent-worktree-prune — clean-ahead worktrees (Bug B regression)', () => {
-  test('clean worktree with commits ahead of base is preserved by --only-dirty-worktrees', () => {
+  test('clean worktree with commits ahead of base is preserved by --keep-clean-unmerged', () => {
     // Scenario: agent branch was created, one commit was committed locally but
     // never pushed (no open PR, no merged PR).  The working tree is clean (no
     // uncommitted changes).  A broad --only-dirty-worktrees prune from another
@@ -76,7 +76,7 @@ defineSpawnSuite('agent-worktree-prune — clean-ahead worktrees (Bug B regressi
     // Broad prune that mirrors what agent-branch-finish.sh emits after a merge.
     // Critically: no --branch filter → evaluates ALL agent/* worktrees.
     const res = runWorktreePrune(
-      ['--base', 'main', '--only-dirty-worktrees', '--delete-branches'],
+      ['--base', 'main', '--only-dirty-worktrees', '--keep-clean-unmerged', '--delete-branches'],
       repoDir,
       ghEnv
     );
@@ -84,7 +84,7 @@ defineSpawnSuite('agent-worktree-prune — clean-ahead worktrees (Bug B regressi
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       fs.existsSync(wt),
-      'clean worktree with unpushed commits must NOT be removed by --only-dirty-worktrees'
+      'clean worktree with unpushed commits must NOT be removed by --keep-clean-unmerged'
     );
   });
 
@@ -109,7 +109,14 @@ defineSpawnSuite('agent-worktree-prune — clean-ahead worktrees (Bug B regressi
     };
 
     const res = runWorktreePrune(
-      ['--base', 'main', '--only-dirty-worktrees', '--include-pr-merged', '--delete-branches'],
+      [
+        '--base',
+        'main',
+        '--only-dirty-worktrees',
+        '--keep-clean-unmerged',
+        '--include-pr-merged',
+        '--delete-branches'
+      ],
       repoDir,
       ghEnv
     );
@@ -138,7 +145,7 @@ defineSpawnSuite('agent-worktree-prune — clean-ahead worktrees (Bug B regressi
     };
 
     const res = runWorktreePrune(
-      ['--base', 'main', '--only-dirty-worktrees', '--delete-branches'],
+      ['--base', 'main', '--only-dirty-worktrees', '--keep-clean-unmerged', '--delete-branches'],
       repoDir,
       ghEnv
     );

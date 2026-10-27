@@ -8,6 +8,9 @@ FORCE_DIRTY=0
 DELETE_BRANCHES=0
 DELETE_REMOTE_BRANCHES=0
 ONLY_DIRTY_WORKTREES=0
+# Set by another lane's post-merge sweep: a clean worktree whose branch still
+# has commits not on the base is someone's in-progress lane, not leftovers.
+KEEP_CLEAN_UNMERGED=0
 INCLUDE_CLEAN_LINKED_WORKTREES=0
 # Linked worktrees outside the managed agent dirs, but ONLY merged agent lanes
 # (never clean-but-unmerged, detached or non-agent ones) — safe for the bot.
@@ -98,6 +101,10 @@ while [[ $# -gt 0 ]]; do
       ONLY_DIRTY_WORKTREES=1
       shift
       ;;
+    --keep-clean-unmerged)
+      KEEP_CLEAN_UNMERGED=1
+      shift
+      ;;
     --include-clean-linked-worktrees)
       INCLUDE_CLEAN_LINKED_WORKTREES=1
       shift
@@ -133,7 +140,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "[agent-worktree-prune] Unknown argument: $1" >&2
-      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--include-clean-linked-worktrees] [--include-merged-linked-worktrees] [--include-pr-merged] [--preserve-open-prs] [--prune-stale-lanes] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
+      echo "Usage: $0 [--base <branch>] [--dry-run] [--force-dirty] [--delete-branches] [--delete-remote-branches] [--only-dirty-worktrees] [--keep-clean-unmerged] [--include-clean-linked-worktrees] [--include-merged-linked-worktrees] [--include-pr-merged] [--preserve-open-prs] [--prune-stale-lanes] [--branch <agent/...>] [--idle-minutes <minutes>] [--max-branches <count>]" >&2
       exit 1
       ;;
   esac
@@ -1048,15 +1055,10 @@ process_entry() {
       branch_delete_mode="force"
       expected_branch_head="$(branch_tip "$branch")"
     elif [[ "$ONLY_DIRTY_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
-      # Guard: only remove a clean worktree when the branch has no commits ahead
-      # of the base.  A worktree is "clean" in git-status terms even when it
-      # holds committed-but-unpushed work — that work is not dirty but it IS
-      # unmerged and must not be silently discarded.  If the branch is ahead of
-      # the base and no merged-PR path caught it above, the worktree is active
-      # work; leave it alone.  `rev-list --count BASE..branch` returns 0 only
-      # when every commit on the branch is reachable from the base.
-      local branch_ahead_count
-      branch_ahead_count="$(git -C "$repo_root" rev-list --count "${BASE_BRANCH}..${branch}" 2>/dev/null || echo "1")"
+      local branch_ahead_count=0
+      if [[ "$KEEP_CLEAN_UNMERGED" -eq 1 ]]; then
+        branch_ahead_count="$(git -C "$repo_root" rev-list --count "${BASE_BRANCH}..${branch}" 2>/dev/null || echo 1)"
+      fi
       if [[ "$branch_ahead_count" -eq 0 ]]; then
         remove_reason="clean-agent-worktree"
       fi
