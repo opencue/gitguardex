@@ -18,6 +18,10 @@ const MODE = 'git';
 const DEFAULT_REMOTE = 'origin';
 const LOCK_REF_PREFIX = 'refs/gitguardex/locks/';
 const MAX_REMOTE_LOCKS = 1000;
+const CAS_MAX_ATTEMPTS = 5;
+// Shared buffer for synchronous backoff between CAS retry attempts. Using
+// Atomics.wait avoids a busy-spin while keeping the function synchronous.
+const _casWaitArray = new Int32Array(new SharedArrayBuffer(4));
 
 class SharedGitStateError extends Error {
   constructor(code, message, details = {}) {
@@ -433,7 +437,13 @@ function claimLock(repoRoot, { file: rawFile, branch, agent = '', allowDelete = 
     throw new SharedGitStateError('invalid', 'shared Git lock requires a branch');
   }
   let previous = getLock(repoRoot, file);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      // Small exponential backoff between retries so that 3+ concurrent
+      // claimers do not all hammer the remote in lock-step. 50 ms * attempt
+      // gives 50 / 100 / 150 / 200 ms — well under a second in the worst case.
+      Atomics.wait(_casWaitArray, 0, 0, 50 * attempt);
+    }
     if (previous && !ownerMatches(previous, branch, agent)) {
       throw new SharedGitStateError(
         'conflict',

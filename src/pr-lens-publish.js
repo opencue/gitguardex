@@ -1,4 +1,4 @@
-const { GH_BIN } = require('./context');
+const _ctx = require('./context');
 const { readPrLensMetadata } = require('./pr-lens');
 
 const MARKER = '<!-- gitguardex:pr-lens-artifact -->';
@@ -28,7 +28,7 @@ function publishPrLensArtifact(pr, artifactUrl, repoRoot, runner) {
   }
   const api = (endpoint, extra = [], body) => {
     const result = runner(
-      GH_BIN,
+      _ctx.GH_BIN,
       ['api', '--hostname', repo.host, endpoint, ...extra, ...(body ? ['--input', '-'] : [])],
       { cwd: repoRoot, timeout: 30_000, ...(body ? { input: JSON.stringify(body) } : {}) }
     );

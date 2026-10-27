@@ -177,21 +177,6 @@ function collectDoctorDeletedPaths(worktreePath) {
   return Array.from(deleted);
 }
 
-function collectWorktreeDirtyPaths(worktreePath) {
-  const dirty = new Set();
-  const commands = [
-    ['diff', '--name-only'],
-    ['diff', '--cached', '--name-only'],
-    ['ls-files', '--others', '--exclude-standard'],
-  ];
-  for (const gitArgs of commands) {
-    const result = run('git', ['-C', worktreePath, ...gitArgs], { timeout: 20_000 });
-    for (const filePath of parseGitPathList(result.stdout)) {
-      dirty.add(filePath);
-    }
-  }
-  return Array.from(dirty);
-}
 
 function collectDoctorForceAddPaths(worktreePath) {
   return REQUIRED_MANAGED_REPO_FILES
@@ -572,6 +557,16 @@ function finishDoctorSandboxBranch(blocked, metadata, options = {}) {
   };
 }
 
+function applyStashOrWarn(repoRoot, stashRef) {
+  const result = run('git', ['-C', repoRoot, 'stash', 'apply', stashRef], { timeout: 30_000 });
+  if (result.status !== 0 || isSpawnFailure(result)) {
+    const warning = `stash apply failed for ${stashRef}; user changes may be stranded in the stash`;
+    process.stderr.write(`[${TOOL_NAME}] warning: ${warning}\n`);
+    return { warning, stashRef };
+  }
+  return {};
+}
+
 function mergeDoctorSandboxRepairsBackToProtectedBase(options, blocked, metadata, autoCommitResult, finishResult) {
   if (options.dryRun) {
     return {
@@ -610,7 +605,7 @@ function mergeDoctorSandboxRepairsBackToProtectedBase(options, blocked, metadata
     '.gitignore',
     'AGENTS.md',
   ]);
-  const dirtyPaths = collectWorktreeDirtyPaths(blocked.repoRoot);
+  const dirtyPaths = collectDoctorChangedPaths(blocked.repoRoot);
   let stashRef = '';
   if (dirtyPaths.length > 0) {
     const unexpectedPaths = dirtyPaths.filter((filePath) => {
@@ -664,14 +659,12 @@ function mergeDoctorSandboxRepairsBackToProtectedBase(options, blocked, metadata
 
   const restoreResult = ensureRepoBranch(blocked.repoRoot, blocked.branch);
   if (!restoreResult.ok) {
-    if (stashRef) {
-      run('git', ['-C', blocked.repoRoot, 'stash', 'apply', stashRef], { timeout: 30_000 });
-    }
     return {
       status: 'failed',
       note: `could not restore protected branch '${blocked.branch}' before applying sandbox repairs`,
       stdout: restoreResult.stdout || '',
       stderr: restoreResult.stderr || '',
+      ...(stashRef ? applyStashOrWarn(blocked.repoRoot, stashRef) : {}),
     };
   }
 
@@ -681,25 +674,21 @@ function mergeDoctorSandboxRepairsBackToProtectedBase(options, blocked, metadata
     { timeout: 30_000 },
   );
   if (isSpawnFailure(mergeResult)) {
-    if (stashRef) {
-      run('git', ['-C', blocked.repoRoot, 'stash', 'apply', stashRef], { timeout: 30_000 });
-    }
     return {
       status: 'failed',
       note: 'tracked doctor repair merge errored',
       stdout: mergeResult.stdout || '',
       stderr: mergeResult.stderr || '',
+      ...(stashRef ? applyStashOrWarn(blocked.repoRoot, stashRef) : {}),
     };
   }
   if (mergeResult.status !== 0) {
-    if (stashRef) {
-      run('git', ['-C', blocked.repoRoot, 'stash', 'apply', stashRef], { timeout: 30_000 });
-    }
     return {
       status: 'failed',
       note: 'tracked doctor repair merge failed',
       stdout: mergeResult.stdout || '',
       stderr: mergeResult.stderr || '',
+      ...(stashRef ? applyStashOrWarn(blocked.repoRoot, stashRef) : {}),
     };
   }
 
@@ -949,7 +938,7 @@ function autoFinishReadyAgentBranches(repoRoot, options = {}) {
   const ghAvailable =
     originAvailable &&
     (explicitGhBin || originRemoteLooksLikeGithub(repoRoot)) &&
-    run(ghBin, ['--version']).status === 0;
+    run(ghBin, ['--version'], { timeout: 5000 }).status === 0;
 
   let fallbackMode = '';
   if (!originAvailable) {
@@ -1150,8 +1139,6 @@ function executeDoctorSandboxLifecycle(options, blocked, metadata, integrations)
   const resolvedIntegrations = integrations && typeof integrations === 'object' ? integrations : {};
   const autoFinishRunner =
     resolvedIntegrations.autoFinishReadyAgentBranches || autoFinishReadyAgentBranches;
-
-  execution.omxScaffoldSync = summarizeDoctorOmxScaffoldSync(blocked.repoRoot, dryRun);
 
   // `gx doctor` is the explicit recovery path for an invalid lock registry.
   // Publish the repaired sandbox copy before claiming changed files so the

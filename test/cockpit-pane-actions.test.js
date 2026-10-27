@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  commandExists,
   dispatchPaneAction,
   operationContext,
 } = require('../src/cockpit/pane-actions');
@@ -205,4 +206,43 @@ test('operationContext normalizes selected pane, worktree, backend runtime, and 
   assert.equal(payload.worktreePath, '/repo/.omx/agent-worktrees/example');
   assert.equal(payload.repoRoot, '/repo');
   assert.equal(payload.env.CUSTOM, 'yes');
+});
+
+test('commandExists uses PATH scan without shelling out to which', () => {
+  const ctx = {};
+
+  // 'node' must be on PATH since we're running inside Node.
+  assert.equal(commandExists(ctx, 'node'), true, 'node must be found via PATH scan');
+
+  // A deliberately nonexistent command must not be found.
+  assert.equal(commandExists(ctx, '__gx_nonexistent_cmd_xyz__'), false);
+
+  // Context-provided override is still honoured.
+  const overrideCtx = { commandExists: (cmd) => cmd === 'custom-tool' };
+  assert.equal(commandExists(overrideCtx, 'custom-tool'), true);
+  assert.equal(commandExists(overrideCtx, 'node'), false);
+});
+
+test('runSync and runFinish propagate a timeout message on ETIMEDOUT', () => {
+  // Simulate a spawnSync that returns a timeout error.
+  const timeoutError = Object.assign(new Error('spawnSync gx ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  const { context } = mockContext({
+    session: {
+      id: 's1',
+      branch: 'agent/codex/example',
+      worktreePath: '/repo/.omx/agent-worktrees/example',
+      paneId: '%1',
+    },
+    runCommand(_cmd, _args, _opts) {
+      return { pid: 0, stdout: '', stderr: '', status: null, signal: 'SIGTERM', error: timeoutError };
+    },
+  });
+
+  const syncResult = dispatchPaneAction('sync', context);
+  assert.equal(syncResult.ok, false);
+  assert.ok(syncResult.message.includes('timed out'), `sync message must mention timeout: ${syncResult.message}`);
+
+  const finishResult = dispatchPaneAction('finish', context);
+  assert.equal(finishResult.ok, false);
+  assert.ok(finishResult.message.includes('timed out'), `finish message must mention timeout: ${finishResult.message}`);
 });

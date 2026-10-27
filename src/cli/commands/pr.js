@@ -126,6 +126,22 @@ function renderChecksLine(checks) {
   return parts.length ? parts.join(', ') : `${checks.total} checks`;
 }
 
+/** Returns the detail suffix for a checks-failed error: URL + failing check names. */
+function buildChecksFailedDetail(pr) {
+  const url = pr?.url ? ` (${pr.url})` : '';
+  const names = pr?.failedNames?.length
+    ? `\n  Failed checks: ${pr.failedNames.join(', ')}`
+    : '';
+  return `${url}${names}`;
+}
+
+/** Returns the detail suffix for a timeout warning: URL + current check summary. */
+function buildTimeoutDetail(pr) {
+  const url = pr?.url ? ` (${pr.url})` : '';
+  const checks = pr?.checks ? ` — ${renderChecksLine(pr.checks)}` : '';
+  return `${url}${checks}`;
+}
+
 function emitStatusText(snapshot) {
   if (!snapshot) {
     console.log('no open PR for this branch');
@@ -275,12 +291,12 @@ async function cmdWatch(opts) {
   if (result.status === 'merged') return;
   if (result.status === 'checks-failed') {
     process.exitCode = 2;
-    logError('CI checks failed. Investigate the PR before retrying.');
+    logError(`CI checks failed. Investigate the PR before retrying.${buildChecksFailedDetail(result.pr)}`);
     return;
   }
   if (result.status === 'timeout') {
     process.exitCode = 3;
-    logWarn('Timed out waiting for PR to merge.');
+    logWarn(`Timed out waiting for PR to merge.${buildTimeoutDetail(result.pr)}`);
     return;
   }
   if (result.status === 'closed') {
@@ -435,5 +451,7 @@ module.exports = {
   pr,
   parsePrArgs,
   renderChecksLine,
+  buildChecksFailedDetail,
+  buildTimeoutDetail,
   printUsage,
 };

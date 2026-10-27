@@ -51,50 +51,15 @@ sanitize_slug() {
   printf '%s' "$slug"
 }
 
-resolve_base_branch() {
-  local repo="$1"
-  local explicit_target="$2"
-  local configured="" branch_base="" inferred=""
-
-  if [[ -n "$explicit_target" ]]; then
-    branch_base="$(git -C "$repo" config --get "branch.${explicit_target}.guardexBase" || true)"
-    if [[ -n "$branch_base" ]]; then
-      printf '%s' "$branch_base"
-      return 0
-    fi
-    # Infer from git history before trusting the repo-wide configured base.
-    inferred="$(guardex_infer_base_branch "$repo" "$explicit_target" || true)"
-    if [[ -n "$inferred" ]]; then
-      printf '[gx] base for '"'"'%s'"'"' not recorded; inferred '"'"'%s'"'"' from git history (set branch.%s.guardexBase to override)\n' \
-        "$explicit_target" "$inferred" "$explicit_target" >&2
-      printf '%s' "$inferred"
-      return 0
-    fi
-  fi
-
-  configured="$(git -C "$repo" config --get multiagent.baseBranch || true)"
-  if [[ -n "$configured" ]]; then
-    printf '%s' "$configured"
-    return 0
-  fi
-
-  for fallback in dev main master; do
-    if git -C "$repo" show-ref --verify --quiet "refs/heads/${fallback}" \
-      || git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/${fallback}"; then
-      printf '%s' "$fallback"
-      return 0
-    fi
-  done
-
-  printf '%s' "dev"
-}
-
 get_worktree_for_branch() {
   local repo="$1"
   local branch="$2"
   git -C "$repo" worktree list --porcelain | awk -v target="refs/heads/${branch}" '
     $1 == "worktree" { wt = $2 }
-    $1 == "branch" && $2 == target { print wt; exit }
+    $1 == "branch" && $2 == target {
+      n = split(wt, parts, "/")
+      if (parts[n] !~ /^__source-probe-/) { print wt; exit }
+    }
   '
 }
 
