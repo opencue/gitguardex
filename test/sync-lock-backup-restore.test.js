@@ -281,19 +281,16 @@ test('restoreLockBackupSafe: calls python3 with-claims-lock.py when common dir r
   assert.ok(call.args.includes('-e'), 'inline node script must be passed with -e');
 });
 
-test('restoreLockBackupSafe: falls back to merge path when python3 run fails', () => {
+test('restoreLockBackupSafe: throws when python3 was attempted but returned non-zero', () => {
+  // When the flock path and helper script are both available, a non-zero exit
+  // from python3 means the mutex may still be held; the function must throw
+  // rather than silently proceed with an unlocked write.
   const tmpDir = makeTmpDir();
   const lockPath = path.join(tmpDir, '.omx', 'state', 'agent-file-locks.json');
 
   const backup = lockState({
     'src/a.js': { branch: 'agent/a', claimed_at: '2024-01-01T00:00:00Z' }
   });
-  const concurrent = lockState({
-    'src/a.js': { branch: 'agent/a', claimed_at: '2024-01-01T00:00:00Z' },
-    'src/b.js': { branch: 'agent/b', claimed_at: '2024-01-02T00:00:00Z' }
-  });
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  fs.writeFileSync(lockPath, concurrent, 'utf8');
 
   const { restoreLockBackupSafe } = loadFinish({
     gitRun: (_root, args) => {
@@ -305,12 +302,14 @@ test('restoreLockBackupSafe: falls back to merge path when python3 run fails', (
     run: () => ({ status: 75, stdout: '', stderr: 'timeout' }) // python3 timed out
   });
 
-  restoreLockBackupSafe(tmpDir, lockPath, backup);
-
-  // Fallback merge must still run and preserve concurrent claims
-  const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-  assert.ok('src/a.js' in parsed.locks, 'backup entry must be present after fallback');
-  assert.ok('src/b.js' in parsed.locks, 'concurrent entry must be preserved after fallback');
+  assert.throws(
+    () => restoreLockBackupSafe(tmpDir, lockPath, backup),
+    (err) => {
+      assert.match(err.message, /Lock-registry restore failed/);
+      assert.match(err.message, /status 75/);
+      return true;
+    }
+  );
 });
 
 // ---------------------------------------------------------------------------

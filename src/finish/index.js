@@ -733,15 +733,18 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
   // Compact inline Node script executed under the OS flock.
   // Reads current on-disk state, folds in new concurrent entries (those absent
   // from the backup), then writes via temp+rename for an atomic replacement.
+  // Uses Object.create(null) to avoid prototype-property false positives on
+  // filenames like "constructor" or "toString".
   const mergeScript = [
     'var fs=require("fs"),p=require("path");',
     `var lp=${JSON.stringify(lockPath)},bk=${JSON.stringify(backup)};`,
     'var b={},c={};',
     'try{b=JSON.parse(bk);}catch(e){}',
     'try{c=JSON.parse(fs.readFileSync(lp,"utf8"));}catch(e){}',
-    'var ml=Object.assign({},b.locks||{});',
-    'Object.keys(c.locks||{}).forEach(function(k){if(!(k in ml))ml[k]=c.locks[k];});',
-    'var out=JSON.stringify(Object.assign({},b,{locks:ml}),null,2)+"\\n";',
+    'var ml=Object.create(null);',
+    'Object.keys(b.locks||{}).forEach(function(k){ml[k]=b.locks[k];});',
+    'Object.keys(c.locks||{}).forEach(function(k){if(!Object.prototype.hasOwnProperty.call(ml,k))ml[k]=c.locks[k];});',
+    'var out=JSON.stringify(Object.assign({},b,{locks:Object.assign({},ml)}),null,2)+"\\n";',
     'var tmp=lp+".tmp";',
     'fs.mkdirSync(p.dirname(lp),{recursive:true});',
     'fs.writeFileSync(tmp,out,"utf8");',
@@ -753,12 +756,18 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
       cwd: repoRoot,
     });
     if (result.status === 0) return;
+    throw new Error(
+      `Lock-registry restore failed while acquiring or holding the claims lock (status ${result.status})`
+    );
   }
 
-  // Fallback: merge without flock (best-effort; no protection against a concurrent
-  // write in the rename window, but still preserves new entries instead of
-  // silently overwriting them). Use a per-process unique temp name so that two
-  // concurrent fallback restores cannot clobber each other's temp file.
+  // Fallback: merge without flock. Only reached when python3 or the helper
+  // script is unavailable (flockPath resolved but withLockScript absent, or
+  // no common .git dir). Best-effort — no mutex protection — but still
+  // preserves new entries instead of silently overwriting them.
+  // Uses Object.create(null) so filenames like "constructor" / "toString"
+  // cannot match inherited properties. Per-process unique temp name prevents
+  // two concurrent fallback restores from clobbering each other's temp file.
   let merged;
   try {
     const backupState = JSON.parse(backup);
@@ -766,11 +775,11 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
     try {
       currentState = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
     } catch (_) {}
-    const mergedLocks = { ...(backupState.locks || {}) };
+    const mergedLocks = Object.assign(Object.create(null), backupState.locks || {});
     for (const [k, v] of Object.entries(currentState.locks || {})) {
-      if (!(k in mergedLocks)) mergedLocks[k] = v;
+      if (!Object.prototype.hasOwnProperty.call(mergedLocks, k)) mergedLocks[k] = v;
     }
-    merged = JSON.stringify({ ...backupState, locks: mergedLocks }, null, 2) + '\n';
+    merged = JSON.stringify({ ...backupState, locks: { ...mergedLocks } }, null, 2) + '\n';
   } catch (_) {
     merged = backup; // raw fallback when backup is not valid JSON
   }
