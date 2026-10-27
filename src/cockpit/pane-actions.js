@@ -1,9 +1,12 @@
 'use strict';
 
 const cp = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const { readCockpitSettings } = require('./settings');
 const { PANE_MENU_ACTION_IDS } = require('./pane-menu');
+
+const LONG_RUNNING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 const ACTION_ALIASES = new Map([
   ['finish-pr', 'finish'],
@@ -202,11 +205,17 @@ function callHook(label, fn, payload, fallbackMessage) {
 function runCommand(context, cmd, args = [], options = {}) {
   const runner = typeof context.runCommand === 'function' ? context.runCommand : defaultRunCommand;
   const rendered = renderCommand(cmd, args);
-  const payload = normalizeResult(runner(cmd, args, options));
+  const raw = runner(cmd, args, options);
+  const timedOut = raw && raw.error && raw.error.code === 'ETIMEDOUT';
+  const payload = normalizeResult(raw);
   const detail = payload.ok ? payload.stdout : payload.stderr || payload.stdout;
+  const timeoutMins = options.timeout ? Math.round(options.timeout / 60000) : 0;
+  const failMsg = timedOut
+    ? `Command timed out after ${timeoutMins} min: ${rendered}`
+    : `Command failed: ${detail.trim() || rendered}`;
   return resultShape({
     ok: payload.ok,
-    message: payload.ok ? 'Command completed.' : `Command failed: ${detail.trim() || rendered}`,
+    message: payload.ok ? 'Command completed.' : failMsg,
     command: rendered,
     stdout: payload.stdout,
     stderr: payload.stderr,
@@ -217,9 +226,18 @@ function commandExists(context, cmd) {
   if (typeof context.commandExists === 'function') {
     return Boolean(context.commandExists(cmd));
   }
-  const runner = typeof context.runCommand === 'function' ? context.runCommand : defaultRunCommand;
-  const result = normalizeResult(runner('which', [cmd], { cwd: resolveRepoRoot(context) }));
-  return result.ok && result.stdout.trim().length > 0;
+  const envPath = process.env.PATH || '';
+  const sep = process.platform === 'win32' ? ';' : ':';
+  for (const dir of envPath.split(sep)) {
+    if (!dir) continue;
+    try {
+      fs.accessSync(path.join(dir, cmd), fs.constants.X_OK);
+      return true;
+    } catch {
+      // not in this dir
+    }
+  }
+  return false;
 }
 
 function requireBranch(context, actionName) {
@@ -286,7 +304,7 @@ function runSync(context) {
   const args = ['sync', '--target', required.worktreePath];
   const base = firstString(context.base, context.baseBranch, selectedSession(context).base);
   if (base) args.push('--base', base);
-  return runCommand(context, context.gxCommand || 'gx', args, { cwd: required.worktreePath });
+  return runCommand(context, context.gxCommand || 'gx', args, { cwd: required.worktreePath, timeout: LONG_RUNNING_TIMEOUT_MS });
 }
 
 function runFinish(context) {
@@ -306,7 +324,7 @@ function runFinish(context) {
       '--wait-for-merge',
       '--cleanup',
     ],
-    { cwd: resolveRepoRoot(context) },
+    { cwd: resolveRepoRoot(context), timeout: LONG_RUNNING_TIMEOUT_MS },
   );
 }
 
@@ -587,6 +605,7 @@ function dispatchPaneAction(action, context = {}) {
 module.exports = {
   COCKPIT_INTENT_ALIASES,
   PANE_ACTION_HANDLERS,
+  commandExists,
   dispatchCockpitIntent,
   dispatchPaneAction,
   normalizeAction,
