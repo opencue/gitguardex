@@ -911,7 +911,10 @@ function runPrReview(options, deps = {}) {
   // between these calls shows up as a mismatch in the posting guard (the guard
   // checks reviewedHeadSha against the live head at post time).
   const prHeadSha = options.post ? fetchHeadSha(pr, repoRoot, runner) : null;
-  if (options.post && !prHeadSha) {
+  // Only abort when auth IS available but the SHA still came back empty.
+  // If auth is unavailable fetchHeadSha will also fail, but that case is
+  // handled below by the githubAuthAvailable fallback — don't throw here.
+  if (options.post && !prHeadSha && githubAuthAvailable(process.env, runner)) {
     throw new Error('Cannot capture PR head SHA before review; refusing to post an unverified review.');
   }
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
