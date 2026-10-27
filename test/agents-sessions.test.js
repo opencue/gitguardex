@@ -182,31 +182,11 @@ test('updateAgentSession serializes via a lock file and cleans it up on success'
   assert.equal(fs.existsSync(lockPath), false, 'lock file must be removed after update');
 });
 
-test('updateAgentSession steals a stale lock file and still updates', (t) => {
-  const repoRoot = makeRepoRoot();
-  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
-  const created = createAgentSession(repoRoot, {
-    id: 'stale-lock-session',
-    task: 'Stale lock steal',
-    agent: 'claude',
-    branch: 'agent/claude/stale-lock',
-    worktreePath: path.join(repoRoot, 'wt'),
-    base: 'main',
-  });
-
-  // Plant a lock file with a timestamp well in the past (beyond STALE_LOCK_STALE_MS = 5 s).
-  const lockPath = path.join(
-    repoRoot, '.guardex', 'agents', 'sessions', `${created.id}.json.lock`,
-  );
-  fs.writeFileSync(lockPath, 'stale-pid', { mode: 0o600 });
-  const staleTime = Date.now() - 10_000; // 10 seconds ago
-  fs.utimesSync(lockPath, staleTime / 1000, staleTime / 1000);
-
-  // updateAgentSession must steal the stale lock and succeed.
-  const updated = updateAgentSession(repoRoot, created.id, { status: 'completed' });
-  assert.equal(updated.status, 'completed');
-  assert.equal(fs.existsSync(lockPath), false, 'stale lock must be cleaned up');
-});
+// Note: stale-lock stealing was removed from the implementation (see the
+// SESSION_LOCK_MAX_ATTEMPTS constant comment in sessions.js for rationale).
+// A permanently-stuck lock causes all callers to exhaust retries and throw;
+// recovery is manual deletion of the lock file. The lock-lifecycle test
+// above and the concurrent-writes test below cover the active lock paths.
 
 test('updateAgentSession concurrent writes via child processes do not corrupt the session', async (t) => {
   const repoRoot = makeRepoRoot();
