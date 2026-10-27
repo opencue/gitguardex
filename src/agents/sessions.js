@@ -129,25 +129,45 @@ function readAgentSession(repoRoot, sessionId) {
 // back off exponentially; steal the lock if it is older than
 // SESSION_LOCK_STALE_MS. Throws if the lock cannot be acquired after
 // SESSION_LOCK_MAX_ATTEMPTS retries.
+//
+// Ownership protocol: the lock file contains the acquiring process's PID so
+// that releaseSessionWriteLock can verify ownership before deleting, which
+// prevents a resumed-after-steal holder from removing a replacement lock.
+// After stealing a stale lock, the acquisition attempt is made inline rather
+// than via `continue` so that a second concurrent stealer that unlinks the
+// replacement lock is detected as EEXIST and falls through to normal backoff
+// instead of mistakenly believing it holds the lock.
 function acquireSessionWriteLock(lockPath) {
+  const pidStr = String(process.pid);
   for (let attempt = 0; attempt < SESSION_LOCK_MAX_ATTEMPTS; attempt++) {
     try {
       const fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+      try { fs.writeSync(fd, pidStr); } finally { fs.closeSync(fd); }
       return; // lock acquired
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
       // Lock file exists — check whether it is stale.
+      let isStale = false;
       try {
         const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > SESSION_LOCK_STALE_MS) {
-          try { fs.unlinkSync(lockPath); } catch (_) {}
-          // Retry immediately after stealing the stale lock.
-          continue;
-        }
+        isStale = Date.now() - stat.mtimeMs > SESSION_LOCK_STALE_MS;
       } catch (_) {
-        // Lock disappeared between EEXIST and stat — retry.
+        // Lock disappeared between EEXIST and stat — retry from the top.
         continue;
+      }
+      if (isStale) {
+        try { fs.unlinkSync(lockPath); } catch (_) {}
+        // Attempt to acquire immediately after the steal. If another concurrent
+        // stealer got in first (EEXIST), fall through to exponential backoff
+        // rather than looping back to steal again.
+        try {
+          const fd2 = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+          try { fs.writeSync(fd2, pidStr); } finally { fs.closeSync(fd2); }
+          return; // acquired after stealing stale lock
+        } catch (e2) {
+          if (e2.code !== 'EEXIST') throw e2;
+          // Another writer got the lock; fall through to backoff.
+        }
       }
       // Exponential backoff: 10, 20, 40, 80, 160 ms.
       Atomics.wait(_sessionLockWaitArray, 0, 0, 10 * (1 << attempt));
@@ -156,8 +176,16 @@ function acquireSessionWriteLock(lockPath) {
   throw new Error(`Could not acquire session write lock for ${path.basename(lockPath, '.lock')} after ${SESSION_LOCK_MAX_ATTEMPTS} attempts`);
 }
 
+// Release only if this process still owns the lock (PID matches). This
+// prevents a process that resumes after its lock was stolen from deleting
+// the replacement lock held by the stealer.
 function releaseSessionWriteLock(lockPath) {
-  try { fs.unlinkSync(lockPath); } catch (_) {}
+  try {
+    const content = fs.readFileSync(lockPath, 'utf8').trim();
+    if (content === String(process.pid)) {
+      fs.unlinkSync(lockPath);
+    }
+  } catch (_) {}
 }
 
 function updateAgentSession(repoRoot, sessionId, patch) {
@@ -167,7 +195,14 @@ function updateAgentSession(repoRoot, sessionId, patch) {
 
   const filePath = sessionFilePath(repoRoot, sessionId);
   const lockPath = `${filePath}.lock`;
-  acquireSessionWriteLock(lockPath);
+  // ENOENT means the sessions directory (and thus the session file) does not
+  // exist yet — treat it the same as a missing session rather than throwing.
+  try {
+    acquireSessionWriteLock(lockPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
   try {
     const existing = readAgentSession(repoRoot, sessionId);
     if (!existing) {

@@ -208,7 +208,7 @@ test('updateAgentSession steals a stale lock file and still updates', (t) => {
   assert.equal(fs.existsSync(lockPath), false, 'stale lock must be cleaned up');
 });
 
-test('updateAgentSession concurrent writes via child processes do not corrupt the session', (t) => {
+test('updateAgentSession concurrent writes via child processes do not corrupt the session', async (t) => {
   const repoRoot = makeRepoRoot();
   t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
   const created = createAgentSession(repoRoot, {
@@ -220,18 +220,26 @@ test('updateAgentSession concurrent writes via child processes do not corrupt th
     base: 'main',
   });
 
-  // Spawn several concurrent writers; each sets a unique status.
-  const writers = Array.from({ length: 8 }, (_, i) => {
+  // Launch all 8 writers asynchronously so they genuinely overlap.
+  // Each writer patches a different field (status + a per-writer key) so
+  // lost updates are detectable in addition to malformed JSON.
+  const writerPromises = Array.from({ length: 8 }, (_, i) => {
     const script = `
       const { updateAgentSession } = require(${JSON.stringify(require.resolve('../src/agents/sessions'))});
-      updateAgentSession(${JSON.stringify(repoRoot)}, ${JSON.stringify(created.id)}, { status: 'w${i}' });
+      updateAgentSession(${JSON.stringify(repoRoot)}, ${JSON.stringify(created.id)}, { status: 'w${i}', writer${i}: true });
     `;
-    return cp.spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+    return new Promise((resolve, reject) => {
+      const child = cp.spawn(process.execPath, ['-e', script], { encoding: 'utf8' });
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('close', (code) => {
+        if (code !== 0) reject(new Error(`writer ${i} failed (exit ${code}): ${stderr}`));
+        else resolve();
+      });
+    });
   });
 
-  for (const result of writers) {
-    assert.equal(result.status, 0, `writer failed: ${result.stderr}`);
-  }
+  await Promise.all(writerPromises);
 
   // The file must be valid JSON and match the schema regardless of which
   // writer won the last slot.
