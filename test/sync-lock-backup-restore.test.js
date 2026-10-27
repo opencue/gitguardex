@@ -212,8 +212,10 @@ test('restoreLockBackupSafe: writes via temp+rename (no partial write visible)',
 
   restoreLockBackupSafe(tmpDir, lockPath, backup);
 
-  // The .tmp file must not exist after a successful write
-  assert.equal(fs.existsSync(`${lockPath}.tmp`), false, '.tmp file must be cleaned up by rename');
+  // No per-process .tmp file must remain after a successful write
+  // (the exact name includes the PID, so check for any .<digits>.tmp leftover)
+  const tmpLeftovers = fs.readdirSync(path.dirname(lockPath)).filter((f) => /\.\d+\.tmp$/.test(f));
+  assert.equal(tmpLeftovers.length, 0, 'per-process .tmp file must be cleaned up by rename');
   // The lock file must exist and be valid JSON
   const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
   assert.ok('locks' in parsed);

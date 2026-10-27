@@ -757,7 +757,8 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
 
   // Fallback: merge without flock (best-effort; no protection against a concurrent
   // write in the rename window, but still preserves new entries instead of
-  // silently overwriting them).
+  // silently overwriting them). Use a per-process unique temp name so that two
+  // concurrent fallback restores cannot clobber each other's temp file.
   let merged;
   try {
     const backupState = JSON.parse(backup);
@@ -773,7 +774,7 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
   } catch (_) {
     merged = backup; // raw fallback when backup is not valid JSON
   }
-  const tmpPath = `${lockPath}.tmp`;
+  const tmpPath = `${lockPath}.${process.pid}.tmp`;
   fs.writeFileSync(tmpPath, merged, 'utf8');
   fs.renameSync(tmpPath, lockPath);
 }
