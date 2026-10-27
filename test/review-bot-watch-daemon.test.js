@@ -274,15 +274,31 @@ test('describeReviewDaemon returns stopped for stale pid', () => {
 test('describeReviewDaemon returns running for live pid', () => {
   const { describeReviewDaemon } = require('../src/cli/commands/status');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-review-daemon-'));
+
+  // Spawn a background process whose argv includes 'review-bot-watch' so that
+  // the /proc/<pid>/cmdline check in describeReviewDaemon passes on Linux.
+  // `bash -c 'sleep 30' review-bot-watch` puts 'review-bot-watch' as argv[3]
+  // in the cmdline null-separated string, which is what includes() checks.
+  const child = cp.spawn('bash', ['-c', 'sleep 30', 'review-bot-watch'], {
+    detached: true,
+    stdio: 'ignore'
+  });
+  child.unref();
+  const childPid = child.pid;
+
   try {
     const stateDir = path.join(tmpDir, '.omx', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
-    // Use this process's own PID — guaranteed to be alive.
-    fs.writeFileSync(path.join(stateDir, 'review-bot-watch.pid'), `${process.pid}\n`);
+    fs.writeFileSync(path.join(stateDir, 'review-bot-watch.pid'), `${childPid}\n`);
     const result = describeReviewDaemon(tmpDir);
     assert.equal(result.state, 'running');
-    assert.equal(result.pid, process.pid);
+    assert.equal(result.pid, childPid);
   } finally {
+    try {
+      process.kill(childPid, 'SIGTERM');
+    } catch {
+      /* already dead */
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
