@@ -42,12 +42,14 @@ const SEVERITY_IN_BODY_RE = /\*\*(CRITICAL|HIGH|MEDIUM|LOW)\*\*/i;
 /**
  * Fetch PR metadata needed for the respond flow.
  *
- * Returns `{ headRefName, isCrossRepository }` on success, or throws.
+ * Returns `{ headRefName, headRefOid, isCrossRepository }` on success, or throws.
+ * `headRefOid` is the current PR head commit SHA from GitHub — used to verify
+ * the local worktree is at the same commit before applying any fix.
  */
 function fetchPrMeta(pr, repoRoot, runner = run) {
   const result = runner(
     GH_BIN,
-    ['pr', 'view', String(pr), '--json', 'headRefName,isCrossRepository'],
+    ['pr', 'view', String(pr), '--json', 'headRefName,isCrossRepository,headRefOid'],
     { cwd: repoRoot, timeout: 60_000, allowFailure: true }
   );
   if (result.status !== 0) {
@@ -61,6 +63,7 @@ function fetchPrMeta(pr, repoRoot, runner = run) {
   }
   return {
     headRefName: String(data.headRefName || ''),
+    headRefOid: String(data.headRefOid || ''),
     isCrossRepository: Boolean(data.isCrossRepository)
   };
 }
@@ -426,7 +429,7 @@ function prRespond(options = {}, deps = {}) {
     };
   }
 
-  // 3. Verify the worktree is on the expected branch and its HEAD matches origin.
+  // 3. Verify the worktree is on the expected branch and its HEAD matches the PR head.
   const wtBranch = currentBranchName(worktreePath);
   if (wtBranch !== branch) {
     return {
@@ -435,7 +438,23 @@ function prRespond(options = {}, deps = {}) {
     };
   }
 
-  // Verify the local HEAD matches origin to prevent applying the fix to a stale worktree.
+  // Primary staleness check: compare local HEAD to the PR head SHA from GitHub.
+  // This is authoritative and does not require a network call.
+  if (meta.headRefOid) {
+    const localHead = String(
+      gitRun(worktreePath, ['rev-parse', 'HEAD'], { allowFailure: true }).stdout || ''
+    ).trim();
+    if (localHead && localHead !== meta.headRefOid) {
+      return {
+        status: 'skipped',
+        reason:
+          `worktree HEAD (${localHead.slice(0, 8)}) does not match PR head ` +
+          `(${meta.headRefOid.slice(0, 8)}) — push the branch first`
+      };
+    }
+  }
+
+  // Secondary staleness check: if origin is reachable, also verify via fetch.
   // Step 1: check whether origin is configured. No remote → skip (local-only repo).
   const remoteCheck = gitRun(worktreePath, ['remote', 'get-url', 'origin'], { allowFailure: true });
   if (remoteCheck.status === 0) {
@@ -586,8 +605,8 @@ function prRespond(options = {}, deps = {}) {
       skippedReply.push(thread.id);
       continue;
     }
-    if (reReviewResult === null) {
-      // Re-review failed: cannot confirm fix; leave thread open.
+    if (!reReviewResult || !Array.isArray(reReviewResult.findings)) {
+      // Re-review failed or returned no findings array: cannot confirm fix; leave thread open.
       skippedReply.push(thread.id);
       continue;
     }
