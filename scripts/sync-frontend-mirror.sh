@@ -96,11 +96,16 @@ fi
 
 # Pass the token via http.extraHeader through git's per-process env config so
 # it never appears in argv or in the remote URL (both are visible in `ps`).
+# actions/checkout persists its own http.https://github.com/.extraheader, and
+# git sends every value of that multi-valued key; an empty value first resets
+# the list so only the mirror token is sent.
 remote_url="https://github.com/${TARGET_REPO}.git"
 push_output=""
-if ! push_output="$(GIT_CONFIG_COUNT=1 \
-    GIT_CONFIG_KEY_0="http.extraHeader" \
-    GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "${SYNC_TOKEN}" | base64 | tr -d '\r\n')" \
+if ! push_output="$(GIT_CONFIG_COUNT=2 \
+    GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+    GIT_CONFIG_VALUE_0="" \
+    GIT_CONFIG_KEY_1="http.https://github.com/.extraheader" \
+    GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${SYNC_TOKEN}" | base64 | tr -d '\r\n')" \
     git push --force "$remote_url" "${split_sha}:${TARGET_BRANCH}" 2>&1)"; then
   sanitized_output="$push_output"
   if [[ -n "$SYNC_TOKEN" ]]; then
