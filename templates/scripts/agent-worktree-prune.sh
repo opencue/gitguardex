@@ -1048,7 +1048,18 @@ process_entry() {
       branch_delete_mode="force"
       expected_branch_head="$(branch_tip "$branch")"
     elif [[ "$ONLY_DIRTY_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
-      remove_reason="clean-agent-worktree"
+      # Guard: only remove a clean worktree when the branch has no commits ahead
+      # of the base.  A worktree is "clean" in git-status terms even when it
+      # holds committed-but-unpushed work — that work is not dirty but it IS
+      # unmerged and must not be silently discarded.  If the branch is ahead of
+      # the base and no merged-PR path caught it above, the worktree is active
+      # work; leave it alone.  `rev-list --count BASE..branch` returns 0 only
+      # when every commit on the branch is reachable from the base.
+      local branch_ahead_count
+      branch_ahead_count="$(git -C "$repo_root" rev-list --count "${BASE_BRANCH}..${branch}" 2>/dev/null || echo "1")"
+      if [[ "$branch_ahead_count" -eq 0 ]]; then
+        remove_reason="clean-agent-worktree"
+      fi
     fi
   elif [[ "$branch" == __agent_integrate_* || "$branch" == __source-probe-* ]]; then
     remove_reason="temporary-worktree"
