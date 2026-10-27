@@ -739,3 +739,52 @@ exit 1
   assert.match(quiet.body, /No findings/);
   assert.ok(!quiet.body.includes('abide'));
 });
+
+test('gx pr-review aborts posting when the PR head advances between the pre-review snapshot and the post', () => {
+  // The guard was dead on the non-Lens path: reviewedHeadSha was only set from
+  // lensContext, leaving the mismatch check permanently skipped.  The fix
+  // captures the head SHA before runProviderReviewPayload so both paths enforce
+  // it.
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-pr-review-headchange-'));
+  const countFile = path.join(markerDir, 'view-count');
+  // First call to `gh pr view` → sha-before (captured pre-review).
+  // Second call (inside postGithubReview) → sha-after, which triggers the guard.
+  const fakeGh = createFakeBin('gh', `
+if [[ "$1" == "repo" && "$2" == "view" ]]; then printf '%s\\n' 'opencue/gitguardex'; exit 0; fi
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then
+  printf '%s\\n' 'diff --git a/src/a.js b/src/a.js'
+  printf '%s\\n' '--- a/src/a.js'
+  printf '%s\\n' '+++ b/src/a.js'
+  printf '%s\\n' '@@ -1 +1 @@'
+  printf '%s\\n' '+const broken = true'
+  exit 0
+fi
+if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  count=$(cat "${countFile}" 2>/dev/null || echo 0)
+  echo $((count + 1)) > "${countFile}"
+  if [[ $count -eq 0 ]]; then
+    printf '%s\\n' 'sha-before-review'
+  else
+    printf '%s\\n' 'sha-after-push'
+  fi
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then exit 0; fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+  const fakeCodex = createFakeBin('codex', `
+printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","category":"tests","message":"Use a real assertion","suggestion":""}]}'
+`);
+
+  const result = runNodeWithEnv(
+    ['pr-review', '--provider', 'codex', '--pr', '22', '--post', '--no-pr-lens', '--target', repoDir],
+    repoDir,
+    { PATH: `${fakeGh.fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}` },
+  );
+  assert.notEqual(result.status, 0, 'review must fail when PR head changed between snapshot and post');
+  assert.match(result.stderr || result.stdout, /PR changed before posting/);
+});

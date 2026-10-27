@@ -791,6 +791,9 @@ function runPrReview(options, deps = {}) {
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
   const { diff, truncated } = capDiff(rawDiff);
   if (lensContext && truncated) throw new Error('PR Lens requires a complete diff; review diff is truncated');
+  // Capture the PR head SHA before the (potentially long) provider run so the
+  // mismatch guard in postGithubReview is active on every path, not just Lens.
+  const prHeadSha = fetchHeadSha(pr, repoRoot, runner);
   const { findings: providerFindings, graph } = runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
     model: options.model,
     prLens: Boolean(lensContext),
@@ -807,7 +810,7 @@ function runPrReview(options, deps = {}) {
   const payload = {
     pr, provider, findings, anchored, unanchored, truncated, gate, prLens,
     abide: abideResult,
-    reviewedHeadSha: lensContext?.metadata.provenance.head.sha,
+    reviewedHeadSha: lensContext?.metadata.provenance.head.sha ?? prHeadSha,
   };
   let savedArtifact;
   if (lensContext) {
