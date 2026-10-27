@@ -408,6 +408,25 @@ function getPullRequestStatus(repoRoot, branch) {
 }
 
 /**
+ * Lightweight poll: fetch only the open PR's headRefOid for `branch`.
+ * Used when only the head SHA is needed (e.g. waiting for a push to propagate)
+ * and fetching the full statusCheckRollup would be wasteful.
+ *
+ * Returns `{ headSha }` when an open PR exists, or `null` otherwise.
+ */
+function getPrHeadOid(repoRoot, branch) {
+  const result = ghJson(repoRoot, [
+    'pr', 'list',
+    '--head', branch,
+    '--state', 'open',
+    '--json', 'headRefOid',
+    '--limit', '1',
+  ]);
+  if (!result.ok || !Array.isArray(result.data) || !result.data.length) return null;
+  return { headSha: result.data[0].headRefOid || '' };
+}
+
+/**
  * Check outcomes recorded against `ref` (a branch name or SHA).
  *
  * Returns `{ failing, total }` — `total` matters as much as `failing`, because
@@ -626,6 +645,7 @@ module.exports = {
   pushBranch,
   openPullRequest,
   getPullRequestStatus,
+  getPrHeadOid,
   githubActionsJobId,
   isBillingBlockedCheckRun,
   checkOutcomes,

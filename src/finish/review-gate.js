@@ -98,7 +98,9 @@ function waitForPullRequestHead(repoRoot, branch, expectedHeadSha, options = {})
   const pollSeconds = options.pollSeconds || DEFAULT_PR_HEAD_POLL_SECONDS;
   const sleep = options.sleep || ((seconds) => run('sleep', [String(seconds)], { cwd: repoRoot }));
   const now = options.now || (() => Date.now());
-  const getStatus = options.getStatus || ((r, b) => pr.getPullRequestStatus(r, b));
+  // Only headSha is needed here; use the lightweight query to avoid fetching
+  // the full statusCheckRollup on every 2-second poll.
+  const getStatus = options.getStatus || ((r, b) => pr.getPrHeadOid(r, b));
   const deadline = now() + timeoutSeconds * 1000;
   let snapshot;
 
@@ -599,10 +601,17 @@ function runReviewGate({
   }
   if (ci.status === 'merge-blocked') {
     const mss = (ci.pr && ci.pr.mergeStateStatus) || 'BLOCKED';
+    const mssHints = {
+      DIRTY: `resolve conflicts first (${TOOL_NAME} pr sync, or merge the base branch)`,
+      BEHIND: 'update the branch to head of base (gx pr sync)',
+      BLOCKED: 'required reviews or conversations are unresolved',
+      UNSTABLE: 'wait for non-required checks or investigate failing ones',
+    };
+    const hint = mssHints[mss] || 'check branch-protection requirements';
     reportProgress(progress, 'fail', 'ci', `mergeStateStatus=${mss}`);
     throw new Error(
       `review gate: GitHub reports mergeStateStatus=${mss} for PR #${prNumber} `
-      + '(not mergeable under branch protection). Refusing to merge.',
+      + `(not mergeable under branch protection — ${hint}). Refusing to merge.`,
     );
   }
   if (ci.status === 'no-checks') {
