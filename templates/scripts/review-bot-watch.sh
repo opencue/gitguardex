@@ -9,6 +9,7 @@ BASE_BRANCH="${GUARDEX_REVIEW_BOT_BASE_BRANCH:-}"
 ONLY_PR="${GUARDEX_REVIEW_BOT_ONLY_PR:-}"
 RETRY_FAILED_RAW="${GUARDEX_REVIEW_BOT_RETRY_FAILED:-false}"
 INCLUDE_DRAFT_RAW="${GUARDEX_REVIEW_BOT_INCLUDE_DRAFT:-false}"
+AUTO_RESPOND_RAW="${GUARDEX_REVIEW_AUTO_RESPOND:-}"
 NODE_BIN="${GUARDEX_NODE_BIN:-node}"
 CLI_ENTRY="${GUARDEX_CLI_ENTRY:-}"
 
@@ -33,6 +34,9 @@ Options:
 
 Environment overrides:
   GUARDEX_REVIEW_BOT_PROMPT_APPEND  Additional instructions appended to each Codex prompt
+  GUARDEX_REVIEW_AUTO_RESPOND       Set to 1 to auto-fix blocking review threads on agent/*
+                                    PRs each poll cycle (opt-in; requires a local worktree
+                                    for the PR branch)
 USAGE
 }
 
@@ -148,6 +152,7 @@ done
 
 RETRY_FAILED="$(normalize_bool "$RETRY_FAILED_RAW" "0")"
 INCLUDE_DRAFT="$(normalize_bool "$INCLUDE_DRAFT_RAW" "0")"
+AUTO_RESPOND="$(normalize_bool "$AUTO_RESPOND_RAW" "0")"
 
 if [[ ! "$INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || [[ "$INTERVAL_SECONDS" -lt 5 ]]; then
   echo "[review-bot-watch] --interval must be an integer >= 5 seconds." >&2
@@ -373,6 +378,65 @@ process_one_pr() {
   save_state
 }
 
+# Auto-fix blocking review threads on the PR when GUARDEX_REVIEW_AUTO_RESPOND=1.
+# This is a best-effort supplementary step: a failure here is logged but does
+# not affect LAST_STATUS or cause the watch loop to exit.
+#
+# Rate-limiting: when the PR head SHA is unchanged we skip respond for
+# RESPOND_BACKOFF_POLLS consecutive polls after a successful run to avoid
+# re-invoking the fix provider on threads that are already handled.  The
+# backoff resets immediately when the SHA changes or when respond exits non-zero
+# (so a transient failure is retried on the next cycle).
+declare -A LAST_RESPOND_SHA
+declare -A RESPOND_SKIP_REMAINING
+RESPOND_BACKOFF_POLLS="${GUARDEX_RESPOND_BACKOFF_POLLS:-4}"
+
+try_respond_pr() {
+  local pr="$1"
+  local head_branch="$2"
+  local current_sha="${3:-}"
+
+  # Only attempt for agent/* branches: non-agent PRs are refused by 'pr respond'
+  # anyway, but the prefix check avoids a round-trip for every human PR.
+  if [[ "$head_branch" != agent/* ]]; then
+    return 0
+  fi
+
+  # When the SHA is unchanged and we have remaining backoff polls, decrement and skip.
+  if [[ -n "$current_sha" && "${LAST_RESPOND_SHA[$pr]:-}" == "$current_sha" ]]; then
+    local remaining="${RESPOND_SKIP_REMAINING[$pr]:-0}"
+    if (( remaining > 0 )); then
+      RESPOND_SKIP_REMAINING["$pr"]=$(( remaining - 1 ))
+      return 0
+    fi
+  else
+    # SHA changed (or first run): reset backoff for this PR.
+    LAST_RESPOND_SHA["$pr"]="${current_sha:-}"
+    RESPOND_SKIP_REMAINING["$pr"]=0
+  fi
+
+  echo "[review-bot-watch] respond: checking PR #${pr} for blocking review threads"
+  set +e
+  run_guardex_cli pr respond --pr "$pr"
+  local respond_exit="$?"
+  set -e
+
+  if [[ "$respond_exit" -eq 0 ]]; then
+    echo "[review-bot-watch] respond: PR #${pr} done"
+    # Arm the backoff so we don't re-invoke on the next N polls with the same SHA.
+    if [[ -n "$current_sha" ]]; then
+      LAST_RESPOND_SHA["$pr"]="$current_sha"
+      RESPOND_SKIP_REMAINING["$pr"]="$RESPOND_BACKOFF_POLLS"
+    fi
+  else
+    echo "[review-bot-watch] respond: PR #${pr} skipped or failed (exit=${respond_exit})" >&2
+    # Use a 1-poll mini-backoff on failure: retries the next cycle for transient
+    # errors (network blip, dirty worktree) but doesn't hammer on permanent ones
+    # (worktree absent, fork PR) on every cycle like clearing to 0 would.
+    RESPOND_SKIP_REMAINING["$pr"]=1
+  fi
+}
+
 load_state
 
 echo "[review-bot-watch] Starting monitor"
@@ -381,6 +445,9 @@ echo "[review-bot-watch] Interval    : ${INTERVAL_SECONDS}s"
 echo "[review-bot-watch] State file  : ${STATE_FILE}"
 if [[ -n "$ONLY_PR" ]]; then
   echo "[review-bot-watch] Only PR      : #${ONLY_PR}"
+fi
+if [[ "$AUTO_RESPOND" == "1" ]]; then
+  echo "[review-bot-watch] Auto-respond : enabled (GUARDEX_REVIEW_AUTO_RESPOND=1)"
 fi
 
 trap 'echo "[review-bot-watch] Stopped."; exit 0' INT TERM
@@ -411,10 +478,20 @@ while true; do
     only_pr_seen=1
 
     if ! should_process_pr "$pr" "$sha"; then
+      # Even when the SHA hasn't changed, auto-respond handles any new review
+      # comments that arrived since the last dispatch, but is rate-limited by
+      # try_respond_pr's backoff to avoid re-invoking the fix provider every cycle.
+      if [[ "$AUTO_RESPOND" == "1" ]]; then
+        try_respond_pr "$pr" "$head_branch" "$sha"
+      fi
       continue
     fi
 
     process_one_pr "$pr" "$head_branch" "$sha" "$title" "$url"
+
+    if [[ "$AUTO_RESPOND" == "1" ]]; then
+      try_respond_pr "$pr" "$head_branch" "$sha"
+    fi
   done < <(list_open_prs || true)
 
   if [[ "$found" -eq 0 ]]; then

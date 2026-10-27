@@ -9,6 +9,7 @@
 //   gx pr list       list open PRs for the current repo
 //   gx pr ready      promote draft -> ready for review
 //   gx pr review     hand off to existing pr-review provider flow
+//   gx pr respond    auto-fix blocking review threads on an agent PR
 //
 // This is the thin glue layer; logic lives in src/pr.js.
 
@@ -370,6 +371,106 @@ function cmdReady(opts) {
   }
 }
 
+/**
+ * Parse `gx pr respond` arguments. Kept separate from parsePrArgs because the
+ * respond subcommand has its own flag set and does not need most of the base
+ * PR flags (no --draft, --auto-merge, etc.).
+ */
+function parseRespondArgs(rawArgs) {
+  const opts = {
+    target: process.cwd(),
+    pr: null,
+    provider: null,
+    model: null,
+    timeoutMs: null,
+    dryRun: false,
+    json: false,
+  };
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index];
+    if (arg === '--target') { opts.target = rawArgs[++index]; continue; }
+    if (arg === '--pr') { opts.pr = rawArgs[++index]; continue; }
+    if (arg === '--provider') { opts.provider = rawArgs[++index]; continue; }
+    if (arg === '--model') { opts.model = rawArgs[++index]; continue; }
+    if (arg === '--timeout') {
+      const seconds = parseFloat(rawArgs[++index]);
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        throw new Error(`Invalid --timeout: ${rawArgs[index]}`);
+      }
+      opts.timeoutMs = Math.round(seconds * 1000);
+      continue;
+    }
+    if (arg === '--dry-run') { opts.dryRun = true; continue; }
+    if (arg === '--json') { opts.json = true; continue; }
+  }
+  return opts;
+}
+
+function cmdRespond(rawArgs) {
+  const opts = parseRespondArgs(rawArgs);
+  if (!opts.pr) {
+    logError("'gx pr respond' requires --pr <number>");
+    process.exitCode = 1;
+    return;
+  }
+
+  const { prRespond } = require('../../pr-respond');
+  const result = prRespond({
+    pr: opts.pr,
+    target: opts.target,
+    provider: opts.provider || undefined,
+    model: opts.model || undefined,
+    timeoutMs: opts.timeoutMs || undefined,
+    dryRun: opts.dryRun,
+  });
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    if (result.status === 'skipped' || result.status === 'fix-failed' || result.status === 'push-failed') {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (result.status === 'skipped') {
+    logWarn(`Skipped: ${result.reason}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (result.status === 'no-threads') {
+    logInfo(`PR #${opts.pr}: no blocking review threads found.`);
+    return;
+  }
+  if (result.status === 'dry-run') {
+    logInfo(`PR #${opts.pr}: dry run — would fix ${result.findings.length} thread(s) in ${result.worktreePath}`);
+    for (const finding of result.findings) {
+      logInfo(`  [${finding.severity.toUpperCase()}] ${finding.path}:${finding.line} — ${finding.message.slice(0, 80)}`);
+    }
+    return;
+  }
+  if (result.status === 'no-op') {
+    logInfo(`PR #${opts.pr}: fix ran but made no file changes (${result.reason || 'provider no-op'}).`);
+    return;
+  }
+  if (result.status === 'fix-failed') {
+    logError(`Fix failed: ${result.reason}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (result.status === 'push-failed') {
+    logError(`Fix committed (${result.fixSha}) but push failed: ${result.reason}`);
+    process.exitCode = 1;
+    return;
+  }
+  // 'fixed'
+  logOk(
+    `PR #${opts.pr}: fixed ${result.changedFiles.length} file(s), pushed ${result.fixSha ? result.fixSha.slice(0, 8) : ''}, resolved ${result.resolved.length}/${result.threads.length} thread(s).`,
+  );
+  if (result.skippedReply.length > 0) {
+    logInfo(`  ${result.skippedReply.length} thread(s) untouched (path not in changed files).`);
+  }
+}
+
 function printUsage() {
   console.log(`Usage: ${SHORT_TOOL_NAME} pr <subcommand> [flags]
 
@@ -381,6 +482,7 @@ Subcommands:
   list                List open PRs in this repo.
   ready               Promote a draft PR to ready-for-review.
   review              Run AI PR review (codex/claude provider).
+  respond             Auto-fix blocking review threads on an agent PR.
 
 Flags:
   --target <path>           Operate in a different repo directory.
@@ -393,9 +495,15 @@ Flags:
   --ready                   After open/sync, promote draft -> ready.
   --auto-merge              After open/sync, enable auto-merge.
   --merge-strategy <s>      squash (default) | merge | rebase.
-  --timeout <secs>          For watch: max wait time. Default 600.
+  --timeout <secs>          For watch/respond: max wait time. Default 600.
   --interval <secs>         For watch: poll interval. Default 5.
   --json                    Emit JSON instead of human-readable output.
+
+respond-specific flags:
+  --pr <number>             PR number to respond to (required for 'respond').
+  --provider <name>         codex|claude (default: codex).
+  --model <name>            Override model for the fix provider.
+  --dry-run                 Show what would be fixed without making any changes.
 `);
 }
 
@@ -426,6 +534,7 @@ async function pr(rawArgs) {
     if (sub === 'list') return cmdList(opts);
     if (sub === 'ready') return cmdReady(opts);
     if (sub === 'review') return prReview(rest);
+    if (sub === 'respond') return cmdRespond(rest);
   } catch (error) {
     if (error && error.code === 'gh-missing') {
       logError(error.message);
@@ -450,6 +559,7 @@ async function pr(rawArgs) {
 module.exports = {
   pr,
   parsePrArgs,
+  parseRespondArgs,
   renderChecksLine,
   buildChecksFailedDetail,
   buildTimeoutDetail,

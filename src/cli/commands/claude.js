@@ -863,7 +863,16 @@ function runInstall(rawArgs) {
   }
 
   if (!opts.dryRun) {
-    logOk('Claude Code wiring is in place.');
+    if (mcpResult.status === 'ownership-unavailable') {
+      logWarn(
+        `MCP server registration skipped — ${MCP_REL} already exists and `
+        + 'ownership could not be claimed (another tool owns it). '
+        + "The rest of the wiring is in place, but MCP tools won't be available until "
+        + `the file is free. Remove or relocate ${MCP_REL} and re-run to register.`,
+      );
+    } else {
+      logOk('Claude Code wiring is in place.');
+    }
     logInfo(`Next: run '${SHORT_TOOL_NAME} status' to verify and '${SHORT_TOOL_NAME} pivot "<task>" "claude-<name>"' to start work.`);
   }
 }
