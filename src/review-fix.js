@@ -37,12 +37,12 @@ function commandForFix(provider, prompt, settings = {}) {
   const model = String(settings.model || '').trim();
   if (provider === 'claude') {
     // Print mode defaults to asking for permission; acceptEdits lets it write.
-    return {
-      cmd,
-      args: model
-        ? ['--safe-mode', '--model', model, '-p', '--permission-mode', 'acceptEdits', prompt]
-        : ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', prompt],
-    };
+    // Deliver the prompt via stdin (same as the review path) so it never
+    // appears in the process listing and cannot exceed ARG_MAX.
+    const args = ['--safe-mode', '--permission-mode', 'acceptEdits'];
+    if (model) args.push('--model', model);
+    args.push('-p');
+    return { cmd, args, input: prompt };
   }
   // `codex exec` sandboxes to read-only by default; workspace-write allows edits
   // inside the worktree and nowhere else.
@@ -56,8 +56,9 @@ function commandForFix(provider, prompt, settings = {}) {
     args: [
       'exec', ...automationArgs, ...effortArgs,
       ...(model ? ['-m', model] : []),
-      '--sandbox', 'workspace-write', prompt,
+      '--sandbox', 'workspace-write', '-',
     ],
+    input: prompt,
   };
 }
 
@@ -191,9 +192,11 @@ function runReviewFix({
   const result = runner(command.cmd, command.args, {
     cwd: repoRoot,
     timeout: timeoutMs,
+    input: command.input,
     // No provider output is parsed in fix mode. Inherit both streams so edits,
     // tool calls, and progress remain visible to the parent Codex session.
-    stdio: ['ignore', 'inherit', 'inherit'],
+    // stdin is 'pipe' so the fix prompt arrives via input instead of a CLI arg.
+    stdio: ['pipe', 'inherit', 'inherit'],
   });
   if (result.status !== 0) {
     throw new Error(`${provider} fix run failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`);

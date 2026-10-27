@@ -157,7 +157,10 @@ test('waitForGreenCi blocks UNSTABLE when a skipped check accompanies audited bi
   assert.equal(r.status, 'merge-blocked');
 });
 
-test('waitForGreenCi times out without a GitHub verdict when a skipped check accompanies billing waivers', () => {
+test('waitForGreenCi passes without a GitHub verdict when a skipped check accompanies audited billing waivers', () => {
+  // Skipped checks are now included in the allAccountedFor formula, so a PR
+  // where every non-pending check is either success, waived, or skipped can
+  // proceed even without a GitHub CLEAN verdict.
   const c = makeClock();
   const r = waitForGreenCi('repo', 'br', {
     ...c,
@@ -173,7 +176,7 @@ test('waitForGreenCi times out without a GitHub verdict when a skipped check acc
     }),
   });
 
-  assert.equal(r.status, 'timeout');
+  assert.equal(r.status, 'green');
 });
 
 test('waitForGreenCi accepts UNSTABLE when every non-success check has an audited billing waiver', () => {
@@ -736,4 +739,58 @@ test('runReviewGate passes review model and timeout through to the provider runn
 test('runReviewGate blocks when the PR head never catches up to the auto-fix commit', () => {
   const deps = gateDeps({ waitForGreenCi: () => ({ status: 'stale-head', pr: { headSha: 'old-sha' } }) });
   assert.throws(() => runReviewGate(gateArgs, deps), /still reports head old-sha/);
+});
+
+test('waitForGreenCi passes when all checks are skipped and GitHub says CLEAN', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    getStatus: constStatus({
+      checks: { failed: 0, cancelled: 0, pending: 0, success: 0, skipped: 2, other: 0, total: 2 },
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+    }),
+  });
+  assert.equal(r.status, 'green');
+});
+
+test('waitForGreenCi passes without a GitHub verdict when checks are all success or skipped', () => {
+  const c = makeClock();
+  const r = waitForGreenCi('repo', 'br', {
+    ...c,
+    getStatus: constStatus({
+      checks: { failed: 0, cancelled: 0, pending: 0, success: 1, skipped: 1, other: 0, total: 2 },
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      // no mergeStateStatus — falls back to allAccountedFor
+    }),
+  });
+  assert.equal(r.status, 'green');
+});
+
+test('runReviewGate throws on push failure after auto-fix (not the misleading "did not clear" message)', () => {
+  let reviewCalls = 0;
+  let headReads = 0;
+  const deps = gateDeps({
+    runPrReview: () => {
+      reviewCalls += 1;
+      return { findings: [{ severity: 'high', path: 'a.js', line: 1, message: 'bug' }], posted: true };
+    },
+    runReviewFix: () => ({ status: 'fixed', changedFiles: ['a.js'] }),
+    pushBranch: () => ({ ok: false, output: 'remote: Permission denied' }),
+    readHeadSha: () => (headReads++ === 0 ? 'initial-sha' : 'sha-after-fix'),
+  });
+
+  assert.throws(
+    () => runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps),
+    (err) => {
+      assert.match(err.message, /push after auto-fix failed/);
+      assert.match(err.message, /remote: Permission denied/);
+      // Must NOT say "Auto-fix did not clear them" — that hides the real cause
+      assert.doesNotMatch(err.message, /Auto-fix did not clear/);
+      return true;
+    },
+  );
+  assert.equal(reviewCalls, 1, 'only one review round before the push error is surfaced');
 });

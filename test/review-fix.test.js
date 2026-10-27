@@ -36,11 +36,25 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
     args: [
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
       '-c', 'model_reasoning_effort="high"',
-      '--sandbox', 'workspace-write', 'p',
+      '--sandbox', 'workspace-write', '-',
     ],
+    input: 'p',
   });
-  assert.deepEqual(commandForFix('claude', 'p'), { cmd: 'claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
-  assert.deepEqual(commandForFix('claude', 'p', { bin: '/opt/claude' }), { cmd: '/opt/claude', args: ['--safe-mode', '-p', '--permission-mode', 'acceptEdits', 'p'] });
+  assert.deepEqual(commandForFix('claude', 'p'), {
+    cmd: 'claude',
+    args: ['--safe-mode', '--permission-mode', 'acceptEdits', '-p'],
+    input: 'p',
+  });
+  assert.deepEqual(commandForFix('claude', 'p', { bin: '/opt/claude' }), {
+    cmd: '/opt/claude',
+    args: ['--safe-mode', '--permission-mode', 'acceptEdits', '-p'],
+    input: 'p',
+  });
+  assert.deepEqual(commandForFix('claude', 'p', { model: 'opus' }), {
+    cmd: 'claude',
+    args: ['--safe-mode', '--permission-mode', 'acceptEdits', '--model', 'opus', '-p'],
+    input: 'p',
+  });
   assert.deepEqual(
     commandForFix('codex', 'p', { model: 'fast-model', effort: 'high' }),
     {
@@ -48,8 +62,9 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
       args: [
         'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
         '-c', 'model_reasoning_effort="high"', '-m', 'fast-model',
-        '--sandbox', 'workspace-write', 'p',
+        '--sandbox', 'workspace-write', '-',
       ],
+      input: 'p',
     },
   );
   const inheritedEffortArgs = process.env.GUARDEX_REVIEW_CODEX_EFFORT
@@ -57,8 +72,17 @@ test('commandForFix gives each provider a write-enabled invocation', () => {
     : [];
   assert.deepEqual(
     commandForFix('codex', 'p', { inheritConfig: true }),
-    { cmd: 'codex', args: ['exec', ...inheritedEffortArgs, '--sandbox', 'workspace-write', 'p'] },
+    { cmd: 'codex', args: ['exec', ...inheritedEffortArgs, '--sandbox', 'workspace-write', '-'], input: 'p' },
   );
+});
+
+test('commandForFix delivers the fix prompt via stdin, never as a CLI argument', () => {
+  const prompt = 'x'.repeat(220_000);
+  for (const provider of ['claude', 'codex']) {
+    const command = commandForFix(provider, prompt);
+    assert.equal(command.args.includes(prompt), false, `${provider}: prompt must not appear in args`);
+    assert.equal(command.input, prompt, `${provider}: prompt must arrive via input`);
+  }
 });
 
 test('fixPrompt carries the location, the severity, and the proposed replacement', () => {
@@ -173,8 +197,12 @@ test('runReviewFix streams provider output and applies the review model override
     ], 'the same review model knob controls the isolated auto-fix provider');
     assert.deepEqual(
       providerCall.options.stdio,
-      ['ignore', 'inherit', 'inherit'],
-      'auto-fix progress is visible instead of buffered until exit',
+      ['pipe', 'inherit', 'inherit'],
+      'stdin is piped so the fix prompt arrives via input; stdout/stderr inherit for live progress',
+    );
+    assert.ok(
+      typeof providerCall.options.input === 'string' && providerCall.options.input.length > 0,
+      'fix prompt travels via options.input, not as a CLI argument',
     );
   } finally {
     if (previous === undefined) delete process.env.GUARDEX_REVIEW_MODEL;
