@@ -37,12 +37,16 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Checkout PR head
+      - name: Checkout base branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Explicitly check out the PR head commit, not the merge commit,
-          # so the review diff matches what the author pushed.
-          ref: ${{ github.event.pull_request.head.sha }}
+          # Check out the base branch, NOT the PR head. The reviewer fetches
+          # the PR diff from the GitHub API using --pr, so it does not need the
+          # PR code locally. Checking out the base branch means only trusted,
+          # already-merged code runs with the API keys and GH_TOKEN, preventing
+          # a same-repository PR from modifying bin/multiagent-safety.js (or any
+          # of its imports) and exfiltrating secrets before review.
+          ref: ${{ github.event.pull_request.base.ref }}
 
       - name: Setup Node 20
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
