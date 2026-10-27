@@ -583,11 +583,10 @@ test('prRespond dry-run returns findings without touching the worktree', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
   // Create an agent/* worktree for the PR branch.
+  // Use 'git branch' (not 'checkout -b') so the branch is not checked out in repoDir;
+  // worktree add requires the branch to be absent from the main checkout.
   const wtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-wt-'));
-  cp.spawnSync('git', ['-C', repoDir, 'checkout', '-b', 'agent/test/dry', '--track'], {
-    encoding: 'utf8',
-    env: { ...process.env, GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH: '1' }
-  });
+  cp.spawnSync('git', ['-C', repoDir, 'branch', 'agent/test/dry'], { encoding: 'utf8' });
   cp.spawnSync('git', ['-C', repoDir, 'worktree', 'add', wtDir, 'agent/test/dry'], {
     encoding: 'utf8'
   });
@@ -762,10 +761,9 @@ test('fetchPrMeta throws when gh pr view fails', () => {
 test('prRespond returns no-threads when the PR has no actionable threads', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
-  cp.spawnSync('git', ['-C', repoDir, 'checkout', '-b', 'agent/empty-fix', '--track'], {
-    encoding: 'utf8',
-    env: { ...process.env, GUARDEX_ALLOW_PRIMARY_BRANCH_SWITCH: '1' }
-  });
+  // Use 'git branch' so the branch is not checked out in repoDir — worktree add
+  // requires the branch to be absent from the main checkout.
+  cp.spawnSync('git', ['-C', repoDir, 'branch', 'agent/empty-fix'], { encoding: 'utf8' });
   const wtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-wt-'));
   cp.spawnSync('git', ['-C', repoDir, 'worktree', 'add', wtDir, 'agent/empty-fix'], {
     encoding: 'utf8'
