@@ -342,6 +342,22 @@ function openPullRequest(options) {
     );
   }
 
+  // gh pr create prints the PR URL as its last (or only) non-empty line.
+  // Parse it to avoid a second list-API round-trip on the happy path.
+  const createStdout = (result.stdout || '').trim();
+  const urlMatch = createStdout.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+  if (urlMatch) {
+    const prUrl = urlMatch[0];
+    const viewResult = ghJson(repoRoot, [
+      'pr', 'view', prUrl,
+      '--json', 'number,url,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefName,headRefOid,baseRefName,title,statusCheckRollup',
+    ]);
+    if (viewResult.ok && viewResult.data) {
+      return { created: true, pr: viewResult.data };
+    }
+  }
+
+  // Fall back to a list lookup when the stdout URL is absent or the view call failed.
   const created = findOpenPrForBranch(repoRoot, branch);
   if (!created) {
     throw new PrError('PR appears to have been created but could not be located on origin', {
