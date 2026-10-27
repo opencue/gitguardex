@@ -315,11 +315,39 @@ test('fetchBlockingThreads includes threads from human reviewers who requested c
       ]
     }
   };
-  const reviews = [{ author: { login: 'reviewer-alice' } }];
+  const reviews = [{ author: { login: 'reviewer-alice' }, state: 'CHANGES_REQUESTED' }];
   const runner = makeGhRunner({ threads: [humanThread], reviews });
   const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
   assert.equal(threads.length, 1);
   assert.equal(threads[0].id, 'thread-human');
+});
+
+test('fetchBlockingThreads excludes human threads when reviewer later approved', () => {
+  const humanThread = {
+    id: 'thread-stale',
+    isResolved: false,
+    isOutdated: false,
+    path: 'src/f.js',
+    line: 3,
+    startLine: null,
+    comments: {
+      nodes: [
+        {
+          id: 'c-stale',
+          body: 'Please rename.',
+          author: { login: 'reviewer-bob' }
+        }
+      ]
+    }
+  };
+  // reviewer-bob first requested changes, then approved — latest state is APPROVED.
+  const reviews = [
+    { author: { login: 'reviewer-bob' }, state: 'CHANGES_REQUESTED' },
+    { author: { login: 'reviewer-bob' }, state: 'APPROVED' }
+  ];
+  const runner = makeGhRunner({ threads: [humanThread], reviews });
+  const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
+  assert.deepEqual(threads, []);
 });
 
 test('fetchBlockingThreads does not include human threads from non-CHANGES_REQUESTED reviewers', () => {
