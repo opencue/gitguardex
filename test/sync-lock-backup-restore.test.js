@@ -312,7 +312,8 @@ test('restoreLockBackupSafe: throws when python3 was attempted but returned non-
       }
       return { status: 1, stdout: '', stderr: '' };
     },
-    run: () => ({ status: 75, stdout: '', stderr: 'timeout' }) // python3 timed out
+    // result.error is absent → python3 was spawned but exited non-zero
+    run: () => ({ status: 75, stdout: '', stderr: 'timeout', error: undefined })
   });
 
   assert.throws(
@@ -323,6 +324,44 @@ test('restoreLockBackupSafe: throws when python3 was attempted but returned non-
       return true;
     }
   );
+});
+
+test('restoreLockBackupSafe: falls back to merge when python3 cannot be spawned (ENOENT)', () => {
+  // When python3 is not installed, result.error is set (ENOENT). The function
+  // must NOT throw — it should fall back to the lock-free merge so the backup
+  // is restored even when python3 is unavailable.
+  const tmpDir = makeTmpDir();
+  const lockPath = path.join(tmpDir, '.omx', 'state', 'agent-file-locks.json');
+
+  const backup = lockState({
+    'src/a.js': { branch: 'agent/a', claimed_at: '2024-01-01T00:00:00Z' }
+  });
+  const concurrent = lockState({
+    'src/a.js': { branch: 'agent/a', claimed_at: '2024-01-01T00:00:00Z' },
+    'src/b.js': { branch: 'agent/b', claimed_at: '2024-01-02T00:00:00Z' }
+  });
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, concurrent, 'utf8');
+
+  const enoentError = Object.assign(new Error('spawn python3 ENOENT'), { code: 'ENOENT' });
+
+  const { restoreLockBackupSafe } = loadFinish({
+    gitRun: (_root, args) => {
+      if (args.includes('--git-common-dir')) {
+        return { status: 0, stdout: tmpDir + '\n', stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: '' };
+    },
+    // result.error is set → python3 could not be spawned
+    run: () => ({ status: null, stdout: '', stderr: '', error: enoentError })
+  });
+
+  // Must not throw, must still restore the backup
+  restoreLockBackupSafe(tmpDir, lockPath, backup);
+
+  const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  assert.ok('src/a.js' in parsed.locks, 'backup entry must be restored via fallback');
+  assert.ok('src/b.js' in parsed.locks, 'concurrent entry must be preserved via fallback');
 });
 
 // ---------------------------------------------------------------------------

@@ -752,7 +752,7 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
       'var ml=Object.create(null);',
       'Object.keys(b.locks||{}).forEach(function(k){ml[k]=b.locks[k];});',
       'Object.keys(c.locks||{}).forEach(function(k){if(!Object.prototype.hasOwnProperty.call(ml,k))ml[k]=c.locks[k];});',
-      'var out=JSON.stringify(Object.assign({},b,{locks:Object.assign({},ml)}),null,2)+"\\n";',
+      'var out=JSON.stringify(Object.assign({},b,{locks:ml}),null,2)+"\\n";',
       'var tmp=lp+".tmp";',
       'fs.mkdirSync(p.dirname(lp),{recursive:true});',
       'fs.writeFileSync(tmp,out,"utf8");',
@@ -772,14 +772,23 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
       } catch (_) {}
     }
     if (result.status === 0) return;
-    throw new Error(
-      `Lock-registry restore failed while acquiring or holding the claims lock (status ${result.status})`
-    );
+    // Distinguish: if python3 could not be spawned at all (e.g. not installed,
+    // result.error is ENOENT), treat it as unavailable and fall through to the
+    // lock-free merge below — the mutex was never acquired so no claims are at
+    // risk. Only throw when python3 was spawned successfully but exited non-zero,
+    // which means the flock may still be held.
+    if (!result.error) {
+      throw new Error(
+        `Lock-registry restore failed while acquiring or holding the claims lock (status ${result.status})`
+      );
+    }
+    // python3 spawn failed — fall through to lock-free fallback
   }
 
   // Fallback: merge without flock. Only reached when python3 or the helper
-  // script is unavailable (flockPath resolved but withLockScript absent, or
-  // no common .git dir). Best-effort — no mutex protection — but still
+  // script is unavailable (flockPath resolved but withLockScript absent, no
+  // common .git dir, or python3 could not be spawned). Best-effort — no mutex
+  // protection — but still
   // preserves new entries instead of silently overwriting them.
   // Uses Object.create(null) so filenames like "constructor" / "toString"
   // cannot match inherited properties. Per-process unique temp name prevents
