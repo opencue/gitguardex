@@ -28,8 +28,12 @@ function ghApi(endpoint) {
       throw err;
     }
     if (/403/.test(message)) {
+      const rawExcerpt = message.slice(0, 120).replace(/\n/g, ' ');
       const err = new Error(
-        `GitHub API 403: ${endpoint}. The current token lacks the billing scope (org owners need admin:org; user accounts need user scope).`,
+        `GitHub API 403: ${endpoint}. Likely causes: missing billing scope (org owners ` +
+        `need admin:org; user accounts need user scope), SAML SSO enforcement on the org, ` +
+        `an expired or revoked token, or an IP allowlist restriction. ` +
+        `Response: ${rawExcerpt}`,
       );
       err.code = 'GH_API_FORBIDDEN';
       throw err;
@@ -339,6 +343,7 @@ module.exports = {
   formatBudgetReportText,
   renderBudgetHelp,
   currentMonthKey,
+  fetchUsage,
   DEFAULT_WARN_NET_USD,
   DEFAULT_CRITICAL_NET_USD,
 };

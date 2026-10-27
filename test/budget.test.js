@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   parseBudgetArgs,
@@ -176,4 +179,92 @@ test('renderBudgetHelp covers documented flags', () => {
   assert.match(help, /--warn-usd/);
   assert.match(help, /--critical-usd/);
   assert.match(help, /--json/);
+});
+
+// ---------------------------------------------------------------------------
+// fetchUsage tests — use require-cache injection to swap GH_BIN per-test.
+// budget/index.js captures GH_BIN from context.js at require-time; clearing
+// both caches and re-requiring with GUARDEX_GH_BIN set picks up the fake bin.
+// ---------------------------------------------------------------------------
+
+const repoRoot = path.resolve(__dirname, '..');
+
+function loadBudgetWithFakeGh(ghScriptBody) {
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-test-gh-'));
+  const fakePath = path.join(fakeBin, 'gh');
+  fs.writeFileSync(fakePath, `#!/usr/bin/env bash\nset -e\n${ghScriptBody}\n`, 'utf8');
+  fs.chmodSync(fakePath, 0o755);
+
+  const contextPath = require.resolve(path.join(repoRoot, 'src/context'));
+  const budgetPath = require.resolve(path.join(repoRoot, 'src/budget'));
+
+  delete require.cache[contextPath];
+  delete require.cache[budgetPath];
+
+  const savedGhBin = process.env.GUARDEX_GH_BIN;
+  process.env.GUARDEX_GH_BIN = fakePath;
+
+  let budget;
+  try {
+    budget = require(budgetPath);
+  } finally {
+    if (savedGhBin === undefined) {
+      delete process.env.GUARDEX_GH_BIN;
+    } else {
+      process.env.GUARDEX_GH_BIN = savedGhBin;
+    }
+    // Clear so subsequent requires in this file stay on the original module.
+    delete require.cache[contextPath];
+    delete require.cache[budgetPath];
+  }
+
+  return budget;
+}
+
+test('ghApi 403 error lists SAML SSO, expired token, and IP allowlist as likely causes', () => {
+  // Fake gh: always exits 1 with "403 Forbidden" in stderr.
+  const budget = loadBudgetWithFakeGh('echo "HTTP 403: Forbidden" >&2\nexit 1');
+
+  assert.throws(
+    () => budget.fetchUsage({ user: 'testuser' }),
+    (err) => {
+      assert.match(err.message, /403/);
+      assert.match(err.message, /SAML SSO/);
+      assert.match(err.message, /expired/i);
+      assert.match(err.message, /IP allowlist/i);
+      assert.equal(err.code, 'GH_API_FORBIDDEN');
+      return true;
+    },
+  );
+});
+
+test('fetchUsage falls back from user 404 to org endpoint', () => {
+  // Fake gh responds per endpoint:
+  //   "api user --jq .login"                     → testlogin  (raw string, no JSON quotes)
+  //   "api /users/testlogin/settings/..."        → 404
+  //   "api /orgs/testlogin/settings/..."         → empty JSON usage
+  const script = `
+args="$*"
+if echo "$args" | grep -qF "user --jq"; then
+  echo 'testlogin'
+  exit 0
+fi
+if echo "$args" | grep -qF "/users/testlogin/settings/billing/usage"; then
+  echo "HTTP 404: Not Found" >&2
+  exit 1
+fi
+if echo "$args" | grep -qF "/orgs/testlogin/settings/billing/usage"; then
+  echo '{"usageItems":[]}'
+  exit 0
+fi
+echo "unexpected args: $args" >&2
+exit 1
+`;
+
+  const budget = loadBudgetWithFakeGh(script);
+
+  const result = budget.fetchUsage();
+  assert.equal(result.scope, 'org');
+  assert.equal(result.name, 'testlogin');
+  assert.deepEqual(result.usage, { usageItems: [] });
 });

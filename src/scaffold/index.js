@@ -400,7 +400,19 @@ function writeLockState(repoRoot, payload, dryRun) {
   if (dryRun) return;
   const lockPath = lockFilePath(repoRoot);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  fs.writeFileSync(lockPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  // Atomic write: temp sibling + rename so concurrent readers never see a
+  // partial file. Cross-worktree serialization (preventing two concurrent
+  // claim/release runs from racing on the read-modify-write cycle) is handled
+  // by the Python cross_worktree_lock in scripts/agent-file-locks.py, which
+  // acquires an fcntl.flock on <common-git-dir>/agent-file-locks.lock before
+  // calling into this write path. Node has no native fcntl binding without
+  // additional dependencies, so we provide atomicity only — not exclusion.
+  const tempPath = path.join(
+    path.dirname(lockPath),
+    `.${path.basename(lockPath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tempPath, lockPath);
 }
 
 function removeLegacyPackageScripts(repoRoot, dryRun) {
