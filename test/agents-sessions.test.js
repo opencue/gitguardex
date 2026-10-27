@@ -161,6 +161,94 @@ test('session ids cannot escape the sessions directory', () => {
   );
 });
 
+test('updateAgentSession serializes via a lock file and cleans it up on success', () => {
+  const repoRoot = makeRepoRoot();
+  const created = createAgentSession(repoRoot, {
+    id: 'lock-test-session',
+    task: 'Lock file round-trip',
+    agent: 'codex',
+    branch: 'agent/codex/lock-test',
+    worktreePath: path.join(repoRoot, 'wt'),
+    base: 'main',
+  });
+
+  const updated = updateAgentSession(repoRoot, created.id, { status: 'done' });
+  assert.equal(updated.status, 'done');
+
+  // The lock file must be gone after a successful update.
+  const lockPath = path.join(
+    repoRoot, '.guardex', 'agents', 'sessions', `${created.id}.json.lock`,
+  );
+  assert.equal(fs.existsSync(lockPath), false, 'lock file must be removed after update');
+});
+
+test('updateAgentSession steals a stale lock file and still updates', (t) => {
+  const repoRoot = makeRepoRoot();
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const created = createAgentSession(repoRoot, {
+    id: 'stale-lock-session',
+    task: 'Stale lock steal',
+    agent: 'claude',
+    branch: 'agent/claude/stale-lock',
+    worktreePath: path.join(repoRoot, 'wt'),
+    base: 'main',
+  });
+
+  // Plant a lock file with a timestamp well in the past (beyond STALE_LOCK_STALE_MS = 5 s).
+  const lockPath = path.join(
+    repoRoot, '.guardex', 'agents', 'sessions', `${created.id}.json.lock`,
+  );
+  fs.writeFileSync(lockPath, 'stale-pid', { mode: 0o600 });
+  const staleTime = Date.now() - 10_000; // 10 seconds ago
+  fs.utimesSync(lockPath, staleTime / 1000, staleTime / 1000);
+
+  // updateAgentSession must steal the stale lock and succeed.
+  const updated = updateAgentSession(repoRoot, created.id, { status: 'completed' });
+  assert.equal(updated.status, 'completed');
+  assert.equal(fs.existsSync(lockPath), false, 'stale lock must be cleaned up');
+});
+
+test('updateAgentSession concurrent writes via child processes do not corrupt the session', (t) => {
+  const repoRoot = makeRepoRoot();
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const created = createAgentSession(repoRoot, {
+    id: 'concurrent-session',
+    task: 'Concurrent write safety',
+    agent: 'codex',
+    branch: 'agent/codex/concurrent',
+    worktreePath: path.join(repoRoot, 'wt'),
+    base: 'main',
+  });
+
+  // Spawn several concurrent writers; each sets a unique status.
+  const writers = Array.from({ length: 8 }, (_, i) => {
+    const script = `
+      const { updateAgentSession } = require(${JSON.stringify(require.resolve('../src/agents/sessions'))});
+      updateAgentSession(${JSON.stringify(repoRoot)}, ${JSON.stringify(created.id)}, { status: 'w${i}' });
+    `;
+    return cp.spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+  });
+
+  for (const result of writers) {
+    assert.equal(result.status, 0, `writer failed: ${result.stderr}`);
+  }
+
+  // The file must be valid JSON and match the schema regardless of which
+  // writer won the last slot.
+  const final = JSON.parse(fs.readFileSync(
+    path.join(repoRoot, '.guardex', 'agents', 'sessions', `${created.id}.json`),
+    'utf8',
+  ));
+  assert.match(final.status, /^w\d$/);
+  assert.equal(final.id, created.id);
+
+  // The lock file must be gone.
+  const lockPath = path.join(
+    repoRoot, '.guardex', 'agents', 'sessions', `${created.id}.json.lock`,
+  );
+  assert.equal(fs.existsSync(lockPath), false, 'lock must be released after concurrent writes');
+});
+
 test('linked worktrees share the primary checkout session store', (t) => {
   const repoRoot = makeRepoRoot();
   const worktree = path.join(repoRoot, 'linked-worktree');

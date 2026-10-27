@@ -3,6 +3,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { cachedSpawn } = require('../context');
 
+// Per-session write-lock constants. The lock file is a sibling of the session
+// JSON (`<id>.json.lock`) created with O_EXCL to make acquisition atomic on
+// POSIX file systems. A short exponential backoff makes concurrent callers
+// (the hook subprocess and the main CLI) serialise without busy-spinning.
+const SESSION_LOCK_MAX_ATTEMPTS = 6;
+const SESSION_LOCK_STALE_MS = 5000;
+// Shared wait buffer — avoids busy-spinning between retries (same pattern as
+// shared-git-state.js).
+const _sessionLockWaitArray = new Int32Array(new SharedArrayBuffer(4));
+
 const SESSION_FIELDS = [
   'id',
   'task',
@@ -115,26 +125,68 @@ function readAgentSession(repoRoot, sessionId) {
   return pickSessionFields(readJsonFile(filePath));
 }
 
+// Acquire a per-session write lock using an O_EXCL lock file. On EEXIST,
+// back off exponentially; steal the lock if it is older than
+// SESSION_LOCK_STALE_MS. Throws if the lock cannot be acquired after
+// SESSION_LOCK_MAX_ATTEMPTS retries.
+function acquireSessionWriteLock(lockPath) {
+  for (let attempt = 0; attempt < SESSION_LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+      return; // lock acquired
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      // Lock file exists — check whether it is stale.
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > SESSION_LOCK_STALE_MS) {
+          try { fs.unlinkSync(lockPath); } catch (_) {}
+          // Retry immediately after stealing the stale lock.
+          continue;
+        }
+      } catch (_) {
+        // Lock disappeared between EEXIST and stat — retry.
+        continue;
+      }
+      // Exponential backoff: 10, 20, 40, 80, 160 ms.
+      Atomics.wait(_sessionLockWaitArray, 0, 0, 10 * (1 << attempt));
+    }
+  }
+  throw new Error(`Could not acquire session write lock for ${path.basename(lockPath, '.lock')} after ${SESSION_LOCK_MAX_ATTEMPTS} attempts`);
+}
+
+function releaseSessionWriteLock(lockPath) {
+  try { fs.unlinkSync(lockPath); } catch (_) {}
+}
+
 function updateAgentSession(repoRoot, sessionId, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error('Agent session patch must be an object.');
   }
 
-  const existing = readAgentSession(repoRoot, sessionId);
-  if (!existing) {
-    return null;
-  }
+  const filePath = sessionFilePath(repoRoot, sessionId);
+  const lockPath = `${filePath}.lock`;
+  acquireSessionWriteLock(lockPath);
+  try {
+    const existing = readAgentSession(repoRoot, sessionId);
+    if (!existing) {
+      return null;
+    }
 
-  const now = new Date().toISOString();
-  const session = pickSessionFields({
-    ...existing,
-    ...patch,
-    id: existing.id,
-    createdAt: existing.createdAt,
-    updatedAt: now,
-  });
-  writeJsonAtomic(sessionFilePath(repoRoot, sessionId), session);
-  return session;
+    const now = new Date().toISOString();
+    const session = pickSessionFields({
+      ...existing,
+      ...patch,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: now,
+    });
+    writeJsonAtomic(filePath, session);
+    return session;
+  } finally {
+    releaseSessionWriteLock(lockPath);
+  }
 }
 
 function listAgentSessions(repoRoot) {
