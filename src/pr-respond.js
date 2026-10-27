@@ -35,6 +35,12 @@ const AGENT_BRANCH_PREFIX = 'agent/';
 // Severities that trigger an auto-fix from gitguardex review threads.
 const BLOCKING_SEVERITIES = new Set(['high', 'critical']);
 
+// Only these reviewer associations are trusted for human-thread auto-fix.
+// GitHub's `authorAssociation` on a review reflects the submitter's repo role at
+// submission time. NONE / CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR are externals who
+// can review public PRs — they must not be able to trigger the fix provider.
+const TRUSTED_REVIEW_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
 // Detect severity embedded in a gitguardex findingBody comment.
 // findingBody writes e.g.  `> 🔴 **CRITICAL** · category`  or  `> 🟠 **HIGH**`
 const SEVERITY_IN_BODY_RE = /\*\*(CRITICAL|HIGH|MEDIUM|LOW)\*\*/i;
@@ -123,6 +129,11 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
   // a reviewer who subsequently approved or dismissed their CHANGES_REQUESTED
   // review is not treated as still blocking.
   //
+  // `authorAssociation` on each review is checked to restrict auto-fix triggering
+  // to repository collaborators (OWNER/MEMBER/COLLABORATOR). External contributors
+  // (NONE, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR) are excluded so that anyone who can
+  // open a review on a public repo cannot trigger the fix provider.
+  //
   // `latestComment` is a field alias for `comments(last:1)` — it gives the most
   // recent comment in the thread, used to detect whether the bot already replied
   // to a human reviewer thread (in which case we skip it until the reviewer acts).
@@ -130,7 +141,7 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     'query($owner:String!,$name:String!,$pr:Int!){',
     'viewer{login}',
     'repository(owner:$owner,name:$name){pullRequest(number:$pr){',
-    'reviews(last:50){nodes{author{login}state}pageInfo{hasPreviousPage}}',
+    'reviews(last:50){nodes{author{login}state authorAssociation}pageInfo{hasPreviousPage}}',
     'reviewThreads(first:100){nodes{',
     'id isResolved isOutdated diffSide path line startLine',
     'comments(first:3){nodes{id body author{login}}}',
@@ -181,23 +192,35 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     throw new Error('authenticated GitHub identity unavailable');
   }
 
-  // Build a map of reviewer → latest review state (reviews are returned oldest-first
-  // when using `last:N`, so later entries overwrite earlier ones — i.e. the Map
-  // retains the most-recently-submitted state for each author).
+  // Build per-reviewer tracking from the review history.
+  // Reviews are returned oldest-first with `last:N`, so later entries overwrite
+  // earlier ones — the Map retains the most-recently-submitted state per author.
+  // We also track whether the reviewer has ever reviewed with a trusted association
+  // (OWNER/MEMBER/COLLABORATOR): `authorAssociation` reflects their repo role at
+  // submission time, so even a single trusted-association review is sufficient.
   const latestStateByReviewer = new Map();
+  const trustedReviewerAssocs = new Set(); // reviewers with at least one trusted assoc
   for (const review of payload?.data?.repository?.pullRequest?.reviews?.nodes || []) {
     const login = String(review?.author?.login || '').toLowerCase();
     const state = String(review?.state || '');
+    const assoc = String(review?.authorAssociation || '');
+    if (login && TRUSTED_REVIEW_ASSOCIATIONS.has(assoc)) {
+      trustedReviewerAssocs.add(login);
+    }
     // COMMENTED and PENDING do not represent a review decision — skip them so a
     // comment-only interaction cannot clear an active CHANGES_REQUESTED state.
     if (login && state && state !== 'COMMENTED' && state !== 'PENDING') {
       latestStateByReviewer.set(login, state);
     }
   }
-  // Only treat a reviewer as "blocking" when their most recent review is CHANGES_REQUESTED.
+  // Only treat a reviewer as "blocking" when BOTH hold:
+  //   a) their most recent review decision is CHANGES_REQUESTED, AND
+  //   b) they are a repository collaborator (OWNER/MEMBER/COLLABORATOR association).
+  // This prevents external contributors on public repos from triggering the fix
+  // provider via a CHANGES_REQUESTED review.
   const humanReviewers = new Set(
     [...latestStateByReviewer.entries()]
-      .filter(([, state]) => state === 'CHANGES_REQUESTED')
+      .filter(([login, state]) => state === 'CHANGES_REQUESTED' && trustedReviewerAssocs.has(login))
       .map(([login]) => login)
   );
 
