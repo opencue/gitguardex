@@ -373,7 +373,7 @@ test('doctor CLI parser stays in src/cli args while the main doctor command stay
   // Doctor handler moved to src/cli/commands/doctor.js after the dispatcher
   // split; main.js now just imports and routes to it.
   assert.match(doctorCmdSource, /function doctor\(rawArgs\)/);
-  assert.match(cliSource, /\{ doctor \} = require\('\.\/commands\/doctor'\)/);
+  assert.match(cliSource, /require\('\.\/commands\/doctor'\)\.doctor/);
   assert.doesNotMatch(cliSource, /function doctorAudit\(rawArgs\)/);
   assert.doesNotMatch(cliSource, /function installMany\(rawArgs\)/);
   assert.doesNotMatch(cliSource, /function initWorkspace\(rawArgs\)/);
