@@ -86,7 +86,7 @@ function hook(rawArgs, deps) {
     });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
-    process.exitCode = result.status;
+    process.exitCode = result.status ?? (result.signal ? 1 : 0);
     return;
   }
   if (subcommand === 'install') {

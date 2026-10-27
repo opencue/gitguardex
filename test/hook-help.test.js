@@ -120,3 +120,15 @@ test('a real hook name still dispatches to the template hook', () => {
   assert.equal(calls[0].cmd, 'bash');
   assert.match(calls[0].args[0], /githooks[/\\]post-checkout$/);
 });
+
+test('a signal-killed hook subprocess exits with code 1, not 0 (the silent-pass bug)', () => {
+  const prev = process.exitCode;
+  try {
+    hook(['run', 'post-checkout'], makeDeps({
+      run: () => ({ status: null, signal: 'SIGTERM', stdout: '', stderr: '' }),
+    }));
+    assert.equal(process.exitCode, 1, 'signal kill must not silently pass with exit 0');
+  } finally {
+    process.exitCode = prev;
+  }
+});

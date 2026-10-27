@@ -243,9 +243,9 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     const waiversAccountedFor = waivedCount === 0 || namedWaivers;
     const allAccountedFor = waiversAccountedFor && (baselineMode
       ? count('other') === 0
-        && count('success') + failingCount + waivedCount === count('total')
+        && count('success') + failingCount + waivedCount + count('skipped') === count('total')
       : count('other') === 0
-        && count('success') + waivedCount === count('total'));
+        && count('success') + waivedCount + count('skipped') === count('total'));
     const trusted = waiversAccountedFor && (
       baselineBlockedByKnownChecks
       || unstableOnlyBecauseBillingChecksWereWaived
@@ -475,7 +475,9 @@ function runReviewGate({
     if (!pushed.ok) {
       reportProgress(progress, 'fail', 'autofix', 'push failed');
       gateLog(`push after auto-fix failed: ${pushed.output}`);
-      break;
+      throw new Error(
+        `review gate: push after auto-fix failed. Refusing to continue.\n${pushed.output || '(no output)'}`,
+      );
     }
     pushedHeadSha = headSha(fixCwd);
     const headSync = waitHead(repoRoot, branch, pushedHeadSha, {
