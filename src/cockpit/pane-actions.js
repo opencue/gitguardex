@@ -238,14 +238,20 @@ function commandExists(context, cmd) {
   }
   const envPath = process.env.PATH || '';
   const sep = process.platform === 'win32' ? ';' : ':';
+  const extensions =
+    process.platform === 'win32'
+      ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+      : [''];
   for (const dir of envPath.split(sep)) {
     if (!dir) continue;
-    try {
-      const candidate = path.join(dir, cmd);
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) return true;
-    } catch {
-      // not in this dir or not a regular file
+    for (const extension of extensions) {
+      const candidate = path.join(dir, cmd + extension);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (fs.statSync(candidate).isFile()) return true;
+      } catch {
+        // Try the next executable extension.
+      }
     }
   }
   return false;
