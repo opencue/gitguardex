@@ -100,7 +100,7 @@ remote_url="https://github.com/${TARGET_REPO}.git"
 push_output=""
 if ! push_output="$(GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0="http.extraHeader" \
-    GIT_CONFIG_VALUE_0="Authorization: Bearer ${SYNC_TOKEN}" \
+    GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "${SYNC_TOKEN}" | base64 | tr -d '\r\n')" \
     git push --force "$remote_url" "${split_sha}:${TARGET_BRANCH}" 2>&1)"; then
   sanitized_output="$push_output"
   if [[ -n "$SYNC_TOKEN" ]]; then
