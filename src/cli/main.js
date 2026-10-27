@@ -16,75 +16,30 @@ const {
   TOOL_NAME,
   SHORT_TOOL_NAME,
   DEPRECATED_COMMAND_ALIASES,
-  CLI_COMMAND_HELP,
+  CLI_COMMAND_HELP
 } = require('../context');
 const toolchainModule = require('../toolchain');
 const budgetModule = require('../budget');
 const ciInitModule = require('../ci-init');
 const speckitModule = require('../speckit');
-const {
-  usage,
-  startTransientSpinner,
-  commandHelpLines,
-  commandCatalogJson,
-} = require('../output');
+const { usage, startTransientSpinner, commandHelpLines, commandCatalogJson } = require('../output');
 const {
   maybeSuggestCommand,
   normalizeCommandOrThrow,
   warnDeprecatedAlias,
-  extractFlag,
+  extractFlag
 } = require('./dispatch');
 const {
   isInteractiveTerminal,
   legacyDefaultStatusEnabled,
   defaultCockpitDisabled,
-  parseBooleanLike,
+  parseBooleanLike
 } = require('./shared/repo-env');
 const { resolveRepoRoot } = require('../git');
 
-// Subcommand modules (each owns one or a small cluster of verbs).
-const { status } = require('./commands/status');
-const { setup } = require('./commands/setup');
-const { onboard } = require('./commands/onboard');
-const { install, fix, scan } = require('./commands/bootstrap');
-const { doctor } = require('./commands/doctor');
-const { review, prReview } = require('./commands/review');
-const { pr: prCommand } = require('./commands/pr');
-const { claude: claudeCommand } = require('./commands/claude');
-const { codex: codexCommand } = require('./commands/codex');
-const { agents } = require('./commands/agents');
-const { mcp } = require('./commands/mcp');
-const { report } = require('./commands/report');
-const { release } = require('./commands/release');
-const { watch } = require('./commands/watch');
-const {
-  prompt,
-  printAgentsSnippet,
-  copyPrompt,
-  copyCommands,
-} = require('./commands/prompt');
-const {
-  branch,
-  pivot,
-  ship,
-  locks,
-  worktree,
-} = require('./commands/branch');
-const {
-  cleanup,
-  merge,
-  finish,
-  sync,
-} = require('./commands/finish');
-const {
-  hook,
-  internal,
-  installAgentSkills,
-  migrate,
-  submodule,
-  cockpit,
-  protect,
-} = require('./commands/misc');
+// Subcommand modules are required lazily inside each dispatch branch so
+// `node bin/multiagent-safety.js --version` (and any other cheap command)
+// does not pay the cost of loading all 20+ handlers up front.
 
 // `gx` (no args) — auto-doctor wiring. Reused only by the default flow.
 function autoDoctorEnabledForCurrentSession() {
@@ -98,12 +53,12 @@ function autoDoctorEnabledForCurrentSession() {
 function shouldAutoRunDoctorFromStatus(statusPayload) {
   const repo = statusPayload?.repo || {};
   return Boolean(
-    autoDoctorEnabledForCurrentSession()
-    && repo.inGitRepo
-    && repo.guardexEnabled !== false
-    && repo.serviceStatus === 'degraded'
-    && repo.scan
-    && Number(repo.scan.findings || 0) > 0,
+    autoDoctorEnabledForCurrentSession() &&
+      repo.inGitRepo &&
+      repo.guardexEnabled !== false &&
+      repo.serviceStatus === 'degraded' &&
+      repo.scan &&
+      Number(repo.scan.findings || 0) > 0
   );
 }
 
@@ -111,16 +66,16 @@ function runCliSubprocessWithSpinner(args, options = {}) {
   return new Promise((resolve, reject) => {
     const spinner = options.spinnerMessage
       ? startTransientSpinner(options.spinnerMessage, {
-        prefix: options.spinnerPrefix || `[${TOOL_NAME}]`,
-      })
+          prefix: options.spinnerPrefix || `[${TOOL_NAME}]`
+        })
       : { stop() {} };
     const child = cp.spawn(process.execPath, [path.resolve(__filename), ...args], {
       cwd: options.cwd || process.cwd(),
       env: {
         ...process.env,
-        GUARDEX_AUTO_DOCTOR: '0',
+        GUARDEX_AUTO_DOCTOR: '0'
       },
-      stdio: ['inherit', 'pipe', 'pipe'],
+      stdio: ['inherit', 'pipe', 'pipe']
     });
 
     const stopSpinner = () => spinner.stop();
@@ -149,14 +104,16 @@ async function maybeAutoRunDoctorFromDefaultStatus(statusPayload) {
   }
 
   const target = statusPayload?.repo?.target || process.cwd();
-  console.log(`[${TOOL_NAME}] Auto-repair: repo safety is degraded. Running '${SHORT_TOOL_NAME} doctor --current' now.`);
+  console.log(
+    `[${TOOL_NAME}] Auto-repair: repo safety is degraded. Running '${SHORT_TOOL_NAME} doctor --current' now.`
+  );
   process.exitCode = await runCliSubprocessWithSpinner(
     ['doctor', '--target', target, '--current'],
     {
       cwd: target,
       spinnerPrefix: `[${TOOL_NAME}] Auto-repair:`,
-      spinnerMessage: 'preparing doctor workspace',
-    },
+      spinnerMessage: 'preparing doctor workspace'
+    }
   );
   return true;
 }
@@ -276,9 +233,9 @@ function printHelpForRejectedHelpFlag(argv, error) {
 // fall through to a bare "Unknown option: --help".
 function normalizeHelpArgv(argv) {
   if (
-    argv.length > 1
-    && (argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h')
-    && !String(argv[1]).startsWith('-')
+    argv.length > 1 &&
+    (argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h') &&
+    !String(argv[1]).startsWith('-')
   ) {
     return [argv[1], '--help', ...argv.slice(2)];
   }
@@ -294,14 +251,14 @@ async function main() {
       const cockpitModule = require('../cockpit');
       cockpitModule.openDefaultCockpit({
         resolveRepoRoot,
-        toolName: TOOL_NAME,
+        toolName: TOOL_NAME
       });
       process.exitCode = 0;
       return;
     }
     toolchainModule.maybeSelfUpdateBeforeStatus();
     toolchainModule.maybeOpenSpecUpdateBeforeStatus();
-    const statusPayload = status([]);
+    const statusPayload = require('./commands/status').status([]);
     await maybeAutoRunDoctorFromDefaultStatus(statusPayload);
     return;
   }
@@ -335,62 +292,65 @@ async function main() {
   // Deprecated direct aliases — route to new surface and warn once.
   if (DEPRECATED_COMMAND_ALIASES.has(command)) {
     warnDeprecatedAlias(command);
-    if (command === 'init') return setup(rest);
-    if (command === 'install') return install(rest);
-    if (command === 'fix') return fix(rest);
-    if (command === 'scan') return scan(rest);
-    if (command === 'copy-prompt') return copyPrompt();
-    if (command === 'copy-commands') return copyCommands();
-    if (command === 'print-agents-snippet') return printAgentsSnippet();
-    if (command === 'review') return review(rest);
+    if (command === 'init') return require('./commands/setup').setup(rest);
+    if (command === 'install') return require('./commands/bootstrap').install(rest);
+    if (command === 'fix') return require('./commands/bootstrap').fix(rest);
+    if (command === 'scan') return require('./commands/bootstrap').scan(rest);
+    if (command === 'copy-prompt') return require('./commands/prompt').copyPrompt();
+    if (command === 'copy-commands') return require('./commands/prompt').copyCommands();
+    if (command === 'print-agents-snippet')
+      return require('./commands/prompt').printAgentsSnippet();
+    if (command === 'review') return require('./commands/review').review(rest);
   }
 
   if (command === 'status') {
     const { found: strict, remaining } = extractFlag(rest, '--strict');
-    if (strict) return scan(remaining);
-    return status(remaining);
+    if (strict) return require('./commands/bootstrap').scan(remaining);
+    return require('./commands/status').status(remaining);
   }
 
   if (command === 'setup') {
     const installOnly = extractFlag(rest, '--install-only', '--only-install');
-    if (installOnly.found) return install(installOnly.remaining);
+    if (installOnly.found) return require('./commands/bootstrap').install(installOnly.remaining);
     const repairOnly = extractFlag(installOnly.remaining, '--repair', '--fix-only');
-    if (repairOnly.found) return fix(repairOnly.remaining);
-    return setup(repairOnly.remaining);
+    if (repairOnly.found) return require('./commands/bootstrap').fix(repairOnly.remaining);
+    return require('./commands/setup').setup(repairOnly.remaining);
   }
 
-  if (command === 'onboard' || command === 'welcome') return onboard(rest);
-  if (command === 'prompt') return prompt(rest);
-  if (command === 'pr-review') return prReview(rest);
-  if (command === 'pr') return prCommand(rest);
-  if (command === 'claude') return claudeCommand(rest);
-  if (command === 'codex') return codexCommand(rest);
-  if (command === 'doctor') return doctor(rest);
+  if (command === 'onboard' || command === 'welcome')
+    return require('./commands/onboard').onboard(rest);
+  if (command === 'prompt') return require('./commands/prompt').prompt(rest);
+  if (command === 'pr-review') return require('./commands/review').prReview(rest);
+  if (command === 'pr') return require('./commands/pr').pr(rest);
+  if (command === 'claude') return require('./commands/claude').claude(rest);
+  if (command === 'codex') return require('./commands/codex').codex(rest);
+  if (command === 'doctor') return require('./commands/doctor').doctor(rest);
   if (command === 'context') return require('./commands/context').agentContext(rest);
   if (command === 'usage') return require('./commands/usage').usage(rest);
-  if (command === 'branch') return branch(rest);
+  if (command === 'branch') return require('./commands/branch').branch(rest);
   if (command === 'switch') return require('./commands/worktree-navigation').switchWorktree(rest);
   if (command === 'shell-init') return require('./commands/worktree-navigation').shellInit(rest);
-  if (command === 'pivot') return pivot(rest);
-  if (command === 'ship') return ship(rest);
-  if (command === 'locks') return locks(rest);
-  if (command === 'worktree') return worktree(rest);
-  if (command === 'hook') return hook(rest);
-  if (command === 'migrate') return migrate(rest);
-  if (command === 'install-agent-skills') return installAgentSkills(rest);
-  if (command === 'internal') return internal(rest);
-  if (command === 'agents') return agents(rest);
-  if (command === 'mcp') return mcp(rest);
-  if (command === 'cockpit') return cockpit(rest);
-  if (command === 'merge') return merge(rest);
-  if (command === 'finish') return finish(rest);
-  if (command === 'report') return report(rest);
-  if (command === 'protect') return protect(rest);
-  if (command === 'sync') return sync(rest);
-  if (command === 'submodule') return submodule(rest);
-  if (command === 'cleanup') return cleanup(rest);
-  if (command === 'release') return release(rest);
-  if (command === 'watch') return watch(rest);
+  if (command === 'pivot') return require('./commands/branch').pivot(rest);
+  if (command === 'ship') return require('./commands/branch').ship(rest);
+  if (command === 'locks') return require('./commands/branch').locks(rest);
+  if (command === 'worktree') return require('./commands/branch').worktree(rest);
+  if (command === 'hook') return require('./commands/misc').hook(rest);
+  if (command === 'migrate') return require('./commands/misc').migrate(rest);
+  if (command === 'install-agent-skills')
+    return require('./commands/misc').installAgentSkills(rest);
+  if (command === 'internal') return require('./commands/misc').internal(rest);
+  if (command === 'agents') return require('./commands/agents').agents(rest);
+  if (command === 'mcp') return require('./commands/mcp').mcp(rest);
+  if (command === 'cockpit') return require('./commands/misc').cockpit(rest);
+  if (command === 'merge') return require('./commands/finish').merge(rest);
+  if (command === 'finish') return require('./commands/finish').finish(rest);
+  if (command === 'report') return require('./commands/report').report(rest);
+  if (command === 'protect') return require('./commands/misc').protect(rest);
+  if (command === 'sync') return require('./commands/finish').sync(rest);
+  if (command === 'submodule') return require('./commands/misc').submodule(rest);
+  if (command === 'cleanup') return require('./commands/finish').cleanup(rest);
+  if (command === 'release') return require('./commands/release').release(rest);
+  if (command === 'watch') return require('./commands/watch').watch(rest);
   if (command === 'budget') return budgetModule.runBudgetCommand(rest);
   if (command === 'ci-init') return ciInitModule.runCiInitCommand(rest);
   if (command === 'speckit') return speckitModule.runSpeckitCommand(rest);
@@ -424,5 +384,5 @@ module.exports = {
   normalizeHelpArgv,
   hasRenderableHelp,
   helpFlagIsTopLevel,
-  printHelpForRejectedHelpFlag,
+  printHelpForRejectedHelpFlag
 };
