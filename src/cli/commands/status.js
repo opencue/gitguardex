@@ -30,9 +30,32 @@ const {
 const { describeGuardexRepoToggle } = require('../shared/repo-env');
 
 /**
+ * Best-effort check that the process at `pid` is actually the review-watcher
+ * and not an unrelated process that inherited the PID after an unclean exit.
+ *
+ * On Linux we read /proc/<pid>/cmdline; on other platforms we fall back to
+ * accepting any live process (same behaviour as before, which is still correct
+ * for the vast majority of cases).  Never throws.
+ */
+function _isReviewWatcherProcess(pid) {
+  if (process.platform !== 'linux') return true;
+  try {
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return cmdline.includes('review-bot-watch');
+  } catch {
+    // /proc unavailable or process already dead; trust the kill(0) result.
+    return true;
+  }
+}
+
+/**
  * Read the review-watcher daemon's pidfile (written by review-bot-watch.sh
  * --daemon) and return its live status.  Returns { state: 'running', pid } or
  * { state: 'stopped', pid: null }.  Never throws.
+ *
+ * Uses a two-step liveness check: signal 0 (process exists) + cmdline
+ * verification (the process is actually review-bot-watch, not a PID-reuse
+ * collision).
  */
 function describeReviewDaemon(repoRoot) {
   const pidfile = path.join(repoRoot, '.omx', 'state', 'review-bot-watch.pid');
@@ -44,6 +67,9 @@ function describeReviewDaemon(repoRoot) {
     }
     try {
       process.kill(pid, 0);
+      if (!_isReviewWatcherProcess(pid)) {
+        return { state: 'stopped', pid: null };
+      }
       return { state: 'running', pid };
     } catch {
       return { state: 'stopped', pid: null };
