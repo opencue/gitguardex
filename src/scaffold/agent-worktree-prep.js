@@ -91,140 +91,6 @@ function pickFreePort(start) {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Port reservation — O_EXCL lock files in the git common dir
-// ---------------------------------------------------------------------------
-
-// Returns the directory used for port-reservation lock files, or null when
-// the git common dir cannot be resolved (best-effort degradation).
-function portReservationDir(repoRoot) {
-  const result = spawnSync('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir'], {
-    encoding: 'utf8',
-    timeout: 2000
-  });
-  if (result.status !== 0 || !result.stdout) return null;
-  const commonDir = path.resolve(repoRoot, result.stdout.trim());
-  const lockDir = path.join(commonDir, 'gitguardex-port-locks');
-  try {
-    fs.mkdirSync(lockDir, { recursive: true });
-  } catch {
-    return null;
-  }
-  return lockDir;
-}
-
-// Remove port lock files whose recorded worktree no longer exists. Lock files
-// written by an older version of this tool (which stored a PID instead of a
-// path) and unreadable files are treated as stale so they do not accumulate.
-function pruneStaleLocks(lockDir) {
-  if (!lockDir) return;
-  let entries;
-  try {
-    entries = fs.readdirSync(lockDir);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (!entry.startsWith('port-') || !entry.endsWith('.lock')) continue;
-    const p = path.join(lockDir, entry);
-    let content;
-    try {
-      content = fs.readFileSync(p, 'utf8');
-    } catch {
-      continue; // already removed by a concurrent pruner
-    }
-    // An empty file means tryClaimPort is still writing (open/write window).
-    // Keep it rather than pruning it between the O_EXCL create and the write,
-    // unless it is old enough that the claimer must have died mid-write.
-    if (content.trim() === '' && !isOlderThan(p, EMPTY_LOCK_GRACE_MS)) continue;
-    // Keep the lock only when the content is an absolute path that still exists
-    // (meaning the worktree that holds this reservation is still present).
-    const owner = content.trim().split('\n')[0];
-    if (path.isAbsolute(owner) && fs.existsSync(owner)) continue;
-    removeLockIfUnchanged(p, content);
-  }
-}
-
-const EMPTY_LOCK_GRACE_MS = 120_000;
-
-function isOlderThan(file, ms) {
-  try {
-    return Date.now() - fs.statSync(file).mtimeMs >= ms;
-  } catch {
-    return false;
-  }
-}
-
-// Move the lock aside before deleting it so a concurrent pruner that read the
-// same stale lock cannot delete a fresh reservation created in its place: if
-// what we moved is not what we judged stale, put it back.
-function removeLockIfUnchanged(lockPath, staleContent) {
-  const aside = `${lockPath}.prune-${process.pid}`;
-  try {
-    fs.renameSync(lockPath, aside);
-  } catch {
-    return; // gone already
-  }
-  try {
-    if (fs.readFileSync(aside, 'utf8') !== staleContent) {
-      fs.linkSync(aside, lockPath); // fails with EEXIST if a newer claim exists
-    }
-  } catch {
-    // best-effort restore
-  }
-  try { fs.unlinkSync(aside); } catch { /* ok */ }
-}
-
-// Atomically claim a port by creating port-<N>.lock with O_EXCL. Records the
-// worktreePath so pruneStaleLocks can tell when the reservation is stale (the
-// lock is kept as long as that path exists). Returns true when this process
-// wins the claim, false when another process already owns it. On unexpected
-// errors it returns true (best-effort degradation).
-function tryClaimPort(lockDir, port, worktreePath, appName = '') {
-  if (!lockDir) return true;
-  const lockPath = path.join(lockDir, `port-${port}.lock`);
-  try {
-    fs.writeFileSync(lockPath, `${worktreePath}\n${appName}`, { flag: 'wx', encoding: 'utf8' });
-    return true;
-  } catch (err) {
-    if (err.code === 'EEXIST') return false;
-    return true; // unexpected error — degrade gracefully
-  }
-}
-
-// Port this worktree already reserved for appName, so re-preparing the same
-// worktree reuses its reservation instead of claiming another port.
-function findReservedPort(lockDir, worktreePath, appName) {
-  if (!lockDir) return null;
-  let entries;
-  try {
-    entries = fs.readdirSync(lockDir);
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    const match = /^port-(\d+)\.lock$/.exec(entry);
-    if (!match) continue;
-    try {
-      const [owner, app = ''] = fs.readFileSync(path.join(lockDir, entry), 'utf8').split('\n');
-      if (owner === worktreePath && app.trim() === appName) return Number(match[1]);
-    } catch {
-      // concurrent removal — not ours
-    }
-  }
-  return null;
-}
-
-// Release a previously claimed port lock.
-function releasePortLock(lockDir, port) {
-  if (!lockDir) return;
-  try {
-    fs.unlinkSync(path.join(lockDir, `port-${port}.lock`));
-  } catch {
-    // best-effort
-  }
-}
-
 function symlinkAppEnvFiles(repoRoot, worktreePath, appName) {
   const operations = [];
   const rootAppDir = path.join(repoRoot, 'apps', appName);
@@ -270,28 +136,17 @@ function symlinkAppEnvFiles(repoRoot, worktreePath, appName) {
   return operations;
 }
 
-function assignAgentPort(repoRoot, worktreePath, appName, takenPorts, _lockDir) {
+function assignAgentPort(repoRoot, worktreePath, appName, takenPorts) {
   const wtAppDir = path.join(worktreePath, 'apps', appName);
   if (!fs.existsSync(wtAppDir)) {
     return { status: 'skipped', file: `apps/${appName}`, note: 'no app dir in worktree' };
   }
   const role = inferAppRole(appName);
   const base = PORT_POOLS[role] || PORT_POOLS.default;
-
-  // Resolve the port-lock directory once — callers may pass it in to avoid
-  // a repeated git rev-parse when assigning ports for several apps.
-  const lockDir = _lockDir !== undefined ? _lockDir : portReservationDir(repoRoot);
-
-  // Pick a free port while atomically reserving it with an O_EXCL lock file
-  // so two concurrent `gx branch start` runs cannot claim the same port.
-  const reserved = findReservedPort(lockDir, worktreePath, appName);
-  let port = reserved !== null && !takenPorts.has(reserved) ? reserved : null;
-  for (let p = base; port === null && p < base + 200; p++) {
-    if (takenPorts.has(p)) continue;
-    if (!isPortFree(p)) continue;
-    if (!tryClaimPort(lockDir, p, worktreePath, appName)) continue; // another process claimed it first
-    port = p;
-    break;
+  let port = pickFreePort(base);
+  // Bump past anything we've already assigned this run.
+  while (port !== null && takenPorts.has(port)) {
+    port = pickFreePort(port + 1);
   }
   if (port === null) {
     return {
@@ -325,20 +180,10 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts, _lockDir) 
     }
   }
   fs.writeFileSync(envLocalPath, next, 'utf8');
-  // The O_EXCL lock is intentionally NOT released here.  Writing PORT to
-  // .env.local does not create a listening socket; an immediate release would
-  // let a subsequent `gx branch start` claim the same port before the process
-  // binds it.  The lock persists until pruneStaleLocks removes it after the
-  // 120-second stale window — by which time the application should be bound.
-  // The _assignedPort and _lockDir fields are exposed for callers that need
-  // explicit cleanup (e.g. test teardown), but are never deleted by this
-  // module itself.
   return {
     status: 'wrote',
     file: `apps/${appName}/.env.local`,
-    note: `PORT=${port} (${role} pool)`,
-    _assignedPort: port,
-    _lockDir: lockDir
+    note: `PORT=${port} (${role} pool)`
   };
 }
 
@@ -359,20 +204,10 @@ function prepareAgentWorktree(repoRoot, worktreePath, deps = {}) {
   // per app. Stays as the zero-config default for monorepos.
   const apps = detectAppPackages(repoRoot);
   const takenPorts = new Set();
-  // Resolve the port-lock dir once and prune stale reservations before the loop
-  // so all apps share the same common-git-dir lookup and cleanup pass.
-  const lockDir = portReservationDir(repoRoot);
-  pruneStaleLocks(lockDir);
   for (const appName of apps) {
     operations.push(...symlinkAppEnvFiles(repoRoot, worktreePath, appName));
-    operations.push(assignAgentPort(repoRoot, worktreePath, appName, takenPorts, lockDir));
+    operations.push(assignAgentPort(repoRoot, worktreePath, appName, takenPorts));
   }
-  // Port locks are intentionally NOT released here.  They persist until
-  // pruneStaleLocks removes them after the 120-second stale window so that
-  // a subsequent preparation cannot claim the same port before each
-  // application has bound its socket.  _assignedPort/_lockDir fields on the
-  // operation results are available to callers that need explicit teardown
-  // (e.g. test teardown that runs before the stale window expires).
   return operations;
 }
 
@@ -381,10 +216,6 @@ module.exports = {
   inferAppRole,
   isPortFree,
   pickFreePort,
-  portReservationDir,
-  pruneStaleLocks,
-  tryClaimPort,
-  releasePortLock,
   symlinkAppEnvFiles,
   assignAgentPort,
   prepareAgentWorktree
