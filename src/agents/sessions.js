@@ -127,58 +127,74 @@ function readAgentSession(repoRoot, sessionId) {
 
 // Acquire a per-session write lock using an O_EXCL lock file. On EEXIST,
 // back off exponentially; steal the lock if it is older than
-// SESSION_LOCK_STALE_MS. Throws if the lock cannot be acquired after
-// SESSION_LOCK_MAX_ATTEMPTS retries.
+// SESSION_LOCK_STALE_MS.
 //
 // Ownership protocol: the lock file contains the acquiring process's PID so
-// that releaseSessionWriteLock can verify ownership before deleting, which
-// prevents a resumed-after-steal holder from removing a replacement lock.
-// After stealing a stale lock, the acquisition attempt is made inline rather
-// than via `continue` so that a second concurrent stealer that unlinks the
-// replacement lock is detected as EEXIST and falls through to normal backoff
-// instead of mistakenly believing it holds the lock.
+// that releaseSessionWriteLock can verify ownership before deleting.
+//
+// Stale-lock steal protocol: instead of unlink + O_EXCL (which has a TOCTOU
+// gap where two concurrent stealers can each unlink the other's newly created
+// lock), we write our PID to a per-process temp file and rename it onto the
+// lock path. `rename` is atomic on POSIX: if two stealers race, exactly one
+// rename lands last and becomes the canonical owner. We verify ownership by
+// reading back: if another stealer's rename overwrote ours between our rename
+// and our readback we see their PID and fall through to backoff. Once our
+// readback confirms our PID the lock has a fresh mtime; no concurrent caller
+// will evaluate it as stale again (5 s threshold >> the critical section),
+// so we hold it safely for the duration of the write.
 function acquireSessionWriteLock(lockPath) {
   const pidStr = String(process.pid);
+  const tmpPath = `${lockPath}.${process.pid}.tmp`;
   for (let attempt = 0; attempt < SESSION_LOCK_MAX_ATTEMPTS; attempt++) {
+    // Fast path: O_EXCL create succeeds when no lock file exists.
     try {
       const fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
       try { fs.writeSync(fd, pidStr); } finally { fs.closeSync(fd); }
       return; // lock acquired
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
-      // Lock file exists — check whether it is stale.
-      let isStale = false;
+    }
+    // Lock file exists — check whether it is stale.
+    let isStale = false;
+    try {
+      const stat = fs.statSync(lockPath);
+      isStale = Date.now() - stat.mtimeMs > SESSION_LOCK_STALE_MS;
+    } catch (_) {
+      // Lock disappeared between EEXIST and stat — retry from the top.
+      continue;
+    }
+    if (isStale) {
+      // Rename-based atomic steal: write PID to a temp path then rename it
+      // onto lockPath. Two concurrent stealers race their renames; the last
+      // rename wins. The verify-by-readback detects whether we won or lost.
+      // If we won, the lock has a fresh mtime so no further stealer will
+      // consider it stale and rename over us within SESSION_LOCK_STALE_MS.
+      let tmpCreated = false;
       try {
-        const stat = fs.statSync(lockPath);
-        isStale = Date.now() - stat.mtimeMs > SESSION_LOCK_STALE_MS;
+        fs.writeFileSync(tmpPath, pidStr, { mode: 0o600 });
+        tmpCreated = true;
+        fs.renameSync(tmpPath, lockPath);
+        tmpCreated = false; // tmpPath is now lockPath; nothing to clean up
+        const owner = fs.readFileSync(lockPath, 'utf8').trim();
+        if (owner === pidStr) return; // steal confirmed, lock acquired
+        // Another stealer's rename landed after ours; fall through to backoff.
       } catch (_) {
-        // Lock disappeared between EEXIST and stat — retry from the top.
-        continue;
-      }
-      if (isStale) {
-        try { fs.unlinkSync(lockPath); } catch (_) {}
-        // Attempt to acquire immediately after the steal. If another concurrent
-        // stealer got in first (EEXIST), fall through to exponential backoff
-        // rather than looping back to steal again.
-        try {
-          const fd2 = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-          try { fs.writeSync(fd2, pidStr); } finally { fs.closeSync(fd2); }
-          return; // acquired after stealing stale lock
-        } catch (e2) {
-          if (e2.code !== 'EEXIST') throw e2;
-          // Another writer got the lock; fall through to backoff.
+        // Any error during steal — fall through to backoff.
+      } finally {
+        if (tmpCreated) {
+          try { fs.unlinkSync(tmpPath); } catch (_) {}
         }
       }
-      // Exponential backoff: 10, 20, 40, 80, 160 ms.
-      Atomics.wait(_sessionLockWaitArray, 0, 0, 10 * (1 << attempt));
     }
+    // Exponential backoff: 10, 20, 40, 80, 160 ms.
+    Atomics.wait(_sessionLockWaitArray, 0, 0, 10 * (1 << attempt));
   }
   throw new Error(`Could not acquire session write lock for ${path.basename(lockPath, '.lock')} after ${SESSION_LOCK_MAX_ATTEMPTS} attempts`);
 }
 
 // Release only if this process still owns the lock (PID matches). This
-// prevents a process that resumes after its lock was stolen from deleting
-// the replacement lock held by the stealer.
+// prevents a resumed-after-steal holder from deleting the stealer's
+// replacement lock.
 function releaseSessionWriteLock(lockPath) {
   try {
     const content = fs.readFileSync(lockPath, 'utf8').trim();
