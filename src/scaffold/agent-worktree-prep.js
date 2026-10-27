@@ -134,7 +134,8 @@ function pruneStaleLocks(lockDir) {
       if (content === '') continue;
       // Keep the lock only when the content is an absolute path that still exists
       // (meaning the worktree that holds this reservation is still present).
-      if (path.isAbsolute(content) && fs.existsSync(content)) continue;
+      const owner = content.split('\n')[0];
+      if (path.isAbsolute(owner) && fs.existsSync(owner)) continue;
       fs.unlinkSync(p);
     } catch {
       // concurrent removal or unreadable file — try to clean up
@@ -148,16 +149,39 @@ function pruneStaleLocks(lockDir) {
 // lock is kept as long as that path exists). Returns true when this process
 // wins the claim, false when another process already owns it. On unexpected
 // errors it returns true (best-effort degradation).
-function tryClaimPort(lockDir, port, worktreePath) {
+function tryClaimPort(lockDir, port, worktreePath, appName = '') {
   if (!lockDir) return true;
   const lockPath = path.join(lockDir, `port-${port}.lock`);
   try {
-    fs.writeFileSync(lockPath, worktreePath, { flag: 'wx', encoding: 'utf8' });
+    fs.writeFileSync(lockPath, `${worktreePath}\n${appName}`, { flag: 'wx', encoding: 'utf8' });
     return true;
   } catch (err) {
     if (err.code === 'EEXIST') return false;
     return true; // unexpected error — degrade gracefully
   }
+}
+
+// Port this worktree already reserved for appName, so re-preparing the same
+// worktree reuses its reservation instead of claiming another port.
+function findReservedPort(lockDir, worktreePath, appName) {
+  if (!lockDir) return null;
+  let entries;
+  try {
+    entries = fs.readdirSync(lockDir);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const match = /^port-(\d+)\.lock$/.exec(entry);
+    if (!match) continue;
+    try {
+      const [owner, app = ''] = fs.readFileSync(path.join(lockDir, entry), 'utf8').split('\n');
+      if (owner === worktreePath && app.trim() === appName) return Number(match[1]);
+    } catch {
+      // concurrent removal — not ours
+    }
+  }
+  return null;
 }
 
 // Release a previously claimed port lock.
@@ -229,11 +253,12 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts, _lockDir) 
 
   // Pick a free port while atomically reserving it with an O_EXCL lock file
   // so two concurrent `gx branch start` runs cannot claim the same port.
-  let port = null;
-  for (let p = base; p < base + 200; p++) {
+  const reserved = findReservedPort(lockDir, worktreePath, appName);
+  let port = reserved !== null && !takenPorts.has(reserved) ? reserved : null;
+  for (let p = base; port === null && p < base + 200; p++) {
     if (takenPorts.has(p)) continue;
     if (!isPortFree(p)) continue;
-    if (!tryClaimPort(lockDir, p, worktreePath)) continue; // another process claimed it first
+    if (!tryClaimPort(lockDir, p, worktreePath, appName)) continue; // another process claimed it first
     port = p;
     break;
   }

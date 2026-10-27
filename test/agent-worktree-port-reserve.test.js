@@ -31,9 +31,9 @@ test('tryClaimPort creates a lock file with O_EXCL on first call', () => {
   const lockPath = path.join(lockDir, 'port-9999.lock');
   assert.ok(fs.existsSync(lockPath), 'lock file must exist after claim');
   assert.equal(
-    fs.readFileSync(lockPath, 'utf8'),
+    fs.readFileSync(lockPath, 'utf8').split('\n')[0],
     worktreePath,
-    'lock must record the worktree path'
+    'lock must record the worktree path on its first line'
   );
   releasePortLock(lockDir, 9999);
 });
@@ -224,4 +224,21 @@ test('pickFreePort returns a number in the expected range', () => {
 test('isPortFree returns a boolean', () => {
   const result = isPortFree(59800);
   assert.equal(typeof result, 'boolean');
+});
+
+test('assignAgentPort reuses the reservation when the same worktree is prepared again', () => {
+  const repoRoot = makeTmpDir();
+  const worktreePath = makeTmpDir();
+  const appDir = path.join(worktreePath, 'apps', 'backend');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, 'package.json'), '{"name":"backend"}');
+  const lockDir = makeTmpDir();
+
+  const first = assignAgentPort(repoRoot, worktreePath, 'backend', new Set(), lockDir);
+  const second = assignAgentPort(repoRoot, worktreePath, 'backend', new Set(), lockDir);
+
+  assert.equal(first.status, 'wrote');
+  const firstPort = first.note.match(/PORT=(\d+)/)?.[1];
+  assert.equal(second.note.match(/PORT=(\d+)/)?.[1], firstPort);
+  assert.deepEqual(fs.readdirSync(lockDir), [`port-${firstPort}.lock`]);
 });
