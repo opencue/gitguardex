@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+_PRUNE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/guardex-base-branch.sh
+source "${_PRUNE_SCRIPT_DIR}/lib/guardex-base-branch.sh"
+
 BASE_BRANCH="${GUARDEX_BASE_BRANCH:-}"
 BASE_BRANCH_EXPLICIT=0
 DRY_RUN=0
@@ -194,32 +198,6 @@ is_temporary_worktree_path() {
   [[ "$name" == __agent_integrate-* || "$name" == __source-probe-* ]]
 }
 
-resolve_base_branch() {
-  local configured=""
-  local current=""
-
-  configured="$(git -C "$repo_root" config --get multiagent.baseBranch || true)"
-  if [[ -n "$configured" ]] && git -C "$repo_root" show-ref --verify --quiet "refs/heads/${configured}"; then
-    printf '%s' "$configured"
-    return 0
-  fi
-
-  current="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  if [[ -n "$current" && "$current" != "HEAD" ]] && git -C "$repo_root" show-ref --verify --quiet "refs/heads/${current}"; then
-    printf '%s' "$current"
-    return 0
-  fi
-
-  for fallback in main dev; do
-    if git -C "$repo_root" show-ref --verify --quiet "refs/heads/${fallback}"; then
-      printf '%s' "$fallback"
-      return 0
-    fi
-  done
-
-  printf '%s' ""
-}
-
 load_merged_pr_branches() {
   if [[ "$INCLUDE_PR_MERGED" -ne 1 ]]; then
     return 1
@@ -313,9 +291,12 @@ branch_has_merged_pr() {
   done
   [[ ${#tips[@]} -gt 0 ]] || return 1
   local tip oid contained
+  local oids_arr=()
+  read -ra oids_arr <<< "$merged_oids"
   for tip in "${tips[@]}"; do
     contained=0
-    for oid in $merged_oids; do
+    for oid in "${oids_arr[@]}"; do
+      [[ "$oid" =~ ^[0-9a-f]{40}$ ]] || continue
       if [[ "$tip" == "$oid" ]] || git -C "$repo_root" merge-base --is-ancestor "$tip" "$oid" >/dev/null 2>&1; then
         contained=1
         break
@@ -489,7 +470,7 @@ if [[ -n "$NOW_EPOCH_RAW" && ! "$NOW_EPOCH_RAW" =~ ^[0-9]+$ ]]; then
 fi
 
 if [[ "$BASE_BRANCH_EXPLICIT" -eq 0 ]]; then
-  BASE_BRANCH="$(resolve_base_branch)"
+  BASE_BRANCH="$(resolve_base_branch "$repo_root")"
 fi
 
 if [[ -z "$BASE_BRANCH" ]]; then

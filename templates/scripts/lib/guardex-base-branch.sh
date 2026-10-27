@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
-# guardex-base-branch.sh — shared helper: infer PR base branch from git history
+# guardex-base-branch.sh — shared helpers: infer and resolve PR base branch
 #
 # Source this file, then call:
+#
 #   guardex_infer_base_branch <repo_root> <source_branch>
+#     Prints the inferred base branch name and exits 0, or exits 1 if none found.
 #
-# Prints the inferred base branch name and exits 0, or exits 1 if none found.
+#   resolve_base_branch <repo_root> [<source_branch>]
+#     Prints the fully resolved base branch using the canonical order:
+#       1. branch.<source>.guardexBase  per-branch config (requires source_branch)
+#       2. guardex_infer_base_branch    git-history inference (requires source_branch)
+#       3. multiagent.baseBranch        repo-wide config
+#       4. origin/HEAD symbolic-ref
+#       5. First of: main, master, dev  (local or remote)
+#       6. Hard fallback: main
+#     Always succeeds.
 #
-# Algorithm:
+# guardex_infer_base_branch algorithm:
 #   1. Reflog hint: scan <source_branch>'s reflog for the oldest
 #      "branch: Created from <name>" entry; if <name> is an existing local
 #      branch (not HEAD, not a SHA, not the source itself) → return it.
@@ -141,4 +151,57 @@ guardex_infer_base_branch() {
 
   [[ -n "$_g_winner" ]] || return 1
   printf '%s' "$_g_winner"
+}
+
+# resolve_base_branch <repo_root> [<source_branch>]
+# Canonical resolution chain matching JS resolveFinishBaseBranch.  Always
+# prints a non-empty branch name; never fails.
+resolve_base_branch() {
+  local _rb_repo="$1"
+  local _rb_branch="${2:-}"
+  local _rb_val="" _rb_head_ref="" _rb_cand
+
+  # 1. Per-branch config.
+  if [[ -n "$_rb_branch" ]]; then
+    _rb_val="$(git -C "$_rb_repo" config --get "branch.${_rb_branch}.guardexBase" 2>/dev/null || true)"
+    if [[ -n "$_rb_val" ]]; then
+      printf '%s' "$_rb_val"
+      return 0
+    fi
+
+    # 2. Infer from git history.
+    _rb_val="$(guardex_infer_base_branch "$_rb_repo" "$_rb_branch" 2>/dev/null || true)"
+    if [[ -n "$_rb_val" ]]; then
+      printf '[gx] base for '"'"'%s'"'"' not recorded; inferred '"'"'%s'"'"' from git history (set branch.%s.guardexBase to override)\n' \
+        "$_rb_branch" "$_rb_val" "$_rb_branch" >&2
+      printf '%s' "$_rb_val"
+      return 0
+    fi
+  fi
+
+  # 3. Repo-wide config.
+  _rb_val="$(git -C "$_rb_repo" config --get multiagent.baseBranch 2>/dev/null || true)"
+  if [[ -n "$_rb_val" ]]; then
+    printf '%s' "$_rb_val"
+    return 0
+  fi
+
+  # 4. origin/HEAD symbolic ref.
+  _rb_head_ref="$(git -C "$_rb_repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [[ -n "$_rb_head_ref" ]]; then
+    printf '%s' "${_rb_head_ref#origin/}"
+    return 0
+  fi
+
+  # 5. Well-known fallback candidates (local or remote).
+  for _rb_cand in main master dev; do
+    if git -C "$_rb_repo" show-ref --verify --quiet "refs/heads/${_rb_cand}" 2>/dev/null \
+       || git -C "$_rb_repo" show-ref --verify --quiet "refs/remotes/origin/${_rb_cand}" 2>/dev/null; then
+      printf '%s' "$_rb_cand"
+      return 0
+    fi
+  done
+
+  # 6. Absolute fallback.
+  printf '%s' "main"
 }
