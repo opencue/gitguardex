@@ -7,7 +7,11 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 
-const { worktreeHasLocalChanges, mapWorktreePathsByBranch, listAgentWorktrees } = require('../src/git');
+const {
+  worktreeHasLocalChanges,
+  mapWorktreePathsByBranch,
+  listAgentWorktrees
+} = require('../src/git');
 const { startSingleAgentLane } = require('../src/agents/start');
 
 // ---------------------------------------------------------------------------
@@ -118,7 +122,7 @@ test('startSingleAgentLane does not throw TypeError when options.claims is omitt
   // Provide a mock packageAssetRunner that returns success with no metadata
   // patterns in stdout, so writeAgentSession short-circuits without touching disk.
   const deps = {
-    packageAssetRunner: () => ({ status: 0, stdout: '', stderr: '' }),
+    packageAssetRunner: () => ({ status: 0, stdout: '', stderr: '' })
   };
   // Should succeed without throwing.
   const result = startSingleAgentLane('/no/such/repo', { task: 'test', agent: 'claude' }, deps);
