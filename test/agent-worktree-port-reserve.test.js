@@ -12,7 +12,7 @@ const {
   pruneStaleLocks,
   assignAgentPort,
   pickFreePort,
-  isPortFree,
+  isPortFree
 } = require('../src/scaffold/agent-worktree-prep');
 
 function makeTmpDir() {
@@ -44,7 +44,11 @@ test('releasePortLock removes the lock file', () => {
   const lockDir = makeTmpDir();
   tryClaimPort(lockDir, 9997);
   releasePortLock(lockDir, 9997);
-  assert.equal(fs.existsSync(path.join(lockDir, 'port-9997.lock')), false, 'lock file must be gone after release');
+  assert.equal(
+    fs.existsSync(path.join(lockDir, 'port-9997.lock')),
+    false,
+    'lock file must be gone after release'
+  );
 });
 
 test('tryClaimPort degrades gracefully when lockDir is null', () => {

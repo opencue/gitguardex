@@ -48,7 +48,7 @@ test('agents writeAgentsState pattern leaves no temp file behind', () => {
     agent: 'claude',
     branch: 'agent/claude/atomic',
     worktreePath: path.join(repoRoot, 'wt'),
-    base: 'main',
+    base: 'main'
   });
   const sessionsDir = path.join(repoRoot, '.guardex', 'agents', 'sessions');
   const entries = fs.readdirSync(sessionsDir);
@@ -64,9 +64,15 @@ test('agents writeAgentsState pattern writes valid JSON', () => {
     agent: 'claude',
     branch: 'agent/claude/json',
     worktreePath: path.join(repoRoot, 'wt'),
-    base: 'main',
+    base: 'main'
   });
-  const sessionPath = path.join(repoRoot, '.guardex', 'agents', 'sessions', 'atomic-json-session.json');
+  const sessionPath = path.join(
+    repoRoot,
+    '.guardex',
+    'agents',
+    'sessions',
+    'atomic-json-session.json'
+  );
   const stored = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
   assert.equal(stored.id, session.id);
   assert.equal(stored.status, 'active');

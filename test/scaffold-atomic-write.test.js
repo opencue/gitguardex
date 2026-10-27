@@ -14,7 +14,9 @@ function makeTmpDir() {
 
 test('writeLockState writes valid JSON to the lock file path', () => {
   const repoRoot = makeTmpDir();
-  const payload = { locks: { 'src/foo.js': { branch: 'agent/a', claimed_at: '2024-01-01T00:00:00.000Z' } } };
+  const payload = {
+    locks: { 'src/foo.js': { branch: 'agent/a', claimed_at: '2024-01-01T00:00:00.000Z' } }
+  };
 
   writeLockState(repoRoot, payload, false);
 
