@@ -76,16 +76,27 @@ function pruneSpecKitScaffolds(target, { dryRun, logger }) {
   return removed;
 }
 
+// Allow tests to inject a shorter timeout via env; production default is 5 minutes.
+const SPECIFY_INIT_TIMEOUT_MS_DEFAULT = 5 * 60 * 1000;
+
 function runSpecifyInit(target, { dryRun, logger }) {
   const args = ['init', '--here', '--ai', 'claude', '--force', '--ignore-agent-tools'];
   if (dryRun) {
     logger(`[${TOOL_NAME}] dry-run: would run \`${SPECIFY_BIN} ${args.join(' ')}\` in ${target}`);
     return { status: 'dry-run' };
   }
+  const timeoutMs = Number(process.env.SPECIFY_INIT_TIMEOUT_MS_OVERRIDE) || SPECIFY_INIT_TIMEOUT_MS_DEFAULT;
   const result = cp.spawnSync(SPECIFY_BIN, args, {
     cwd: target,
     stdio: 'inherit',
+    timeout: timeoutMs,
   });
+  if (result.error && result.error.code === 'ETIMEDOUT') {
+    throw new Error(
+      `${SPECIFY_BIN} init timed out after ${timeoutMs / 60000} minute(s) (killed by SIGTERM). ` +
+      `Check that \`${SPECIFY_BIN}\` can complete without user interaction.`,
+    );
+  }
   if (result.status !== 0) {
     throw new Error(`${SPECIFY_BIN} init exited with status ${result.status}`);
   }

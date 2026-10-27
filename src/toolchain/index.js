@@ -307,8 +307,13 @@ function detectGlobalToolchainPackages() {
   if (globalToolchainDetectionCache) {
     return globalToolchainDetectionCache;
   }
-  globalToolchainDetectionCache = computeGlobalToolchainPackages();
-  return globalToolchainDetectionCache;
+  const result = computeGlobalToolchainPackages();
+  // Only cache successful detections; a transient npm failure must not
+  // permanently poison the cache for the rest of the process lifetime.
+  if (result.ok) {
+    globalToolchainDetectionCache = result;
+  }
+  return result;
 }
 
 function computeGlobalToolchainPackages() {
