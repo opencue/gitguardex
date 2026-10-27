@@ -36,10 +36,18 @@ function readAgentsState(repoRoot) {
   }
 }
 
+function writeJsonAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tempPath, filePath);
+}
+
 function writeAgentsState(repoRoot, state) {
-  const statePath = agentsStatePathForRepo(repoRoot);
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  writeJsonAtomic(agentsStatePathForRepo(repoRoot), state);
 }
 
 function processAlive(pid) {

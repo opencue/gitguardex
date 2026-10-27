@@ -91,6 +91,77 @@ function pickFreePort(start) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Port reservation — O_EXCL lock files in the git common dir
+// ---------------------------------------------------------------------------
+
+// Returns the directory used for port-reservation lock files, or null when
+// the git common dir cannot be resolved (best-effort degradation).
+function portReservationDir(repoRoot) {
+  const result = spawnSync('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir'], {
+    encoding: 'utf8',
+    timeout: 2000
+  });
+  if (result.status !== 0 || !result.stdout) return null;
+  const commonDir = path.resolve(repoRoot, result.stdout.trim());
+  const lockDir = path.join(commonDir, 'gitguardex-port-locks');
+  try {
+    fs.mkdirSync(lockDir, { recursive: true });
+  } catch {
+    return null;
+  }
+  return lockDir;
+}
+
+// Remove port lock files older than 120 s — stale from a crashed or
+// interrupted gx branch start run.
+function pruneStaleLocks(lockDir) {
+  if (!lockDir) return;
+  let entries;
+  try {
+    entries = fs.readdirSync(lockDir);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - 120_000;
+  for (const entry of entries) {
+    if (!entry.startsWith('port-') || !entry.endsWith('.lock')) continue;
+    const p = path.join(lockDir, entry);
+    try {
+      const stat = fs.statSync(p);
+      if (stat.mtimeMs < cutoff) fs.unlinkSync(p);
+    } catch {
+      // concurrent removal is fine
+    }
+  }
+}
+
+// Atomically claim a port by creating port-<N>.lock with O_EXCL.
+// Returns true when this process wins the claim, false when another process
+// already owns it.  On unexpected errors it returns true (best-effort
+// degradation so port assignment still works without the lock dir).
+function tryClaimPort(lockDir, port) {
+  if (!lockDir) return true;
+  const lockPath = path.join(lockDir, `port-${port}.lock`);
+  try {
+    fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx', encoding: 'utf8' });
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+    return true; // unexpected error — degrade gracefully
+  }
+}
+
+// Release a previously claimed port lock.
+function releasePortLock(lockDir, port) {
+  if (!lockDir) return;
+  try {
+    fs.unlinkSync(path.join(lockDir, `port-${port}.lock`));
+  } catch {
+    // best-effort
+  }
+}
+
 function symlinkAppEnvFiles(repoRoot, worktreePath, appName) {
   const operations = [];
   const rootAppDir = path.join(repoRoot, 'apps', appName);
@@ -136,17 +207,27 @@ function symlinkAppEnvFiles(repoRoot, worktreePath, appName) {
   return operations;
 }
 
-function assignAgentPort(repoRoot, worktreePath, appName, takenPorts) {
+function assignAgentPort(repoRoot, worktreePath, appName, takenPorts, _lockDir) {
   const wtAppDir = path.join(worktreePath, 'apps', appName);
   if (!fs.existsSync(wtAppDir)) {
     return { status: 'skipped', file: `apps/${appName}`, note: 'no app dir in worktree' };
   }
   const role = inferAppRole(appName);
   const base = PORT_POOLS[role] || PORT_POOLS.default;
-  let port = pickFreePort(base);
-  // Bump past anything we've already assigned this run.
-  while (port !== null && takenPorts.has(port)) {
-    port = pickFreePort(port + 1);
+
+  // Resolve the port-lock directory once — callers may pass it in to avoid
+  // a repeated git rev-parse when assigning ports for several apps.
+  const lockDir = _lockDir !== undefined ? _lockDir : portReservationDir(repoRoot);
+
+  // Pick a free port while atomically reserving it with an O_EXCL lock file
+  // so two concurrent `gx branch start` runs cannot claim the same port.
+  let port = null;
+  for (let p = base; p < base + 200; p++) {
+    if (takenPorts.has(p)) continue;
+    if (!isPortFree(p)) continue;
+    if (!tryClaimPort(lockDir, p)) continue; // another process claimed it first
+    port = p;
+    break;
   }
   if (port === null) {
     return {
@@ -180,6 +261,9 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts) {
     }
   }
   fs.writeFileSync(envLocalPath, next, 'utf8');
+  // Release the O_EXCL lock — the port is now written and the next lsof
+  // check from another process will see the listening socket instead.
+  releasePortLock(lockDir, port);
   return {
     status: 'wrote',
     file: `apps/${appName}/.env.local`,
@@ -204,9 +288,13 @@ function prepareAgentWorktree(repoRoot, worktreePath, deps = {}) {
   // per app. Stays as the zero-config default for monorepos.
   const apps = detectAppPackages(repoRoot);
   const takenPorts = new Set();
+  // Resolve the port-lock dir once and prune stale reservations before the loop
+  // so all apps share the same common-git-dir lookup and cleanup pass.
+  const lockDir = portReservationDir(repoRoot);
+  pruneStaleLocks(lockDir);
   for (const appName of apps) {
     operations.push(...symlinkAppEnvFiles(repoRoot, worktreePath, appName));
-    operations.push(assignAgentPort(repoRoot, worktreePath, appName, takenPorts));
+    operations.push(assignAgentPort(repoRoot, worktreePath, appName, takenPorts, lockDir));
   }
   return operations;
 }
@@ -216,6 +304,10 @@ module.exports = {
   inferAppRole,
   isPortFree,
   pickFreePort,
+  portReservationDir,
+  pruneStaleLocks,
+  tryClaimPort,
+  releasePortLock,
   symlinkAppEnvFiles,
   assignAgentPort,
   prepareAgentWorktree
