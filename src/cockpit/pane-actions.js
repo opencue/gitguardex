@@ -226,6 +226,16 @@ function commandExists(context, cmd) {
   if (typeof context.commandExists === 'function') {
     return Boolean(context.commandExists(cmd));
   }
+  // When a custom runCommand is provided (e.g. in tests), use it with `which`
+  // so the caller can control the mock result. In production (defaultRunCommand),
+  // use an fs.accessSync PATH scan to avoid depending on `which` being available
+  // (it may be absent in Alpine / minimal containers).
+  if (typeof context.runCommand === 'function') {
+    const result = normalizeResult(
+      context.runCommand('which', [cmd], { cwd: resolveRepoRoot(context) }),
+    );
+    return result.ok && result.stdout.trim().length > 0;
+  }
   const envPath = process.env.PATH || '';
   const sep = process.platform === 'win32' ? ';' : ':';
   for (const dir of envPath.split(sep)) {
