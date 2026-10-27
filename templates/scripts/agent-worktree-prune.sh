@@ -299,7 +299,7 @@ branch_has_merged_pr() {
   [[ ${#tips[@]} -gt 0 ]] || return 1
   local tip oid contained
   local oids_arr=()
-  read -ra oids_arr <<< "$merged_oids"
+  read -ra oids_arr <<< "${merged_oids//$'\n'/ }"
   for tip in "${tips[@]}"; do
     contained=0
     for oid in "${oids_arr[@]}"; do
