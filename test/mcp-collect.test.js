@@ -396,3 +396,67 @@ test('radarRecord slims a lane to counts + essentials (well under 40% of the ful
     `radar record must be < 40% of full (${slimBytes}/${fullBytes} = ${Math.round((100 * slimBytes) / fullBytes)}%)`,
   );
 });
+
+test('boundContext running-byte counter produces byte-identical output to naive re-serialization', () => {
+  // Reference implementation using the naive O(N^2) re-serialization approach.
+  function boundContextNaive(context, maxBytes) {
+    const { otherAgents = [], ...required } = context;
+    const relevant = new Set((context.ownership || []).flatMap((item) =>
+      [item.owner, ...(item.owners || [])].filter(Boolean).map((owner) => owner.branch)));
+    const peers = [...otherAgents].sort((a, b) => Number(relevant.has(b.branch)) - Number(relevant.has(a.branch)));
+    const result = { ...required, otherAgents: [], complete: peers.length === 0,
+      omitted: { otherAgents: peers.length }, details: 'Use repo_state for peers; omit max_bytes for full context.' };
+    const size = () => Buffer.byteLength(JSON.stringify(result), 'utf8');
+    if (size() > maxBytes) throw new Error('budget-too-small: mandatory context exceeds max_bytes; raise budget or split the file batch');
+    for (const peer of peers) {
+      result.otherAgents.push(peer);
+      result.omitted.otherAgents--;
+      result.complete = result.omitted.otherAgents === 0;
+      if (size() > maxBytes) {
+        result.otherAgents.pop();
+        result.omitted.otherAgents++;
+        result.complete = false;
+      }
+    }
+    result.complete = result.omitted.otherAgents === 0;
+    return result;
+  }
+
+  // Multi-peer context with a mix of relevant and unrelated agents, varying sizes.
+  const contexts = [
+    // simple: one peer fits, one doesn't
+    { repo: 'r', branch: 'agent/me', ownership: [{ file: 'a.js', owners: [{ branch: 'relevant' }] }],
+      otherAgents: [{ branch: 'relevant', task: 'small' }, { branch: 'big', task: 'x'.repeat(500) }] },
+    // all peers fit
+    { repo: 'r', branch: 'b', ownership: [],
+      otherAgents: [{ branch: 'a', task: 'hi' }, { branch: 'b2', task: 'bye' }] },
+    // no peers at all
+    { repo: 'r', branch: 'b', ownership: [], otherAgents: [] },
+    // exactly one peer, fits
+    { repo: 'r', branch: 'b', ownership: [], otherAgents: [{ branch: 'only', task: 't' }] },
+    // peer count crosses a power-of-10 boundary (11 → 10 → 9, digit change)
+    { repo: 'r', branch: 'b', ownership: [],
+      otherAgents: Array.from({ length: 11 }, (_, i) => ({ branch: `agent-${i}`, task: 'x'.repeat(30) })) },
+  ];
+
+  const budgets = [200, 300, 500, 1000, 2000, 10000];
+
+  for (const ctx of contexts) {
+    for (const budget of budgets) {
+      let naive;
+      let fast;
+      let naiveErr;
+      let fastErr;
+      try { naive = boundContextNaive(ctx, budget); } catch (e) { naiveErr = e.message; }
+      try { fast = collect.boundContext(ctx, budget); } catch (e) { fastErr = e.message; }
+
+      if (naiveErr) {
+        assert.ok(fastErr, `budget ${budget}: fast must also throw when naive throws (${naiveErr})`);
+        continue;
+      }
+
+      assert.equal(JSON.stringify(fast), JSON.stringify(naive),
+        `budget ${budget}: output must be byte-identical`);
+    }
+  }
+});
