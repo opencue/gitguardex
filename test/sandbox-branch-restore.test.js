@@ -18,14 +18,24 @@ const repoRoot = path.resolve(__dirname, '..');
 
 function stub(relPath, stubExports) {
   const resolved = require.resolve(path.join(repoRoot, relPath));
-  require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports: stubExports };
+  require.cache[resolved] = {
+    id: resolved,
+    filename: resolved,
+    loaded: true,
+    exports: stubExports
+  };
 }
 
-function loadSandboxWithMocks({ runPackageAsset, currentBranchName, ensureRepoBranch, gitRefExists }) {
+function loadSandboxWithMocks({
+  runPackageAsset,
+  currentBranchName,
+  ensureRepoBranch,
+  gitRefExists
+}) {
   // Stub runtime: all git subprocesses succeed; runPackageAsset is injectable.
   stub('src/core/runtime.js', {
     run: () => ({ status: 0, stdout: '', stderr: '' }),
-    runPackageAsset,
+    runPackageAsset
   });
 
   // Stub git helpers used by startProtectedBaseSandbox and the fallback.
@@ -34,12 +44,12 @@ function loadSandboxWithMocks({ runPackageAsset, currentBranchName, ensureRepoBr
     ensureRepoBranch: ensureRepoBranch || (() => ({ ok: true })),
     gitRefExists: gitRefExists || (() => false),
     resolveRepoRoot: (p) => p,
-    readProtectedBranches: () => ['main'],
+    readProtectedBranches: () => ['main']
   });
 
   // Stub worktree-prep: skip monorepo env-file work.
   stub('src/scaffold/agent-worktree-prep.js', {
-    prepareAgentWorktree: () => [],
+    prepareAgentWorktree: () => []
   });
 
   const sandboxPath = require.resolve(path.join(repoRoot, 'src/sandbox/index.js'));
@@ -63,30 +73,36 @@ test('startProtectedBaseSandbox falls back when branchStart returns worktreePath
         stdout:
           `[agent-branch-start] Created branch: agent/test/from-start\n` +
           `[agent-branch-start] Worktree: ${tempRepo}\n`,
-        stderr: '',
+        stderr: ''
       }),
       // No branch switch: the protected base is still checked out.
       currentBranchName: () => 'main',
-      ensureRepoBranch: () => { ensureCalled = true; return { ok: true }; },
+      ensureRepoBranch: () => {
+        ensureCalled = true;
+        return { ok: true };
+      }
     });
 
     const result = startProtectedBaseSandbox(
       { repoRoot: tempRepo, branch: 'main' },
-      { taskName: 'test task', sandboxSuffix: 'restore-test' },
+      { taskName: 'test task', sandboxSuffix: 'restore-test' }
     );
 
     // The fallback names its branch under 'agent/gx/', not 'agent/test/'.
     assert.match(
       result.metadata.branch,
       /^agent\/gx\//,
-      'branch must come from startProtectedBaseSandboxFallback, not from the branchStart stdout',
+      'branch must come from startProtectedBaseSandboxFallback, not from the branchStart stdout'
     );
     assert.notEqual(
       result.metadata.worktreePath,
       tempRepo,
-      'fallback must allocate a new worktree path distinct from the repo root',
+      'fallback must allocate a new worktree path distinct from the repo root'
     );
-    assert.ok(ensureCalled, 'ensureRepoBranch must be called to restore the protected base checkout');
+    assert.ok(
+      ensureCalled,
+      'ensureRepoBranch must be called to restore the protected base checkout'
+    );
   } finally {
     fs.rmSync(tempRepo, { recursive: true, force: true });
   }
@@ -104,30 +120,33 @@ test('startProtectedBaseSandbox falls back when checkout branch switched during 
         stdout:
           `[agent-branch-start] Created branch: agent/test/from-start\n` +
           `[agent-branch-start] Worktree: ${path.join(tempRepo, 'side-worktree')}\n`,
-        stderr: '',
+        stderr: ''
       }),
       // Branch switched: currentBranchName returns a branch that differs from
       // the protected 'main' we started on.
       currentBranchName: () => 'some-other-branch',
-      ensureRepoBranch: () => { ensureCalled = true; return { ok: true }; },
+      ensureRepoBranch: () => {
+        ensureCalled = true;
+        return { ok: true };
+      },
       // Let resolveProtectedBaseSandboxStartRef locate the base branch locally
       // so it does not throw (gitRefExists returns true for refs/heads/main).
-      gitRefExists: (_root, ref) => ref === 'refs/heads/main',
+      gitRefExists: (_root, ref) => ref === 'refs/heads/main'
     });
 
     const result = startProtectedBaseSandbox(
       { repoRoot: tempRepo, branch: 'main' },
-      { taskName: 'test task', sandboxSuffix: 'switch-test' },
+      { taskName: 'test task', sandboxSuffix: 'switch-test' }
     );
 
     assert.match(
       result.metadata.branch,
       /^agent\/gx\//,
-      'branch must come from startProtectedBaseSandboxFallback after the branch-switched trigger',
+      'branch must come from startProtectedBaseSandboxFallback after the branch-switched trigger'
     );
     assert.ok(
       ensureCalled,
-      'ensureRepoBranch must be called to restore the protected base after the branch switch',
+      'ensureRepoBranch must be called to restore the protected base after the branch switch'
     );
   } finally {
     fs.rmSync(tempRepo, { recursive: true, force: true });
