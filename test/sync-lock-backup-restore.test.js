@@ -258,7 +258,9 @@ test('restoreLockBackupSafe: calls python3 with-claims-lock.py when common dir r
     },
     run: (cmd, args, _opts) => {
       calls.push({ cmd, args });
-      // Simulate a successful python3 run that also writes the file
+      // Simulate a successful python3 run that also writes the lock file.
+      // The real script would read the backup temp file; skip that here —
+      // we're testing dispatch, not the merge logic.
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
       fs.writeFileSync(lockPath, backup, 'utf8');
       return { status: 0, stdout: '', stderr: '' };
@@ -279,6 +281,17 @@ test('restoreLockBackupSafe: calls python3 with-claims-lock.py when common dir r
     'flock path must be in args'
   );
   assert.ok(call.args.includes('-e'), 'inline node script must be passed with -e');
+  // The backup must be passed via a temp file, not embedded in the -e script,
+  // to avoid E2BIG on large registries.
+  const inlineScript = call.args[call.args.indexOf('-e') + 1] || '';
+  assert.ok(
+    !inlineScript.includes('"locks"'),
+    'backup content must not be embedded in the inline script'
+  );
+  assert.ok(
+    inlineScript.includes('backup.tmp') || inlineScript.includes('readFileSync'),
+    'inline script must read backup from a temp file'
+  );
 });
 
 test('restoreLockBackupSafe: throws when python3 was attempted but returned non-zero', () => {

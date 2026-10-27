@@ -730,31 +730,47 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
 
   const withLockScript = path.join(__dirname, 'with-claims-lock.py');
 
-  // Compact inline Node script executed under the OS flock.
-  // Reads current on-disk state, folds in new concurrent entries (those absent
-  // from the backup), then writes via temp+rename for an atomic replacement.
-  // Uses Object.create(null) to avoid prototype-property false positives on
-  // filenames like "constructor" or "toString".
-  const mergeScript = [
-    'var fs=require("fs"),p=require("path");',
-    `var lp=${JSON.stringify(lockPath)},bk=${JSON.stringify(backup)};`,
-    'var b={},c={};',
-    'try{b=JSON.parse(bk);}catch(e){}',
-    'try{c=JSON.parse(fs.readFileSync(lp,"utf8"));}catch(e){}',
-    'var ml=Object.create(null);',
-    'Object.keys(b.locks||{}).forEach(function(k){ml[k]=b.locks[k];});',
-    'Object.keys(c.locks||{}).forEach(function(k){if(!Object.prototype.hasOwnProperty.call(ml,k))ml[k]=c.locks[k];});',
-    'var out=JSON.stringify(Object.assign({},b,{locks:Object.assign({},ml)}),null,2)+"\\n";',
-    'var tmp=lp+".tmp";',
-    'fs.mkdirSync(p.dirname(lp),{recursive:true});',
-    'fs.writeFileSync(tmp,out,"utf8");',
-    'fs.renameSync(tmp,lp);',
-  ].join('');
-
   if (flockPath && fs.existsSync(withLockScript)) {
-    const result = run('python3', [withLockScript, flockPath, process.execPath, '-e', mergeScript], {
-      cwd: repoRoot,
-    });
+    // Write the backup to a temp file so the inline Node script can read it
+    // instead of receiving it as a command-line argument. Embedding it in the
+    // argument would fail with E2BIG once the registry exceeds ~128 KiB on Linux.
+    const backupTmpPath = `${lockPath}.${process.pid}.backup.tmp`;
+    fs.writeFileSync(backupTmpPath, backup, 'utf8');
+
+    // Compact inline Node script executed under the OS flock.
+    // Reads the backup temp file and the current on-disk state, folds in new
+    // concurrent entries (those absent from the backup), then writes via
+    // temp+rename for an atomic replacement. Uses Object.create(null) to avoid
+    // prototype-property false positives on filenames like "constructor".
+    const mergeScript = [
+      'var fs=require("fs"),p=require("path");',
+      `var lp=${JSON.stringify(lockPath)},bkp=${JSON.stringify(backupTmpPath)};`,
+      'var b={},c={};',
+      'try{b=JSON.parse(fs.readFileSync(bkp,"utf8"));}catch(e){}',
+      'try{fs.unlinkSync(bkp);}catch(e){}',
+      'try{c=JSON.parse(fs.readFileSync(lp,"utf8"));}catch(e){}',
+      'var ml=Object.create(null);',
+      'Object.keys(b.locks||{}).forEach(function(k){ml[k]=b.locks[k];});',
+      'Object.keys(c.locks||{}).forEach(function(k){if(!Object.prototype.hasOwnProperty.call(ml,k))ml[k]=c.locks[k];});',
+      'var out=JSON.stringify(Object.assign({},b,{locks:Object.assign({},ml)}),null,2)+"\\n";',
+      'var tmp=lp+".tmp";',
+      'fs.mkdirSync(p.dirname(lp),{recursive:true});',
+      'fs.writeFileSync(tmp,out,"utf8");',
+      'fs.renameSync(tmp,lp);',
+    ].join('');
+
+    let result;
+    try {
+      result = run('python3', [withLockScript, flockPath, process.execPath, '-e', mergeScript], {
+        cwd: repoRoot,
+      });
+    } finally {
+      // Clean up the backup temp file if python3 did not (e.g. it crashed
+      // before the inline script ran). Ignore ENOENT — the script removed it.
+      try {
+        fs.unlinkSync(backupTmpPath);
+      } catch (_) {}
+    }
     if (result.status === 0) return;
     throw new Error(
       `Lock-registry restore failed while acquiring or holding the claims lock (status ${result.status})`
