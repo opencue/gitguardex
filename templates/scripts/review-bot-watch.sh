@@ -430,8 +430,10 @@ try_respond_pr() {
     fi
   else
     echo "[review-bot-watch] respond: PR #${pr} skipped or failed (exit=${respond_exit})" >&2
-    # Clear backoff on failure so we retry next cycle.
-    RESPOND_SKIP_REMAINING["$pr"]=0
+    # Use a 1-poll mini-backoff on failure: retries the next cycle for transient
+    # errors (network blip, dirty worktree) but doesn't hammer on permanent ones
+    # (worktree absent, fork PR) on every cycle like clearing to 0 would.
+    RESPOND_SKIP_REMAINING["$pr"]=1
   fi
 }
 
