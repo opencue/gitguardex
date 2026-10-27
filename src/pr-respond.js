@@ -23,9 +23,9 @@ const { GH_BIN } = require('./context');
 const { run } = require('./core/runtime');
 const { repoNameWithOwner } = require('./github-api');
 const { worktreePathForBranch } = require('./agents/inspect');
-const { gitRun, readProtectedBranches, currentBranchName } = require('./git');
+const { gitRun, currentBranchName } = require('./git');
 const { runReviewFix } = require('./review-fix');
-const { runPrReview, MARKER, FINDING_MARKER_PREFIX } = require('./pr-review');
+const { runPrReview, MARKER } = require('./pr-review');
 
 const TOOL_PREFIX = '[gitguardex]';
 
@@ -276,8 +276,13 @@ function threadToFinding(thread, trustedAuthor) {
   const isBot = author === trustedAuthor && body.includes(MARKER);
 
   const severity = isBot ? severityFromBody(body) || 'high' : 'high';
-  const rawMessage = isBot ? messageFromBody(body) : body.replace(/\s+/g, ' ').trim();
-  // Cap human-supplied messages so they don't bloat the fix prompt.
+  // For bot threads use the parsed message; for human threads prefix with an explicit
+  // data-label so the fix provider treats the reviewer's words as data, not instructions.
+  // This prevents prompt-injection via CHANGES_REQUESTED review comments.
+  const rawMessage = isBot
+    ? messageFromBody(body)
+    : `reviewer: ${body.replace(/\s+/g, ' ').trim()}`;
+  // Cap so human-supplied content doesn't bloat the fix prompt.
   const message = rawMessage.slice(0, 500) || `review thread on ${thread.path}:${thread.line}`;
   const suggestion = isBot ? suggestionFromBody(body) : '';
 

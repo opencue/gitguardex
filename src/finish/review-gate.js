@@ -38,9 +38,7 @@ function reportProgress(progress, method, stage, detail) {
 
 function requireGhAction(result, failureMessage) {
   if (result && result.ok === false) {
-    throw new Error(
-      `${failureMessage}${result.output ? `\n${result.output}` : ''}`,
-    );
+    throw new Error(`${failureMessage}${result.output ? `\n${result.output}` : ''}`);
   }
 }
 
@@ -55,15 +53,16 @@ function requireGhAction(result, failureMessage) {
  */
 function requirePostedReview(review, prNumber) {
   if (review.posted) return;
-  const why = review.reason === 'github-auth-unavailable'
-    ? 'GitHub auth was unavailable to the review runner'
-    : `the review runner reported posted=${JSON.stringify(review.posted)}`;
+  const why =
+    review.reason === 'github-auth-unavailable'
+      ? 'GitHub auth was unavailable to the review runner'
+      : `the review runner reported posted=${JSON.stringify(review.posted)}`;
   throw new Error(
-    `review gate: the AI review was not posted to PR #${prNumber} (${why}). Refusing to merge — `
-    + 'an unposted review leaves no evidence the diff was examined, and a provider that returns '
-    + 'nothing then looks exactly like a clean pass.'
-    + (review.artifactPath ? `\nLocal artifact: ${review.artifactPath}` : '')
-    + '\nFix the provider/auth issue and re-run, or bypass with --skip-review-gate.',
+    `review gate: the AI review was not posted to PR #${prNumber} (${why}). Refusing to merge — ` +
+      'an unposted review leaves no evidence the diff was examined, and a provider that returns ' +
+      'nothing then looks exactly like a clean pass.' +
+      (review.artifactPath ? `\nLocal artifact: ${review.artifactPath}` : '') +
+      '\nFix the provider/auth issue and re-run, or bypass with --skip-review-gate.'
   );
 }
 
@@ -74,10 +73,19 @@ function readHeadSha(cwd) {
 }
 
 function readBaseSha(cwd, baseBranch) {
-  const result = run('git', ['-C', cwd, 'ls-remote', '--exit-code', 'origin', `refs/heads/${baseBranch}`], {
-    cwd, allowFailure: true,
-  });
-  return result.status === 0 ? String(result.stdout || '').trim().split(/\s+/)[0] : '';
+  const result = run(
+    'git',
+    ['-C', cwd, 'ls-remote', '--exit-code', 'origin', `refs/heads/${baseBranch}`],
+    {
+      cwd,
+      allowFailure: true
+    }
+  );
+  return result.status === 0
+    ? String(result.stdout || '')
+        .trim()
+        .split(/\s+/)[0]
+    : '';
 }
 
 /** Worktree holding `branch`, or `repoRoot` when git cannot tell us. */
@@ -196,10 +204,8 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     const settled = count('pending') === 0;
     const namedFailures = failedNames.length === failingCount;
     const novelFailures = failedNames.filter((name) => !baseline.has(name));
-    const onlyBaselineFailures = baselineMode
-      && failingCount > 0
-      && namedFailures
-      && novelFailures.length === 0;
+    const onlyBaselineFailures =
+      baselineMode && failingCount > 0 && namedFailures && novelFailures.length === 0;
     if (failingCount > 0) {
       if (!baselineMode || !namedFailures || novelFailures.length > 0) {
         return { status: 'checks-failed', pr: snap, newFailures: novelFailures };
@@ -213,13 +219,14 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // base baseline and GitHub still says the branch is mergeable, that state is
     // the same "no new failures" verdict as UNSTABLE.
     const baselineBlockedByKnownChecks = mss === 'BLOCKED' && mergeable && onlyBaselineFailures;
-    const unstableOnlyBecauseBillingChecksWereWaived = mss === 'UNSTABLE'
-      && namedWaivers
-      && failingCount === 0
-      && count('pending') === 0
-      && count('other') === 0
-      && count('skipped') === 0
-      && count('success') + waivedCount === count('total');
+    const unstableOnlyBecauseBillingChecksWereWaived =
+      mss === 'UNSTABLE' &&
+      namedWaivers &&
+      failingCount === 0 &&
+      count('pending') === 0 &&
+      count('other') === 0 &&
+      count('skipped') === 0 &&
+      count('success') + waivedCount === count('total');
     // GitHub says this can't merge as-is. Some BLOCKED/UNSTABLE snapshots are
     // just "required checks are still pending" immediately after a draft PR is
     // promoted to ready, so wait for pending checks to settle before treating
@@ -228,9 +235,13 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     if (mss && (mss === 'DIRTY' || mss === 'BEHIND')) {
       return { status: 'merge-blocked', pr: snap };
     }
-    if (mss && blockedStates.has(mss) && settled
-      && !baselineBlockedByKnownChecks
-      && !unstableOnlyBecauseBillingChecksWereWaived) {
+    if (
+      mss &&
+      blockedStates.has(mss) &&
+      settled &&
+      !baselineBlockedByKnownChecks &&
+      !unstableOnlyBecauseBillingChecksWereWaived
+    ) {
       return { status: 'merge-blocked', pr: snap };
     }
 
@@ -243,16 +254,18 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
     // fallback accounts every check as success-or-cleared-failure. `other` must
     // still be zero either way — an ambiguous state is never a pass.
     const waiversAccountedFor = waivedCount === 0 || namedWaivers;
-    const allAccountedFor = waiversAccountedFor && (baselineMode
-      ? count('other') === 0
-        && count('success') + failingCount + waivedCount + count('skipped') === count('total')
-      : count('other') === 0
-        && count('success') + waivedCount + count('skipped') === count('total'));
-    const trusted = waiversAccountedFor && (
-      baselineBlockedByKnownChecks
-      || unstableOnlyBecauseBillingChecksWereWaived
-      || (mss ? trustedStates.has(mss) : allAccountedFor)
-    );
+    const allAccountedFor =
+      waiversAccountedFor &&
+      (baselineMode
+        ? count('other') === 0 &&
+          count('success') + failingCount + waivedCount + count('skipped') === count('total')
+        : count('other') === 0 &&
+          count('success') + waivedCount + count('skipped') === count('total'));
+    const trusted =
+      waiversAccountedFor &&
+      (baselineBlockedByKnownChecks ||
+        unstableOnlyBecauseBillingChecksWereWaived ||
+        (mss ? trustedStates.has(mss) : allAccountedFor));
 
     if (settled && mergeable && hasChecks && trusted) {
       const result = { status: 'green', pr: snap };
@@ -289,7 +302,7 @@ function resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings) {
   const stillReported = new Set(
     (Array.isArray(currentFindings) ? currentFindings : [])
       .map((finding) => finding && finding.path)
-      .filter(Boolean),
+      .filter(Boolean)
   );
   return [...blockedPaths]
     .filter((path) => !repairedPaths.has(path) && !stillReported.has(path))
@@ -301,9 +314,10 @@ function resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings) {
  * passes a clean AI review AND green CI AND GitHub reports it mergeable. Returns
  * `{ prNumber }` on pass; the caller then proceeds to the real merge.
  */
-function runReviewGate({
-  repoRoot, worktreePath, branch, baseBranch, options = {}, progress,
-}, deps = {}) {
+function runReviewGate(
+  { repoRoot, worktreePath, branch, baseBranch, options = {}, progress },
+  deps = {}
+) {
   // Quiet mode suppresses successful narration, never warnings or blocking errors.
   const logProgress = options.agentQuiet ? () => {} : gateLog;
   const openPullRequest = deps.openPullRequest || pr.openPullRequest;
@@ -347,14 +361,14 @@ function runReviewGate({
   }
   const initialHeadSync = waitHead(repoRoot, branch, initialHeadSha, {
     timeoutSeconds: options.gateHeadTimeoutSeconds,
-    pollSeconds: options.gateHeadPollSeconds,
+    pollSeconds: options.gateHeadPollSeconds
   });
   if (initialHeadSync.status !== 'current') {
     const seen = initialHeadSync.pr?.headSha || 'unknown';
     reportProgress(progress, 'fail', 'pr', `PR head is still ${seen}`);
     throw new Error(
-      `review gate: PR #${prNumber} still reports head ${seen}, not the pushed commit `
-      + `${initialHeadSha || 'unknown'}. Refusing to review a stale PR diff.`,
+      `review gate: PR #${prNumber} still reports head ${seen}, not the pushed commit ` +
+        `${initialHeadSha || 'unknown'}. Refusing to review a stale PR diff.`
     );
   }
   reportProgress(progress, 'complete', 'pr', `PR #${prNumber}`);
@@ -369,14 +383,14 @@ function runReviewGate({
   if (serialCi && opened.pr.isDraft === false) {
     requireGhAction(
       markDraft(repoRoot, prNumber),
-      `review gate: could not hold PR #${prNumber} as draft before review. Refusing to merge.`,
+      `review gate: could not hold PR #${prNumber} as draft before review. Refusing to merge.`
     );
     logProgress(`PR #${prNumber}: held as draft while the review runs`);
   }
   if (!serialCi) {
     requireGhAction(
       markReady(repoRoot, prNumber),
-      `review gate: could not promote PR #${prNumber} before review. Refusing to merge.`,
+      `review gate: could not promote PR #${prNumber} before review. Refusing to merge.`
     );
     logProgress(`PR #${prNumber}: promoted to ready — CI runs alongside the review`);
   }
@@ -402,7 +416,7 @@ function runReviewGate({
       progress,
       'start',
       'review',
-      `round ${round + 1}/${maxFixRounds + 1} via ${provider}`,
+      `round ${round + 1}/${maxFixRounds + 1} via ${provider}`
     );
     try {
       review = runPrReview({
@@ -414,13 +428,13 @@ function runReviewGate({
         timeoutMs: options.reviewTimeoutMs,
         // abide's AGENTS.md verdicts ride along with the AI review; `act`
         // verdicts block like a high finding. --no-gate-abide turns them off.
-        abide: options.gateAbide !== false,
+        abide: options.gateAbide !== false
       });
     } catch (err) {
       reportProgress(progress, 'fail', 'review', err.message);
       throw new Error(
-        `review gate: AI review did not complete (${err.message}). Refusing to merge. `
-        + 'Fix the provider/auth issue or rerun with --skip-review-gate.',
+        `review gate: AI review did not complete (${err.message}). Refusing to merge. ` +
+          'Fix the provider/auth issue or rerun with --skip-review-gate.'
       );
     }
     // Evidence check, before anything is spent on this review. A review that
@@ -448,18 +462,23 @@ function runReviewGate({
     }
     if (verdict.clean || round === maxFixRounds) break;
 
-    logProgress(`PR #${prNumber}: ${verdict.blocking.length} blocking finding(s) — auto-fix round ${round + 1}/${maxFixRounds}`);
+    logProgress(
+      `PR #${prNumber}: ${verdict.blocking.length} blocking finding(s) — auto-fix round ${round + 1}/${maxFixRounds}`
+    );
     autofixAttempted = true;
     reportProgress(
       progress,
       'start',
       'autofix',
-      `round ${round + 1}/${maxFixRounds}: ${verdict.blocking.length} blocking finding(s)`,
+      `round ${round + 1}/${maxFixRounds}: ${verdict.blocking.length} blocking finding(s)`
     );
     let fix;
     try {
       fix = runFix({
-        repoRoot: fixCwd, provider, findings: verdict.blocking, expectBranch: branch,
+        repoRoot: fixCwd,
+        provider,
+        findings: verdict.blocking,
+        expectBranch: branch
       });
     } catch (err) {
       reportProgress(progress, 'fail', 'autofix', err.message);
@@ -472,44 +491,61 @@ function runReviewGate({
       break;
     }
     for (const changed of fix.changedFiles) repairedPaths.add(changed);
-    logProgress(`auto-fix committed ${fix.changedFiles.length} file(s): ${fix.changedFiles.slice(0, 5).join(', ')}`);
+    logProgress(
+      `auto-fix committed ${fix.changedFiles.length} file(s): ${fix.changedFiles.slice(0, 5).join(', ')}`
+    );
     const pushed = pushBranch(fixCwd, branch);
     if (!pushed.ok) {
       reportProgress(progress, 'fail', 'autofix', 'push failed');
       gateLog(`push after auto-fix failed: ${pushed.output}`);
       throw new Error(
-        `review gate: push after auto-fix failed. Refusing to continue.\n${pushed.output || '(no output)'}`,
+        `review gate: push after auto-fix failed. Refusing to continue.\n${pushed.output || '(no output)'}`
       );
     }
     pushedHeadSha = headSha(fixCwd);
     const headSync = waitHead(repoRoot, branch, pushedHeadSha, {
       timeoutSeconds: options.gateHeadTimeoutSeconds,
-      pollSeconds: options.gateHeadPollSeconds,
+      pollSeconds: options.gateHeadPollSeconds
     });
     if (headSync.status !== 'current') {
       const seen = headSync.pr?.headSha || 'unknown';
       reportProgress(progress, 'fail', 'autofix', `PR head is still ${seen}`);
       throw new Error(
-        `review gate: PR #${prNumber} still reports head ${seen}, not the auto-fix commit `
-        + `${pushedHeadSha || 'unknown'}. Refusing to re-review a stale PR diff.`,
+        `review gate: PR #${prNumber} still reports head ${seen}, not the auto-fix commit ` +
+          `${pushedHeadSha || 'unknown'}. Refusing to re-review a stale PR diff.`
       );
     }
-    reportProgress(progress, 'complete', 'autofix', `${fix.changedFiles.length} file(s) fixed and pushed`);
+    reportProgress(
+      progress,
+      'complete',
+      'autofix',
+      `${fix.changedFiles.length} file(s) fixed and pushed`
+    );
   }
 
   if (!verdict.clean) {
-    reportProgress(progress, 'fail', 'review', `${verdict.blocking.length} blocking finding(s) remain`);
+    reportProgress(
+      progress,
+      'fail',
+      'review',
+      `${verdict.blocking.length} blocking finding(s) remain`
+    );
     if (!autofixAttempted) {
-      reportProgress(progress, 'skip', 'autofix', maxFixRounds > 0 ? 'no repair round completed' : 'disabled');
+      reportProgress(
+        progress,
+        'skip',
+        'autofix',
+        maxFixRounds > 0 ? 'no repair round completed' : 'disabled'
+      );
     }
     const detail = verdict.blocking
       .map((f) => `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`)
       .join('\n');
     throw new Error(
-      `review gate: ${verdict.blocking.length} blocking finding(s). Refusing to merge.\n${detail}\n`
-      + (maxFixRounds > 0
-        ? 'Auto-fix did not clear them. Fix manually or rerun with --skip-review-gate.'
-        : 'Fix the findings, rerun with --gate-autofix to let the agent repair them, or bypass with --skip-review-gate.'),
+      `review gate: ${verdict.blocking.length} blocking finding(s). Refusing to merge.\n${detail}\n` +
+        (maxFixRounds > 0
+          ? 'Auto-fix did not clear them. Fix manually or rerun with --skip-review-gate.'
+          : 'Fix the findings, rerun with --gate-autofix to let the agent repair them, or bypass with --skip-review-gate.')
     );
   }
 
@@ -520,34 +556,43 @@ function runReviewGate({
   // edited by a fix.
   const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, review.findings);
   if (unexplained.length > 0) {
-    reportProgress(progress, 'fail', 'review', `${unexplained.length} finding(s) disappeared without a matching edit`);
+    reportProgress(
+      progress,
+      'fail',
+      'review',
+      `${unexplained.length} finding(s) disappeared without a matching edit`
+    );
     throw new Error(
-      `review gate: ${unexplained.length} earlier blocking finding(s) disappeared without their file being changed. `
-      + `Refusing to merge — a finding that is merely absent from a later review is not a fixed finding.\n`
-      + unexplained.map((p) => `  - ${p} (blocked earlier, never edited, no current finding)`).join('\n')
-      + '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.',
+      `review gate: ${unexplained.length} earlier blocking finding(s) disappeared without their file being changed. ` +
+        `Refusing to merge — a finding that is merely absent from a later review is not a fixed finding.\n` +
+        unexplained
+          .map((p) => `  - ${p} (blocked earlier, never edited, no current finding)`)
+          .join('\n') +
+        '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.'
     );
   }
   const threadResolution = resolveThreads(prNumber, repoRoot, review.findings);
   if (threadResolution.ok === false) {
     gateLog(
-      `PR #${prNumber}: could not inspect outdated GitGuardex review threads`
-      + `${threadResolution.output ? ` (${threadResolution.output})` : ''}; merge-state gate remains authoritative`,
+      `PR #${prNumber}: could not inspect outdated GitGuardex review threads` +
+        `${threadResolution.output ? ` (${threadResolution.output})` : ''}; merge-state gate remains authoritative`
     );
   } else if (threadResolution.resolved > 0) {
-    logProgress(`PR #${prNumber}: resolved ${threadResolution.resolved} outdated GitGuardex review thread(s)`);
+    logProgress(
+      `PR #${prNumber}: resolved ${threadResolution.resolved} outdated GitGuardex review thread(s)`
+    );
   }
   reportProgress(
     progress,
     'complete',
     'review',
-    `clean review posted${threadResolution.resolved > 0 ? `; ${threadResolution.resolved} stale thread(s) resolved` : ''}`,
+    `clean review posted${threadResolution.resolved > 0 ? `; ${threadResolution.resolved} stale thread(s) resolved` : ''}`
   );
   if (!autofixAttempted) {
     reportProgress(progress, 'skip', 'autofix', 'not needed');
   }
   logProgress(
-    `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`,
+    `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`
   );
 
   // 3. Promote draft -> ready so required CI checks fire. Already done in step
@@ -555,7 +600,7 @@ function runReviewGate({
   if (serialCi) {
     requireGhAction(
       markReady(repoRoot, prNumber),
-      `review gate: could not promote PR #${prNumber} after a clean review. Refusing to merge.`,
+      `review gate: could not promote PR #${prNumber} after a clean review. Refusing to merge.`
     );
     logProgress(`PR #${prNumber}: promoted to ready after a clean review`);
   }
@@ -570,9 +615,11 @@ function runReviewGate({
   if (options.gateBaseline) {
     const baseline = readBaseline(repoRoot, baseBranch);
     baselineFailures = baseline.failing;
-    gateLog(baselineFailures.size > 0
-      ? `baseline from ${baseline.source}: ${baselineFailures.size} check(s) already failing — [${[...baselineFailures].join(', ')}]`
-      : `baseline from ${baseline.source}: no known failures — every failing check counts as new`);
+    gateLog(
+      baselineFailures.size > 0
+        ? `baseline from ${baseline.source}: ${baselineFailures.size} check(s) already failing — [${[...baselineFailures].join(', ')}]`
+        : `baseline from ${baseline.source}: no known failures — every failing check counts as new`
+    );
   }
 
   reportProgress(progress, 'start', 'ci', 'waiting for required GitHub checks');
@@ -583,7 +630,7 @@ function runReviewGate({
       pollSeconds: options.gatePollSeconds,
       requireChecks,
       baselineFailures,
-      expectHeadSha: pushedHeadSha,
+      expectHeadSha: pushedHeadSha
     });
   } catch (error) {
     reportProgress(progress, 'fail', 'ci', error.message);
@@ -591,43 +638,46 @@ function runReviewGate({
   }
   if (ci.status === 'checks-failed') {
     reportProgress(progress, 'fail', 'ci', 'checks failed or were cancelled');
-    const novel = Array.isArray(ci.newFailures) && ci.newFailures.length > 0
-      ? ` New failure(s) vs '${baseBranch}': ${ci.newFailures.join(', ')}.`
-      : '';
+    const novel =
+      Array.isArray(ci.newFailures) && ci.newFailures.length > 0
+        ? ` New failure(s) vs '${baseBranch}': ${ci.newFailures.join(', ')}.`
+        : '';
     throw new Error(
-      `review gate: CI checks failed/cancelled on PR #${prNumber}. Refusing to merge.${novel}`
-      + (options.gateBaseline ? '' : ' Pass --gate-baseline to ignore failures already red on the base branch.'),
+      `review gate: CI checks failed/cancelled on PR #${prNumber}. Refusing to merge.${novel}` +
+        (options.gateBaseline
+          ? ''
+          : ' Pass --gate-baseline to ignore failures already red on the base branch.')
     );
   }
   if (ci.status === 'merge-blocked') {
     const mss = (ci.pr && ci.pr.mergeStateStatus) || 'BLOCKED';
     const mssHints = {
       DIRTY: `resolve conflicts first (${TOOL_NAME} pr sync, or merge the base branch)`,
-      BEHIND: 'update the branch to head of base (gx pr sync)',
+      BEHIND: `update the branch to head of base (${TOOL_NAME} pr sync)`,
       BLOCKED: 'required reviews or conversations are unresolved',
-      UNSTABLE: 'wait for non-required checks or investigate failing ones',
+      UNSTABLE: 'wait for non-required checks or investigate failing ones'
     };
     const hint = mssHints[mss] || 'check branch-protection requirements';
     reportProgress(progress, 'fail', 'ci', `mergeStateStatus=${mss}`);
     throw new Error(
-      `review gate: GitHub reports mergeStateStatus=${mss} for PR #${prNumber} `
-      + `(not mergeable under branch protection — ${hint}). Refusing to merge.`,
+      `review gate: GitHub reports mergeStateStatus=${mss} for PR #${prNumber} ` +
+        `(not mergeable under branch protection — ${hint}). Refusing to merge.`
     );
   }
   if (ci.status === 'no-checks') {
     reportProgress(progress, 'fail', 'ci', 'no CI checks configured');
     throw new Error(
-      `review gate: PR #${prNumber} has no CI checks configured. Refusing to merge an `
-      + 'unverified PR. Pass --allow-no-checks to override.',
+      `review gate: PR #${prNumber} has no CI checks configured. Refusing to merge an ` +
+        'unverified PR. Pass --allow-no-checks to override.'
     );
   }
   if (ci.status === 'stale-head') {
     const seen = (ci.pr && ci.pr.headSha) || 'unknown';
     reportProgress(progress, 'fail', 'ci', `stale PR head ${seen}`);
     throw new Error(
-      `review gate: PR #${prNumber} still reports head ${seen}, not the auto-fix commit `
-      + `${pushedHeadSha}. Refusing to merge — the checks GitHub is reporting describe a `
-      + 'commit that push replaced, so their green says nothing about the code being merged.',
+      `review gate: PR #${prNumber} still reports head ${seen}, not the auto-fix commit ` +
+        `${pushedHeadSha}. Refusing to merge — the checks GitHub is reporting describe a ` +
+        'commit that push replaced, so their green says nothing about the code being merged.'
     );
   }
   if (ci.status === 'timeout') {
@@ -640,28 +690,30 @@ function runReviewGate({
   }
 
   if (headSha(fixCwd) !== pushedHeadSha || baseSha(fixCwd, baseBranch) !== reviewedBaseSha) {
-    throw new Error('review gate: source or base changed during review. Rerun the review gate before merging.');
+    throw new Error(
+      'review gate: source or base changed during review. Rerun the review gate before merging.'
+    );
   }
   const revision = { reviewedHeadSha: pushedHeadSha, reviewedBaseSha };
   const mss = ci.pr && ci.pr.mergeStateStatus;
-  const billingChecksWaived = Array.isArray(ci.billingWaivedNames)
-    ? ci.billingWaivedNames
-    : [];
+  const billingChecksWaived = Array.isArray(ci.billingWaivedNames) ? ci.billingWaivedNames : [];
   if (billingChecksWaived.length > 0) {
     reportProgress(
       progress,
       'complete',
       'ci',
-      `${billingChecksWaived.length} GitHub billing-blocked check(s) waived; local preflight required`,
+      `${billingChecksWaived.length} GitHub billing-blocked check(s) waived; local preflight required`
     );
     gateLog(
-      `PR #${prNumber}: review clean; GitHub billing prevented [${billingChecksWaived.join(', ')}] from starting. `
-      + 'Proceeding only with mandatory repository preflight.',
+      `PR #${prNumber}: review clean; GitHub billing prevented [${billingChecksWaived.join(', ')}] from starting. ` +
+        'Proceeding only with mandatory repository preflight.'
     );
     return { prNumber, ...revision, billingChecksWaived };
   }
   reportProgress(progress, 'complete', 'ci', `green${mss ? `, mergeStateStatus=${mss}` : ''}`);
-  logProgress(`PR #${prNumber}: review clean + CI green${mss ? ` + mergeStateStatus=${mss}` : ''} — proceeding to merge`);
+  logProgress(
+    `PR #${prNumber}: review clean + CI green${mss ? ` + mergeStateStatus=${mss}` : ''} — proceeding to merge`
+  );
   return { prNumber, ...revision };
 }
 
@@ -671,5 +723,5 @@ module.exports = {
   waitForGreenCi,
   waitForPullRequestHead,
   DEFAULT_GATE_TIMEOUT_SECONDS,
-  MERGEABLE_STATES,
+  MERGEABLE_STATES
 };
