@@ -275,15 +275,16 @@ build_prompt() {
 
   # Sanitize PR-author-controlled fields to prevent prompt injection.
   # Strip control characters (including newlines) and cap length.
-  local safe_title safe_head_branch
+  local safe_title safe_head_branch safe_url
   safe_title="$(sanitize_untrusted_str "$pr_title" 200)"
   safe_head_branch="$(sanitize_untrusted_str "$head_branch" 100)"
+  safe_url="$(sanitize_untrusted_str "$pr_url" 300)"
 
   cat <<PROMPT
 You are the continuous PR review+merge Codex agent.
 
 Target PR: #${pr}
-URL: ${pr_url}
+URL: ${safe_url}
 Base branch: ${BASE_BRANCH}
 Head SHA: ${head_sha}
 

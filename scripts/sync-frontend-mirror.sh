@@ -63,7 +63,7 @@ if [[ -n "$TOKEN_FILE" ]]; then
     exit 1
   fi
   SYNC_TOKEN="$(< "$TOKEN_FILE")"
-  SYNC_TOKEN="${SYNC_TOKEN//$'\n'/}"
+  SYNC_TOKEN="${SYNC_TOKEN//[$'\r\n']/}"
 fi
 
 if [[ -z "$TARGET_REPO" ]]; then
