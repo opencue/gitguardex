@@ -373,7 +373,7 @@ REUSE_EXISTING_WORKTREE="$(normalize_bool "$REUSE_EXISTING_RAW" "1")"
 
 normalize_tier() {
   local raw="${1:-}"
-  local fallback="${2:-T3}"
+  local fallback="${2:-T1}"
   local upper
   upper="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
   case "$upper" in
@@ -982,23 +982,24 @@ run_guardex_cli "${estimate_args[@]}"
 if [[ "$PREVIEW" -eq 1 ]]; then exit 0; fi
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$worktree_root"
 branch_suffix=2
-while git show-ref --verify --quiet "refs/heads/${branch_name}"; do
+worktree_leaf="$(resolve_worktree_leaf "$branch_name" "$agent_slug")"
+# Guard against both a duplicate branch ref and a stale leftover worktree
+# directory (e.g. a previous agent was killed before the ref was registered).
+# Both checks share the suffix counter so a single increment resolves either
+# kind of collision, keeping the timestamp format stable.
+while git show-ref --verify --quiet "refs/heads/${branch_name}" \
+    || [[ -e "${worktree_root}/${worktree_leaf}" ]]; do
   branch_name="${branch_name_base}-${branch_suffix}"
   branch_suffix=$((branch_suffix + 1))
+  worktree_leaf="$(resolve_worktree_leaf "$branch_name" "$agent_slug")"
 done
 
-mkdir -p "$worktree_root"
-worktree_leaf="$(resolve_worktree_leaf "$branch_name" "$agent_slug")"
 worktree_path="${worktree_root}/${worktree_leaf}"
 openspec_plan_slug="$(resolve_openspec_plan_slug "$branch_name" "$agent_slug" "$task_slug")"
 openspec_change_slug="$(resolve_openspec_change_slug "$branch_name" "$task_slug")"
 openspec_capability_slug="$(resolve_openspec_capability_slug "$task_slug")"
-
-if [[ -e "$worktree_path" ]]; then
-  echo "[agent-branch-start] Worktree path already exists: ${worktree_path}" >&2
-  exit 1
-fi
 
 auto_transfer_stash_ref=""
 auto_transfer_message=""
