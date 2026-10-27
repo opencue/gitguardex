@@ -980,7 +980,7 @@ cleanup_missing_merged_source_branch() {
     fi
   fi
 
-  prune_args=(worktree prune --base "$BASE_BRANCH" --only-dirty-worktrees --delete-branches)
+  prune_args=(worktree prune --base "$BASE_BRANCH" --only-dirty-worktrees --keep-clean-unmerged --delete-branches)
   if [[ "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then
     prune_args+=(--delete-remote-branches)
   fi
@@ -2098,7 +2098,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
   # after we deliberately kept a branch with unlanded commits would force-delete
   # exactly what we just protected. Skip branch deletion for this run; the next
   # finish or an explicit `gx cleanup` sweeps the rest.
-  prune_args=(--base "$BASE_BRANCH" --only-dirty-worktrees --include-pr-merged)
+  prune_args=(--base "$BASE_BRANCH" --only-dirty-worktrees --keep-clean-unmerged --include-pr-merged)
   if [[ "$local_branch_cleaned" -eq 1 ]]; then
     prune_args+=(--delete-branches)
     if [[ "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then
