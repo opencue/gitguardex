@@ -128,3 +128,133 @@ test('push: false still opts out when a PR exists', (t) => {
   prModule.openPullRequest({ repoRoot: repo, branch: BRANCH, base: 'main', push: false });
   assert.equal(remoteSha(origin), published, 'push: false must not publish anything');
 });
+
+/**
+ * Fake `gh` that simulates the first-create path: no open PR on list, pr
+ * create succeeds and prints the URL, pr view returns the full PR object.
+ * `pr list` must NOT be called after a successful create; the test enforces
+ * this by making it exit 1.
+ */
+function installFakeGhForCreate(dir) {
+  const binDir = path.join(dir, 'bin-create');
+  fs.mkdirSync(binDir, { recursive: true });
+  const gh = path.join(binDir, 'gh');
+  const PR_URL = 'https://github.com/test-owner/test-repo/pull/99';
+  const viewObj = JSON.stringify({
+    number: 99,
+    url: PR_URL,
+    state: 'OPEN',
+    isDraft: true,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
+    reviewDecision: null,
+    headRefName: BRANCH,
+    headRefOid: 'abc123',
+    baseRefName: 'main',
+    title: 'feat: test pr',
+    statusCheckRollup: [],
+  });
+  fs.writeFileSync(
+    gh,
+    [
+      '#!/usr/bin/env bash',
+      'if [[ "$1" == "--version" ]]; then echo "gh version 2.0.0 (fake)"; exit 0; fi',
+      'if [[ "$1" == "auth" ]]; then echo "Logged in"; exit 0; fi',
+      // Initial pr list (no open PR yet) → empty array
+      `if [[ "$1" == "pr" && "$2" == "list" && "$3" == "--head" ]]; then echo '[]'; exit 0; fi`,
+      // pr create → output the URL
+      `if [[ "$1" == "pr" && "$2" == "create" ]]; then echo '${PR_URL}'; exit 0; fi`,
+      // pr view → return the full object
+      `if [[ "$1" == "pr" && "$2" == "view" ]]; then echo '${viewObj}'; exit 0; fi`,
+      'echo "unexpected gh call: $*" >&2',
+      'exit 1',
+    ].join('\n'),
+    'utf8',
+  );
+  fs.chmodSync(gh, 0o755);
+  return { binDir, PR_URL };
+}
+
+test('openPullRequest uses gh pr view URL from stdout, skips second pr list on create', (t) => {
+  const { dir, repo } = makeRepoWithOrigin();
+  const { binDir, PR_URL } = installFakeGhForCreate(dir);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  t.after(() => {
+    process.env.PATH = previousPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const result = prModule.openPullRequest({ repoRoot: repo, branch: BRANCH, base: 'main' });
+  assert.equal(result.created, true, 'should report the PR as newly created');
+  assert.equal(result.pr.url, PR_URL, 'pr.url should come from gh pr view, not pr list');
+  assert.equal(result.pr.number, 99);
+  assert.equal(result.pr.headRefName, BRANCH);
+});
+
+/**
+ * Fake `gh` that returns no URL on pr create (empty stdout). openPullRequest
+ * must fall back to findOpenPrForBranch (pr list).
+ * A counter file tracks how many times `pr list` was called so the first call
+ * returns an empty array and the second (fallback after create) returns the PR.
+ */
+function installFakeGhForCreateNoUrl(dir) {
+  const binDir = path.join(dir, 'bin-create-nourl');
+  fs.mkdirSync(binDir, { recursive: true });
+  const gh = path.join(binDir, 'gh');
+  const counterFile = path.join(dir, 'pr-list-count');
+  const PR_URL = 'https://github.com/test-owner/test-repo/pull/77';
+  const listObj = JSON.stringify([{
+    number: 77,
+    url: PR_URL,
+    state: 'OPEN',
+    isDraft: true,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
+    reviewDecision: null,
+    headRefName: BRANCH,
+    headRefOid: 'def456',
+    baseRefName: 'main',
+    title: 'feat: fallback pr',
+    statusCheckRollup: [],
+  }]);
+  fs.writeFileSync(counterFile, '0', 'utf8');
+  fs.writeFileSync(
+    gh,
+    [
+      '#!/usr/bin/env bash',
+      `COUNTER_FILE='${counterFile}'`,
+      'if [[ "$1" == "--version" ]]; then echo "gh version 2.0.0 (fake)"; exit 0; fi',
+      'if [[ "$1" == "auth" ]]; then echo "Logged in"; exit 0; fi',
+      'if [[ "$1" == "pr" && "$2" == "list" ]]; then',
+      '  COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)',
+      '  echo $((COUNT + 1)) > "$COUNTER_FILE"',
+      `  if [[ "$COUNT" == "0" ]]; then echo '[]'; exit 0; fi`,
+      `  echo '${listObj}'; exit 0`,
+      'fi',
+      // pr create → empty stdout (no URL)
+      `if [[ "$1" == "pr" && "$2" == "create" ]]; then echo ''; exit 0; fi`,
+      'echo "unexpected gh call: $*" >&2',
+      'exit 1',
+    ].join('\n'),
+    'utf8',
+  );
+  fs.chmodSync(gh, 0o755);
+  return { binDir, PR_URL };
+}
+
+test('openPullRequest falls back to pr list when gh pr create stdout has no URL', (t) => {
+  const { dir, repo } = makeRepoWithOrigin();
+  const { binDir, PR_URL } = installFakeGhForCreateNoUrl(dir);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${previousPath}`;
+  t.after(() => {
+    process.env.PATH = previousPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const result = prModule.openPullRequest({ repoRoot: repo, branch: BRANCH, base: 'main' });
+  assert.equal(result.created, true, 'should report the PR as newly created');
+  assert.equal(result.pr.url, PR_URL, 'pr.url should come from the fallback pr list');
+  assert.equal(result.pr.number, 77);
+});
