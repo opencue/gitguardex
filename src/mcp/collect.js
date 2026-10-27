@@ -588,17 +588,26 @@ function boundContext(context, maxBytes) {
   const peers = [...otherAgents].sort((a, b) => Number(relevant.has(b.branch)) - Number(relevant.has(a.branch)));
   const result = { ...required, otherAgents: [], complete: peers.length === 0,
     omitted: { otherAgents: peers.length }, details: 'Use repo_state for peers; omit max_bytes for full context.' };
-  const size = () => Buffer.byteLength(JSON.stringify(result), 'utf8');
-  if (size() > maxBytes) throw new Error('budget-too-small: mandatory context exceeds max_bytes; raise budget or split the file batch');
+  // Compute the base serialization size once; then track deltas per peer so
+  // we avoid an O(N^2) re-serialization of the growing otherAgents array.
+  let runningBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+  if (runningBytes > maxBytes) throw new Error('budget-too-small: mandatory context exceeds max_bytes; raise budget or split the file batch');
   for (const peer of peers) {
+    const peerBytes = Buffer.byteLength(JSON.stringify(peer), 'utf8');
+    // `,` separator added between array elements by JSON.stringify (no space).
+    const sepBytes = result.otherAgents.length === 0 ? 0 : 1;
+    // Digit-length change when omitted count decrements (e.g. 10→9 = -1 byte).
+    const curOmit = result.omitted.otherAgents;
+    const omitDelta = String(curOmit - 1).length - String(curOmit).length;
+    // "complete" flips false(5)→true(4) = -1 byte only when this is the last peer.
+    const completeDelta = curOmit === 1 ? -1 : 0;
+    if (runningBytes + peerBytes + sepBytes + omitDelta + completeDelta > maxBytes) {
+      continue;
+    }
     result.otherAgents.push(peer);
     result.omitted.otherAgents--;
     result.complete = result.omitted.otherAgents === 0;
-    if (size() > maxBytes) {
-      result.otherAgents.pop();
-      result.omitted.otherAgents++;
-      result.complete = false;
-    }
+    runningBytes += peerBytes + sepBytes + omitDelta + completeDelta;
   }
   result.complete = result.omitted.otherAgents === 0;
   return result;

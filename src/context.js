@@ -85,22 +85,11 @@ function resolveGithubCliBin(env = process.env) {
   return commandAvailable('ghx') ? 'ghx' : 'gh';
 }
 
-const GH_BIN = resolveGithubCliBin();
 const RTK_BIN = process.env.GUARDEX_RTK_BIN || 'rtk';
-const REQUIRED_SYSTEM_TOOLS = [
-  {
-    name: 'gh',
-    displayName: GH_BIN === 'ghx' ? 'GitHub (ghx proxy)' : 'GitHub (gh)',
-    command: GH_BIN,
-    installHint: 'https://cli.github.com/',
-  },
-  {
-    name: 'rtk',
-    displayName: 'RTK (rtk)',
-    command: RTK_BIN,
-    installHint: 'Install RTK and ensure `rtk` is on PATH.',
-  },
-];
+// GH_BIN and REQUIRED_SYSTEM_TOOLS are exported as lazy getters (see module.exports)
+// so that commandAvailable('ghx') is not called at require time on every gx invocation.
+let _ghBin;
+let _requiredSystemTools;
 const MAINTAINER_RELEASE_REPO = path.resolve(
   process.env.GUARDEX_RELEASE_REPO || PACKAGE_ROOT,
 );
@@ -1299,8 +1288,30 @@ module.exports = {
   GLOBAL_TOOLCHAIN_PACKAGES,
   OPTIONAL_LOCAL_COMPANION_TOOLS,
   resolveGithubCliBin,
-  GH_BIN,
-  REQUIRED_SYSTEM_TOOLS,
+  get GH_BIN() {
+    if (_ghBin === undefined) _ghBin = resolveGithubCliBin();
+    return _ghBin;
+  },
+  get REQUIRED_SYSTEM_TOOLS() {
+    if (!_requiredSystemTools) {
+      const ghBin = module.exports.GH_BIN;
+      _requiredSystemTools = [
+        {
+          name: 'gh',
+          displayName: ghBin === 'ghx' ? 'GitHub (ghx proxy)' : 'GitHub (gh)',
+          command: ghBin,
+          installHint: 'https://cli.github.com/',
+        },
+        {
+          name: 'rtk',
+          displayName: 'RTK (rtk)',
+          command: RTK_BIN,
+          installHint: 'Install RTK and ensure `rtk` is on PATH.',
+        },
+      ];
+    }
+    return _requiredSystemTools;
+  },
   MAINTAINER_RELEASE_REPO,
   NPM_BIN,
   OPENSPEC_BIN,

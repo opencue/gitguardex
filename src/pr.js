@@ -7,7 +7,7 @@
 // these helpers expose the same primitives to the JS CLI so `gx pr ...` can be
 // driven without invoking the shell flow.
 
-const { GH_BIN } = require('./context');
+const _ctx = require('./context');
 const { run } = require('./core/runtime');
 const {
   resolveRepoRoot,
@@ -33,12 +33,12 @@ class PrError extends Error {
 }
 
 function ghAvailable() {
-  const result = run(GH_BIN, ['--version'], { allowFailure: true });
+  const result = run(_ctx.GH_BIN, ['--version'], { allowFailure: true });
   return result.status === 0;
 }
 
 function ghAuthStatus() {
-  const result = run(GH_BIN, ['auth', 'status'], { allowFailure: true });
+  const result = run(_ctx.GH_BIN, ['auth', 'status'], { allowFailure: true });
   return {
     authenticated: result.status === 0,
     output: ((result.stdout || '') + (result.stderr || '')).trim(),
@@ -46,7 +46,7 @@ function ghAuthStatus() {
 }
 
 function ghJson(repoRoot, args) {
-  const result = run(GH_BIN, args, { cwd: repoRoot, allowFailure: true });
+  const result = run(_ctx.GH_BIN, args, { cwd: repoRoot, allowFailure: true });
   if (result.status !== 0) {
     return { ok: false, error: (result.stderr || result.stdout || '').trim(), data: null };
   }
@@ -92,7 +92,7 @@ function commitCheckRuns(repoRoot, headSha, runner = run) {
   const sha = String(headSha || '').trim();
   if (!/^[0-9a-f]{7,64}$/i.test(sha)) return [];
 
-  const result = runner(GH_BIN, [
+  const result = runner(_ctx.GH_BIN, [
     'api',
     repoApiPath(repoRoot, `commits/${sha}/check-runs?per_page=100`, runner),
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
@@ -122,7 +122,7 @@ function isBillingBlockedCheckRun(repoRoot, check, expectedCheckRunId, runner = 
   const jobId = githubActionsJobId(check);
   if (!jobId || !expectedCheckRunId) return false;
 
-  const jobResult = runner(GH_BIN, [
+  const jobResult = runner(_ctx.GH_BIN, [
     'api',
     repoApiPath(repoRoot, `actions/jobs/${jobId}`, runner),
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
@@ -144,7 +144,7 @@ function isBillingBlockedCheckRun(repoRoot, check, expectedCheckRunId, runner = 
   const annotationsPath = githubCheckRunAnnotationsPath(job, expectedCheckRunId);
   if (!annotationsPath) return false;
 
-  const result = runner(GH_BIN, [
+  const result = runner(_ctx.GH_BIN, [
     'api',
     repoApiPath(repoRoot, annotationsPath, runner),
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
@@ -334,7 +334,7 @@ function openPullRequest(options) {
   ];
   if (options.draft !== false) args.push('--draft');
 
-  const result = run(GH_BIN, args, { cwd: repoRoot, allowFailure: true });
+  const result = run(_ctx.GH_BIN, args, { cwd: repoRoot, allowFailure: true });
   if (result.status !== 0) {
     throw new PrError(
       `gh pr create failed:\n${(result.stderr || result.stdout || '').trim()}`,
@@ -435,13 +435,13 @@ function checkOutcomes(repoRoot, ref, runner = run) {
     }
   };
 
-  collect(runner(GH_BIN, [
+  collect(runner(_ctx.GH_BIN, [
     'api', '--paginate',
     repoApiPath(repoRoot, `commits/${ref}/check-runs?per_page=100`, runner),
     '-q', '.check_runs[] | select(.status == "completed") | "\\(.conclusion)\\t\\(.name)"',
   ], { cwd: repoRoot, timeout: 60_000, allowFailure: true }));
 
-  collect(runner(GH_BIN, [
+  collect(runner(_ctx.GH_BIN, [
     'api',
     repoApiPath(repoRoot, `commits/${ref}/status`, runner),
     '-q', '.statuses[] | "\\(.state)\\t\\(.context)"',
@@ -452,7 +452,7 @@ function checkOutcomes(repoRoot, ref, runner = run) {
 
 /** Head SHA of the most recently merged PR into `baseBranch`, or ''. */
 function lastMergedPrHead(repoRoot, baseBranch, runner = run) {
-  const result = runner(GH_BIN, [
+  const result = runner(_ctx.GH_BIN, [
     'api',
     // GitHub cannot sort by merge time; `updated` desc correlates with it far
     // better than the `created` desc default, which would rank a long-lived PR
@@ -518,7 +518,7 @@ function enableAutoMerge(repoRoot, prNumber, { strategy = 'squash' } = {}) {
   const flag = strategy === 'merge'
     ? '--merge'
     : strategy === 'rebase' ? '--rebase' : '--squash';
-  const result = run(GH_BIN, [
+  const result = run(_ctx.GH_BIN, [
     'pr', 'merge', String(prNumber),
     '--auto', flag, '--delete-branch',
   ], { cwd: repoRoot, allowFailure: true });
@@ -529,7 +529,7 @@ function enableAutoMerge(repoRoot, prNumber, { strategy = 'squash' } = {}) {
 }
 
 function markPullRequestReady(repoRoot, prNumber) {
-  const result = run(GH_BIN, ['pr', 'ready', String(prNumber)], {
+  const result = run(_ctx.GH_BIN, ['pr', 'ready', String(prNumber)], {
     cwd: repoRoot, allowFailure: true,
   });
   return {
@@ -539,7 +539,7 @@ function markPullRequestReady(repoRoot, prNumber) {
 }
 
 function markPullRequestDraft(repoRoot, prNumber) {
-  const result = run(GH_BIN, ['pr', 'ready', '--undo', String(prNumber)], {
+  const result = run(_ctx.GH_BIN, ['pr', 'ready', '--undo', String(prNumber)], {
     cwd: repoRoot, allowFailure: true,
   });
   return {
