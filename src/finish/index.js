@@ -85,56 +85,55 @@ function shouldSkipBranchPreflight(options = {}) {
  * @throws {Error} When the lock-claim or allow-delete subprocess exits non-zero.
  */
 function claimLocksForAutoCommit(repoRoot, worktreePath, branch) {
-  const changedFiles = uniquePreserveOrder([
-    ...gitOutputLines(worktreePath, ['diff', '--name-only', '--', '.', ':(exclude).omx/state/agent-file-locks.json']),
-    ...gitOutputLines(worktreePath, ['diff', '--cached', '--name-only', '--', '.', ':(exclude).omx/state/agent-file-locks.json']),
+  // Use --name-status for both staged and unstaged diffs so changed and
+  // deleted files are derived from two git calls instead of four.
+  const changedFiles = [];
+  const deletedFiles = [];
+  for (const args of [
+    ['diff', '--name-status', '--', '.', `:(exclude)${LOCK_FILE_RELATIVE}`],
+    ['diff', '--cached', '--name-status', '--', '.', `:(exclude)${LOCK_FILE_RELATIVE}`],
+  ]) {
+    for (const line of gitOutputLines(worktreePath, args)) {
+      const tab = line.indexOf('\t');
+      if (tab === -1) continue;
+      const status = line.slice(0, tab);
+      const rest = line.slice(tab + 1);
+      // Renames (R100\told\tnew): take the destination name after the second tab.
+      const file = rest.includes('\t') ? rest.slice(rest.indexOf('\t') + 1) : rest;
+      if (status === 'D') {
+        deletedFiles.push(file);
+      } else {
+        changedFiles.push(file);
+      }
+    }
+  }
+
+  const allChanged = uniquePreserveOrder([
+    ...changedFiles,
     ...gitOutputLines(worktreePath, ['ls-files', '--others', '--exclude-standard']),
   ]);
+  const allDeleted = uniquePreserveOrder(deletedFiles);
 
-  if (changedFiles.length > 0) {
-    const claim = runPackageAsset('lockTool', ['claim', '--branch', branch, ...changedFiles], {
+  if (allChanged.length > 0) {
+    const claim = runPackageAsset('lockTool', ['claim', '--branch', branch, ...allChanged], {
       cwd: repoRoot,
       stdio: 'pipe',
     });
     if (claim.status !== 0) {
       throw new Error(
-        `Lock claim failed for ${branch}: ${(
-          claim.stderr || claim.stdout || ''
-        ).trim()}`,
+        `Lock claim failed for ${branch}: ${(claim.stderr || claim.stdout || '').trim()}`,
       );
     }
   }
 
-  const deletedFiles = uniquePreserveOrder([
-    ...gitOutputLines(worktreePath, [
-      'diff',
-      '--name-only',
-      '--diff-filter=D',
-      '--',
-      '.',
-      ':(exclude).omx/state/agent-file-locks.json',
-    ]),
-    ...gitOutputLines(worktreePath, [
-      'diff',
-      '--cached',
-      '--name-only',
-      '--diff-filter=D',
-      '--',
-      '.',
-      ':(exclude).omx/state/agent-file-locks.json',
-    ]),
-  ]);
-
-  if (deletedFiles.length > 0) {
-    const allowDelete = runPackageAsset('lockTool', ['allow-delete', '--branch', branch, ...deletedFiles], {
+  if (allDeleted.length > 0) {
+    const allowDelete = runPackageAsset('lockTool', ['allow-delete', '--branch', branch, ...allDeleted], {
       cwd: repoRoot,
       stdio: 'pipe',
     });
     if (allowDelete.status !== 0) {
       throw new Error(
-        `Delete-lock grant failed for ${branch}: ${(
-          allowDelete.stderr || allowDelete.stdout || ''
-        ).trim()}`,
+        `Delete-lock grant failed for ${branch}: ${(allowDelete.stderr || allowDelete.stdout || '').trim()}`,
       );
     }
   }

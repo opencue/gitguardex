@@ -381,24 +381,24 @@ function listLocalAgentBranches(repoRoot) {
  * @returns {Map<string, string>} Branch -> absolute worktree path; empty on failure.
  */
 function mapWorktreePathsByBranch(repoRoot) {
-  const result = gitRun(repoRoot, ['worktree', 'list', '--porcelain'], { allowFailure: true });
+  const result = gitRun(repoRoot, ['worktree', 'list', '--porcelain', '-z'], { allowFailure: true });
   const map = new Map();
   if (result.status !== 0) {
     return map;
   }
 
-  const lines = String(result.stdout || '').split('\n');
-  let currentWorktree = '';
-  for (const line of lines) {
-    if (line.startsWith('worktree ')) {
-      currentWorktree = line.slice('worktree '.length).trim();
-      continue;
-    }
-    if (line.startsWith('branch refs/heads/')) {
-      const branchName = line.slice('branch refs/heads/'.length).trim();
-      if (currentWorktree && branchName) {
-        map.set(branchName, currentWorktree);
+  for (const record of String(result.stdout || '').split('\0\0').filter(Boolean)) {
+    let worktreePath = '';
+    let branchName = '';
+    for (const field of record.split('\0')) {
+      if (field.startsWith('worktree ')) {
+        worktreePath = field.slice('worktree '.length);
+      } else if (field.startsWith('branch refs/heads/')) {
+        branchName = field.slice('branch refs/heads/'.length);
       }
+    }
+    if (worktreePath && branchName) {
+      map.set(branchName, worktreePath);
     }
   }
   return map;
@@ -930,41 +930,28 @@ function lockRegistryStatus(repoRoot) {
  * @throws {Error} When `git worktree list` cannot run.
  */
 function listAgentWorktrees(repoRoot) {
-  const result = gitRun(repoRoot, ['worktree', 'list', '--porcelain'], { allowFailure: true });
+  const result = gitRun(repoRoot, ['worktree', 'list', '--porcelain', '-z'], { allowFailure: true });
   if (result.status !== 0) {
     throw new Error('Unable to list git worktrees for finish command');
   }
 
   const entries = [];
-  let currentPath = '';
-  let currentBranchRef = '';
-  const lines = String(result.stdout || '').split('\n');
-  for (const line of lines) {
-    if (!line.trim()) {
-      if (currentPath && currentBranchRef.startsWith('refs/heads/agent/')) {
-        entries.push({
-          worktreePath: currentPath,
-          branch: currentBranchRef.replace(/^refs\/heads\//, ''),
-        });
+  for (const record of String(result.stdout || '').split('\0\0').filter(Boolean)) {
+    let currentPath = '';
+    let currentBranchRef = '';
+    for (const field of record.split('\0')) {
+      if (field.startsWith('worktree ')) {
+        currentPath = field.slice('worktree '.length);
+      } else if (field.startsWith('branch ')) {
+        currentBranchRef = field.slice('branch '.length);
       }
-      currentPath = '';
-      currentBranchRef = '';
-      continue;
     }
-    if (line.startsWith('worktree ')) {
-      currentPath = line.slice('worktree '.length).trim();
-      continue;
+    if (currentPath && currentBranchRef.startsWith('refs/heads/agent/')) {
+      entries.push({
+        worktreePath: currentPath,
+        branch: currentBranchRef.replace(/^refs\/heads\//, ''),
+      });
     }
-    if (line.startsWith('branch ')) {
-      currentBranchRef = line.slice('branch '.length).trim();
-      continue;
-    }
-  }
-  if (currentPath && currentBranchRef.startsWith('refs/heads/agent/')) {
-    entries.push({
-      worktreePath: currentPath,
-      branch: currentBranchRef.replace(/^refs\/heads\//, ''),
-    });
   }
 
   return entries;
@@ -1021,7 +1008,7 @@ function worktreeHasLocalChanges(worktreePath) {
     '--quiet',
     '--',
     '.',
-    ':(exclude).omx/state/agent-file-locks.json',
+    `:(exclude)${LOCK_FILE_RELATIVE}`,
   ]);
   if (hasUnstaged) {
     return true;
@@ -1033,7 +1020,7 @@ function worktreeHasLocalChanges(worktreePath) {
     '--quiet',
     '--',
     '.',
-    ':(exclude).omx/state/agent-file-locks.json',
+    `:(exclude)${LOCK_FILE_RELATIVE}`,
   ]);
   if (hasStaged) {
     return true;
@@ -1137,18 +1124,16 @@ function inferBaseBranchFromHistory(repoRoot, sourceBranch, {
 
   // 2. Ancestry search: build ordered, deduped candidate set.
   const seen = new Set();
-  /** @type {string[]} */
+  /** @type {Array<{name: string, ref: string}>} */
   const candidates = [];
 
   /** @param {string} name */
   function addCandidate(name) {
     if (!name || seen.has(name)) return;
     seen.add(name);
-    if (
-      branchExists(repoRoot, name) ||
-      gitRefExists(repoRoot, `refs/remotes/origin/${name}`)
-    ) {
-      candidates.push(name);
+    const hasRemote = gitRefExists(repoRoot, `refs/remotes/origin/${name}`);
+    if (branchExists(repoRoot, name) || hasRemote) {
+      candidates.push({ name, ref: hasRemote ? `origin/${name}` : name });
     }
   }
 
@@ -1172,10 +1157,7 @@ function inferBaseBranchFromHistory(repoRoot, sourceBranch, {
   /** @type {string[]} */
   let bestCandidates = [];
 
-  for (const candidate of candidates) {
-    const ref = gitRefExists(repoRoot, `refs/remotes/origin/${candidate}`)
-      ? `origin/${candidate}`
-      : candidate;
+  for (const { name: candidate, ref } of candidates) {
     const mbResult = gitRun(repoRoot, ['merge-base', sourceBranch, ref], { allowFailure: true });
     if (mbResult.status !== 0) continue;
     const mb = String(mbResult.stdout || '').trim();

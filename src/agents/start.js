@@ -479,7 +479,7 @@ function startSingleAgentLane(repoRoot, options, deps = {}) {
   const metadata = extractAgentBranchStartMetadata(stdout);
   const session = writeAgentSession(repoRoot, options, metadata, 'active');
   stdout = appendSessionId(stdout, session);
-  if (options.claims.length === 0) {
+  if (!options.claims || options.claims.length === 0) {
     return { status: 0, stdout, stderr, session };
   }
 
