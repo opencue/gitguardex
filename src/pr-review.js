@@ -907,14 +907,14 @@ function runPrReview(options, deps = {}) {
   const lensContext = prLensEnabled(options.prLens)
     ? preparePrLens(pr, repoRoot, resolveReviewTimeoutMs(options.timeoutMs), runner)
     : null;
+  // Capture the head SHA BEFORE fetching the diff so any push that arrives
+  // between these calls shows up as a mismatch in the posting guard (the guard
+  // checks reviewedHeadSha against the live head at post time).
+  const prHeadSha = options.post ? fetchHeadSha(pr, repoRoot, runner) : null;
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
   const { diff, truncated } = capDiff(rawDiff);
   if (lensContext && truncated)
     throw new Error('PR Lens requires a complete diff; review diff is truncated');
-  // Capture the PR head SHA only when posting so the mismatch guard in
-  // postGithubReview is active on the non-Lens post path without adding an
-  // extra gh call on every non-posting (artifact-only) invocation.
-  const prHeadSha = options.post ? fetchHeadSha(pr, repoRoot, runner) : null;
   const { findings: providerFindings, graph } = runProviderReviewPayload(
     provider,
     diff,
