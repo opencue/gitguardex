@@ -92,7 +92,7 @@ test('installSpeckit throws when specify is missing and silent is false', () => 
   withEmptyPath(emptyDir, () => {
     assert.throws(
       () => installSpeckit({ target, silent: false, logger: () => {} }),
-      (err) => /not found on PATH/i.test(err.message),
+      (err) => /not found on PATH/i.test(err.message)
     );
   });
 });
@@ -105,7 +105,7 @@ test('installSpeckit throws when runSpecifyInit exits non-zero', () => {
   withPath(fakeBin, () => {
     assert.throws(
       () => installSpeckit({ target, logger: () => {} }),
-      (err) => /exited with status 2/i.test(err.message),
+      (err) => /exited with status 2/i.test(err.message)
     );
   });
 });
@@ -123,7 +123,7 @@ test('installSpeckit throws with timeout message when specify hangs', () => {
     withPath(fakeBin, () => {
       assert.throws(
         () => installSpeckit({ target, logger: () => {} }),
-        (err) => /timed out/i.test(err.message) && /SIGTERM/i.test(err.message),
+        (err) => /timed out/i.test(err.message) && /SIGTERM/i.test(err.message)
       );
     });
   } finally {
