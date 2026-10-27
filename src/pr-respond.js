@@ -115,12 +115,15 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
   }
   const [owner, name] = slug.split('/');
 
-  // One query: viewer login, CHANGES_REQUESTED reviewers, and review threads.
+  // One query: viewer login, all recent reviews (unfiltered), and review threads.
+  // We fetch all review states and compute the latest state per reviewer so that
+  // a reviewer who subsequently approved or dismissed their CHANGES_REQUESTED
+  // review is not treated as still blocking.
   const query = [
     'query($owner:String!,$name:String!,$pr:Int!){',
     'viewer{login}',
     'repository(owner:$owner,name:$name){pullRequest(number:$pr){',
-    'reviews(states:[CHANGES_REQUESTED],last:20){nodes{author{login}}}',
+    'reviews(last:50){nodes{author{login}state}}',
     'reviewThreads(first:100){nodes{',
     'id isResolved isOutdated path line startLine',
     'comments(first:3){nodes{id body author{login}}}',
@@ -170,11 +173,20 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     throw new Error('authenticated GitHub identity unavailable');
   }
 
-  // Reviewers whose latest submitted state is CHANGES_REQUESTED.
+  // Build a map of reviewer → latest review state (reviews are returned oldest-first
+  // when using `last:N`, so later entries overwrite earlier ones — i.e. the Map
+  // retains the most-recently-submitted state for each author).
+  const latestStateByReviewer = new Map();
+  for (const review of payload?.data?.repository?.pullRequest?.reviews?.nodes || []) {
+    const login = String(review?.author?.login || '').toLowerCase();
+    const state = String(review?.state || '');
+    if (login && state) latestStateByReviewer.set(login, state);
+  }
+  // Only treat a reviewer as "blocking" when their most recent review is CHANGES_REQUESTED.
   const humanReviewers = new Set(
-    (payload?.data?.repository?.pullRequest?.reviews?.nodes || [])
-      .map((review) => String(review?.author?.login || '').toLowerCase())
-      .filter(Boolean)
+    [...latestStateByReviewer.entries()]
+      .filter(([, state]) => state === 'CHANGES_REQUESTED')
+      .map(([login]) => login)
   );
 
   const rawThreads = payload?.data?.repository?.pullRequest?.reviewThreads;
@@ -496,16 +508,23 @@ function prRespond(options = {}, deps = {}) {
     );
   } catch (error) {
     // Non-fatal: fix is already pushed. Log but don't fail the whole respond.
-    console.log(`${TOOL_PREFIX} re-review failed (fix is pushed): ${error.message}`);
+    process.stderr.write(`${TOOL_PREFIX} re-review failed (fix is pushed): ${error.message}\n`);
     reReviewResult = null;
   }
 
   // 8. Reply + resolve threads whose files were touched by the fix.
+  // Only resolve when re-review succeeded: a null result means re-review threw,
+  // so we cannot confirm the defect was addressed — leave threads open for human review.
   const resolved = [];
   const skippedReply = [];
   for (let index = 0; index < threads.length; index += 1) {
     const thread = threads[index];
     if (!changedFiles.has(thread.path)) {
+      skippedReply.push(thread.id);
+      continue;
+    }
+    if (reReviewResult === null) {
+      // Re-review failed: cannot confirm fix; leave thread open.
       skippedReply.push(thread.id);
       continue;
     }
@@ -516,13 +535,17 @@ function prRespond(options = {}, deps = {}) {
     ].join('\n');
     const replyResult = replyToThread(thread.id, replyBody, repoRoot, runner);
     if (!replyResult.ok) {
-      console.log(`${TOOL_PREFIX} failed to reply to thread ${thread.id}: ${replyResult.output}`);
+      process.stderr.write(
+        `${TOOL_PREFIX} failed to reply to thread ${thread.id}: ${replyResult.output}\n`
+      );
     }
     const resolveResult = resolveThread(thread.id, repoRoot, runner);
     if (resolveResult.ok) {
       resolved.push(thread.id);
     } else {
-      console.log(`${TOOL_PREFIX} failed to resolve thread ${thread.id}: ${resolveResult.output}`);
+      process.stderr.write(
+        `${TOOL_PREFIX} failed to resolve thread ${thread.id}: ${resolveResult.output}\n`
+      );
     }
   }
 
