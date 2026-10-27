@@ -129,6 +129,9 @@ function pruneStaleLocks(lockDir) {
     const p = path.join(lockDir, entry);
     try {
       const content = fs.readFileSync(p, 'utf8').trim();
+      // An empty file means tryClaimPort is still writing (open/write window).
+      // Keep it rather than pruning it between the O_EXCL create and the write.
+      if (content === '') continue;
       // Keep the lock only when the content is an absolute path that still exists
       // (meaning the worktree that holds this reservation is still present).
       if (path.isAbsolute(content) && fs.existsSync(content)) continue;

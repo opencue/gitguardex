@@ -25,24 +25,32 @@ function makeTmpDir() {
 
 test('tryClaimPort creates a lock file with O_EXCL on first call', () => {
   const lockDir = makeTmpDir();
-  const result = tryClaimPort(lockDir, 9999);
+  const worktreePath = makeTmpDir();
+  const result = tryClaimPort(lockDir, 9999, worktreePath);
   assert.equal(result, true, 'first claim must succeed');
   const lockPath = path.join(lockDir, 'port-9999.lock');
   assert.ok(fs.existsSync(lockPath), 'lock file must exist after claim');
+  assert.equal(
+    fs.readFileSync(lockPath, 'utf8'),
+    worktreePath,
+    'lock must record the worktree path'
+  );
   releasePortLock(lockDir, 9999);
 });
 
 test('tryClaimPort returns false when the port is already claimed', () => {
   const lockDir = makeTmpDir();
-  tryClaimPort(lockDir, 9998);
-  const second = tryClaimPort(lockDir, 9998);
+  const worktreePath = makeTmpDir();
+  tryClaimPort(lockDir, 9998, worktreePath);
+  const second = tryClaimPort(lockDir, 9998, worktreePath);
   assert.equal(second, false, 'second claim must fail when file exists');
   releasePortLock(lockDir, 9998);
 });
 
 test('releasePortLock removes the lock file', () => {
   const lockDir = makeTmpDir();
-  tryClaimPort(lockDir, 9997);
+  const worktreePath = makeTmpDir();
+  tryClaimPort(lockDir, 9997, worktreePath);
   releasePortLock(lockDir, 9997);
   assert.equal(
     fs.existsSync(path.join(lockDir, 'port-9997.lock')),
@@ -63,25 +71,36 @@ test('releasePortLock is a no-op when lockDir is null', () => {
 // pruneStaleLocks
 // ---------------------------------------------------------------------------
 
-test('pruneStaleLocks removes files older than 120 s', () => {
+test('pruneStaleLocks removes locks whose recorded worktree no longer exists', () => {
   const lockDir = makeTmpDir();
   const stale = path.join(lockDir, 'port-7777.lock');
-  fs.writeFileSync(stale, '12345');
-  // Back-date the mtime to 130 s ago.
-  const past = new Date(Date.now() - 130_000);
-  fs.utimesSync(stale, past, past);
+  // Record a path that does not exist — simulates a removed worktree.
+  fs.writeFileSync(stale, '/tmp/guardex-nonexistent-worktree-' + Date.now());
 
   pruneStaleLocks(lockDir);
-  assert.equal(fs.existsSync(stale), false, 'stale lock must be removed');
+  assert.equal(fs.existsSync(stale), false, 'lock with gone worktree must be removed');
 });
 
-test('pruneStaleLocks keeps fresh lock files', () => {
+test('pruneStaleLocks removes legacy lock files (PID content, not an absolute path)', () => {
   const lockDir = makeTmpDir();
-  tryClaimPort(lockDir, 7776);
+  const legacy = path.join(lockDir, 'port-7778.lock');
+  fs.writeFileSync(legacy, '12345'); // PID-format from old tool version
+
+  pruneStaleLocks(lockDir);
+  assert.equal(fs.existsSync(legacy), false, 'legacy PID-format lock must be removed');
+});
+
+test('pruneStaleLocks keeps locks whose worktree still exists', () => {
+  const lockDir = makeTmpDir();
+  const worktreePath = makeTmpDir(); // exists
+  tryClaimPort(lockDir, 7776, worktreePath);
 
   pruneStaleLocks(lockDir);
 
-  assert.ok(fs.existsSync(path.join(lockDir, 'port-7776.lock')), 'fresh lock must survive prune');
+  assert.ok(
+    fs.existsSync(path.join(lockDir, 'port-7776.lock')),
+    'lock for live worktree must survive prune'
+  );
   releasePortLock(lockDir, 7776);
 });
 
@@ -102,7 +121,7 @@ test('assignAgentPort skips an already-claimed port and picks the next free one'
 
   const lockDir = makeTmpDir();
   // Claim port 9101 (the backend base) upfront to force assignAgentPort to skip it.
-  tryClaimPort(lockDir, 9101);
+  tryClaimPort(lockDir, 9101, worktreePath);
 
   const takenPorts = new Set();
   const result = assignAgentPort(repoRoot, worktreePath, 'backend', takenPorts, lockDir);
@@ -131,9 +150,9 @@ test('assignAgentPort writes PORT to .env.local', () => {
 });
 
 test('assignAgentPort holds the O_EXCL lock beyond its return (not released internally)', () => {
-  // The lock must NOT be released by assignAgentPort.  It persists until the
-  // 120-second stale window so that a subsequent preparation cannot claim the
-  // same port before the application binds its socket.  _assignedPort and
+  // The lock must NOT be released by assignAgentPort.  It persists as long as
+  // the worktree directory exists so that a subsequent preparation cannot claim
+  // the same port before the application binds its socket.  _assignedPort and
   // _lockDir are exposed for explicit test teardown only.
   const repoRoot = makeTmpDir();
   const worktreePath = makeTmpDir();
