@@ -5,6 +5,7 @@ const {
   envFlagIsTruthy,
 } = require('../context');
 const { DEFAULT_NESTED_REPO_MAX_DEPTH } = require('../git');
+const { applyGateFlagAt } = require('./shared/gate-flags');
 
 function requireValue(rawArgs, index, flagName) {
   const value = rawArgs[index + 1];
@@ -1292,6 +1293,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     // them. Off by default: this writes commits to the branch.
     gateAutofix: false,
     gateAutofixRounds: 1,
+    gateAbide: defaults.gateAbide ?? true,
     // After a bulk `--all` finish, sweep merged-but-stranded worktree dirs whose
     // branch was merged out-of-band and never reaped (the post-merge "retained"
     // gap). Only fires for `--all`; opt out with --no-sweep-orphans.
@@ -1427,79 +1429,9 @@ function parseFinishArgs(rawArgs, defaults = {}) {
       options.skipPreflight = true;
       continue;
     }
-    if (arg === '--gate-review') {
-      options.gateReview = true;
-      continue;
-    }
-    if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
-      options.gateReview = false;
-      continue;
-    }
-    if (arg === '--allow-no-checks') {
-      options.allowNoChecks = true;
-      continue;
-    }
-    if (arg === '--gate-baseline') {
-      options.gateBaseline = true;
-      continue;
-    }
-    if (arg === '--no-gate-baseline') {
-      options.gateBaseline = false;
-      continue;
-    }
-    if (arg === '--gate-autofix') {
-      options.gateAutofix = true;
-      continue;
-    }
-    if (arg === '--no-gate-autofix') {
-      options.gateAutofix = false;
-      continue;
-    }
-    if (arg === '--gate-autofix-rounds') {
-      const raw = rawArgs[index + 1];
-      const rounds = Number.parseInt(String(raw ?? ''), 10);
-      if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) {
-        throw new Error('--gate-autofix-rounds requires an integer between 1 and 5');
-      }
-      options.gateAutofixRounds = rounds;
-      options.gateAutofix = true;
-      index += 1;
-      continue;
-    }
-    if (arg === '--review-provider') {
-      const next = rawArgs[index + 1];
-      if (!next || !['codex', 'claude'].includes(next)) {
-        throw new Error('--review-provider requires a value of codex|claude');
-      }
-      options.reviewProvider = next;
-      index += 1;
-      continue;
-    }
-    if (arg === '--review-model') {
-      const next = String(rawArgs[index + 1] ?? '').trim();
-      if (!next || next.startsWith('-')) {
-        throw new Error('--review-model requires a model name (e.g. sonnet)');
-      }
-      options.reviewModel = next;
-      index += 1;
-      continue;
-    }
-    if (arg === '--review-timeout-ms') {
-      const raw = rawArgs[index + 1];
-      const timeoutMs = Number.parseInt(String(raw ?? ''), 10);
-      if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-        throw new Error('--review-timeout-ms requires a positive integer');
-      }
-      options.reviewTimeoutMs = timeoutMs;
-      index += 1;
-      continue;
-    }
-    if (arg === '--gate-serial-ci') {
-      options.gateSerialCi = true;
-      continue;
-    }
-    if (arg === '--no-gate-serial-ci') {
-      options.gateSerialCi = false;
+    const consumed = applyGateFlagAt(rawArgs, index, options);
+    if (consumed > 0) {
+      index += consumed - 1;
       continue;
     }
     throw new Error(`Unknown option: ${arg}`);
@@ -1510,7 +1442,6 @@ function parseFinishArgs(rawArgs, defaults = {}) {
       '--gate-review',
       '--gate-autofix',
       '--gate-autofix-rounds',
-      '--preflight',
       '--direct-only',
     ].includes(arg));
     const modeIndex = rawArgs.indexOf('--mode');
