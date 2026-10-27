@@ -350,6 +350,79 @@ test('fetchBlockingThreads excludes human threads when reviewer later approved',
   assert.deepEqual(threads, []);
 });
 
+test('fetchBlockingThreads excludes human threads when reviewer commented after CHANGES_REQUESTED (COMMENTED does not clear blocking)', () => {
+  const humanThread = {
+    id: 'thread-commented',
+    isResolved: false,
+    isOutdated: false,
+    path: 'src/g.js',
+    line: 5,
+    startLine: null,
+    comments: {
+      nodes: [
+        {
+          id: 'c-commented',
+          body: 'Add a null check here.',
+          author: { login: 'reviewer-carol' }
+        }
+      ]
+    }
+  };
+  // reviewer-carol requested changes, then left a COMMENTED review — COMMENTED must not clear CR.
+  const reviews = [
+    { author: { login: 'reviewer-carol' }, state: 'CHANGES_REQUESTED' },
+    { author: { login: 'reviewer-carol' }, state: 'COMMENTED' }
+  ];
+  const runner = makeGhRunner({ threads: [humanThread], reviews });
+  const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
+  assert.equal(threads.length, 1, 'COMMENTED should not override CHANGES_REQUESTED');
+  assert.equal(threads[0].id, 'thread-commented');
+});
+
+test('fetchBlockingThreads excludes LEFT-side diff threads (deleted-line coordinates)', () => {
+  const botLogin = 'gitguardex-bot'; // must match makeGhRunner default login
+  const leftThread = {
+    id: 'thread-left',
+    isResolved: false,
+    isOutdated: false,
+    diffSide: 'LEFT',
+    path: 'src/h.js',
+    line: 10,
+    startLine: null,
+    comments: {
+      nodes: [
+        {
+          id: 'c-left',
+          body: `> 🟠 **HIGH** · correctness\n\nDeleted line issue.\n\n${MARKER}`,
+          author: { login: botLogin }
+        }
+      ]
+    }
+  };
+  const rightThread = {
+    id: 'thread-right',
+    isResolved: false,
+    isOutdated: false,
+    diffSide: 'RIGHT',
+    path: 'src/h.js',
+    line: 12,
+    startLine: null,
+    comments: {
+      nodes: [
+        {
+          id: 'c-right',
+          body: `> 🟠 **HIGH** · correctness\n\nRight-side issue.\n\n${MARKER}`,
+          author: { login: botLogin }
+        }
+      ]
+    }
+  };
+  const runner = makeGhRunner({ threads: [leftThread, rightThread], reviews: [] });
+  const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
+  assert.equal(threads.length, 1, 'only RIGHT-side thread should remain');
+  assert.equal(threads[0].id, 'thread-right');
+});
+
 test('fetchBlockingThreads does not include human threads from non-CHANGES_REQUESTED reviewers', () => {
   const humanThread = {
     id: 'thread-human',

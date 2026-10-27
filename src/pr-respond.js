@@ -447,19 +447,20 @@ function prRespond(options = {}, deps = {}) {
         reason: `git fetch origin ${branch} failed — cannot verify worktree HEAD against remote: ${(fetchResult.stderr || '').trim()}`
       };
     }
-    // Step 3: compare local HEAD to the freshly-fetched tracking ref.
+    // Step 3: compare local HEAD to FETCH_HEAD — the SHA git wrote for the branch
+    // we just fetched. Using refs/remotes/origin/<branch> could be stale if the
+    // fetch refspec doesn't update that tracking ref.
     const localHead = String(
       gitRun(worktreePath, ['rev-parse', 'HEAD'], { allowFailure: true }).stdout || ''
     ).trim();
     const remoteHead = String(
-      gitRun(worktreePath, ['rev-parse', `refs/remotes/origin/${branch}`], { allowFailure: true })
-        .stdout || ''
+      gitRun(worktreePath, ['rev-parse', 'FETCH_HEAD'], { allowFailure: true }).stdout || ''
     ).trim();
     if (localHead && remoteHead && localHead !== remoteHead) {
       return {
         status: 'skipped',
         reason:
-          `worktree HEAD (${localHead.slice(0, 8)}) does not match origin/${branch} ` +
+          `worktree HEAD (${localHead.slice(0, 8)}) does not match remote HEAD ` +
           `(${remoteHead.slice(0, 8)}) — pull or push the branch first`
       };
     }
