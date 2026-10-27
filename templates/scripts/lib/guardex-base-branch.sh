@@ -202,6 +202,6 @@ resolve_base_branch() {
     fi
   done
 
-  # 6. Absolute fallback.
-  printf '%s' "main"
+  # 6. Absolute fallback — matches src/context.js DEFAULT_BASE_BRANCH.
+  printf '%s' "dev"
 }
