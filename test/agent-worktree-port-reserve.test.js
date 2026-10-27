@@ -252,7 +252,7 @@ test('pruneStaleLocks leaves a lock that was replaced after it was judged stale'
   // prune's read and its removal.
   const realRead = fs.readFileSync;
   let swapped = false;
-  fs.readFileSync = function (file, ...rest) {
+  fs.readFileSync = (file, ...rest) => {
     const out = realRead.call(fs, file, ...rest);
     if (!swapped && file === lockPath) {
       swapped = true;
@@ -267,4 +267,16 @@ test('pruneStaleLocks leaves a lock that was replaced after it was judged stale'
   }
   assert.equal(fs.readFileSync(lockPath, 'utf8'), `${liveWorktree}\nbackend`);
   assert.deepEqual(fs.readdirSync(lockDir), ['port-9300.lock']);
+});
+
+test('pruneStaleLocks removes an empty lock left by a claimer that died mid-write', () => {
+  const lockDir = makeTmpDir();
+  const fresh = path.join(lockDir, 'port-9400.lock');
+  const abandoned = path.join(lockDir, 'port-9401.lock');
+  fs.writeFileSync(fresh, '');
+  fs.writeFileSync(abandoned, '');
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  fs.utimesSync(abandoned, old, old);
+  pruneStaleLocks(lockDir);
+  assert.deepEqual(fs.readdirSync(lockDir), ['port-9400.lock']);
 });

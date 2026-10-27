@@ -134,13 +134,24 @@ function pruneStaleLocks(lockDir) {
       continue; // already removed by a concurrent pruner
     }
     // An empty file means tryClaimPort is still writing (open/write window).
-    // Keep it rather than pruning it between the O_EXCL create and the write.
-    if (content.trim() === '') continue;
+    // Keep it rather than pruning it between the O_EXCL create and the write,
+    // unless it is old enough that the claimer must have died mid-write.
+    if (content.trim() === '' && !isOlderThan(p, EMPTY_LOCK_GRACE_MS)) continue;
     // Keep the lock only when the content is an absolute path that still exists
     // (meaning the worktree that holds this reservation is still present).
     const owner = content.trim().split('\n')[0];
     if (path.isAbsolute(owner) && fs.existsSync(owner)) continue;
     removeLockIfUnchanged(p, content);
+  }
+}
+
+const EMPTY_LOCK_GRACE_MS = 120_000;
+
+function isOlderThan(file, ms) {
+  try {
+    return Date.now() - fs.statSync(file).mtimeMs >= ms;
+  } catch {
+    return false;
   }
 }
 
