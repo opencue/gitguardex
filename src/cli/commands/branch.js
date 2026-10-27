@@ -23,8 +23,7 @@ const { createFinishProgress, summarizeFinishRun } = require('../../finish/progr
 const { autoCommitWorktreeForFinish } = require('../../finish');
 const { finish, merge } = require('./finish');
 const { locks } = require('../shared-locks');
-
-const REVIEW_PROVIDERS = ['codex', 'claude'];
+const { REVIEW_PROVIDERS, applyGateFlagAt } = require('../shared/gate-flags');
 
 function printBranchFinishHelp() {
   console.log(`USAGE: ${SHORT_TOOL_NAME} branch finish [options]
@@ -78,22 +77,29 @@ function isBranchFinishHelpRequest(args) {
 function splitGateReviewFlags(args) {
   const scriptArgs = [];
   let fastMode = false;
-  let gateReview = false;
-  let reviewProvider;
-  let gateAutofix = false;
-  let gateAutofixRounds = 1;
-  let gateBaseline = false;
-  let gateAbide = true;
-  let gateSerialCi = true;
-  let allowNoChecks = false;
-  let reviewModel;
-  let reviewTimeoutMs;
   let noAutoCommit = false;
   let commitMessage = '';
   let agentQuiet = false;
+  // Gate-flag options — populated by applyGateFlagAt below.
+  const gateOpts = {
+    gateReview: false,
+    reviewProvider: undefined,
+    reviewModel: undefined,
+    reviewTimeoutMs: undefined,
+    gateAutofix: false,
+    gateAutofixRounds: 1,
+    gateBaseline: false,
+    gateAbide: true,
+    gateSerialCi: true,
+    allowNoChecks: false,
+  };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--fast') {
+    const consumed = applyGateFlagAt(args, index, gateOpts);
+    if (consumed > 0) {
+      // Gate flags are consumed here; applyGateFlagAt already validated them.
+      index += consumed - 1;
+    } else if (arg === '--fast') {
       fastMode = true;
     } else if (arg === '--agent-quiet') {
       agentQuiet = true;
@@ -105,66 +111,6 @@ function splitGateReviewFlags(args) {
         throw new Error('--commit-message requires a value');
       }
       index += 1;
-    } else if (arg === '--gate-review') {
-      gateReview = true;
-    } else if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
-      gateReview = false;
-    } else if (arg === '--gate-serial-ci') {
-      gateSerialCi = true;
-    } else if (arg === '--no-gate-serial-ci') {
-      gateSerialCi = false;
-    } else if (arg === '--review-model') {
-      // Consume the value for the same reason as --review-provider: a bare
-      // model name left behind becomes a positional the shell script rejects.
-      reviewModel = args[index + 1] ?? '';
-      index += 1;
-    } else if (arg.startsWith('--review-model=')) {
-      reviewModel = arg.slice('--review-model='.length);
-    } else if (arg === '--review-timeout-ms' || arg.startsWith('--review-timeout-ms=')) {
-      // The shell script does not know this gx-level gate flag either.
-      reviewTimeoutMs = arg.includes('=') ? arg.slice('--review-timeout-ms='.length) : (args[index + 1] ?? '');
-      if (!arg.includes('=')) index += 1;
-    } else if (arg === '--allow-no-checks') {
-      // The gate's own escape hatch for a repo with no CI; the shell script
-      // does not know it, and dropping it made the gate refuse forever.
-      allowNoChecks = true;
-    } else if (arg === '--gate-baseline') {
-      gateBaseline = true;
-    } else if (arg === '--no-gate-baseline') {
-      gateBaseline = false;
-    } else if (arg === '--gate-abide') {
-      gateAbide = true;
-    } else if (arg === '--no-gate-abide') {
-      gateAbide = false;
-    } else if (arg === '--gate-autofix') {
-      gateAutofix = true;
-    } else if (arg === '--no-gate-autofix') {
-      gateAutofix = false;
-    } else if (arg === '--gate-autofix-rounds' || arg.startsWith('--gate-autofix-rounds=')) {
-      // Consume the value too, for the same reason as --review-provider: a bare
-      // number left behind becomes a positional the shell script rejects.
-      let raw;
-      if (arg.includes('=')) {
-        raw = arg.slice('--gate-autofix-rounds='.length);
-      } else {
-        raw = args[index + 1];
-        index += 1;
-      }
-      const rounds = Number.parseInt(String(raw ?? ''), 10);
-      if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) {
-        throw new Error('--gate-autofix-rounds requires an integer between 1 and 5');
-      }
-      gateAutofixRounds = rounds;
-      gateAutofix = true;
-    } else if (arg === '--review-provider') {
-      // Consume the value too — leaving it behind would hand the script a bare
-      // "claude" positional and it would exit 1. A missing value becomes "" so
-      // the check below rejects it, matching args.js: falling back to the
-      // default here would gate with codex a caller who asked for claude.
-      reviewProvider = args[index + 1] ?? '';
-      index += 1;
-    } else if (arg.startsWith('--review-provider=')) {
-      reviewProvider = arg.slice('--review-provider='.length);
     } else {
       scriptArgs.push(arg);
     }
@@ -188,13 +134,13 @@ function splitGateReviewFlags(args) {
       throw new Error(`--fast cannot be combined with ${conflict}`);
     }
 
-    gateReview = false;
-    gateAutofix = false;
+    gateOpts.gateReview = false;
+    gateOpts.gateAutofix = false;
     if (!scriptArgs.includes('--via-pr')) scriptArgs.push('--via-pr');
     if (!scriptArgs.includes('--no-preflight')) scriptArgs.push('--no-preflight');
   }
 
-  if (gateReview) {
+  if (gateOpts.gateReview) {
     const mode = readFlagValue(scriptArgs, '--mode');
     if (scriptArgs.includes('--direct-only') || scriptArgs.includes('--no-push') || (mode && mode !== 'pr')) {
       throw new Error('--gate-review requires a push-enabled PR finish; direct/local modes are incompatible.');
@@ -202,42 +148,8 @@ function splitGateReviewFlags(args) {
     if (!scriptArgs.includes('--via-pr')) scriptArgs.push('--via-pr');
   }
 
-  if (reviewProvider !== undefined) {
-    reviewProvider = String(reviewProvider).trim().toLowerCase();
-    // Fail closed on a typo rather than silently falling back to the default: a
-    // caller who named a provider must not quietly get a different one.
-    if (!REVIEW_PROVIDERS.includes(reviewProvider)) {
-      throw new Error(`--review-provider requires a value of ${REVIEW_PROVIDERS.join('|')}`);
-    }
-  }
-
-  if (reviewModel !== undefined) {
-    reviewModel = String(reviewModel).trim();
-    // Same fail-closed reasoning as --review-provider: a caller who named a
-    // model must not silently get the provider's default one instead.
-    if (!reviewModel || reviewModel.startsWith('-')) {
-      throw new Error('--review-model requires a model name (e.g. sonnet)');
-    }
-  }
-
-  if (reviewTimeoutMs !== undefined) {
-    reviewTimeoutMs = Number.parseInt(String(reviewTimeoutMs ?? ''), 10);
-    if (!Number.isInteger(reviewTimeoutMs) || reviewTimeoutMs <= 0) {
-      throw new Error('--review-timeout-ms requires a positive integer');
-    }
-  }
-
   return {
-    gateReview,
-    reviewProvider,
-    reviewModel,
-    reviewTimeoutMs,
-    gateAutofix,
-    gateAutofixRounds,
-    gateBaseline,
-    gateAbide,
-    gateSerialCi,
-    allowNoChecks,
+    ...gateOpts,
     noAutoCommit,
     commitMessage,
     agentQuiet,
@@ -361,7 +273,19 @@ function branch(rawArgs) {
       agentQuiet,
       scriptArgs,
     } = splitGateReviewFlags(passthrough);
-    const finishBranch = readFlagValue(scriptArgs, '--branch') || currentBranchName(repoRoot);
+    let finishBranch = readFlagValue(scriptArgs, '--branch');
+    if (!finishBranch) {
+      try {
+        finishBranch = currentBranchName(repoRoot);
+      } catch (err) {
+        if (err.message && err.message.includes('Detached HEAD')) {
+          throw new Error(
+            'Detached HEAD: pass --branch <agent/* branch> to gx branch finish explicitly.',
+          );
+        }
+        throw err;
+      }
+    }
     const finishBase = resolveFinishBaseBranch(repoRoot, finishBranch, readFlagValue(scriptArgs, '--base'));
     const finishWorktree = listAgentWorktrees(repoRoot)
       .find((entry) => entry.branch === finishBranch)?.worktreePath || '';

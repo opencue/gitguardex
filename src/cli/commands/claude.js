@@ -17,6 +17,7 @@ const path = require('path');
 const { isDeepStrictEqual } = require('util');
 const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
 const { gitRun, resolveRepoRoot } = require('../../git');
+const { requireValue } = require('../args');
 
 const SETTINGS_REL = '.claude/settings.json';
 const HOOKS_REL = '.claude/hooks';
@@ -1140,7 +1141,7 @@ function parseInstallArgs(rawArgs) {
   };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
-    if (arg === '--target') { opts.target = rawArgs[++index]; continue; }
+    if (arg === '--target') { opts.target = requireValue(rawArgs, index, '--target'); index += 1; continue; }
     if (arg === '--force') { opts.force = true; continue; }
     if (arg === '--dry-run') { opts.dryRun = true; continue; }
     if (arg === '--json') { opts.json = true; continue; }
@@ -1229,4 +1230,5 @@ module.exports = {
   compileAbideRubric,
   calibrateAbideRules,
   ensureAbideGitignore,
+  parseInstallArgs,
 };
