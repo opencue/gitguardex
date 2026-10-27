@@ -229,6 +229,12 @@ test('updateAgentSession concurrent writes via child processes do not corrupt th
   ));
   assert.match(final.status, /^w\d$/);
   assert.equal(final.id, created.id);
+  // Note: `writerN: true` patch keys are intentionally not asserted here.
+  // pickSessionFields strips extra keys, so `writerN` never reaches disk.
+  // The meaningful invariants are: (a) all 8 writers exit 0 (no concurrent
+  // throw, no O_EXCL deadlock), (b) the JSON is valid, and (c) the schema
+  // fields are intact. JSON corruption from a missing lock would surface
+  // as a JSON.parse failure in the read above.
 
   // The lock file must be gone.
   const lockPath = path.join(

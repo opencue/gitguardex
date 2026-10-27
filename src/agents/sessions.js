@@ -143,7 +143,17 @@ function acquireSessionWriteLock(lockPath) {
   for (let attempt = 0; attempt < SESSION_LOCK_MAX_ATTEMPTS; attempt++) {
     try {
       const fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-      try { fs.writeSync(fd, pidStr); } finally { fs.closeSync(fd); }
+      try {
+        fs.writeSync(fd, pidStr);
+      } catch (writeErr) {
+        // Remove the lock file so future callers are not stuck waiting for a
+        // lock that will never be released (the holder never entered the
+        // critical section and cannot call releaseSessionWriteLock).
+        try { fs.unlinkSync(lockPath); } catch (_) {}
+        throw writeErr;
+      } finally {
+        fs.closeSync(fd);
+      }
       return; // lock acquired
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
