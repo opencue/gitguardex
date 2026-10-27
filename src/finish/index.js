@@ -91,7 +91,7 @@ function claimLocksForAutoCommit(repoRoot, worktreePath, branch) {
   const deletedFiles = [];
   for (const args of [
     ['diff', '--name-status', '--', '.', `:(exclude)${LOCK_FILE_RELATIVE}`],
-    ['diff', '--cached', '--name-status', '--', '.', `:(exclude)${LOCK_FILE_RELATIVE}`],
+    ['diff', '--cached', '--name-status', '--', '.', `:(exclude)${LOCK_FILE_RELATIVE}`]
   ]) {
     for (const line of gitOutputLines(worktreePath, args)) {
       const tab = line.indexOf('\t');
@@ -100,10 +100,11 @@ function claimLocksForAutoCommit(repoRoot, worktreePath, branch) {
       const rest = line.slice(tab + 1);
       // Renames (R100\told\tnew): take the destination name after the second tab.
       const file = rest.includes('\t') ? rest.slice(rest.indexOf('\t') + 1) : rest;
+      // Claim deleted files too so ownership is established before the
+      // allow-delete step (mirrors the old --name-only which included deletions).
+      changedFiles.push(file);
       if (status === 'D') {
         deletedFiles.push(file);
-      } else {
-        changedFiles.push(file);
       }
     }
   }

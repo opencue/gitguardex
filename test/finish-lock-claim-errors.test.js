@@ -104,16 +104,19 @@ test('autoCommitWorktreeForFinish throws when the allow-delete grant subprocess 
   const lockCalls = [];
   const finish = loadFinishWithMocks({
     gitOutputLines: (_wt, args) => {
-      // No changed files → the claim step is skipped entirely.
-      // --name-status calls return a deleted-file line so the code's D-status
-      // branch triggers allow-delete (the old code used --diff-filter=D; this
-      // branch consolidated those into --name-status + status-letter parsing).
+      // --name-status returns a deleted-file line.  Deleted files are also
+      // included in the claim step (changedFiles), so claim must succeed here
+      // to let the allow-delete path run.
       return args.includes('--name-status') ? ['D\tsrc/removed.js'] : [];
     },
     runPackageAsset: (asset, args, opts) => {
       if (asset === 'lockTool') {
         lockCalls.push({ args, opts });
-        return { status: 1, stderr: 'delete denied', stdout: '' };
+        // Succeed on claim so the allow-delete step is reached; fail there.
+        if (args.includes('allow-delete')) {
+          return { status: 1, stderr: 'delete denied', stdout: '' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
       }
       return { status: 0, stdout: '', stderr: '' };
     }
@@ -129,13 +132,19 @@ test('autoCommitWorktreeForFinish throws when the allow-delete grant subprocess 
     }
   );
 
-  assert.equal(lockCalls.length, 1, 'lockTool must be invoked exactly once');
+  // Two lockTool calls: claim (succeeds) + allow-delete (fails).
+  assert.equal(lockCalls.length, 2, 'lockTool must be invoked twice (claim then allow-delete)');
   assert.ok(
-    lockCalls[0].args.includes('allow-delete'),
-    'lockTool must be invoked with the allow-delete sub-command'
+    lockCalls[0].args.includes('claim'),
+    'first lockTool call must be the claim sub-command'
+  );
+  assert.ok(lockCalls[0].args.includes('src/removed.js'), 'claim must receive the deleted file');
+  assert.ok(
+    lockCalls[1].args.includes('allow-delete'),
+    'second lockTool call must be the allow-delete sub-command'
   );
   assert.ok(
-    lockCalls[0].args.includes('src/removed.js'),
-    'lockTool must receive the deleted file in its argument list'
+    lockCalls[1].args.includes('src/removed.js'),
+    'allow-delete must receive the deleted file'
   );
 });
