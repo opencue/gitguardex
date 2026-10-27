@@ -127,21 +127,41 @@ function pruneStaleLocks(lockDir) {
   for (const entry of entries) {
     if (!entry.startsWith('port-') || !entry.endsWith('.lock')) continue;
     const p = path.join(lockDir, entry);
+    let content;
     try {
-      const content = fs.readFileSync(p, 'utf8').trim();
-      // An empty file means tryClaimPort is still writing (open/write window).
-      // Keep it rather than pruning it between the O_EXCL create and the write.
-      if (content === '') continue;
-      // Keep the lock only when the content is an absolute path that still exists
-      // (meaning the worktree that holds this reservation is still present).
-      const owner = content.split('\n')[0];
-      if (path.isAbsolute(owner) && fs.existsSync(owner)) continue;
-      fs.unlinkSync(p);
+      content = fs.readFileSync(p, 'utf8');
     } catch {
-      // concurrent removal or unreadable file — try to clean up
-      try { fs.unlinkSync(p); } catch { /* ok */ }
+      continue; // already removed by a concurrent pruner
     }
+    // An empty file means tryClaimPort is still writing (open/write window).
+    // Keep it rather than pruning it between the O_EXCL create and the write.
+    if (content.trim() === '') continue;
+    // Keep the lock only when the content is an absolute path that still exists
+    // (meaning the worktree that holds this reservation is still present).
+    const owner = content.trim().split('\n')[0];
+    if (path.isAbsolute(owner) && fs.existsSync(owner)) continue;
+    removeLockIfUnchanged(p, content);
   }
+}
+
+// Move the lock aside before deleting it so a concurrent pruner that read the
+// same stale lock cannot delete a fresh reservation created in its place: if
+// what we moved is not what we judged stale, put it back.
+function removeLockIfUnchanged(lockPath, staleContent) {
+  const aside = `${lockPath}.prune-${process.pid}`;
+  try {
+    fs.renameSync(lockPath, aside);
+  } catch {
+    return; // gone already
+  }
+  try {
+    if (fs.readFileSync(aside, 'utf8') !== staleContent) {
+      fs.linkSync(aside, lockPath); // fails with EEXIST if a newer claim exists
+    }
+  } catch {
+    // best-effort restore
+  }
+  try { fs.unlinkSync(aside); } catch { /* ok */ }
 }
 
 // Atomically claim a port by creating port-<N>.lock with O_EXCL. Records the

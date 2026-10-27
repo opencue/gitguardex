@@ -242,3 +242,29 @@ test('assignAgentPort reuses the reservation when the same worktree is prepared 
   assert.equal(second.note.match(/PORT=(\d+)/)?.[1], firstPort);
   assert.deepEqual(fs.readdirSync(lockDir), [`port-${firstPort}.lock`]);
 });
+
+test('pruneStaleLocks leaves a lock that was replaced after it was judged stale', () => {
+  const lockDir = makeTmpDir();
+  const lockPath = path.join(lockDir, 'port-9300.lock');
+  const liveWorktree = makeTmpDir();
+  fs.writeFileSync(lockPath, '/nonexistent/old-worktree\nbackend');
+  // Simulate the race: a fresh claim replaces the stale lock between the
+  // prune's read and its removal.
+  const realRead = fs.readFileSync;
+  let swapped = false;
+  fs.readFileSync = function (file, ...rest) {
+    const out = realRead.call(fs, file, ...rest);
+    if (!swapped && file === lockPath) {
+      swapped = true;
+      fs.writeFileSync(lockPath, `${liveWorktree}\nbackend`);
+    }
+    return out;
+  };
+  try {
+    pruneStaleLocks(lockDir);
+  } finally {
+    fs.readFileSync = realRead;
+  }
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), `${liveWorktree}\nbackend`);
+  assert.deepEqual(fs.readdirSync(lockDir), ['port-9300.lock']);
+});
