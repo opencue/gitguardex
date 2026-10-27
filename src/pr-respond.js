@@ -123,7 +123,7 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     'query($owner:String!,$name:String!,$pr:Int!){',
     'viewer{login}',
     'repository(owner:$owner,name:$name){pullRequest(number:$pr){',
-    'reviews(last:50){nodes{author{login}state}pageInfo{hasNextPage}}',
+    'reviews(last:50){nodes{author{login}state}pageInfo{hasPreviousPage}}',
     'reviewThreads(first:100){nodes{',
     'id isResolved isOutdated diffSide path line startLine',
     'comments(first:3){nodes{id body author{login}}}',
@@ -197,7 +197,9 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
   // oldest ones fall off and an active CHANGES_REQUESTED reviewer could be silently
   // excluded. Refuse rather than auto-fix with incomplete information.
   const rawReviews = payload?.data?.repository?.pullRequest?.reviews;
-  if (rawReviews?.pageInfo?.hasNextPage) {
+  // `last:50` fetches the most recent 50 reviews; hasPreviousPage=true means older
+  // reviews were dropped, so a CHANGES_REQUESTED reviewer could be missing.
+  if (rawReviews?.pageInfo?.hasPreviousPage) {
     throw new Error(
       'PR has more than 50 reviews; review history is truncated and auto-fix cannot ' +
         'reliably determine the latest review state per reviewer. Refusing to auto-fix.'
@@ -433,11 +435,19 @@ function prRespond(options = {}, deps = {}) {
     };
   }
 
-  // If we can reach origin, verify the local HEAD matches to prevent applying the fix
-  // to a stale worktree (a diverged push would fail non-fast-forward, but checking here
-  // gives a clearer error sooner).
-  const fetchResult = gitRun(worktreePath, ['fetch', 'origin', branch], { allowFailure: true });
-  if (fetchResult.status === 0) {
+  // Verify the local HEAD matches origin to prevent applying the fix to a stale worktree.
+  // Step 1: check whether origin is configured. No remote → skip (local-only repo).
+  const remoteCheck = gitRun(worktreePath, ['remote', 'get-url', 'origin'], { allowFailure: true });
+  if (remoteCheck.status === 0) {
+    // Step 2: origin exists — fetch must succeed so we can compare.
+    const fetchResult = gitRun(worktreePath, ['fetch', 'origin', branch], { allowFailure: true });
+    if (fetchResult.status !== 0) {
+      return {
+        status: 'skipped',
+        reason: `git fetch origin ${branch} failed — cannot verify worktree HEAD against remote: ${(fetchResult.stderr || '').trim()}`
+      };
+    }
+    // Step 3: compare local HEAD to the freshly-fetched tracking ref.
     const localHead = String(
       gitRun(worktreePath, ['rev-parse', 'HEAD'], { allowFailure: true }).stdout || ''
     ).trim();

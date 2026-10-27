@@ -373,6 +373,35 @@ test('fetchBlockingThreads does not include human threads from non-CHANGES_REQUE
   assert.deepEqual(threads, []);
 });
 
+test('fetchBlockingThreads throws when review history is truncated (hasPreviousPage=true)', () => {
+  const runner = (_cmd, args, _opts) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex\n', stderr: '' };
+    const operation = args.find((a) => String(a).startsWith('query=')) || '';
+    if (operation.includes('reviewThreads')) {
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          data: {
+            viewer: { login: 'bot' },
+            repository: {
+              pullRequest: {
+                reviews: { nodes: [], pageInfo: { hasPreviousPage: true } },
+                reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } }
+              }
+            }
+          }
+        }),
+        stderr: ''
+      };
+    }
+    return { status: 1, stdout: '', stderr: '' };
+  };
+  assert.throws(
+    () => prRespond.fetchBlockingThreads('42', '/repo', runner),
+    /more than 50 reviews/
+  );
+});
+
 test('fetchBlockingThreads throws when more than 100 threads (refuses partial fix)', () => {
   const runner = (_cmd, args, _opts) => {
     if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex\n', stderr: '' };
