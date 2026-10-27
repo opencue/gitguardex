@@ -289,7 +289,10 @@ run_preflight() {
   local trusted_tree=""
   if [[ "$PREFLIGHT_REQUIRED" -eq 1 && "$PREFLIGHT_SCRIPT_RAW" != /* ]]; then
     local relative_configured="${PREFLIGHT_SCRIPT_RAW#./}"
-    local trusted_prefix="${TMPDIR:-/tmp}/guardex-preflight."
+    local _raw_tmpdir="${TMPDIR:-/tmp}"
+    local _resolved_tmpdir
+    _resolved_tmpdir="$(cd -P "$_raw_tmpdir" 2>/dev/null && pwd -P)" || _resolved_tmpdir="$_raw_tmpdir"
+    local trusted_prefix="${_resolved_tmpdir}/guardex-preflight."
     if [[ "$script_path" != "$trusted_prefix"*"/$relative_configured" ]]; then
       finish_progress failed preflight "trusted execution tree missing"
       echo "[agent-branch-finish] Mandatory pre-flight did not resolve inside its trusted base archive; refusing push." >&2
@@ -381,6 +384,7 @@ place_hold_marker() {
   fi
   if ! "$GH_BIN" pr edit "$pr_url" --body "${body}"$'\n\n'"${HOLD_MARKER_COMMENT}" >/dev/null 2>&1; then
     echo "[agent-branch-finish] Warning: could not write the ${HOLD_MARKER} marker to the PR body; the hold will NOT survive an unflagged re-run of the finish flow." >&2
+    return 1
   fi
 }
 
@@ -1217,8 +1221,6 @@ if [[ "$should_require_sync" -eq 1 ]] && git -C "$repo_root" show-ref --verify -
 fi
 
 if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
-  git -C "$source_worktree" fetch origin "$BASE_BRANCH" --quiet
-
   if ! git -C "$source_worktree" merge --no-commit --no-ff "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
     conflict_files="$(git -C "$source_worktree" diff --name-only --diff-filter=U || true)"
     openspec_tasks_reconciled=""
@@ -1877,7 +1879,7 @@ run_pr_flow() {
     # the load-bearing hold.
     "$GH_BIN" pr merge "$pr_url" --disable-auto >/dev/null 2>&1 || true
     "$GH_BIN" pr ready --undo "$pr_url" >/dev/null 2>&1 || true
-    place_hold_marker "$pr_url"
+    place_hold_marker "$pr_url" || true
     finish_progress skipped merge "merge hold active"
     echo "[agent-branch-finish] Merge held (--no-auto-promote): PR left unmerged for review/e2e." >&2
     return 2
