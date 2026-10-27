@@ -113,8 +113,9 @@ function portReservationDir(repoRoot) {
   return lockDir;
 }
 
-// Remove port lock files older than 120 s — stale from a crashed or
-// interrupted gx branch start run.
+// Remove port lock files whose recorded worktree no longer exists. Lock files
+// written by an older version of this tool (which stored a PID instead of a
+// path) and unreadable files are treated as stale so they do not accumulate.
 function pruneStaleLocks(lockDir) {
   if (!lockDir) return;
   let entries;
@@ -123,28 +124,32 @@ function pruneStaleLocks(lockDir) {
   } catch {
     return;
   }
-  const cutoff = Date.now() - 120_000;
   for (const entry of entries) {
     if (!entry.startsWith('port-') || !entry.endsWith('.lock')) continue;
     const p = path.join(lockDir, entry);
     try {
-      const stat = fs.statSync(p);
-      if (stat.mtimeMs < cutoff) fs.unlinkSync(p);
+      const content = fs.readFileSync(p, 'utf8').trim();
+      // Keep the lock only when the content is an absolute path that still exists
+      // (meaning the worktree that holds this reservation is still present).
+      if (path.isAbsolute(content) && fs.existsSync(content)) continue;
+      fs.unlinkSync(p);
     } catch {
-      // concurrent removal is fine
+      // concurrent removal or unreadable file — try to clean up
+      try { fs.unlinkSync(p); } catch { /* ok */ }
     }
   }
 }
 
-// Atomically claim a port by creating port-<N>.lock with O_EXCL.
-// Returns true when this process wins the claim, false when another process
-// already owns it.  On unexpected errors it returns true (best-effort
-// degradation so port assignment still works without the lock dir).
-function tryClaimPort(lockDir, port) {
+// Atomically claim a port by creating port-<N>.lock with O_EXCL. Records the
+// worktreePath so pruneStaleLocks can tell when the reservation is stale (the
+// lock is kept as long as that path exists). Returns true when this process
+// wins the claim, false when another process already owns it. On unexpected
+// errors it returns true (best-effort degradation).
+function tryClaimPort(lockDir, port, worktreePath) {
   if (!lockDir) return true;
   const lockPath = path.join(lockDir, `port-${port}.lock`);
   try {
-    fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx', encoding: 'utf8' });
+    fs.writeFileSync(lockPath, worktreePath, { flag: 'wx', encoding: 'utf8' });
     return true;
   } catch (err) {
     if (err.code === 'EEXIST') return false;
@@ -225,7 +230,7 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts, _lockDir) 
   for (let p = base; p < base + 200; p++) {
     if (takenPorts.has(p)) continue;
     if (!isPortFree(p)) continue;
-    if (!tryClaimPort(lockDir, p)) continue; // another process claimed it first
+    if (!tryClaimPort(lockDir, p, worktreePath)) continue; // another process claimed it first
     port = p;
     break;
   }

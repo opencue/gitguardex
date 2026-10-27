@@ -422,4 +422,6 @@ function agents(rawArgs) {
 
 module.exports = {
   agents,
+  writeAgentsState,
+  agentsStatePathForRepo,
 };
