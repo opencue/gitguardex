@@ -21,7 +21,14 @@ test('applyGateFlagAt returns 0 for unrecognised args', () => {
 });
 
 test('applyGateFlagAt handles boolean gate flags', () => {
-  const opts = { gateReview: false, gateAutofix: false, gateBaseline: false, gateAbide: true, gateSerialCi: true, allowNoChecks: false };
+  const opts = {
+    gateReview: false,
+    gateAutofix: false,
+    gateBaseline: false,
+    gateAbide: true,
+    gateSerialCi: true,
+    allowNoChecks: false
+  };
   assert.equal(applyGateFlagAt(['--gate-review'], 0, opts), 1);
   assert.equal(opts.gateReview, true);
 
@@ -78,11 +85,11 @@ test('applyGateFlagAt --gate-autofix-rounds= inline form', () => {
 test('applyGateFlagAt --gate-autofix-rounds rejects out-of-range values', () => {
   assert.throws(
     () => applyGateFlagAt(['--gate-autofix-rounds', '6'], 0, {}),
-    /--gate-autofix-rounds requires an integer between 1 and 5/,
+    /--gate-autofix-rounds requires an integer between 1 and 5/
   );
   assert.throws(
     () => applyGateFlagAt(['--gate-autofix-rounds=0'], 0, {}),
-    /--gate-autofix-rounds requires an integer between 1 and 5/,
+    /--gate-autofix-rounds requires an integer between 1 and 5/
   );
 });
 
@@ -101,7 +108,7 @@ test('applyGateFlagAt --review-provider= inline form', () => {
 test('applyGateFlagAt --review-provider rejects unknown provider', () => {
   assert.throws(
     () => applyGateFlagAt(['--review-provider', 'openai'], 0, {}),
-    new RegExp(`--review-provider requires a value of ${REVIEW_PROVIDERS.join('|')}`),
+    new RegExp(`--review-provider requires a value of ${REVIEW_PROVIDERS.join('|')}`)
   );
 });
 
@@ -126,11 +133,11 @@ test('applyGateFlagAt --review-model= inline form', () => {
 test('applyGateFlagAt --review-model rejects empty / flag-like values', () => {
   assert.throws(
     () => applyGateFlagAt(['--review-model', '--other'], 0, {}),
-    /--review-model requires a model name/,
+    /--review-model requires a model name/
   );
   assert.throws(
     () => applyGateFlagAt(['--review-model='], 0, {}),
-    /--review-model requires a model name/,
+    /--review-model requires a model name/
   );
 });
 
@@ -149,11 +156,11 @@ test('applyGateFlagAt --review-timeout-ms= inline form', () => {
 test('applyGateFlagAt --review-timeout-ms rejects non-positive values', () => {
   assert.throws(
     () => applyGateFlagAt(['--review-timeout-ms', '0'], 0, {}),
-    /--review-timeout-ms requires a positive integer/,
+    /--review-timeout-ms requires a positive integer/
   );
   assert.throws(
     () => applyGateFlagAt(['--review-timeout-ms', 'abc'], 0, {}),
-    /--review-timeout-ms requires a positive integer/,
+    /--review-timeout-ms requires a positive integer/
   );
 });
 
@@ -172,17 +179,11 @@ test('parseInstallArgs accepts --target with a value', () => {
 });
 
 test('parseInstallArgs throws when --target is missing its value', () => {
-  assert.throws(
-    () => parseInstallArgs(['--target']),
-    /--target requires a value/,
-  );
+  assert.throws(() => parseInstallArgs(['--target']), /--target requires a value/);
 });
 
 test('parseInstallArgs throws when --target is followed by another flag', () => {
-  assert.throws(
-    () => parseInstallArgs(['--target', '--force']),
-    /--target requires a value/,
-  );
+  assert.throws(() => parseInstallArgs(['--target', '--force']), /--target requires a value/);
 });
 
 // ---------------------------------------------------------------------------
@@ -201,14 +202,16 @@ test('branch finish gives a clear error on detached HEAD when --branch is omitte
     resolveRepoRoot: () => '/fake/repo',
     resolveFinishBaseBranch: (_root, branch, base) => base || 'main',
     // Simulate a detached HEAD state.
-    currentBranchName: () => { throw new Error('Detached HEAD is not supported for sync operations'); },
-    listAgentWorktrees: () => [],
+    currentBranchName: () => {
+      throw new Error('Detached HEAD is not supported for sync operations');
+    },
+    listAgentWorktrees: () => []
   });
   stub('src/core/runtime.js', {
     run: () => {},
     extractTargetedArgs: (args) => ({ target: undefined, passthrough: args }),
     runPackageAsset: () => ({ status: 0, stdout: '', stderr: '' }),
-    invokePackageAsset: () => {},
+    invokePackageAsset: () => {}
   });
   stub('src/finish/review-gate.js', { runReviewGate: () => {} });
   stub('src/finish/progress.js', {
@@ -216,13 +219,13 @@ test('branch finish gives a clear error on detached HEAD when --branch is omitte
       start: () => {},
       complete: () => {},
       skip: () => {},
-      eventEnv: {},
+      eventEnv: {}
     }),
-    summarizeFinishRun: () => ({}),
+    summarizeFinishRun: () => ({})
   });
   stub('src/finish/index.js', {
     autoCommitWorktreeForFinish: () => ({ changed: false, committed: false }),
-    finish: () => {},
+    finish: () => {}
   });
   stub('src/cli/commands/finish.js', { finish: () => {}, merge: () => {} });
   stub('src/cli/shared-locks.js', { locks: () => {} });
@@ -233,10 +236,7 @@ test('branch finish gives a clear error on detached HEAD when --branch is omitte
 
   try {
     const { branch } = require(path.join(repoRoot, 'src/cli/commands/branch'));
-    assert.throws(
-      () => branch(['finish', '--via-pr']),
-      /Detached HEAD: pass --branch/,
-    );
+    assert.throws(() => branch(['finish', '--via-pr']), /Detached HEAD: pass --branch/);
   } finally {
     // Clean up: remove the branch module and stubs from cache.
     delete require.cache[require.resolve(path.join(repoRoot, 'src/cli/commands/branch'))];
@@ -247,7 +247,7 @@ test('branch finish gives a clear error on detached HEAD when --branch is omitte
       'src/finish/progress.js',
       'src/finish/index.js',
       'src/cli/commands/finish.js',
-      'src/cli/shared-locks.js',
+      'src/cli/shared-locks.js'
     ]) {
       delete require.cache[require.resolve(path.join(repoRoot, rel))];
     }
@@ -266,14 +266,18 @@ test('branch finish does NOT give a detached HEAD error when --branch is provide
     resolveRepoRoot: () => '/fake/repo',
     resolveFinishBaseBranch: () => 'main',
     // Would throw if called — --branch makes it unreachable.
-    currentBranchName: () => { throw new Error('Detached HEAD is not supported for sync operations'); },
-    listAgentWorktrees: () => [],
+    currentBranchName: () => {
+      throw new Error('Detached HEAD is not supported for sync operations');
+    },
+    listAgentWorktrees: () => []
   });
   stub('src/core/runtime.js', {
     run: () => {},
     extractTargetedArgs: (args) => ({ target: undefined, passthrough: args }),
     runPackageAsset: () => ({ status: 0, stdout: '', stderr: '' }),
-    invokePackageAsset: (asset, args) => { scriptCallArgs = args; },
+    invokePackageAsset: (asset, args) => {
+      scriptCallArgs = args;
+    }
   });
   stub('src/finish/review-gate.js', { runReviewGate: () => {} });
   stub('src/finish/progress.js', {
@@ -281,13 +285,13 @@ test('branch finish does NOT give a detached HEAD error when --branch is provide
       start: () => {},
       complete: () => {},
       skip: () => {},
-      eventEnv: {},
+      eventEnv: {}
     }),
-    summarizeFinishRun: () => ({}),
+    summarizeFinishRun: () => ({})
   });
   stub('src/finish/index.js', {
     autoCommitWorktreeForFinish: () => ({ changed: false, committed: false }),
-    finish: () => {},
+    finish: () => {}
   });
   stub('src/cli/commands/finish.js', { finish: () => {}, merge: () => {} });
   stub('src/cli/shared-locks.js', { locks: () => {} });
@@ -309,7 +313,7 @@ test('branch finish does NOT give a detached HEAD error when --branch is provide
       'src/finish/progress.js',
       'src/finish/index.js',
       'src/cli/commands/finish.js',
-      'src/cli/shared-locks.js',
+      'src/cli/shared-locks.js'
     ]) {
       delete require.cache[require.resolve(path.join(repoRoot, rel))];
     }

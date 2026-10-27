@@ -30,17 +30,50 @@ const REVIEW_PROVIDERS = ['codex', 'claude'];
 function applyGateFlagAt(rawArgs, index, opts) {
   const arg = rawArgs[index];
 
-  if (arg === '--gate-review') { opts.gateReview = true; return 1; }
-  if (arg === '--no-gate-review' || arg === '--skip-review-gate') { opts.gateReview = false; return 1; }
-  if (arg === '--allow-no-checks') { opts.allowNoChecks = true; return 1; }
-  if (arg === '--gate-baseline') { opts.gateBaseline = true; return 1; }
-  if (arg === '--no-gate-baseline') { opts.gateBaseline = false; return 1; }
-  if (arg === '--gate-abide') { opts.gateAbide = true; return 1; }
-  if (arg === '--no-gate-abide') { opts.gateAbide = false; return 1; }
-  if (arg === '--gate-autofix') { opts.gateAutofix = true; return 1; }
-  if (arg === '--no-gate-autofix') { opts.gateAutofix = false; return 1; }
-  if (arg === '--gate-serial-ci') { opts.gateSerialCi = true; return 1; }
-  if (arg === '--no-gate-serial-ci') { opts.gateSerialCi = false; return 1; }
+  if (arg === '--gate-review') {
+    opts.gateReview = true;
+    return 1;
+  }
+  if (arg === '--no-gate-review' || arg === '--skip-review-gate') {
+    opts.gateReview = false;
+    return 1;
+  }
+  if (arg === '--allow-no-checks') {
+    opts.allowNoChecks = true;
+    return 1;
+  }
+  if (arg === '--gate-baseline') {
+    opts.gateBaseline = true;
+    return 1;
+  }
+  if (arg === '--no-gate-baseline') {
+    opts.gateBaseline = false;
+    return 1;
+  }
+  if (arg === '--gate-abide') {
+    opts.gateAbide = true;
+    return 1;
+  }
+  if (arg === '--no-gate-abide') {
+    opts.gateAbide = false;
+    return 1;
+  }
+  if (arg === '--gate-autofix') {
+    opts.gateAutofix = true;
+    return 1;
+  }
+  if (arg === '--no-gate-autofix') {
+    opts.gateAutofix = false;
+    return 1;
+  }
+  if (arg === '--gate-serial-ci') {
+    opts.gateSerialCi = true;
+    return 1;
+  }
+  if (arg === '--no-gate-serial-ci') {
+    opts.gateSerialCi = false;
+    return 1;
+  }
 
   if (arg === '--gate-autofix-rounds' || arg.startsWith('--gate-autofix-rounds=')) {
     const inline = arg.includes('=');
@@ -70,7 +103,7 @@ function applyGateFlagAt(rawArgs, index, opts) {
   if (arg === '--review-model' || arg.startsWith('--review-model=')) {
     const inline = arg.includes('=');
     const value = String(
-      inline ? arg.slice('--review-model='.length) : (rawArgs[index + 1] ?? ''),
+      inline ? arg.slice('--review-model='.length) : (rawArgs[index + 1] ?? '')
     ).trim();
     // Same fail-closed reasoning as --review-provider: a caller who named a
     // model must not silently get the provider's default one instead.
