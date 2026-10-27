@@ -1221,6 +1221,8 @@ if [[ "$should_require_sync" -eq 1 ]] && git -C "$repo_root" show-ref --verify -
 fi
 
 if git -C "$repo_root" show-ref --verify --quiet "refs/remotes/origin/${BASE_BRANCH}"; then
+  git -C "$source_worktree" fetch origin "$BASE_BRANCH" --quiet
+
   if ! git -C "$source_worktree" merge --no-commit --no-ff "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
     conflict_files="$(git -C "$source_worktree" diff --name-only --diff-filter=U || true)"
     openspec_tasks_reconciled=""
