@@ -241,10 +241,11 @@ function commandExists(context, cmd) {
   for (const dir of envPath.split(sep)) {
     if (!dir) continue;
     try {
-      fs.accessSync(path.join(dir, cmd), fs.constants.X_OK);
-      return true;
+      const candidate = path.join(dir, cmd);
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return true;
     } catch {
-      // not in this dir
+      // not in this dir or not a regular file
     }
   }
   return false;
