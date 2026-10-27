@@ -261,13 +261,18 @@ function assignAgentPort(repoRoot, worktreePath, appName, takenPorts, _lockDir) 
     }
   }
   fs.writeFileSync(envLocalPath, next, 'utf8');
-  // Release the O_EXCL lock — the port is now written and the next lsof
-  // check from another process will see the listening socket instead.
-  releasePortLock(lockDir, port);
+  // Do NOT release the O_EXCL lock here. Writing to .env.local does not
+  // create a listening socket; releasing immediately would allow a concurrent
+  // `gx branch start` to claim the same port before the process binds it.
+  // The caller (prepareAgentWorktree) releases all port locks after every app
+  // has been assigned, keeping the exclusive window as narrow as possible
+  // while still covering the entire batch.
   return {
     status: 'wrote',
     file: `apps/${appName}/.env.local`,
-    note: `PORT=${port} (${role} pool)`
+    note: `PORT=${port} (${role} pool)`,
+    _assignedPort: port,
+    _lockDir: lockDir
   };
 }
 
@@ -295,6 +300,18 @@ function prepareAgentWorktree(repoRoot, worktreePath, deps = {}) {
   for (const appName of apps) {
     operations.push(...symlinkAppEnvFiles(repoRoot, worktreePath, appName));
     operations.push(assignAgentPort(repoRoot, worktreePath, appName, takenPorts, lockDir));
+  }
+  // Release all O_EXCL port locks after every app has been assigned.
+  // Holding the locks through the full batch means a concurrent run cannot
+  // claim the same port for any app in this worktree preparation, narrowing
+  // the race window to the gap between this release and each process binding
+  // its socket — which is handled by the lsof-based isPortFree fallback.
+  for (const op of operations) {
+    if (op && op._assignedPort !== undefined) {
+      releasePortLock(op._lockDir, op._assignedPort);
+      delete op._assignedPort;
+      delete op._lockDir;
+    }
   }
   return operations;
 }

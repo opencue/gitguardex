@@ -130,7 +130,11 @@ test('assignAgentPort writes PORT to .env.local', () => {
   assert.match(envLocal, /^PORT=\d+/m, '.env.local must contain PORT=<n>');
 });
 
-test('assignAgentPort releases the O_EXCL lock after writing .env.local', () => {
+test('assignAgentPort holds the O_EXCL lock until the caller releases it', () => {
+  // The lock must NOT be released inside assignAgentPort — it is held through
+  // the full prepareAgentWorktree loop so concurrent runs cannot claim the
+  // same port for any app in the batch.  The caller is responsible for
+  // releasing via _assignedPort / _lockDir fields on the result.
   const repoRoot = makeTmpDir();
   const worktreePath = makeTmpDir();
   const appDir = path.join(worktreePath, 'apps', 'api');
@@ -142,9 +146,14 @@ test('assignAgentPort releases the O_EXCL lock after writing .env.local', () => 
   const result = assignAgentPort(repoRoot, worktreePath, 'api', takenPorts, lockDir);
 
   assert.equal(result.status, 'wrote');
-  // After the function returns the lock must be gone.
+  // The lock file must still exist — the caller has not released it yet.
   const entries = fs.readdirSync(lockDir).filter((e) => e.endsWith('.lock'));
-  assert.equal(entries.length, 0, `lock files must be released after write: ${entries.join(', ')}`);
+  assert.equal(entries.length, 1, `expected 1 held lock, got: ${entries.join(', ')}`);
+
+  // Simulate the caller's cleanup (mirrors what prepareAgentWorktree does).
+  releasePortLock(result._lockDir, result._assignedPort);
+  const after = fs.readdirSync(lockDir).filter((e) => e.endsWith('.lock'));
+  assert.equal(after.length, 0, `lock must be gone after caller releases it`);
 });
 
 // ---------------------------------------------------------------------------
