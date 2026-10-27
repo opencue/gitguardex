@@ -316,7 +316,11 @@ test('fetchBlockingThreads includes threads from human reviewers who requested c
     }
   };
   const reviews = [
-    { author: { login: 'reviewer-alice' }, state: 'CHANGES_REQUESTED', authorAssociation: 'COLLABORATOR' }
+    {
+      author: { login: 'reviewer-alice' },
+      state: 'CHANGES_REQUESTED',
+      authorAssociation: 'COLLABORATOR'
+    }
   ];
   const runner = makeGhRunner({ threads: [humanThread], reviews });
   const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
@@ -344,7 +348,11 @@ test('fetchBlockingThreads excludes human threads when reviewer later approved',
   };
   // reviewer-bob first requested changes, then approved — latest state is APPROVED.
   const reviews = [
-    { author: { login: 'reviewer-bob' }, state: 'CHANGES_REQUESTED', authorAssociation: 'COLLABORATOR' },
+    {
+      author: { login: 'reviewer-bob' },
+      state: 'CHANGES_REQUESTED',
+      authorAssociation: 'COLLABORATOR'
+    },
     { author: { login: 'reviewer-bob' }, state: 'APPROVED', authorAssociation: 'COLLABORATOR' }
   ];
   const runner = makeGhRunner({ threads: [humanThread], reviews });
@@ -380,7 +388,13 @@ test('fetchBlockingThreads skips human thread when bot already replied (waiting 
       ]
     }
   };
-  const reviews = [{ author: { login: 'reviewer-dave' }, state: 'CHANGES_REQUESTED', authorAssociation: 'COLLABORATOR' }];
+  const reviews = [
+    {
+      author: { login: 'reviewer-dave' },
+      state: 'CHANGES_REQUESTED',
+      authorAssociation: 'COLLABORATOR'
+    }
+  ];
   const runner = makeGhRunner({ threads: [humanThread], reviews });
   const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
   assert.deepEqual(threads, [], 'thread should be skipped because bot already replied');
@@ -414,7 +428,13 @@ test('fetchBlockingThreads re-queues human thread when reviewer replies after bo
       ]
     }
   };
-  const reviews = [{ author: { login: 'reviewer-eve' }, state: 'CHANGES_REQUESTED', authorAssociation: 'COLLABORATOR' }];
+  const reviews = [
+    {
+      author: { login: 'reviewer-eve' },
+      state: 'CHANGES_REQUESTED',
+      authorAssociation: 'COLLABORATOR'
+    }
+  ];
   const runner = makeGhRunner({ threads: [humanThread], reviews });
   const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
   assert.equal(threads.length, 1, 'thread should be re-queued because reviewer replied');
@@ -441,7 +461,11 @@ test('fetchBlockingThreads excludes human threads when reviewer commented after 
   };
   // reviewer-carol requested changes, then left a COMMENTED review — COMMENTED must not clear CR.
   const reviews = [
-    { author: { login: 'reviewer-carol' }, state: 'CHANGES_REQUESTED', authorAssociation: 'MEMBER' },
+    {
+      author: { login: 'reviewer-carol' },
+      state: 'CHANGES_REQUESTED',
+      authorAssociation: 'MEMBER'
+    },
     { author: { login: 'reviewer-carol' }, state: 'COMMENTED', authorAssociation: 'MEMBER' }
   ];
   const runner = makeGhRunner({ threads: [humanThread], reviews });
@@ -538,10 +562,16 @@ test('fetchBlockingThreads excludes human threads from external contributors (NO
     }
   };
   for (const assoc of ['NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER']) {
-    const reviews = [{ author: { login: 'external-user' }, state: 'CHANGES_REQUESTED', authorAssociation: assoc }];
+    const reviews = [
+      { author: { login: 'external-user' }, state: 'CHANGES_REQUESTED', authorAssociation: assoc }
+    ];
     const runner = makeGhRunner({ threads: [externalThread], reviews });
     const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
-    assert.deepEqual(threads, [], `external reviewer with association ${assoc} must not trigger auto-fix`);
+    assert.deepEqual(
+      threads,
+      [],
+      `external reviewer with association ${assoc} must not trigger auto-fix`
+    );
   }
 });
 
