@@ -62,10 +62,13 @@ test('autoCommitWorktreeForFinish throws when the lock-claim subprocess exits no
   const lockCalls = [];
   const finish = loadFinishWithMocks({
     gitOutputLines: (_wt, args) => {
-      // Return a changed file for diff / ls-files calls to trigger the claim.
-      // Return nothing for deleted-file calls (--diff-filter=D) so the test
-      // focuses on the claim path only.
-      return args.includes('--diff-filter=D') ? [] : ['src/modified.js'];
+      // --name-status calls return a modified-file line; ls-files --others
+      // returns the raw filename (no status prefix).  The deleted-file path
+      // is not exercised here so all calls that aren't --name-status return
+      // an empty list (no untracked files, no deletions).
+      if (args.includes('--name-status')) return ['M\tsrc/modified.js'];
+      if (args.includes('--others')) return ['src/modified.js'];
+      return [];
     },
     runPackageAsset: (asset, args, opts) => {
       if (asset === 'lockTool') {
@@ -102,8 +105,10 @@ test('autoCommitWorktreeForFinish throws when the allow-delete grant subprocess 
   const finish = loadFinishWithMocks({
     gitOutputLines: (_wt, args) => {
       // No changed files → the claim step is skipped entirely.
-      // A deleted file returned by the --diff-filter=D calls triggers allow-delete.
-      return args.includes('--diff-filter=D') ? ['src/removed.js'] : [];
+      // --name-status calls return a deleted-file line so the code's D-status
+      // branch triggers allow-delete (the old code used --diff-filter=D; this
+      // branch consolidated those into --name-status + status-letter parsing).
+      return args.includes('--name-status') ? ['D\tsrc/removed.js'] : [];
     },
     runPackageAsset: (asset, args, opts) => {
       if (asset === 'lockTool') {
