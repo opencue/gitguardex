@@ -115,7 +115,7 @@ test('installSpeckit throws with timeout message when specify hangs', () => {
   const fakeBin = makeTmpDir('fake-specify-hang');
   // Hangs until killed; exec sleep is used because `read` exits immediately
   // when stdin is closed (common in CI), which would fail the timeout assertion.
-  makeFakeSpecify(fakeBin, 'exec sleep 9999');
+  makeFakeSpecify(fakeBin, '[ "$1" = "--version" ] && { echo 0.0.0; exit 0; }\nexec sleep 9999');
 
   const savedOverride = process.env.SPECIFY_INIT_TIMEOUT_MS_OVERRIDE;
   // 250 ms is enough to confirm timeout without slowing the suite

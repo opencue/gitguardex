@@ -21,7 +21,7 @@ function whichSpecify() {
 }
 
 function specifyVersion(specifyPath) {
-  const result = cp.spawnSync(specifyPath, ['--version'], { encoding: 'utf8' });
+  const result = cp.spawnSync(specifyPath, ['--version'], { encoding: 'utf8', timeout: 10_000 });
   if (result.status === 0 && result.stdout) {
     return result.stdout.trim();
   }
