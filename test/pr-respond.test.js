@@ -350,6 +350,75 @@ test('fetchBlockingThreads excludes human threads when reviewer later approved',
   assert.deepEqual(threads, []);
 });
 
+test('fetchBlockingThreads skips human thread when bot already replied (waiting for reviewer)', () => {
+  const humanThread = {
+    id: 'thread-bot-replied',
+    isResolved: false,
+    isOutdated: false,
+    path: 'src/x.js',
+    line: 12,
+    startLine: null,
+    comments: {
+      nodes: [
+        {
+          id: 'c-human',
+          body: 'Please add error handling here.',
+          author: { login: 'reviewer-dave' }
+        }
+      ]
+    },
+    // Simulate the bot having already replied — latestComment is from the bot.
+    latestComment: {
+      nodes: [
+        {
+          id: 'c-bot-reply',
+          body: `${MARKER}\nApplied fix in abc12345.\nPlease review the fix and resolve this thread when satisfied.`,
+          author: { login: 'gitguardex-bot' }
+        }
+      ]
+    }
+  };
+  const reviews = [{ author: { login: 'reviewer-dave' }, state: 'CHANGES_REQUESTED' }];
+  const runner = makeGhRunner({ threads: [humanThread], reviews });
+  const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
+  assert.deepEqual(threads, [], 'thread should be skipped because bot already replied');
+});
+
+test('fetchBlockingThreads re-queues human thread when reviewer replies after bot (human is latest)', () => {
+  const humanThread = {
+    id: 'thread-reviewer-replied',
+    isResolved: false,
+    isOutdated: false,
+    path: 'src/y.js',
+    line: 5,
+    startLine: null,
+    comments: {
+      nodes: [
+        {
+          id: 'c-human',
+          body: 'Please add error handling here.',
+          author: { login: 'reviewer-eve' }
+        }
+      ]
+    },
+    // Reviewer replied after the bot — latest comment is from the reviewer.
+    latestComment: {
+      nodes: [
+        {
+          id: 'c-reviewer-reply',
+          body: 'Actually, also handle the timeout case.',
+          author: { login: 'reviewer-eve' }
+        }
+      ]
+    }
+  };
+  const reviews = [{ author: { login: 'reviewer-eve' }, state: 'CHANGES_REQUESTED' }];
+  const runner = makeGhRunner({ threads: [humanThread], reviews });
+  const { threads } = prRespond.fetchBlockingThreads('42', '/repo', runner);
+  assert.equal(threads.length, 1, 'thread should be re-queued because reviewer replied');
+  assert.equal(threads[0].id, 'thread-reviewer-replied');
+});
+
 test('fetchBlockingThreads excludes human threads when reviewer commented after CHANGES_REQUESTED (COMMENTED does not clear blocking)', () => {
   const humanThread = {
     id: 'thread-commented',

@@ -122,6 +122,10 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
   // We fetch all review states and compute the latest state per reviewer so that
   // a reviewer who subsequently approved or dismissed their CHANGES_REQUESTED
   // review is not treated as still blocking.
+  //
+  // `latestComment` is a field alias for `comments(last:1)` — it gives the most
+  // recent comment in the thread, used to detect whether the bot already replied
+  // to a human reviewer thread (in which case we skip it until the reviewer acts).
   const query = [
     'query($owner:String!,$name:String!,$pr:Int!){',
     'viewer{login}',
@@ -130,6 +134,7 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     'reviewThreads(first:100){nodes{',
     'id isResolved isOutdated diffSide path line startLine',
     'comments(first:3){nodes{id body author{login}}}',
+    'latestComment:comments(last:1){nodes{id body author{login}}}',
     '}pageInfo{hasNextPage}}',
     '}}}'
   ].join('');
@@ -239,7 +244,18 @@ function fetchBlockingThreads(pr, repoRoot, runner = run) {
     }
 
     // Human reviewer thread: the author must have an active CHANGES_REQUESTED review.
-    if (humanReviewers.has(author)) return true;
+    // Skip threads where the bot already replied and is waiting for the reviewer to
+    // act — detected by the most recent comment being from the trusted author with
+    // MARKER. This prevents re-queueing the same thread on every poll cycle.
+    if (humanReviewers.has(author)) {
+      const latestComment = thread.latestComment?.nodes?.[0];
+      const latestAuthor = String(latestComment?.author?.login || '').toLowerCase();
+      const latestBody = String(latestComment?.body || '');
+      if (latestAuthor === trustedAuthor && latestBody.includes(MARKER)) {
+        return false; // Bot already replied; skip until the reviewer responds.
+      }
+      return true;
+    }
 
     return false;
   });
