@@ -199,10 +199,13 @@ function updateAgentSession(repoRoot, sessionId, patch) {
       ...patch,
       // Merge metadata rather than replacing it so callers can add individual
       // keys without wiping keys set by other concurrent operations.
+      // null explicitly clears all metadata; undefined leaves it unchanged.
       metadata:
-        patch.metadata !== undefined
-          ? { ...(existing.metadata || {}), ...patch.metadata }
-          : existing.metadata,
+        patch.metadata === null
+          ? null
+          : patch.metadata !== undefined
+            ? { ...(existing.metadata || {}), ...patch.metadata }
+            : existing.metadata,
       id: existing.id,
       createdAt: existing.createdAt,
       updatedAt: now,
