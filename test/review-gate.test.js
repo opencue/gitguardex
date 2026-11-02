@@ -477,6 +477,30 @@ test('runReviewGate blocks when GitHub reports the PR not mergeable', () => {
   assert.throws(() => runReviewGate(gateArgs, deps), /mergeStateStatus=BLOCKED/);
 });
 
+test('runReviewGate merge-blocked error includes actionable hint for DIRTY (conflicts)', () => {
+  const deps = gateDeps({ waitForGreenCi: () => ({ status: 'merge-blocked', pr: { mergeStateStatus: 'DIRTY' } }) });
+  assert.throws(
+    () => runReviewGate(gateArgs, deps),
+    (err) => /mergeStateStatus=DIRTY/.test(err.message) && /resolve conflicts/.test(err.message),
+  );
+});
+
+test('runReviewGate merge-blocked error includes actionable hint for BEHIND (update branch)', () => {
+  const deps = gateDeps({ waitForGreenCi: () => ({ status: 'merge-blocked', pr: { mergeStateStatus: 'BEHIND' } }) });
+  assert.throws(
+    () => runReviewGate(gateArgs, deps),
+    (err) => /mergeStateStatus=BEHIND/.test(err.message) && /update the branch/.test(err.message),
+  );
+});
+
+test('runReviewGate merge-blocked error includes actionable hint for UNSTABLE (failing checks)', () => {
+  const deps = gateDeps({ waitForGreenCi: () => ({ status: 'merge-blocked', pr: { mergeStateStatus: 'UNSTABLE' } }) });
+  assert.throws(
+    () => runReviewGate(gateArgs, deps),
+    (err) => /mergeStateStatus=UNSTABLE/.test(err.message) && /wait for non-required/.test(err.message),
+  );
+});
+
 test('runReviewGate blocks a check-less PR unless --allow-no-checks', () => {
   const deps = gateDeps({ waitForGreenCi: () => ({ status: 'no-checks', pr: {} }) });
   assert.throws(() => runReviewGate(gateArgs, deps), /no CI checks/);

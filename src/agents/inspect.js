@@ -207,4 +207,5 @@ module.exports = {
   renderLocks,
   resolveBaseBranch,
   runInspectCommand,
+  worktreePathForBranch,
 };

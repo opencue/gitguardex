@@ -949,3 +949,31 @@ test('gx claude check walks legacy → migrated → keyed → rubric-stale; doct
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+// ---- banner output -------------------------------------------------------
+
+test('gx claude install prints success banner when mcp installs (or is skipped)', () => {
+  const repoRoot = makeRepo();
+  try {
+    const output = runClaudeQuiet(['install', '--target', repoRoot, '--no-mcp', '--no-abide']);
+    assert.ok(output.includes('✅'), `success banner missing in output:\n${output}`);
+    assert.ok(!output.includes('⚠️  MCP server registration skipped'), `unexpected ownership warning:\n${output}`);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test('gx claude install prints warning (not success banner) when mcp ownership-unavailable', () => {
+  const repoRoot = makeRepo();
+  const origLinkSync = fs.linkSync;
+  try {
+    // Force fs.linkSync to fail so replaceMcpConfigLink returns null → ownership-unavailable.
+    fs.linkSync = () => { throw Object.assign(new Error('cross-device'), { code: 'EXDEV' }); };
+    const output = runClaudeQuiet(['install', '--target', repoRoot, '--no-abide']);
+    assert.ok(output.includes('⚠️'), `ownership warning missing in output:\n${output}`);
+    assert.ok(!output.includes('✅ Claude Code wiring is in place.'), `success banner must not appear when ownership-unavailable:\n${output}`);
+  } finally {
+    fs.linkSync = origLinkSync;
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
