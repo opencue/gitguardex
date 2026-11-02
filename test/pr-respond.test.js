@@ -969,6 +969,31 @@ test('fixHunksByPath parses old-side ranges, including pure insertions', () => {
   assert.equal(hunks.has('src/new.js'), false);
 });
 
+test('fixHunksByPath pins diff prefixes and ignores removed lines that look like headers', () => {
+  let seenArgs = [];
+  const diff = [
+    'diff --git a/q.sql b/q.sql',
+    '--- a/q.sql',
+    '+++ b/q.sql',
+    '@@ -5,2 +5 @@',
+    '--- a/not-a-file comment',
+    '-select 1;',
+    '+select 2;',
+    '@@ -20 +19 @@'
+  ].join('\n');
+  const runner = (_cmd, args) => {
+    seenArgs = args;
+    return { status: 0, stdout: diff, stderr: '' };
+  };
+  const hunks = prRespond.fixHunksByPath('/wt', 'aaa', 'bbb', runner);
+  assert.ok(seenArgs.includes('--src-prefix=a/'));
+  assert.ok(seenArgs.includes('--dst-prefix=b/'));
+  assert.deepEqual(hunks.get('q.sql'), [
+    [5, 6],
+    [20, 20]
+  ]);
+});
+
 test('threadTouchedByFix requires a hunk near the thread lines, not just the same file', () => {
   const hunks = new Map([['src/a.js', [[10, 11]]]]);
   assert.equal(prRespond.threadTouchedByFix({ path: 'src/a.js', line: 12 }, hunks), true);
@@ -1191,4 +1216,12 @@ test('review-bot-watch avoids bash-4-only associative arrays for auto-respond st
     /declare -A (LAST_RESPOND_SHA|RESPOND_SKIP_REMAINING|RESPOND_ROUNDS)/
   );
   assert.match(script, /RESPOND_MAX_ROUNDS="\$\{GUARDEX_RESPOND_MAX_ROUNDS:-3\}"/);
+});
+
+test('parseRespondArgs rejects a non-numeric or missing --pr', () => {
+  const { parseRespondArgs } = require('../src/cli/commands/pr');
+  assert.equal(parseRespondArgs(['--pr', '42']).pr, '42');
+  assert.throws(() => parseRespondArgs(['--pr', 'https://github.com/x/y/pull/1']), /Invalid --pr/);
+  assert.throws(() => parseRespondArgs(['--pr', 'agent/x']), /Invalid --pr/);
+  assert.throws(() => parseRespondArgs(['--pr']), /Invalid --pr/);
 });

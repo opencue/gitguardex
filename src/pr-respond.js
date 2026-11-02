@@ -434,20 +434,33 @@ function resolveThread(threadId, repoRoot, runner = run) {
 function fixHunksByPath(worktreePath, fromSha, toSha, runner = run) {
   const hunks = new Map();
   if (!fromSha || !toSha) return hunks;
-  const result = runner('git', ['diff', '-U0', '--no-color', '--no-ext-diff', fromSha, toSha], {
+  // Pin prefixes so diff.noprefix / diff.mnemonicPrefix in user config cannot
+  // change the header format this parser relies on.
+  const args = ['diff', '-U0', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
+  const result = runner('git', [...args, fromSha, toSha], {
     cwd: worktreePath,
     allowFailure: true
   });
   if (result.status !== 0) return hunks;
   let currentPath = '';
+  // `--- ` is a file header only between `diff --git` and the first hunk; inside a
+  // hunk it is a removed line whose content starts with `-- ` (SQL/Lua comments).
+  let inHeader = false;
   for (const line of String(result.stdout || '').split('\n')) {
-    if (line.startsWith('--- ')) {
+    if (line.startsWith('diff --git ')) {
+      inHeader = true;
+      currentPath = '';
+      continue;
+    }
+    if (inHeader && line.startsWith('--- ')) {
       // Old-side name; a newly-added file (/dev/null) has no pre-fix lines.
       currentPath = line.startsWith('--- a/') ? line.slice(6) : '';
       continue;
     }
     const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(line);
-    if (!match || !currentPath) continue;
+    if (!match) continue;
+    inHeader = false;
+    if (!currentPath) continue;
     const start = Number(match[1]);
     const count = match[2] === undefined ? 1 : Number(match[2]);
     const end = count === 0 ? start : start + count - 1;

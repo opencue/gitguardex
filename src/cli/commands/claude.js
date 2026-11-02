@@ -863,7 +863,7 @@ function runInstall(rawArgs) {
   }
 
   if (!opts.dryRun) {
-    if (mcpResult.status === 'ownership-unavailable') {
+    if (mcpResult && mcpResult.status === 'ownership-unavailable') {
       logWarn(
         `MCP server registration skipped — ${MCP_REL} already exists and `
         + 'ownership could not be claimed (another tool owns it). '

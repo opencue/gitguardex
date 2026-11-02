@@ -389,7 +389,14 @@ function parseRespondArgs(rawArgs) {
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (arg === '--target') { opts.target = rawArgs[++index]; continue; }
-    if (arg === '--pr') { opts.pr = rawArgs[++index]; continue; }
+    if (arg === '--pr') {
+      const value = String(rawArgs[++index] ?? '');
+      if (!/^[1-9]\d*$/.test(value)) {
+        throw new Error(`Invalid --pr: expected a PR number, got '${value}'`);
+      }
+      opts.pr = value;
+      continue;
+    }
     if (arg === '--provider') { opts.provider = rawArgs[++index]; continue; }
     if (arg === '--model') { opts.model = rawArgs[++index]; continue; }
     if (arg === '--timeout') {
@@ -495,7 +502,7 @@ Flags:
   --ready                   After open/sync, promote draft -> ready.
   --auto-merge              After open/sync, enable auto-merge.
   --merge-strategy <s>      squash (default) | merge | rebase.
-  --timeout <secs>          For watch/respond: max wait time. Default 600.
+  --timeout <secs>          For watch: max wait time (default 600). For respond: fix/re-review provider timeout.
   --interval <secs>         For watch: poll interval. Default 5.
   --json                    Emit JSON instead of human-readable output.
 
