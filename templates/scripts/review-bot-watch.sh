@@ -383,13 +383,20 @@ process_one_pr() {
 # not affect LAST_STATUS or cause the watch loop to exit.
 #
 # Rate-limiting: when the PR head SHA is unchanged we skip respond for
-# RESPOND_BACKOFF_POLLS consecutive polls after a successful run to avoid
-# re-invoking the fix provider on threads that are already handled.  The
-# backoff resets immediately when the SHA changes or when respond exits non-zero
-# (so a transient failure is retried on the next cycle).
-declare -A LAST_RESPOND_SHA
-declare -A RESPOND_SKIP_REMAINING
+# RESPOND_BACKOFF_POLLS consecutive polls after any run (success or failure),
+# so neither handled threads nor permanent refusals (no worktree, dirty tree,
+# fork PR) re-invoke respond every cycle. A SHA change resets the backoff.
+#
+# Round cap: at most RESPOND_MAX_ROUNDS auto-fix pushes per PR per watcher
+# process, so a fix the review keeps flagging cannot loop forever.
+#
+# Indexed arrays keyed by PR number (not `declare -A`) so the watcher still
+# starts on bash 3.2 (macOS /bin/bash).
+LAST_RESPOND_SHA=()
+RESPOND_SKIP_REMAINING=()
+RESPOND_ROUNDS=()
 RESPOND_BACKOFF_POLLS="${GUARDEX_RESPOND_BACKOFF_POLLS:-4}"
+RESPOND_MAX_ROUNDS="${GUARDEX_RESPOND_MAX_ROUNDS:-3}"
 
 try_respond_pr() {
   local pr="$1"
@@ -399,6 +406,13 @@ try_respond_pr() {
   # Only attempt for agent/* branches: non-agent PRs are refused by 'pr respond'
   # anyway, but the prefix check avoids a round-trip for every human PR.
   if [[ "$head_branch" != agent/* ]]; then
+    return 0
+  fi
+  # Array subscripts below are arithmetic; only integer PR numbers are valid.
+  if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  if (( ${RESPOND_ROUNDS[$pr]:-0} >= RESPOND_MAX_ROUNDS )); then
     return 0
   fi
 
@@ -416,13 +430,21 @@ try_respond_pr() {
   fi
 
   echo "[review-bot-watch] respond: checking PR #${pr} for blocking review threads"
+  local respond_out
   set +e
-  run_guardex_cli pr respond --pr "$pr"
+  respond_out="$(run_guardex_cli pr respond --pr "$pr" 2>&1)"
   local respond_exit="$?"
   set -e
+  [[ -n "$respond_out" ]] && printf '%s\n' "$respond_out"
 
   if [[ "$respond_exit" -eq 0 ]]; then
     echo "[review-bot-watch] respond: PR #${pr} done"
+    if [[ "$respond_out" == *"file(s), pushed"* ]]; then
+      RESPOND_ROUNDS["$pr"]=$(( ${RESPOND_ROUNDS[$pr]:-0} + 1 ))
+      if (( RESPOND_ROUNDS[$pr] >= RESPOND_MAX_ROUNDS )); then
+        echo "[review-bot-watch] respond: PR #${pr} reached ${RESPOND_MAX_ROUNDS} auto-fix round(s); auto-respond paused for this PR" >&2
+      fi
+    fi
     # Arm the backoff so we don't re-invoke on the next N polls with the same SHA.
     if [[ -n "$current_sha" ]]; then
       LAST_RESPOND_SHA["$pr"]="$current_sha"
@@ -430,10 +452,13 @@ try_respond_pr() {
     fi
   else
     echo "[review-bot-watch] respond: PR #${pr} skipped or failed (exit=${respond_exit})" >&2
-    # Use a 1-poll mini-backoff on failure: retries the next cycle for transient
-    # errors (network blip, dirty worktree) but doesn't hammer on permanent ones
-    # (worktree absent, fork PR) on every cycle like clearing to 0 would.
-    RESPOND_SKIP_REMAINING["$pr"]=1
+    # Same backoff as success: permanent refusals (worktree absent, fork PR)
+    # must not re-run every cycle; transient ones retry after the backoff or
+    # as soon as the head SHA changes.
+    if [[ -n "$current_sha" ]]; then
+      LAST_RESPOND_SHA["$pr"]="$current_sha"
+    fi
+    RESPOND_SKIP_REMAINING["$pr"]="$RESPOND_BACKOFF_POLLS"
   fi
 }
 

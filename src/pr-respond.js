@@ -312,9 +312,21 @@ function threadToFinding(thread, trustedAuthor) {
   // For bot threads use the parsed message; for human threads prefix with an explicit
   // data-label so the fix provider treats the reviewer's words as data, not instructions.
   // This prevents prompt-injection via CHANGES_REQUESTED review comments.
+  // A human reviewer's latest follow-up in the same thread (e.g. "also handle the
+  // timeout case") is part of the request, so carry it alongside the first comment.
+  const latest = thread.latestComment?.nodes?.[0];
+  const latestBody = String(latest?.body || '');
+  const followUp =
+    !isBot &&
+    latest &&
+    latest.id !== firstComment?.id &&
+    String(latest.author?.login || '').toLowerCase() === author &&
+    latestBody.trim()
+      ? ` | reviewer follow-up: ${latestBody.replace(/\s+/g, ' ').trim()}`
+      : '';
   const rawMessage = isBot
     ? messageFromBody(body)
-    : `reviewer: ${body.replace(/\s+/g, ' ').trim()}`;
+    : `reviewer: ${body.replace(/\s+/g, ' ').trim()}${followUp}`;
   // Cap so human-supplied content doesn't bloat the fix prompt.
   const message = rawMessage.slice(0, 500) || `review thread on ${thread.path}:${thread.line}`;
   const suggestion = isBot ? suggestionFromBody(body) : '';

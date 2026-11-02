@@ -1166,3 +1166,29 @@ test('prRespond replies to but never resolves human reviewer threads', () => {
   assert.deepEqual(scenario.resolvedCalls, []);
   assert.ok(scenario.result.skippedReply.includes('t-human'));
 });
+
+test('threadToFinding carries a human reviewer follow-up comment', () => {
+  const thread = {
+    path: 'src/a.js',
+    line: 4,
+    comments: { nodes: [{ id: 'c1', body: 'Handle null.', author: { login: 'alice' } }] },
+    latestComment: {
+      nodes: [{ id: 'c3', body: 'Also handle the timeout case.', author: { login: 'alice' } }]
+    }
+  };
+  const finding = prRespond.threadToFinding(thread, 'gx-bot');
+  assert.match(finding.message, /^reviewer: Handle null\./);
+  assert.match(finding.message, /follow-up: Also handle the timeout case\./);
+});
+
+test('review-bot-watch avoids bash-4-only associative arrays for auto-respond state', () => {
+  const script = fs.readFileSync(
+    path.resolve(__dirname, '..', 'templates', 'scripts', 'review-bot-watch.sh'),
+    'utf8'
+  );
+  assert.doesNotMatch(
+    script,
+    /declare -A (LAST_RESPOND_SHA|RESPOND_SKIP_REMAINING|RESPOND_ROUNDS)/
+  );
+  assert.match(script, /RESPOND_MAX_ROUNDS="\$\{GUARDEX_RESPOND_MAX_ROUNDS:-3\}"/);
+});

@@ -467,7 +467,7 @@ function cmdRespond(rawArgs) {
     `PR #${opts.pr}: fixed ${result.changedFiles.length} file(s), pushed ${result.fixSha ? result.fixSha.slice(0, 8) : ''}, resolved ${result.resolved.length}/${result.threads.length} thread(s).`,
   );
   if (result.skippedReply.length > 0) {
-    logInfo(`  ${result.skippedReply.length} thread(s) untouched (path not in changed files).`);
+    logInfo(`  ${result.skippedReply.length} thread(s) left open (fix did not touch the thread's lines, re-review unconfirmed or still blocking, or human thread awaiting the reviewer).`);
   }
 }
 
