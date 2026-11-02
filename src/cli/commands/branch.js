@@ -373,7 +373,14 @@ function branch(rawArgs) {
       });
       process.stdout.write(`[gx:finish] ${JSON.stringify(summary)}\n`);
       if (result.status !== 0) {
-        throw new Error(`branchFinish command failed with status ${result.status}`);
+        const stderrTail = String(result.stderr || '')
+          .split('\n')
+          .filter(Boolean)
+          .slice(-20)
+          .join('\n');
+        throw new Error(
+          `branchFinish command failed with status ${result.status}${stderrTail ? `\n${stderrTail}` : ''}`,
+        );
       }
     } else {
       invokePackageAsset('branchFinish', scriptArgs, assetOptions);
