@@ -725,8 +725,23 @@ has_live_process_in_worktree() {
   #
   # Unreadable entries (other users' processes) print nothing and are skipped,
   # exactly as the per-entry version's empty result was skipped.
+  #
+  # Not a multi-operand `readlink`: uutils coreutils (Ubuntu 26.04's default)
+  # aborts at the FIRST unreadable operand — /proc/1/cwd for a non-root user —
+  # and prints nothing, so every worktree looked process-free and was pruned
+  # while in use. GNU find's -printf '%l' reads each link in one process and
+  # skips unreadable entries.
   local live_cwds=""
-  live_cwds="$(readlink /proc/[0-9]*/cwd 2>/dev/null || true)"
+  live_cwds="$(find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%l\n' 2>/dev/null || true)"
+  if [[ -z "$live_cwds" ]]; then
+    # No GNU find (-printf unsupported): one readlink per entry. Slow, but never
+    # wrong. Empty output is never a real answer — this shell's own cwd is readable.
+    local proc_entry=""
+    for proc_entry in /proc/[0-9]*; do
+      proc_cwd="$(readlink "${proc_entry}/cwd" 2>/dev/null || true)"
+      [[ -n "$proc_cwd" ]] && live_cwds+="${proc_cwd}"$'\n'
+    done
+  fi
   [[ -n "$live_cwds" ]] || return 1
   local live_cwd=""
   while IFS= read -r live_cwd; do
