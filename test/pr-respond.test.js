@@ -941,3 +941,228 @@ test('prRespond returns no-threads when the PR has no actionable threads', () =>
     encoding: 'utf8'
   });
 });
+
+// ---------------------------------------------------------------------------
+// fixHunksByPath / threadTouchedByFix / waitForPrHead
+// ---------------------------------------------------------------------------
+
+test('fixHunksByPath parses old-side ranges, including pure insertions', () => {
+  const diff = [
+    'diff --git a/src/a.js b/src/a.js',
+    '--- a/src/a.js',
+    '+++ b/src/a.js',
+    '@@ -10,2 +10,3 @@',
+    '@@ -40 +41 @@',
+    '@@ -70,0 +72,4 @@',
+    'diff --git a/src/new.js b/src/new.js',
+    '--- /dev/null',
+    '+++ b/src/new.js',
+    '@@ -0,0 +1,5 @@'
+  ].join('\n');
+  const runner = () => ({ status: 0, stdout: diff, stderr: '' });
+  const hunks = prRespond.fixHunksByPath('/wt', 'aaa', 'bbb', runner);
+  assert.deepEqual(hunks.get('src/a.js'), [
+    [10, 11],
+    [40, 40],
+    [70, 70]
+  ]);
+  assert.equal(hunks.has('src/new.js'), false);
+});
+
+test('threadTouchedByFix requires a hunk near the thread lines, not just the same file', () => {
+  const hunks = new Map([['src/a.js', [[10, 11]]]]);
+  assert.equal(prRespond.threadTouchedByFix({ path: 'src/a.js', line: 12 }, hunks), true);
+  assert.equal(prRespond.threadTouchedByFix({ path: 'src/a.js', line: 80 }, hunks), false);
+  assert.equal(
+    prRespond.threadTouchedByFix({ path: 'src/a.js', startLine: 1, line: 8 }, hunks),
+    true
+  );
+  assert.equal(prRespond.threadTouchedByFix({ path: 'src/b.js', line: 10 }, hunks), false);
+});
+
+test('waitForPrHead returns false when GitHub never reports the fix SHA', () => {
+  let clock = 0;
+  const ok = prRespond.waitForPrHead('/repo', 'agent/x', 'fixsha', {
+    getHead: () => ({ headSha: 'oldsha' }),
+    sleep: () => {
+      clock += 2000;
+    },
+    now: () => clock,
+    timeoutSeconds: 6
+  });
+  assert.equal(ok, false);
+  assert.equal(
+    prRespond.waitForPrHead('/repo', 'agent/x', 'fixsha', {
+      getHead: () => ({ headSha: 'fixsha' })
+    }),
+    true
+  );
+});
+
+// ---------------------------------------------------------------------------
+// prRespond — fixed path (reply / resolve rules)
+// ---------------------------------------------------------------------------
+
+function botThread(id, line) {
+  return {
+    id,
+    isResolved: false,
+    isOutdated: false,
+    path: 'src/a.js',
+    line,
+    startLine: null,
+    comments: {
+      nodes: [
+        {
+          id: `${id}-c`,
+          body: `> 🟠 **HIGH** · correctness\n\nBug at ${line}.\n\n${MARKER}`,
+          author: { login: 'gx-bot' }
+        }
+      ]
+    }
+  };
+}
+
+function runFixedScenario({ threads, reReview, headCurrent = true, hunks, reviews = [] }) {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const branch = `agent/test/fixed-${Math.random().toString(36).slice(2, 8)}`;
+  const wtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-wt-'));
+  cp.spawnSync('git', ['-C', repoDir, 'branch', branch], { encoding: 'utf8' });
+  cp.spawnSync('git', ['-C', repoDir, 'worktree', 'add', wtDir, branch], { encoding: 'utf8' });
+
+  const resolvedCalls = [];
+  const replyCalls = [];
+  const runner = (cmd, args, opts) => {
+    if (args[0] === 'repo' && args[1] === 'view') {
+      return { status: 0, stdout: 'opencue/gitguardex\n', stderr: '' };
+    }
+    if (args[0] === 'pr' && args[1] === 'view') {
+      return {
+        status: 0,
+        stdout: JSON.stringify({ headRefName: branch, isCrossRepository: false }),
+        stderr: ''
+      };
+    }
+    const query = args.find((a) => String(a).startsWith('query=')) || '';
+    if (query.includes('resolveReviewThread')) {
+      resolvedCalls.push(args.find((a) => String(a).startsWith('thread=')).slice(7));
+      return {
+        status: 0,
+        stdout: JSON.stringify({ data: { resolveReviewThread: { thread: { isResolved: true } } } }),
+        stderr: ''
+      };
+    }
+    if (query.includes('addPullRequestReviewThreadReply')) {
+      replyCalls.push(args.find((a) => String(a).startsWith('threadId=')));
+      return { status: 0, stdout: '{"data":{}}', stderr: '' };
+    }
+    if (query.includes('reviewThreads')) {
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          data: {
+            viewer: { login: 'gx-bot' },
+            repository: {
+              pullRequest: {
+                reviews: { nodes: reviews },
+                reviewThreads: { nodes: threads, pageInfo: { hasNextPage: false } }
+              }
+            }
+          }
+        }),
+        stderr: ''
+      };
+    }
+    const result = cp.spawnSync(cmd, args, {
+      cwd: opts && opts.cwd ? opts.cwd : repoDir,
+      encoding: 'utf8'
+    });
+    return { status: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
+  };
+
+  const deps = {
+    run: runner,
+    runReviewFix: () => ({ status: 'fixed', changedFiles: ['src/a.js'], sha: 'f1x5ha00' }),
+    pushBranch: () => {},
+    waitForPrHead: () => headCurrent,
+    runPrReview: () => reReview,
+    fixHunksByPath: () => hunks
+  };
+  const result = prRespond.prRespond({ pr: '42', target: repoDir }, deps);
+  cp.spawnSync('git', ['-C', repoDir, 'worktree', 'remove', wtDir, '--force'], {
+    encoding: 'utf8'
+  });
+  return { result, resolvedCalls, replyCalls };
+}
+
+test('prRespond resolves only the bot thread whose lines the fix touched', () => {
+  const { result, resolvedCalls } = runFixedScenario({
+    threads: [botThread('t-fixed', 10), botThread('t-other', 80)],
+    reReview: { posted: true, findings: [] },
+    hunks: new Map([['src/a.js', [[9, 11]]]])
+  });
+  assert.equal(result.status, 'fixed');
+  assert.deepEqual(resolvedCalls, ['t-fixed']);
+  assert.ok(result.skippedReply.includes('t-other'));
+});
+
+test('prRespond leaves threads open when the re-review was not posted', () => {
+  const { result, resolvedCalls, replyCalls } = runFixedScenario({
+    threads: [botThread('t1', 10)],
+    reReview: { posted: false, findings: [], reason: 'github-auth-unavailable' },
+    hunks: new Map([['src/a.js', [[10, 10]]]])
+  });
+  assert.equal(result.status, 'fixed');
+  assert.deepEqual(resolvedCalls, []);
+  assert.deepEqual(replyCalls, []);
+});
+
+test('prRespond leaves threads open when the PR head never reaches the fix commit', () => {
+  let reviewCalled = false;
+  const scenario = runFixedScenario({
+    threads: [botThread('t1', 10)],
+    reReview: {
+      get posted() {
+        reviewCalled = true;
+        return true;
+      },
+      findings: []
+    },
+    headCurrent: false,
+    hunks: new Map([['src/a.js', [[10, 10]]]])
+  });
+  assert.equal(scenario.result.status, 'fixed');
+  assert.deepEqual(scenario.resolvedCalls, []);
+  assert.equal(scenario.result.reReviewPosted, false);
+  assert.equal(reviewCalled, false);
+});
+
+test('prRespond leaves threads open when the re-review still flags the file', () => {
+  const { resolvedCalls } = runFixedScenario({
+    threads: [botThread('t1', 10)],
+    reReview: { posted: true, findings: [{ path: 'src/a.js', severity: 'high' }] },
+    hunks: new Map([['src/a.js', [[10, 10]]]])
+  });
+  assert.deepEqual(resolvedCalls, []);
+});
+
+test('prRespond replies to but never resolves human reviewer threads', () => {
+  const human = {
+    ...botThread('t-human', 10),
+    comments: { nodes: [{ id: 'h', body: 'please fix', author: { login: 'alice' } }] },
+    latestComment: { nodes: [{ body: 'please fix', author: { login: 'alice' } }] }
+  };
+  const scenario = runFixedScenario({
+    threads: [human],
+    reviews: [
+      { author: { login: 'alice' }, state: 'CHANGES_REQUESTED', authorAssociation: 'COLLABORATOR' }
+    ],
+    reReview: { posted: true, findings: [] },
+    hunks: new Map([['src/a.js', [[10, 10]]]])
+  });
+  assert.equal(scenario.result.status, 'fixed');
+  assert.equal(scenario.replyCalls.length, 1);
+  assert.deepEqual(scenario.resolvedCalls, []);
+  assert.ok(scenario.result.skippedReply.includes('t-human'));
+});

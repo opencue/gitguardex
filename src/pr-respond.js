@@ -26,8 +26,18 @@ const { worktreePathForBranch } = require('./agents/inspect');
 const { gitRun, currentBranchName } = require('./git');
 const { runReviewFix } = require('./review-fix');
 const { runPrReview, MARKER } = require('./pr-review');
+const { getPrHeadOid } = require('./pr');
 
 const TOOL_PREFIX = '[gitguardex]';
+
+// A fix hunk "addresses" a thread when it lands within this many lines of the
+// thread's anchored range (pre-fix coordinates).
+const THREAD_HUNK_MARGIN = 3;
+
+// How long to wait for GitHub to expose the pushed fix commit as the PR head
+// before re-reviewing. A re-review of the pre-fix diff must never drive resolution.
+const PR_HEAD_WAIT_SECONDS = 60;
+const PR_HEAD_POLL_SECONDS = 2;
 
 // Only agent/* branches may be auto-fixed.
 const AGENT_BRANCH_PREFIX = 'agent/';
@@ -404,6 +414,71 @@ function resolveThread(threadId, repoRoot, runner = run) {
 }
 
 /**
+ * Old-side (pre-fix) line ranges changed per file between `fromSha` and `toSha`.
+ *
+ * Returns `Map<path, Array<[start, end]>>`. A pure insertion (`-a,0`) is recorded
+ * as `[a, a]` — the line it was inserted after.
+ */
+function fixHunksByPath(worktreePath, fromSha, toSha, runner = run) {
+  const hunks = new Map();
+  if (!fromSha || !toSha) return hunks;
+  const result = runner('git', ['diff', '-U0', '--no-color', '--no-ext-diff', fromSha, toSha], {
+    cwd: worktreePath,
+    allowFailure: true
+  });
+  if (result.status !== 0) return hunks;
+  let currentPath = '';
+  for (const line of String(result.stdout || '').split('\n')) {
+    if (line.startsWith('--- ')) {
+      // Old-side name; a newly-added file (/dev/null) has no pre-fix lines.
+      currentPath = line.startsWith('--- a/') ? line.slice(6) : '';
+      continue;
+    }
+    const match = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(line);
+    if (!match || !currentPath) continue;
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    const end = count === 0 ? start : start + count - 1;
+    if (!hunks.has(currentPath)) hunks.set(currentPath, []);
+    hunks.get(currentPath).push([start, end]);
+  }
+  return hunks;
+}
+
+/**
+ * True when a fix hunk overlaps the thread's anchored range (± margin).
+ * This is the per-thread evidence that the fix targeted THIS thread, not merely
+ * some other defect in the same file.
+ */
+function threadTouchedByFix(thread, hunks) {
+  const ranges = hunks.get(thread.path);
+  if (!ranges || ranges.length === 0) return false;
+  const line = Number(thread.line) || 0;
+  if (!line) return false;
+  const start = Number(thread.startLine) || line;
+  const lo = Math.min(start, line) - THREAD_HUNK_MARGIN;
+  const hi = Math.max(start, line) + THREAD_HUNK_MARGIN;
+  return ranges.some(([a, b]) => a <= hi && b >= lo);
+}
+
+/** Poll until GitHub reports `expectedSha` as the PR head for `branch`. */
+function waitForPrHead(repoRoot, branch, expectedSha, options = {}) {
+  const expected = String(expectedSha || '').trim();
+  if (!expected) return false;
+  const getHead = options.getHead || getPrHeadOid;
+  const sleep = options.sleep || ((seconds) => run('sleep', [String(seconds)], { cwd: repoRoot }));
+  const now = options.now || (() => Date.now());
+  const deadline = now() + (options.timeoutSeconds || PR_HEAD_WAIT_SECONDS) * 1000;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const snapshot = getHead(repoRoot, branch);
+    if (snapshot && snapshot.headSha === expected) return true;
+    if (now() >= deadline) return false;
+    sleep(options.pollSeconds || PR_HEAD_POLL_SECONDS);
+  }
+}
+
+/**
  * Push the current branch in `worktreePath` to origin.
  */
 function pushBranch(worktreePath, runner = run) {
@@ -572,10 +647,18 @@ function prRespond(options = {}, deps = {}) {
     };
   }
 
-  // 5. Run the fix.
+  // 5. Run the fix. Record the pre-fix HEAD so each thread can later be matched
+  // against the hunks the fix actually changed.
+  const preFixSha = String(
+    gitRun(worktreePath, ['rev-parse', 'HEAD'], { allowFailure: true }).stdout || ''
+  ).trim();
+  const fixRunner = deps.runReviewFix || runReviewFix;
+  const reviewRunner = deps.runPrReview || runPrReview;
+  const pushRunner = deps.pushBranch || pushBranch;
+  const waitHead = deps.waitForPrHead || waitForPrHead;
   let fixResult;
   try {
-    fixResult = runReviewFix(
+    fixResult = fixRunner(
       {
         repoRoot: worktreePath,
         provider: options.provider || 'codex',
@@ -603,15 +686,26 @@ function prRespond(options = {}, deps = {}) {
 
   // 6. Push the fix.
   try {
-    pushBranch(worktreePath, runner);
+    pushRunner(worktreePath, runner);
   } catch (error) {
     return { status: 'push-failed', reason: error.message, fixSha };
   }
 
-  // 7. Re-run pr-review with --post so the updated diff is reviewed again.
-  let reReviewResult;
+  // 7. Re-run pr-review with --post so the updated diff is reviewed again —
+  // but only once GitHub reports the fix commit as the PR head. Otherwise the
+  // re-review would fetch the pre-fix diff and a stale verdict would drive
+  // resolution. On timeout, skip the re-review: every thread stays open.
+  let reReviewResult = null;
+  const headCurrent = waitHead(repoRoot, branch, fixSha);
+  if (!headCurrent) {
+    process.stderr.write(
+      `${TOOL_PREFIX} PR head did not reach ${String(fixSha || '').slice(0, 8)}; ` +
+        'skipping re-review, threads left open (fix is pushed)\n'
+    );
+  }
   try {
-    reReviewResult = runPrReview(
+    if (!headCurrent) throw new Error('stale PR head');
+    reReviewResult = reviewRunner(
       {
         pr,
         target: worktreePath,
@@ -624,16 +718,23 @@ function prRespond(options = {}, deps = {}) {
     );
   } catch (error) {
     // Non-fatal: fix is already pushed. Log but don't fail the whole respond.
-    process.stderr.write(`${TOOL_PREFIX} re-review failed (fix is pushed): ${error.message}\n`);
+    if (headCurrent) {
+      process.stderr.write(`${TOOL_PREFIX} re-review failed (fix is pushed): ${error.message}\n`);
+    }
     reReviewResult = null;
   }
 
-  // 8. Reply + resolve threads whose files were touched by the fix.
-  // Resolve a thread only when BOTH conditions hold:
-  //   a) re-review succeeded (null means it threw; leave all threads open), AND
-  //   b) the re-review no longer reports any blocking finding at that file —
-  //      if two threads target the same file and only one was fixed, the remaining
-  //      re-review finding on that file prevents premature resolution.
+  // 8. Reply + resolve threads the fix addressed.
+  // Resolve a thread only when ALL of these hold:
+  //   a) re-review ran against the fix head, returned a findings array, AND was
+  //      posted to the PR (published evidence; posted:false leaves threads open);
+  //   b) a fix hunk overlaps THIS thread's anchored lines — touching some other
+  //      part of the same file is not evidence that this thread's defect was fixed;
+  //   c) the re-review reports no blocking finding left on that file.
+  const reReviewUsable = Boolean(
+    reReviewResult && Array.isArray(reReviewResult.findings) && reReviewResult.posted === true
+  );
+  const hunks = (deps.fixHunksByPath || fixHunksByPath)(worktreePath, preFixSha, fixSha, runner);
   const reReviewRemainingPaths = new Set(
     reReviewResult && Array.isArray(reReviewResult.findings)
       ? reReviewResult.findings
@@ -649,8 +750,14 @@ function prRespond(options = {}, deps = {}) {
       skippedReply.push(thread.id);
       continue;
     }
-    if (!reReviewResult || !Array.isArray(reReviewResult.findings)) {
-      // Re-review failed or returned no findings array: cannot confirm fix; leave thread open.
+    if (!reReviewUsable) {
+      // Re-review failed, was stale, unposted, or returned no findings array:
+      // cannot confirm the fix; leave thread open.
+      skippedReply.push(thread.id);
+      continue;
+    }
+    if (!threadTouchedByFix(thread, hunks)) {
+      // The file changed, but not near this thread's lines.
       skippedReply.push(thread.id);
       continue;
     }
@@ -715,11 +822,14 @@ function prRespond(options = {}, deps = {}) {
 module.exports = {
   fetchBlockingThreads,
   fetchPrMeta,
+  fixHunksByPath,
   messageFromBody,
   prRespond,
   replyToThread,
   resolveThread,
   severityFromBody,
   suggestionFromBody,
-  threadToFinding
+  threadToFinding,
+  threadTouchedByFix,
+  waitForPrHead
 };
