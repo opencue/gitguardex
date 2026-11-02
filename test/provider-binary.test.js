@@ -79,3 +79,42 @@ test('codexReviewEffort bounds code-assist work independently of the user defaul
   assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: ' XHIGH ' }), 'xhigh');
   assert.equal(codexReviewEffort({ GUARDEX_REVIEW_CODEX_EFFORT: 'unbounded' }), 'medium');
 });
+
+// CI scenario: the provider binary is a plain npm-installed binary on PATH
+// with no shim layer — `npm install -g @anthropic-ai/claude-code` or
+// `npm install -g @openai/codex` puts a real binary directly into the global
+// bin directory.
+
+test('resolveProviderBin finds a plain npm-installed claude binary with no shim layer', () => {
+  withTempDir((tmp) => {
+    const npmBin = path.join(tmp, 'npm-global-bin');
+    // Plain binary — no cue launch shim, no codex-guard.
+    const real = makeExecutable(npmBin, 'claude', '#!/usr/bin/env node\n// @anthropic-ai/claude-code\n');
+
+    assert.equal(
+      resolveProviderBin('claude', { PATH: npmBin }),
+      real,
+    );
+  });
+});
+
+test('resolveProviderBin finds a plain npm-installed codex binary with no shim layer', () => {
+  withTempDir((tmp) => {
+    const npmBin = path.join(tmp, 'npm-global-bin');
+    // Plain binary — not a codex-guard wrapper.
+    const real = makeExecutable(npmBin, 'codex', '#!/usr/bin/env node\n// @openai/codex\n');
+
+    assert.equal(
+      resolveProviderBin('codex', { PATH: npmBin }),
+      real,
+    );
+  });
+});
+
+test('resolveProviderBin returns the provider name when PATH is empty (CI: binary not installed)', () => {
+  // When no key is configured the workflow exits before installing anything.
+  // resolveProviderBin must still return something safe so callers can
+  // surface a meaningful error rather than crash on an empty string.
+  assert.equal(resolveProviderBin('claude', { PATH: '' }), 'claude');
+  assert.equal(resolveProviderBin('codex', { PATH: '' }), 'codex');
+});

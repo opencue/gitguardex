@@ -1,0 +1,82 @@
+name: PR Review
+
+# Run `gx pr-review` on every push to an open PR so findings land as inline
+# comments on the diff before a human reviews it.
+#
+# Security: uses `pull_request` (not `pull_request_target`), so PRs from
+# forks run in a read-only context with no access to repository secrets.
+# That is intentional: the review job is silently skipped for forks unless
+# the repo owner copies the relevant API-key secret into the fork, which is
+# the expected opt-in path.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Minimal permissions: read the code, write PR comments.
+permissions:
+  contents: read
+  pull-requests: write
+
+# Cancel the in-flight review for a PR when a new push arrives; the new
+# commit makes the old review stale anyway.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: AI PR review
+    # Skip draft PRs (matches ci.yml) and Dependabot PRs (dependency bumps
+    # don't benefit from an AI code review and would waste API quota).
+    if: >-
+      github.event.pull_request.draft == false
+      && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Check out the base branch, NOT the PR head. The reviewer fetches
+          # the PR diff from the GitHub API using --pr, so it does not need the
+          # PR code locally. Checking out the base branch means only trusted,
+          # already-merged code runs with the API keys and GH_TOKEN, preventing
+          # a same-repository PR from modifying bin/multiagent-safety.js (or any
+          # of its imports) and exfiltrating secrets before review.
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Setup Node 20
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+
+      - name: Install gitguardex dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install provider CLI and run review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            provider=claude
+            npm install -g @anthropic-ai/claude-code --ignore-scripts
+          elif [ -n "${OPENAI_API_KEY:-}" ]; then
+            provider=codex
+            npm install -g @openai/codex --ignore-scripts
+          else
+            echo "::notice::Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is configured; skipping AI review."
+            exit 0
+          fi
+
+          node bin/multiagent-safety.js pr-review \
+            --pr "$PR_NUMBER" \
+            --provider "$provider" \
+            --post
