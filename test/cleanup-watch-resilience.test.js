@@ -183,9 +183,9 @@ test('exponential backoff: sleep duration doubles after each consecutive failure
 
   // After failure n, sleep = min(10 * 2^n, 900)
   assert.deepEqual(sleepDurations, [
-    Math.min(10 * Math.pow(2, 1), 900), // 20
-    Math.min(10 * Math.pow(2, 2), 900), // 40
-    Math.min(10 * Math.pow(2, 3), 900) // 80
+    Math.min(10 * 2 ** 1, 900), // 20
+    Math.min(10 * 2 ** 2, 900), // 40
+    Math.min(10 * 2 ** 3, 900) // 80
   ]);
 });
 

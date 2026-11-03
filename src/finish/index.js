@@ -283,7 +283,7 @@ function runCleanupWatchLoop(runCycle, opts) {
 
     const backoffSeconds =
       consecutiveFailures > 0
-        ? Math.min(intervalSeconds * Math.pow(2, consecutiveFailures), BACKOFF_CAP_SECONDS)
+        ? Math.min(intervalSeconds * 2 ** consecutiveFailures, BACKOFF_CAP_SECONDS)
         : intervalSeconds;
 
     const sleepResult = runSleep(backoffSeconds);
