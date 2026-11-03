@@ -32,7 +32,11 @@ NOW_EPOCH=0
 GH_BIN="${GUARDEX_GH_BIN:-gh}"
 PR_MERGED_LOOKUP_DISABLED=0
 PR_MERGED_LOOKUP_LOADED=0
+PR_MERGED_LOOKUP_TRUNCATED=0
+MERGED_PR_LOOKUP_LIMIT="${GUARDEX_MERGED_PR_LOOKUP_LIMIT:-500}"
 declare -A MERGED_PR_BRANCHES=()
+# Per-branch merged-PR fallback cache used when the bulk lookup was truncated.
+declare -A MERGED_PR_BRANCH_FALLBACK_CACHE=()
 # `git worktree list --porcelain` was re-run for EVERY branch (104 times in one
 # traced sweep) even though the answer only changes when this script itself
 # removes a worktree. Same for `rev-parse --verify refs/heads/<b>`: one branch
@@ -213,6 +217,9 @@ load_merged_pr_branches() {
     return 1
   fi
   if [[ "$PR_MERGED_LOOKUP_LOADED" -eq 1 ]]; then
+    # Loaded but truncated is still "loaded" for the bulk-lookup; callers that
+    # need a definitive answer for a specific branch use the per-branch fallback
+    # via branch_has_merged_pr_checked().
     return 0
   fi
   if ! command -v "$GH_BIN" >/dev/null 2>&1; then
@@ -223,19 +230,64 @@ load_merged_pr_branches() {
   # Name -> space-separated merged PR head SHAs. The SHA is what makes the
   # name match safe: a reused branch name, or commits pushed after the PR
   # merged, must not read as "merged" (see branch_has_merged_pr).
+  #
+  # Limit is configurable (GUARDEX_MERGED_PR_LOOKUP_LIMIT, default 500).
+  # When the result count hits the limit the lookup may be incomplete, so we
+  # set PR_MERGED_LOOKUP_TRUNCATED=1 and fall back to a per-branch probe in
+  # branch_has_merged_pr() — fail closed: a branch not in the truncated set is
+  # only treated as "not merged" after the per-branch check confirms it.
   local merged_branches=""
   merged_branches="$(
-    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" --limit 200 --json headRefName,headRefOid --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
+    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" \
+      --limit "$MERGED_PR_LOOKUP_LIMIT" \
+      --json headRefName,headRefOid \
+      --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
   )"
+  local row_count=0
   if [[ -n "$merged_branches" ]]; then
     local merged_branch merged_oid
     while IFS=' ' read -r merged_branch merged_oid; do
       [[ -z "$merged_branch" || -z "$merged_oid" ]] && continue
       MERGED_PR_BRANCHES["$merged_branch"]="${MERGED_PR_BRANCHES[$merged_branch]:-} ${merged_oid}"
+      row_count=$((row_count + 1))
     done <<< "$merged_branches"
+  fi
+  if (( row_count >= MERGED_PR_LOOKUP_LIMIT )); then
+    PR_MERGED_LOOKUP_TRUNCATED=1
   fi
   PR_MERGED_LOOKUP_LOADED=1
   return 0
+}
+
+# Per-branch fallback for merged-PR detection, used when the bulk lookup was
+# truncated (PR_MERGED_LOOKUP_TRUNCATED=1).  Caches each result so a branch
+# is never queried twice in one run.
+#
+# Returns 0 when the branch has a confirmed merged PR; 1 otherwise.
+# Never fail-open: a gh failure is treated as "not confirmed merged".
+_load_merged_pr_branch_fallback() {
+  local branch="$1"
+  if [[ -n "${MERGED_PR_BRANCH_FALLBACK_CACHE[$branch]+set}" ]]; then
+    [[ "${MERGED_PR_BRANCH_FALLBACK_CACHE[$branch]}" == "1" ]]
+    return
+  fi
+  local result=""
+  result="$(
+    "$GH_BIN" pr list --state merged --head "$branch" --base "$BASE_BRANCH" \
+      --limit 5 --json headRefName,headRefOid \
+      --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
+  )"
+  if [[ -n "$result" ]]; then
+    local fb_branch fb_oid
+    while IFS=' ' read -r fb_branch fb_oid; do
+      [[ -z "$fb_branch" || -z "$fb_oid" ]] && continue
+      MERGED_PR_BRANCHES["$fb_branch"]="${MERGED_PR_BRANCHES[$fb_branch]:-} ${fb_oid}"
+    done <<< "$result"
+    MERGED_PR_BRANCH_FALLBACK_CACHE["$branch"]="1"
+    return 0
+  fi
+  MERGED_PR_BRANCH_FALLBACK_CACHE["$branch"]="0"
+  return 1
 }
 
 # One `gh pr list` for every open PR instead of one per branch. The merged
@@ -253,6 +305,11 @@ load_open_pr_lookup() {
   if [[ "$OPEN_PR_LOOKUP_LOADED" -eq 1 ]]; then
     return 0
   fi
+  # A truncated or failed bulk list stays unusable for the rest of this run;
+  # without this, every caller re-ran the full `gh pr list` (one per worktree).
+  if [[ "$OPEN_PR_LOOKUP_TRUNCATED" -eq 1 || "${OPEN_PR_LOOKUP_FAILED:-0}" -eq 1 ]]; then
+    return 1
+  fi
   if ! command -v "$GH_BIN" >/dev/null 2>&1; then
     return 1
   fi
@@ -260,6 +317,7 @@ load_open_pr_lookup() {
   if ! open_branches="$(
     "$GH_BIN" pr list --state open --limit "$OPEN_PR_LOOKUP_LIMIT" --json headRefName --jq '.[].headRefName' 2>/dev/null
   )"; then
+    OPEN_PR_LOOKUP_FAILED=1
     return 1
   fi
   local count=0
@@ -285,6 +343,13 @@ branch_has_merged_pr() {
   fi
   load_merged_pr_branches || return 1
   local merged_oids="${MERGED_PR_BRANCHES[$branch]:-}"
+  # When the bulk lookup was truncated and this branch was not in the result,
+  # fall back to a per-branch query rather than treating "not in truncated set"
+  # as "not merged" (which would be fail-open and potentially delete live work).
+  if [[ -z "$merged_oids" && "$PR_MERGED_LOOKUP_TRUNCATED" -eq 1 ]]; then
+    _load_merged_pr_branch_fallback "$branch" || return 1
+    merged_oids="${MERGED_PR_BRANCHES[$branch]:-}"
+  fi
   [[ -n "$merged_oids" ]] || return 1
   # Merged only if every tip we can see — the local branch AND origin's —
   # IS a merged PR's head or is contained in one. Anything newer (commits
@@ -390,6 +455,27 @@ closed_pr_has_remote_recovery() {
   [[ -n "$classified_head" ]] || return 1
   remote_head="$(git -C "$repo_root" ls-remote --heads origin "refs/heads/${branch}" 2>/dev/null | awk 'NR == 1 { print $1 }')"
   [[ "$remote_head" == "$classified_head" ]]
+}
+
+# Open-PR state for a non-agent linked worktree's branch, independent of
+# --preserve-open-prs: 0 = has an open PR, 1 = none, 2 = unknown (fail closed).
+# Uses the bulk list when complete, else one cached per-branch probe.
+declare -A LINKED_OPEN_PR_CACHE=()
+linked_branch_open_pr_state() {
+  local branch="$1" cached="${LINKED_OPEN_PR_CACHE[$1]:-}" head=""
+  if [[ -n "$cached" ]]; then
+    return "$cached"
+  fi
+  local state=2
+  if ! command -v "$GH_BIN" >/dev/null 2>&1; then
+    state=2
+  elif load_open_pr_lookup; then
+    if [[ -n "${OPEN_PR_BRANCHES[$branch]:-}" ]]; then state=0; else state=1; fi
+  elif head="$("$GH_BIN" pr list --state open --head "$branch" --limit 1 --json headRefName --jq '.[0].headRefName // ""' 2>/dev/null)"; then
+    if [[ -n "$head" ]]; then state=0; else state=1; fi
+  fi
+  LINKED_OPEN_PR_CACHE["$branch"]="$state"
+  return "$state"
 }
 
 should_preserve_open_pr_branch() {
@@ -596,6 +682,100 @@ is_clean_worktree() {
     && [[ -z "$(git -C "$wt" ls-files --others --exclude-standard -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}")" ]]
 }
 
+# Directories / patterns whose .gitignore-excluded presence is safe to discard.
+# Addable via GUARDEX_PRUNE_DISPOSABLE_IGNORED (space-separated, appended).
+PRUNE_DISPOSABLE_IGNORED_DEFAULT=(
+  node_modules dist build out .next .nuxt .turbo .cache .parcel-cache .vite
+  coverage target .venv venv __pycache__ .pytest_cache .mypy_cache .codegraph
+  .omc .omx
+)
+PRUNE_DISPOSABLE_IGNORED=("${PRUNE_DISPOSABLE_IGNORED_DEFAULT[@]}")
+if [[ -n "${GUARDEX_PRUNE_DISPOSABLE_IGNORED:-}" ]]; then
+  read -ra _extra_disposable <<< "$GUARDEX_PRUNE_DISPOSABLE_IGNORED"
+  PRUNE_DISPOSABLE_IGNORED+=("${_extra_disposable[@]}")
+fi
+
+# Returns 0 and prints offending paths (up to 5) when the worktree has
+# .gitignore-excluded files that are NOT under a disposable directory and are
+# NOT matched by the existing STATE_EXCLUDE_PATHSPEC globs or *.log/.DS_Store.
+# Returns 1 when all ignored content is disposable.
+worktree_has_precious_ignored_files() {
+  local wt="$1"
+  local ignored_paths=""
+  ignored_paths="$(
+    git -C "$wt" ls-files --others --ignored --exclude-standard \
+      --directory --no-empty-directory 2>/dev/null || true
+  )"
+  [[ -n "$ignored_paths" ]] || return 1
+
+  local -a offenders=()
+  local entry clean base
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    # Strip trailing slash from directory entries.
+    clean="${entry%/}"
+    base="${clean%%/*}"
+
+    # Check disposable dirs.
+    local disposable=0
+    local d
+    for d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
+      if [[ "$base" == "$d" ]]; then
+        disposable=1
+        break
+      fi
+    done
+    [[ "$disposable" -eq 1 ]] && continue
+
+    # Check *.log and .DS_Store.
+    case "$clean" in
+      *.log|.DS_Store) continue ;;
+    esac
+
+    # Check the existing STATE_EXCLUDE_PATHSPEC globs (simple prefix match).
+    local globs_raw="${WORKTREE_STATE_EXCLUDE_GLOBS_RAW:-}"
+    if [[ -n "$globs_raw" ]]; then
+      local glob matched_state=0
+      local -a globs_arr=()
+      IFS=':' read -ra globs_arr <<< "$globs_raw"
+      for glob in "${globs_arr[@]}"; do
+        [[ -z "$glob" ]] && continue
+        # Strip leading ** or ./ for a simple prefix match.
+        local bare_glob="${glob#\*\*/}"
+        bare_glob="${bare_glob#./}"
+        if [[ "$clean" == $bare_glob || "$clean" == ${bare_glob%%\**}* ]]; then
+          matched_state=1
+          break
+        fi
+      done
+      [[ "$matched_state" -eq 1 ]] && continue
+    fi
+
+    offenders+=("$entry")
+    [[ "${#offenders[@]}" -ge 5 ]] && break
+  done <<< "$ignored_paths"
+
+  if [[ "${#offenders[@]}" -gt 0 ]]; then
+    local o
+    for o in "${offenders[@]}"; do
+      printf '%s\n' "$o"
+    done
+    return 0
+  fi
+  return 1
+}
+
+# --force-dirty is an explicit operator override ("Allow cleanup of dirty
+# worktrees"); no automated caller passes it. It therefore applies to every
+# removal reason, but the uncommitted files it is about to destroy are always
+# printed first (warn_force_dirty_removal) so the loss is never silent.
+# It does NOT override the precious-ignored-files guard below.
+warn_force_dirty_removal() {
+  local wt="$1" reason="$2"
+  echo "[agent-worktree-prune] WARNING: --force-dirty removes a dirty worktree (${reason}); these uncommitted changes will be lost: ${wt}" >&2
+  summarize_worktree_dirt "$wt" >&2
+}
+
 # Returns a short, human-readable summary of why a worktree is considered dirty:
 # up to 3 modified-tracked paths + up to 3 untracked paths + a "(+N more)" tail.
 # Used to surface actionable context next to "Skipping dirty worktree" log lines
@@ -687,6 +867,34 @@ read_branch_activity_epoch() {
         if [[ -z "$activity_epoch" || "$lock_mtime" -gt "$activity_epoch" ]]; then
           activity_epoch="$lock_mtime"
         fi
+      fi
+    fi
+
+    # Extend the activity epoch with the newest mtime of any non-disposable file
+    # in the worktree.  A file actively written — e.g. an IDE scratch file, a
+    # spec draft, a half-finished shell script — has no git record but IS a signal
+    # that someone is working in this worktree.  Using `find -printf '%T@'` (GNU)
+    # gives us the whole tree in one pass; on platforms without -printf the block
+    # produces nothing and we fall through to the git-only epoch (safe degradation).
+    #
+    # Exclude .git and the PRUNE_DISPOSABLE_IGNORED dirs (node_modules, dist, …)
+    # to keep the scan cheap and avoid false-recent signals from tooling writes.
+    local _prune_find_args=( \( -name '.git' )
+    local _d
+    for _d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
+      _prune_find_args+=( -o -name "$_d" )
+    done
+    _prune_find_args+=( \) -prune -o -not -type d )
+    local newest_file_mtime=""
+    newest_file_mtime="$(
+      find "$wt" -mindepth 1 -maxdepth 6 \
+        "${_prune_find_args[@]}" \
+        -printf '%T@\n' 2>/dev/null \
+        | sort -rn | head -1 | cut -d. -f1 || true
+    )"
+    if [[ "$newest_file_mtime" =~ ^[0-9]+$ ]]; then
+      if [[ -z "$activity_epoch" || "$newest_file_mtime" -gt "$activity_epoch" ]]; then
+        activity_epoch="$newest_file_mtime"
       fi
     fi
   fi
@@ -866,7 +1074,12 @@ branch_idle_gate() {
   local last_activity_epoch=""
   last_activity_epoch="$(read_branch_activity_epoch "$branch" "$wt")"
   if [[ ! "$last_activity_epoch" =~ ^[0-9]+$ ]]; then
-    return 0
+    # Cannot determine when the branch was last active — fail closed: treat as
+    # recent and skip removal rather than allow it.  A branch with no reflog
+    # and no git history is an unusual edge-case; preserving it is the safe choice.
+    skipped_recent=$((skipped_recent + 1))
+    echo "[agent-worktree-prune] Skipping branch with undetermined activity epoch (fail closed): ${branch} (${reason})"
+    return 1
   fi
 
   local idle_age=$((NOW_EPOCH - last_activity_epoch))
@@ -969,6 +1182,12 @@ branch_is_exact_merged_pr_head() {
   [[ "$INCLUDE_PR_MERGED" -eq 1 ]] || return 1
   load_merged_pr_branches || return 1
   local merged_oids=" ${MERGED_PR_BRANCHES[$branch]:-} "
+  # Same truncation fallback as branch_has_merged_pr: if the bulk list was
+  # capped and this branch was not found, probe it individually.
+  if [[ -z "${merged_oids// /}" && "$PR_MERGED_LOOKUP_TRUNCATED" -eq 1 ]]; then
+    _load_merged_pr_branch_fallback "$branch" || return 1
+    merged_oids=" ${MERGED_PR_BRANCHES[$branch]:-} "
+  fi
   [[ -n "${merged_oids// /}" ]] || return 1
   local ref resolved seen=0
   for ref in "refs/heads/${branch}" "refs/remotes/origin/${branch}"; do
@@ -1030,7 +1249,14 @@ process_entry() {
     echo "[agent-worktree-prune] Skipping live process worktree: ${wt}"
     return
   fi
-  if [[ "$branch" == agent/* || "$branch" == work/* ]] && should_preserve_open_pr_branch "$branch"; then
+  # Apply open-PR guard to every named non-protected branch when PRESERVE_OPEN_PRS=1.
+  # Previously only agent/* and work/* were checked; broadening to all named branches
+  # ensures that --include-clean-linked-worktrees / --include-merged-linked-worktrees
+  # cannot accidentally reclaim a feat/*, fix/*, or personal lane with an open PR.
+  # (should_preserve_open_pr_branch returns false immediately when PRESERVE_OPEN_PRS=0,
+  # so this change is a no-op when the flag is not set.)
+  if [[ -n "$branch" ]] && ! is_protected_linked_branch "$branch" \
+      && should_preserve_open_pr_branch "$branch"; then
     skipped_open_pr=$((skipped_open_pr + 1))
     if [[ "$OPEN_PR_LOOKUP_UNAVAILABLE" -eq 1 ]]; then
       echo "[agent-worktree-prune] Skipping open-PR worktree because PR state is unavailable (fail closed): ${wt}"
@@ -1038,6 +1264,28 @@ process_entry() {
       echo "[agent-worktree-prune] Skipping open-PR worktree: ${wt}"
     fi
     return
+  fi
+
+  # For linked-worktree reclaim modes (--include-clean-linked-worktrees or
+  # --include-merged-linked-worktrees), ALWAYS check for an open PR on non-agent
+  # branches — regardless of PRESERVE_OPEN_PRS. We use the bulk open-PR lookup
+  # and fail closed when it is unavailable or truncated, because a false
+  # "no open PR" answer would silently destroy someone's in-flight work.
+  if [[ -n "$branch" ]] && ! is_managed_worktree_path "$wt" \
+      && [[ "$branch" != agent/* && "$branch" != work/* ]] \
+      && ! is_protected_linked_branch "$branch" \
+      && [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 || "$linked_merged_only" -eq 1 ]]; then
+    local _linked_open_state=0
+    linked_branch_open_pr_state "$branch" || _linked_open_state=$?
+    if [[ "$_linked_open_state" -eq 0 ]]; then
+      skipped_open_pr=$((skipped_open_pr + 1))
+      echo "[agent-worktree-prune] Skipping linked worktree with open PR: ${wt}"
+      return
+    elif [[ "$_linked_open_state" -eq 2 ]]; then
+      skipped_open_pr=$((skipped_open_pr + 1))
+      echo "[agent-worktree-prune] Skipping linked worktree because open-PR state is unavailable (fail closed): ${wt}"
+      return
+    fi
   fi
 
   local remove_reason=""
@@ -1092,7 +1340,24 @@ process_entry() {
   elif [[ "$branch" == __agent_integrate_* || "$branch" == __source-probe-* ]]; then
     remove_reason="temporary-worktree"
   elif [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
-    remove_reason="clean-linked-worktree"
+    # Only reclaim if the branch has no commits ahead of BASE_BRANCH, OR the
+    # branch already passes the merged-PR check (the worktree is truly done).
+    # A clean linked worktree that is ahead of base holds unmerged, potentially
+    # unpushed work — reclaiming it would silently discard that work.
+    # Detached worktrees have no branch ref: keep the existing reclaim behavior.
+    if [[ -z "$branch" ]]; then
+      remove_reason="clean-linked-worktree"
+    elif branch_is_exact_merged_pr_head "$branch" || branch_has_merged_pr "$branch"; then
+      remove_reason="clean-linked-worktree"
+    else
+      local ahead_count=0
+      ahead_count="$(git -C "$repo_root" rev-list --count "${BASE_BRANCH}..${branch}" 2>/dev/null || echo 1)"
+      if [[ "$ahead_count" -eq 0 ]]; then
+        remove_reason="clean-linked-worktree"
+      else
+        echo "[agent-worktree-prune] Keeping linked worktree with unmerged commits (${ahead_count} ahead of ${BASE_BRANCH}): ${wt}"
+      fi
+    fi
   elif [[ "$linked_merged_only" -eq 1 && "$branch" != work/* ]] \
     && ! is_protected_linked_branch "$branch" && branch_is_exact_merged_pr_head "$branch"; then
     # A non-agent worktree (feat/*, fix/*, a person's own lane) goes ONLY on
@@ -1129,11 +1394,15 @@ process_entry() {
     git -C "$wt" merge --abort >/dev/null 2>&1 || true
   fi
 
-  if [[ "$FORCE_DIRTY" -ne 1 ]] && ! is_clean_worktree "$wt"; then
-    skipped_dirty=$((skipped_dirty + 1))
-    echo "[agent-worktree-prune] Skipping dirty worktree (${remove_reason}): ${wt}"
-    summarize_worktree_dirt "$wt"
-    return
+  if ! is_clean_worktree "$wt"; then
+    if [[ "$FORCE_DIRTY" -eq 1 ]]; then
+      warn_force_dirty_removal "$wt" "$remove_reason"
+    else
+      skipped_dirty=$((skipped_dirty + 1))
+      echo "[agent-worktree-prune] Skipping dirty worktree (${remove_reason}): ${wt}"
+      summarize_worktree_dirt "$wt"
+      return
+    fi
   fi
 
   if [[ "$remove_reason" == closed-pr:* ]] && ! closed_pr_has_remote_recovery "$branch"; then
@@ -1161,11 +1430,45 @@ process_entry() {
       echo "[agent-worktree-prune] Worktree changed or became active during pre-remove: ${wt}" >&2
       return
     fi
-    if [[ "$FORCE_DIRTY" -ne 1 ]] && ! is_clean_worktree "$wt"; then
-      echo "[agent-worktree-prune] pre-remove left changes; preserving: ${wt}" >&2
-      return
+    if ! is_clean_worktree "$wt"; then
+      if [[ "$FORCE_DIRTY" -ne 1 ]]; then
+        echo "[agent-worktree-prune] pre-remove left changes; preserving: ${wt}" >&2
+        return
+      fi
+      warn_force_dirty_removal "$wt" "${remove_reason} after pre-remove hook"
     fi
   fi
+  # Refused for non-temporary worktrees that contain precious ignored files
+  # (gitignored content NOT under a disposable directory such as node_modules,
+  # dist, .next, .venv, etc.).  `git worktree remove --force` deletes the
+  # working tree unconditionally; .env, local certs, and similar secrets-or-
+  # state files would be gone forever.  --force-dirty does NOT override this
+  # check — an ignored file is never covered by is_clean_worktree(), so the
+  # caller never saw it as "dirty" and explicitly chose to override it.
+  if [[ "$remove_reason" != "temporary-worktree" ]]; then
+    local _precious_ignored=""
+    _precious_ignored="$(worktree_has_precious_ignored_files "$wt" 2>/dev/null || true)"
+    if [[ -n "$_precious_ignored" ]]; then
+      skipped_dirty=$((skipped_dirty + 1))
+      echo "[agent-worktree-prune] Skipping worktree with precious ignored files (${remove_reason}): ${wt}"
+      while IFS= read -r _pi_path; do
+        [[ -n "$_pi_path" ]] && echo "[agent-worktree-prune]   ignored: ${_pi_path}"
+      done <<< "$_precious_ignored"
+      return
+    fi
+  else
+    # gx's own scratch worktrees (integration / source probes) stay disposable,
+    # but never lose ignored files silently.
+    local _tmp_ignored=""
+    _tmp_ignored="$(worktree_has_precious_ignored_files "$wt" 2>/dev/null || true)"
+    if [[ -n "$_tmp_ignored" ]]; then
+      echo "[agent-worktree-prune] WARNING: removing temporary worktree with ignored files: ${wt}" >&2
+      while IFS= read -r _pi_path; do
+        [[ -n "$_pi_path" ]] && echo "[agent-worktree-prune]   ignored: ${_pi_path}" >&2
+      done <<< "$_tmp_ignored"
+    fi
+  fi
+
   if remove_worktree_with_lock_guard "$wt" "$remove_reason" "$branch"; then
     # The worktree list just changed; branch_has_worktree must re-read it.
     invalidate_worktree_branches
