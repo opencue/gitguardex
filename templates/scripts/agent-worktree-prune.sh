@@ -1123,7 +1123,24 @@ process_entry() {
   elif [[ "$branch" == __agent_integrate_* || "$branch" == __source-probe-* ]]; then
     remove_reason="temporary-worktree"
   elif [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
-    remove_reason="clean-linked-worktree"
+    # Only reclaim if the branch has no commits ahead of BASE_BRANCH, OR the
+    # branch already passes the merged-PR check (the worktree is truly done).
+    # A clean linked worktree that is ahead of base holds unmerged, potentially
+    # unpushed work — reclaiming it would silently discard that work.
+    # Detached worktrees have no branch ref: keep the existing reclaim behavior.
+    if [[ -z "$branch" ]]; then
+      remove_reason="clean-linked-worktree"
+    elif branch_is_exact_merged_pr_head "$branch" || branch_has_merged_pr "$branch"; then
+      remove_reason="clean-linked-worktree"
+    else
+      local ahead_count=0
+      ahead_count="$(git -C "$repo_root" rev-list --count "${BASE_BRANCH}..${branch}" 2>/dev/null || echo 1)"
+      if [[ "$ahead_count" -eq 0 ]]; then
+        remove_reason="clean-linked-worktree"
+      else
+        echo "[agent-worktree-prune] Keeping linked worktree with unmerged commits (${ahead_count} ahead of ${BASE_BRANCH}): ${wt}"
+      fi
+    fi
   elif [[ "$linked_merged_only" -eq 1 && "$branch" != work/* ]] \
     && ! is_protected_linked_branch "$branch" && branch_is_exact_merged_pr_head "$branch"; then
     # A non-agent worktree (feat/*, fix/*, a person's own lane) goes ONLY on
