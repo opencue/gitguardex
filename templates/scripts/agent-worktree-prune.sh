@@ -862,6 +862,34 @@ read_branch_activity_epoch() {
         fi
       fi
     fi
+
+    # Extend the activity epoch with the newest mtime of any non-disposable file
+    # in the worktree.  A file actively written — e.g. an IDE scratch file, a
+    # spec draft, a half-finished shell script — has no git record but IS a signal
+    # that someone is working in this worktree.  Using `find -printf '%T@'` (GNU)
+    # gives us the whole tree in one pass; on platforms without -printf the block
+    # produces nothing and we fall through to the git-only epoch (safe degradation).
+    #
+    # Exclude .git and the PRUNE_DISPOSABLE_IGNORED dirs (node_modules, dist, …)
+    # to keep the scan cheap and avoid false-recent signals from tooling writes.
+    local _prune_find_args=( \( -name '.git' )
+    local _d
+    for _d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
+      _prune_find_args+=( -o -name "$_d" )
+    done
+    _prune_find_args+=( \) -prune -o -not -type d )
+    local newest_file_mtime=""
+    newest_file_mtime="$(
+      find "$wt" -mindepth 1 -maxdepth 6 \
+        "${_prune_find_args[@]}" \
+        -printf '%T@\n' 2>/dev/null \
+        | sort -rn | head -1 | cut -d. -f1 || true
+    )"
+    if [[ "$newest_file_mtime" =~ ^[0-9]+$ ]]; then
+      if [[ -z "$activity_epoch" || "$newest_file_mtime" -gt "$activity_epoch" ]]; then
+        activity_epoch="$newest_file_mtime"
+      fi
+    fi
   fi
 
   printf '%s' "$activity_epoch"
@@ -1039,7 +1067,12 @@ branch_idle_gate() {
   local last_activity_epoch=""
   last_activity_epoch="$(read_branch_activity_epoch "$branch" "$wt")"
   if [[ ! "$last_activity_epoch" =~ ^[0-9]+$ ]]; then
-    return 0
+    # Cannot determine when the branch was last active — fail closed: treat as
+    # recent and skip removal rather than allow it.  A branch with no reflog
+    # and no git history is an unusual edge-case; preserving it is the safe choice.
+    skipped_recent=$((skipped_recent + 1))
+    echo "[agent-worktree-prune] Skipping branch with undetermined activity epoch (fail closed): ${branch} (${reason})"
+    return 1
   fi
 
   local idle_age=$((NOW_EPOCH - last_activity_epoch))
