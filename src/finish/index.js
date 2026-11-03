@@ -209,14 +209,103 @@ function autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options) {
   return { changed: true, committed: true, message: commitMessage };
 }
 
+/** Maximum backoff between watch cycles: 15 minutes. */
+const BACKOFF_CAP_SECONDS = 900;
+
+/**
+ * Run the cleanup watch loop, calling `runCycle` on each iteration.
+ *
+ * Failed cycles are caught and logged (with cycle number and error message).
+ * Consecutive failures trigger exponential backoff on the sleep interval
+ * (interval × 2^n, capped at {@link BACKOFF_CAP_SECONDS}).  After
+ * `maxFailures` consecutive failures the function returns 1 so the caller can
+ * signal a permanently-broken setup to a supervisor such as systemd.  A
+ * successful cycle resets the consecutive-failure counter and backoff.
+ *
+ * SIGINT / SIGTERM are detected via the sleep subprocess's `.signal` field;
+ * when either arrives the loop exits cleanly (returns 0).
+ *
+ * @param {function(): void} runCycle
+ *   Runs one prune cycle; throws on failure.
+ * @param {object} opts
+ * @param {number} opts.intervalSeconds  Nominal interval between cycles (seconds).
+ * @param {number} opts.maxFailures      Exit non-zero after this many consecutive failures.
+ * @param {string} opts.repoRoot         Working directory for the sleep subprocess.
+ * @param {number} [opts.idleMinutes]    Idle threshold (passed through to log line only).
+ * @param {number} [opts.maxBranches]    Branch cap (passed through to log line only).
+ * @param {boolean} [opts.once]          Exit after one cycle regardless.
+ * @param {function(number): {status: number|null, signal?: string|null}} [opts._runSleep]
+ *   Injectable sleep function for unit tests. Default: spawnSync('sleep', [n]).
+ * @returns {number} 0 on clean exit, 1 when maxFailures is reached.
+ */
+function runCleanupWatchLoop(runCycle, opts) {
+  const {
+    intervalSeconds,
+    maxFailures,
+    repoRoot,
+    once,
+    idleMinutes = 0,
+    maxBranches = 0,
+  } = opts;
+  const runSleep =
+    opts._runSleep ||
+    ((s) => run('sleep', [String(s)], { cwd: repoRoot }));
+
+  let cycle = 0;
+  let consecutiveFailures = 0;
+
+  while (true) {
+    cycle += 1;
+    console.log(
+      `[${TOOL_NAME}] Cleanup watch cycle=${cycle} (interval=${intervalSeconds}s, idleMinutes=${idleMinutes}, maxBranches=${maxBranches > 0 ? maxBranches : 'unbounded'}).`,
+    );
+
+    try {
+      runCycle();
+      consecutiveFailures = 0;
+    } catch (error) {
+      consecutiveFailures += 1;
+      console.error(
+        `[${TOOL_NAME}] Cleanup watch cycle=${cycle} FAILED (consecutive=${consecutiveFailures}): ${error.message}`,
+      );
+      if (consecutiveFailures >= maxFailures) {
+        console.error(
+          `[${TOOL_NAME}] Cleanup watch exiting after ${consecutiveFailures} consecutive failures (--max-failures=${maxFailures}).`,
+        );
+        return 1;
+      }
+    }
+
+    if (once) {
+      // Propagate failure: exit 1 when the cycle failed (mirrors one-shot mode).
+      return consecutiveFailures > 0 ? 1 : 0;
+    }
+
+    const backoffSeconds =
+      consecutiveFailures > 0
+        ? Math.min(intervalSeconds * 2 ** consecutiveFailures, BACKOFF_CAP_SECONDS)
+        : intervalSeconds;
+
+    const sleepResult = runSleep(backoffSeconds);
+    if (sleepResult.signal === 'SIGINT' || sleepResult.signal === 'SIGTERM') {
+      return 0;
+    }
+    if (sleepResult.status !== 0) {
+      throw new Error(`Cleanup watch sleep failed (interval=${backoffSeconds}s)`);
+    }
+  }
+}
+
 /**
  * Run the worktree-prune sweep with options parsed from `rawArgs`. In watch
- * mode loops forever (or until `--once`), printing the cycle header and
- * delegating each cycle to the `worktreePrune` package asset.
+ * mode loops until stopped (or until `--once`), printing the cycle header and
+ * delegating each cycle to the `worktreePrune` package asset.  Failed cycles
+ * are logged and the loop continues with exponential backoff; after
+ * `--max-failures` consecutive failures the watcher exits non-zero.
  *
  * @param {ReadonlyArray<string>} rawArgs CLI argv slice for the cleanup command.
  * @returns {void}
- * @throws {Error} When the underlying prune subprocess exits non-zero or the watch sleep fails.
+ * @throws {Error} When the watch sleep subprocess itself fails (not the prune cycle).
  */
 function cleanup(rawArgs) {
   if (rawArgs.some((arg) => arg === '--help' || arg === '-h') || (rawArgs.length === 1 && rawArgs[0] === 'help')) {
@@ -244,6 +333,8 @@ OPTIONS
   --watch                  Repeat cleanup cycles (defaults idle threshold to 60)
   --interval <seconds>     Watch interval in seconds (minimum: 5; default: 60)
   --once                   Run one cleanup cycle when used with --watch
+  --max-failures <n>       Exit watch non-zero after n consecutive failures
+                           (default: 10; also env GUARDEX_CLEANUP_WATCH_MAX_FAILURES)
   --max-branches <n>       Limit branches processed per cycle
   -h, --help               Show this help`);
     process.exitCode = 0;
@@ -302,22 +393,14 @@ OPTIONS
   };
 
   if (options.watch) {
-    let cycle = 0;
-    while (true) {
-      cycle += 1;
-      console.log(
-        `[${TOOL_NAME}] Cleanup watch cycle=${cycle} (interval=${options.intervalSeconds}s, idleMinutes=${options.idleMinutes}, maxBranches=${options.maxBranches > 0 ? options.maxBranches : 'unbounded'}).`,
-      );
-      runCleanupCycle();
-      if (options.once) {
-        break;
-      }
-      const sleepResult = run('sleep', [String(options.intervalSeconds)], { cwd: repoRoot });
-      if (sleepResult.status !== 0) {
-        throw new Error(`Cleanup watch sleep failed (interval=${options.intervalSeconds}s)`);
-      }
-    }
-    process.exitCode = 0;
+    process.exitCode = runCleanupWatchLoop(runCleanupCycle, {
+      intervalSeconds: options.intervalSeconds,
+      maxFailures: options.maxFailures,
+      idleMinutes: options.idleMinutes,
+      maxBranches: options.maxBranches,
+      repoRoot,
+      once: options.once,
+    });
     return;
   }
 
@@ -991,4 +1074,5 @@ module.exports = {
   shouldSweepOrphans,
   shouldSkipBranchPreflight,
   restoreLockBackupSafe,
+  runCleanupWatchLoop,
 };

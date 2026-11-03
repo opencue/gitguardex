@@ -1025,7 +1025,10 @@ function parseSyncArgs(rawArgs) {
   return options;
 }
 
+const CLEANUP_WATCH_MAX_FAILURES_DEFAULT = 10;
+
 function parseCleanupArgs(rawArgs) {
+  const envMaxFailures = Number.parseInt(process.env.GUARDEX_CLEANUP_WATCH_MAX_FAILURES, 10);
   const options = {
     target: process.cwd(),
     base: '',
@@ -1046,6 +1049,12 @@ function parseCleanupArgs(rawArgs) {
     intervalSeconds: 60,
     once: false,
     maxBranches: 0,
+    // How many consecutive prune failures trigger a non-zero exit in watch mode.
+    // Overridable via --max-failures or GUARDEX_CLEANUP_WATCH_MAX_FAILURES env var.
+    maxFailures:
+      Number.isInteger(envMaxFailures) && envMaxFailures >= 1
+        ? envMaxFailures
+        : CLEANUP_WATCH_MAX_FAILURES_DEFAULT,
   };
 
   for (let index = 0; index < rawArgs.length; index += 1) {
@@ -1157,6 +1166,19 @@ function parseCleanupArgs(rawArgs) {
         throw new Error('--max-branches must be an integer >= 1');
       }
       options.maxBranches = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg === '--max-failures') {
+      const next = rawArgs[index + 1];
+      if (!next) {
+        throw new Error('--max-failures requires an integer value');
+      }
+      const parsed = Number.parseInt(next, 10);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new Error('--max-failures must be an integer >= 1');
+      }
+      options.maxFailures = parsed;
       index += 1;
       continue;
     }
