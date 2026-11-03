@@ -1914,7 +1914,7 @@ test('cleanup --include-merged-linked-worktrees reclaims only MERGED agent lanes
   }
 });
 
-test('cleanup --include-merged-linked-worktrees with PR detection reclaims a squash-merged agent lane, never a PR-merged non-agent worktree', () => {
+test('cleanup --include-merged-linked-worktrees with PR detection reclaims squash-merged agent and non-agent worktrees, keeping the non-agent branch', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
   let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
@@ -1966,9 +1966,76 @@ test('cleanup --include-merged-linked-worktrees with PR detection reclaims a squ
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(agentWt), false, 'a squash-merged linked agent lane is reclaimed');
-  assert.equal(fs.existsSync(foreignWt), true, 'a PR-merged non-agent linked worktree is kept');
+  assert.equal(fs.existsSync(foreignWt), false, 'a PR-merged non-agent linked worktree is reclaimed');
+  assert.equal(
+    git(['branch', '--list', 'feature/test-linked-foreign-pr']),
+    'feature/test-linked-foreign-pr',
+    'the non-agent branch itself is never deleted',
+  );
+});
 
-  runCmd('git', ['worktree', 'remove', '--force', foreignWt], repoDir);
+test('cleanup --include-merged-linked-worktrees keeps non-agent worktrees with advanced, unmerged or protected branches and says why', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const git = (args, cwd = repoDir) => {
+    const out = runCmd('git', args, cwd);
+    assert.equal(out.status, 0, out.stderr || out.stdout);
+    return String(out.stdout || '').trim();
+  };
+  const sibling = (name) => path.join(path.dirname(repoDir), `${path.basename(repoDir)}-${name}`);
+  const advancedWt = sibling('wt-advanced');
+  const noPrWt = sibling('wt-no-pr');
+  const releaseWt = sibling('wt-release');
+  const commitIn = (wt, name) => {
+    fs.writeFileSync(path.join(wt, `${name}.txt`), `${name}\n`, 'utf8');
+    git(['add', `${name}.txt`], wt);
+    git(['commit', '-m', name], wt);
+    return git(['rev-parse', 'HEAD'], wt);
+  };
+  git(['worktree', 'add', '-b', 'feature/test-advanced', advancedWt, 'dev']);
+  const mergedHead = commitIn(advancedWt, 'merged-part');
+  commitIn(advancedWt, 'pushed-after-merge');
+  git(['worktree', 'add', '-b', 'feature/test-no-pr', noPrWt, 'dev']);
+  commitIn(noPrWt, 'no-pr');
+  git(['worktree', 'add', '-b', 'release/test-1', releaseWt, 'dev']);
+  const releaseTip = commitIn(releaseWt, 'release');
+  const { fakePath: fakeGhPath } = createFakeGhScript(
+    'if [[ "$1" == "pr" && "$2" == "list" ]]; then\n' +
+      `  printf '%s %s\\n' "feature/test-advanced" "${mergedHead}"\n` +
+      `  printf '%s %s\\n' "release/test-1" "${releaseTip}"\n` +
+      '  exit 0\n' +
+      'fi\n' +
+      'exit 1',
+  );
+
+  result = runNodeWithEnv(
+    [
+      'cleanup',
+      '--target',
+      repoDir,
+      '--base',
+      'dev',
+      '--keep-remote',
+      '--include-pr-merged',
+      '--prune-clean-worktrees',
+      '--include-merged-linked-worktrees',
+    ],
+    repoDir,
+    { GUARDEX_GH_BIN: fakeGhPath },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(advancedWt), true, 'commits after the merged PR head keep the worktree');
+  assert.equal(fs.existsSync(noPrWt), true, 'a non-agent worktree without a merged PR is kept');
+  assert.equal(fs.existsSync(releaseWt), true, 'a protected long-lived branch is never reclaimed');
+  const out = `${result.stdout}\n${result.stderr}`;
+  assert.match(out, /Keeping non-agent linked worktree \(no merged PR for feature\/test-no-pr\)/);
+
+  for (const wt of [advancedWt, noPrWt, releaseWt]) {
+    runCmd('git', ['worktree', 'remove', '--force', wt], repoDir);
+  }
 });
 
 test('cleanup command watch mode defaults to 60-minute idle threshold and supports one-cycle execution', () => {
