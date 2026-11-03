@@ -961,6 +961,25 @@ reserve_branch_slot() {
 
 relocate_foreign_worktree_entries
 
+# Stricter than branch_has_merged_pr, for worktrees that are not agent lanes:
+# the local tip, and origin's tip when there is one, must each EQUAL a merged
+# PR head SHA. Fails closed when PR detection is off or gh is unavailable.
+branch_is_exact_merged_pr_head() {
+  local branch="$1"
+  [[ "$INCLUDE_PR_MERGED" -eq 1 ]] || return 1
+  load_merged_pr_branches || return 1
+  local merged_oids=" ${MERGED_PR_BRANCHES[$branch]:-} "
+  [[ -n "${merged_oids// /}" ]] || return 1
+  local ref resolved seen=0
+  for ref in "refs/heads/${branch}" "refs/remotes/origin/${branch}"; do
+    resolved="$(git -C "$repo_root" rev-parse --verify --quiet "${ref}^{commit}" 2>/dev/null || true)"
+    [[ -n "$resolved" ]] || continue
+    seen=1
+    [[ "$merged_oids" == *" ${resolved} "* ]] || return 1
+  done
+  [[ "$seen" -eq 1 ]]
+}
+
 # Never reclaim a linked worktree that has the base or a long-lived branch
 # checked out, whatever a forge says about a same-named PR.
 is_protected_linked_branch() {
@@ -1075,11 +1094,12 @@ process_entry() {
   elif [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
     remove_reason="clean-linked-worktree"
   elif [[ "$linked_merged_only" -eq 1 && "$branch" != work/* ]] \
-    && ! is_protected_linked_branch "$branch" && branch_has_merged_pr "$branch"; then
+    && ! is_protected_linked_branch "$branch" && branch_is_exact_merged_pr_head "$branch"; then
     # A non-agent worktree (feat/*, fix/*, a person's own lane) goes ONLY on
-    # forge evidence: a MERGED PR whose head contains every local/origin tip.
-    # Ancestry alone is not enough here — a freshly created branch with no
-    # commits yet is an ancestor of the base too. The branch itself is kept.
+    # forge evidence: its tip IS a merged PR's head. Containment is not
+    # enough here — a branch name re-created off the base (no commits yet)
+    # is an ancestor of the old PR's head, and of the base too. The branch
+    # itself is kept.
     remove_reason="merged-linked-pr"
   fi
 
@@ -1087,8 +1107,9 @@ process_entry() {
     case "$remove_reason" in
       merged-agent-branch|merged-agent-pr|merged-pr:*|merged-linked-pr) ;;
       *)
-        if [[ -n "$branch" && "$branch" != agent/* ]]; then
-          echo "[agent-worktree-prune] Keeping non-agent linked worktree (no merged PR for ${branch}): ${wt}"
+        if [[ -z "$remove_reason" && -n "$branch" && "$branch" != agent/* ]] \
+          && git -C "$repo_root" show-ref --verify --quiet "refs/heads/${branch}"; then
+          echo "[agent-worktree-prune] Keeping non-agent linked worktree (tip is not a merged PR head for ${branch}): ${wt}"
         fi
         return 0
         ;;

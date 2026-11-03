@@ -2000,12 +2000,19 @@ test('cleanup --include-merged-linked-worktrees keeps non-agent worktrees with a
   commitIn(advancedWt, 'pushed-after-merge');
   git(['worktree', 'add', '-b', 'feature/test-no-pr', noPrWt, 'dev']);
   commitIn(noPrWt, 'no-pr');
+  // Re-created name: an old feature/test-recreated PR merged, then the branch
+  // was re-made off dev with no commits — its tip is an ancestor of that head.
+  const recreatedWt = sibling('wt-recreated');
+  git(['worktree', 'add', '-b', 'feature/test-recreated', recreatedWt, 'dev']);
+  const recreatedOldHead = commitIn(recreatedWt, 'old-feature');
+  git(['reset', '--hard', 'dev'], recreatedWt);
   git(['worktree', 'add', '-b', 'release/test-1', releaseWt, 'dev']);
   const releaseTip = commitIn(releaseWt, 'release');
   const { fakePath: fakeGhPath } = createFakeGhScript(
     'if [[ "$1" == "pr" && "$2" == "list" ]]; then\n' +
       `  printf '%s %s\\n' "feature/test-advanced" "${mergedHead}"\n` +
       `  printf '%s %s\\n' "release/test-1" "${releaseTip}"\n` +
+      `  printf '%s %s\\n' "feature/test-recreated" "${recreatedOldHead}"\n` +
       '  exit 0\n' +
       'fi\n' +
       'exit 1',
@@ -2030,10 +2037,11 @@ test('cleanup --include-merged-linked-worktrees keeps non-agent worktrees with a
   assert.equal(fs.existsSync(advancedWt), true, 'commits after the merged PR head keep the worktree');
   assert.equal(fs.existsSync(noPrWt), true, 'a non-agent worktree without a merged PR is kept');
   assert.equal(fs.existsSync(releaseWt), true, 'a protected long-lived branch is never reclaimed');
+  assert.equal(fs.existsSync(recreatedWt), true, 'a re-created branch name with no new commits is kept');
   const out = `${result.stdout}\n${result.stderr}`;
-  assert.match(out, /Keeping non-agent linked worktree \(no merged PR for feature\/test-no-pr\)/);
+  assert.match(out, /Keeping non-agent linked worktree \(tip is not a merged PR head for feature\/test-no-pr\)/);
 
-  for (const wt of [advancedWt, noPrWt, releaseWt]) {
+  for (const wt of [advancedWt, noPrWt, releaseWt, recreatedWt]) {
     runCmd('git', ['worktree', 'remove', '--force', wt], repoDir);
   }
 });
