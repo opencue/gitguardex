@@ -21,7 +21,7 @@ const {
   runHumanCmd,
   runWorktreePrune,
   createFakeGhScript,
-  defineSpawnSuite,
+  defineSpawnSuite
 } = require('./helpers/install-test-helpers');
 
 function makeLinkedWorktree(repoDir, branch) {
@@ -29,7 +29,7 @@ function makeLinkedWorktree(repoDir, branch) {
   assert.equal(
     runHumanCmd('git', ['worktree', 'add', '-b', branch, wt, 'main'], repoDir).status,
     0,
-    `create linked worktree for ${branch}`,
+    `create linked worktree for ${branch}`
   );
   return wt;
 }
@@ -84,14 +84,14 @@ defineSpawnSuite('agent-worktree-prune — open-PR guard scope (Fix 4)', () => {
       repoDir,
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
+        GUARDEX_PRUNE_NOW_EPOCH: '0'
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       fs.existsSync(wt),
-      `feat/* linked worktree with open PR must be preserved, stdout: ${res.stdout}`,
+      `feat/* linked worktree with open PR must be preserved, stdout: ${res.stdout}`
     );
     assert.match(res.stdout, /open.?pr|open-PR/i, `should log open-PR skip: ${res.stdout}`);
   });
@@ -107,24 +107,20 @@ defineSpawnSuite('agent-worktree-prune — open-PR guard scope (Fix 4)', () => {
     const wt = makeLinkedWorktree(repoDir, branch);
 
     const { fakeBin } = fakeGhUnavailable();
-    const res = runWorktreePrune(
-      ['--base', 'main', '--include-clean-linked-worktrees'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const res = runWorktreePrune(['--base', 'main', '--include-clean-linked-worktrees'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       fs.existsSync(wt),
-      `non-agent linked worktree must be preserved when gh is unavailable (fail closed), stdout: ${res.stdout}`,
+      `non-agent linked worktree must be preserved when gh is unavailable (fail closed), stdout: ${res.stdout}`
     );
     assert.match(
       res.stdout,
       /unavailable.*fail closed|fail closed/i,
-      `should log fail-closed skip: ${res.stdout}`,
+      `should log fail-closed skip: ${res.stdout}`
     );
   });
 
@@ -138,19 +134,15 @@ defineSpawnSuite('agent-worktree-prune — open-PR guard scope (Fix 4)', () => {
     const wt = makeLinkedWorktree(repoDir, branch);
 
     const { fakeBin } = fakeGhNoOpenPRs();
-    const res = runWorktreePrune(
-      ['--base', 'main', '--include-clean-linked-worktrees'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const res = runWorktreePrune(['--base', 'main', '--include-clean-linked-worktrees'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       !fs.existsSync(wt),
-      `feat/* worktree with no open PR and zero commits ahead must be reclaimed, stdout: ${res.stdout}`,
+      `feat/* worktree with no open PR and zero commits ahead must be reclaimed, stdout: ${res.stdout}`
     );
   });
 
@@ -169,14 +161,14 @@ defineSpawnSuite('agent-worktree-prune — open-PR guard scope (Fix 4)', () => {
       repoDir,
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
+        GUARDEX_PRUNE_NOW_EPOCH: '0'
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       fs.existsSync(wt),
-      `agent/* linked worktree with open PR must still be preserved, stdout: ${res.stdout}`,
+      `agent/* linked worktree with open PR must still be preserved, stdout: ${res.stdout}`
     );
   });
 });

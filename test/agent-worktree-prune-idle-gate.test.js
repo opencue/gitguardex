@@ -26,7 +26,7 @@ const {
   runHumanCmd,
   runWorktreePrune,
   createFakeGhScript,
-  defineSpawnSuite,
+  defineSpawnSuite
 } = require('./helpers/install-test-helpers');
 
 function makeWorktree(repoDir, branch) {
@@ -34,7 +34,7 @@ function makeWorktree(repoDir, branch) {
   assert.equal(
     runHumanCmd('git', ['worktree', 'add', '-b', branch, wt, 'main'], repoDir).status,
     0,
-    `create worktree for ${branch}`,
+    `create worktree for ${branch}`
   );
   return wt;
 }
@@ -75,8 +75,8 @@ defineSpawnSuite('agent-worktree-prune — idle-gate fix 7', () => {
       repoDir,
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: String(nowEpoch),
-      },
+        GUARDEX_PRUNE_NOW_EPOCH: String(nowEpoch)
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
@@ -87,7 +87,7 @@ defineSpawnSuite('agent-worktree-prune — idle-gate fix 7', () => {
     // by the git activity epoch from the worktree creation anyway.
     assert.ok(
       fs.existsSync(wt),
-      `worktree with recent file mtime must be preserved by idle gate, stdout: ${res.stdout}`,
+      `worktree with recent file mtime must be preserved by idle gate, stdout: ${res.stdout}`
     );
   });
 
@@ -103,7 +103,7 @@ defineSpawnSuite('agent-worktree-prune — idle-gate fix 7', () => {
     // Merge the branch into main so it is eligible for removal.
     assert.equal(
       runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
-      0,
+      0
     );
 
     // Set NOW_EPOCH to far in the future (1 year ahead) so idle_age >> threshold.
@@ -115,14 +115,14 @@ defineSpawnSuite('agent-worktree-prune — idle-gate fix 7', () => {
       repoDir,
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: String(farFuture),
-      },
+        GUARDEX_PRUNE_NOW_EPOCH: String(farFuture)
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       !fs.existsSync(wt),
-      `merged worktree that is very old must be removed, stdout: ${res.stdout}`,
+      `merged worktree that is very old must be removed, stdout: ${res.stdout}`
     );
   });
 
@@ -141,21 +141,13 @@ defineSpawnSuite('agent-worktree-prune — idle-gate fix 7', () => {
     // Merge branch into main so there is a remove_reason.
     assert.equal(
       runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
-      0,
+      0
     );
 
     // We need to strip the reflog for this branch so the epoch cannot be found
     // by git. We do this by expiring it.
-    runHumanCmd(
-      'git',
-      ['reflog', 'expire', '--expire=now', '--all'],
-      repoDir,
-    );
-    runHumanCmd(
-      'git',
-      ['gc', '--prune=now', '--quiet'],
-      repoDir,
-    );
+    runHumanCmd('git', ['reflog', 'expire', '--expire=now', '--all'], repoDir);
+    runHumanCmd('git', ['gc', '--prune=now', '--quiet'], repoDir);
 
     // Set NOW_EPOCH to far future so the worktree would appear idle to anything
     // that has a valid epoch.  The idle gate should still fail closed.
@@ -167,8 +159,8 @@ defineSpawnSuite('agent-worktree-prune — idle-gate fix 7', () => {
       repoDir,
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: String(farFuture),
-      },
+        GUARDEX_PRUNE_NOW_EPOCH: String(farFuture)
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
@@ -183,7 +175,7 @@ defineSpawnSuite('agent-worktree-prune — idle-gate fix 7', () => {
       assert.match(
         res.stdout,
         /undetermined activity epoch|fail closed/i,
-        `should log fail-closed reason: ${res.stdout}`,
+        `should log fail-closed reason: ${res.stdout}`
       );
     }
   });

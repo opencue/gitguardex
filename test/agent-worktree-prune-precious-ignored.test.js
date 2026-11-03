@@ -17,7 +17,7 @@ const {
   runHumanCmd,
   runWorktreePrune,
   createFakeGhScript,
-  defineSpawnSuite,
+  defineSpawnSuite
 } = require('./helpers/install-test-helpers');
 
 function makeWorktree(repoDir, branch) {
@@ -25,7 +25,7 @@ function makeWorktree(repoDir, branch) {
   assert.equal(
     runHumanCmd('git', ['worktree', 'add', '-b', branch, wt, 'main'], repoDir).status,
     0,
-    `create worktree for ${branch}`,
+    `create worktree for ${branch}`
   );
   return wt;
 }
@@ -44,10 +44,7 @@ function addGitignore(wt, pattern) {
   const existing = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
   fs.writeFileSync(gi, `${existing}\n${pattern}\n`, 'utf8');
   assert.equal(runHumanCmd('git', ['add', '.gitignore'], wt).status, 0);
-  assert.equal(
-    runHumanCmd('git', ['commit', '--no-verify', '-m', 'add .gitignore'], wt).status,
-    0,
-  );
+  assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', 'add .gitignore'], wt).status, 0);
 }
 
 defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () => {
@@ -69,28 +66,24 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     // Merge the branch into main so remove_reason would be "merged-agent-branch".
     assert.equal(
       runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
-      0,
+      0
     );
 
     const { fakeBin } = fakeGhNoProjects();
-    const res = runWorktreePrune(
-      ['--base', 'main', '--delete-branches'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       fs.existsSync(wt),
-      `worktree with precious .env must NOT be removed, stdout: ${res.stdout}`,
+      `worktree with precious .env must NOT be removed, stdout: ${res.stdout}`
     );
     assert.match(
       res.stdout,
       /precious ignored|ignored:/i,
-      `output must explain the skip: ${res.stdout}`,
+      `output must explain the skip: ${res.stdout}`
     );
     // The .env file must still be there.
     assert.ok(fs.existsSync(path.join(wt, '.env')), '.env must survive');
@@ -115,23 +108,19 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     // Merge the branch into main.
     assert.equal(
       runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
-      0,
+      0
     );
 
     const { fakeBin } = fakeGhNoProjects();
-    const res = runWorktreePrune(
-      ['--base', 'main', '--delete-branches'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       !fs.existsSync(wt),
-      `worktree with only node_modules must be removed, stdout: ${res.stdout}`,
+      `worktree with only node_modules must be removed, stdout: ${res.stdout}`
     );
   });
 
@@ -147,7 +136,7 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     const wt = path.join(repoDir, '.omx', 'agent-worktrees', tmpBranch);
     assert.equal(
       runHumanCmd('git', ['worktree', 'add', '-b', tmpBranch, wt, 'main'], repoDir).status,
-      0,
+      0
     );
 
     // Commit a .gitignore that ignores .env, then write the .env file (now
@@ -156,24 +145,20 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     assert.equal(runHumanCmd('git', ['add', '.gitignore'], wt).status, 0);
     assert.equal(
       runHumanCmd('git', ['commit', '--no-verify', '-m', 'add .gitignore'], wt).status,
-      0,
+      0
     );
     fs.writeFileSync(path.join(wt, '.env'), 'SHOULD_NOT_BLOCK=1\n');
 
     const { fakeBin } = fakeGhNoProjects();
-    const res = runWorktreePrune(
-      ['--base', 'main'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const res = runWorktreePrune(['--base', 'main'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       !fs.existsSync(wt),
-      `temporary-worktree must be removed despite precious ignored file, stdout: ${res.stdout}`,
+      `temporary-worktree must be removed despite precious ignored file, stdout: ${res.stdout}`
     );
   });
 
@@ -195,40 +180,32 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     // Merge branch into main.
     assert.equal(
       runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
-      0,
+      0
     );
 
     const { fakeBin } = fakeGhNoProjects();
 
     // Without the override → must be blocked.
-    const resBlocked = runWorktreePrune(
-      ['--base', 'main', '--delete-branches'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const resBlocked = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
     assert.equal(resBlocked.status, 0, resBlocked.stderr || resBlocked.stdout);
     assert.ok(
       fs.existsSync(wt),
-      `without override, worktree with certs/ must be preserved, stdout: ${resBlocked.stdout}`,
+      `without override, worktree with certs/ must be preserved, stdout: ${resBlocked.stdout}`
     );
 
     // With the override → must be removed.
-    const resAllowed = runWorktreePrune(
-      ['--base', 'main', '--delete-branches'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-        GUARDEX_PRUNE_DISPOSABLE_IGNORED: 'certs',
-      },
-    );
+    const resAllowed = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0',
+      GUARDEX_PRUNE_DISPOSABLE_IGNORED: 'certs'
+    });
     assert.equal(resAllowed.status, 0, resAllowed.stderr || resAllowed.stdout);
     assert.ok(
       !fs.existsSync(wt),
-      `with GUARDEX_PRUNE_DISPOSABLE_IGNORED=certs, worktree must be removed, stdout: ${resAllowed.stdout}`,
+      `with GUARDEX_PRUNE_DISPOSABLE_IGNORED=certs, worktree must be removed, stdout: ${resAllowed.stdout}`
     );
   });
 });

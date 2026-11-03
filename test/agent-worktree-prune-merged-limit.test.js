@@ -19,7 +19,7 @@ const {
   runHumanCmd,
   runWorktreePrune,
   createFakeGhScript,
-  defineSpawnSuite,
+  defineSpawnSuite
 } = require('./helpers/install-test-helpers');
 
 function makeWorktree(repoDir, branch) {
@@ -27,7 +27,7 @@ function makeWorktree(repoDir, branch) {
   assert.equal(
     runHumanCmd('git', ['worktree', 'add', '-b', branch, wt, 'main'], repoDir).status,
     0,
-    `create worktree for ${branch}`,
+    `create worktree for ${branch}`
   );
   return wt;
 }
@@ -92,14 +92,14 @@ defineSpawnSuite('agent-worktree-prune — merged PR lookup limit (Fix 6)', () =
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
         GUARDEX_PRUNE_NOW_EPOCH: '0',
-        GUARDEX_MERGED_PR_LOOKUP_LIMIT: '3', // bulk fills at 3 → truncated
-      },
+        GUARDEX_MERGED_PR_LOOKUP_LIMIT: '3' // bulk fills at 3 → truncated
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       !fs.existsSync(wt),
-      `worktree for branch past bulk limit must be removed via per-branch fallback, stdout: ${res.stdout}`,
+      `worktree for branch past bulk limit must be removed via per-branch fallback, stdout: ${res.stdout}`
     );
   });
 
@@ -116,17 +116,14 @@ defineSpawnSuite('agent-worktree-prune — merged PR lookup limit (Fix 6)', () =
     // also be a "merged" signal via git ancestry, independent of PR detection).
     fs.writeFileSync(path.join(wt, 'wip.txt'), 'wip\n');
     assert.equal(runHumanCmd('git', ['add', 'wip.txt'], wt).status, 0);
-    assert.equal(
-      runHumanCmd('git', ['commit', '--no-verify', '-m', 'wip'], wt).status,
-      0,
-    );
+    assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', 'wip'], wt).status, 0);
 
     // A fake gh that always returns 3 dummies for bulk (truncated) and
     // nothing for any per-branch probe.
     const { fakeBin } = fakeGhTruncatedBulkRealPerBranch(
       'different/branch', // not our branch → per-branch probe returns nothing for ours
       'a'.repeat(40),
-      3,
+      3
     );
 
     const res = runWorktreePrune(
@@ -135,14 +132,14 @@ defineSpawnSuite('agent-worktree-prune — merged PR lookup limit (Fix 6)', () =
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
         GUARDEX_PRUNE_NOW_EPOCH: '0',
-        GUARDEX_MERGED_PR_LOOKUP_LIMIT: '3',
-      },
+        GUARDEX_MERGED_PR_LOOKUP_LIMIT: '3'
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       fs.existsSync(wt),
-      `worktree for genuinely unmerged branch must be preserved, stdout: ${res.stdout}`,
+      `worktree for genuinely unmerged branch must be preserved, stdout: ${res.stdout}`
     );
   });
 
@@ -186,14 +183,14 @@ echo ""
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
         GUARDEX_PRUNE_NOW_EPOCH: '0',
-        GUARDEX_MERGED_PR_LOOKUP_LIMIT: '10', // 9 rows < 10 → not truncated
-      },
+        GUARDEX_MERGED_PR_LOOKUP_LIMIT: '10' // 9 rows < 10 → not truncated
+      }
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(
       !fs.existsSync(wt),
-      `worktree within bulk limit must be removed via bulk cache, stdout: ${res.stdout}`,
+      `worktree within bulk limit must be removed via bulk cache, stdout: ${res.stdout}`
     );
   });
 });
