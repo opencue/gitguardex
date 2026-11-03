@@ -670,6 +670,54 @@ exit 1
 });
 
 
+test('codex-agent does not push or open a PR when the session leaves no commits', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const originPath = attachOriginRemote(repoDir);
+
+  let result = runNode(['setup', '--target', repoDir, '--no-global-install'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['add', '.'], repoDir);
+  assert.equal(result.status, 0, result.stderr);
+  result = runCmd('git', ['commit', '-m', 'apply gx setup'], repoDir, {
+    ALLOW_COMMIT_ON_PROTECTED_BRANCH: '1',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  result = runCmd('git', ['push', 'origin', 'dev'], repoDir);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  // A review-only session: codex runs and changes nothing.
+  const fakeCodexBin = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-fake-codex-noop-'));
+  const fakeCodexPath = path.join(fakeCodexBin, 'codex');
+  fs.writeFileSync(fakeCodexPath, '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+  fs.chmodSync(fakeCodexPath, 0o755);
+  const ghCalls = path.join(repoDir, '.gh-calls-noop');
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+echo "$*" >> "${ghCalls}"
+if [[ "\${1:-}" == "auth" && "\${2:-}" == "status" ]]; then
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+`);
+
+  const launch = runCodexAgent(['noop-review-task', 'planner', 'dev'], repoDir, {
+    PATH: `${fakeCodexBin}:${process.env.PATH}`,
+    GUARDEX_GH_BIN: fakeGhPath,
+    GUARDEX_FINISH_WAIT_TIMEOUT_SECONDS: '30',
+    GUARDEX_FINISH_WAIT_POLL_SECONDS: '0',
+  });
+  const combinedOutput = `${launch.stdout}\n${launch.stderr}`;
+  assert.equal(launch.status, 0, combinedOutput);
+  assert.match(combinedOutput, /\[codex-agent\] Auto-finish: nothing to finish for 'agent\/planner\/noop-review-task-/);
+
+  const calls = fs.existsSync(ghCalls) ? fs.readFileSync(ghCalls, 'utf8') : '';
+  assert.doesNotMatch(calls, /pr create/, 'no PR should be opened for an empty sandbox');
+  const remoteBranches = runCmd('git', ['ls-remote', '--heads', originPath], repoDir);
+  assert.doesNotMatch(remoteBranches.stdout, /agent\/planner\/noop-review-task/, 'empty sandbox branch must not be pushed');
+});
+
+
 test('codex-agent surfaces commit-hook failures so unfinished sandboxes are actionable', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);

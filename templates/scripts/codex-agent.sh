@@ -905,6 +905,31 @@ looks_like_conflict_failure() {
   return 1
 }
 
+# A session that changed nothing (e.g. a review-only run that found no fixes)
+# leaves the sandbox branch at base. Finishing it would push an empty branch and
+# fail in `gh pr create` ("No commits between ..."), so detect that up front.
+# Unknown base => assume there is work, which keeps the previous behavior.
+sandbox_has_commits_ahead() {
+  local wt="$1"
+  local base_branch=""
+  if [[ "$BASE_BRANCH_EXPLICIT" -eq 1 && -n "$BASE_BRANCH" ]]; then
+    base_branch="$BASE_BRANCH"
+  else
+    base_branch="$(resolve_worktree_base_branch "$wt")"
+  fi
+  [[ -n "$base_branch" ]] || return 0
+
+  local base_ref="origin/${base_branch}"
+  if ! git -C "$wt" rev-parse --verify --quiet "$base_ref" >/dev/null; then
+    base_ref="$base_branch"
+    git -C "$wt" rev-parse --verify --quiet "$base_ref" >/dev/null || return 0
+  fi
+
+  local ahead
+  ahead="$(git -C "$wt" rev-list --count "${base_ref}..HEAD" 2>/dev/null || echo 1)"
+  [[ "${ahead:-1}" -gt 0 ]]
+}
+
 run_finish_flow() {
   local wt="$1"
   local branch="$2"
@@ -1027,7 +1052,10 @@ if [[ "$AUTO_FINISH" -eq 1 && -n "$worktree_branch" && "$worktree_branch" != "HE
   if ! auto_finish_context_is_ready "$worktree_path"; then
     echo "[codex-agent] Auto-finish skipped for '${worktree_branch}' (no mergeable remote context)." >&2
   elif auto_commit_worktree_changes "$worktree_path" "$worktree_branch"; then
-    if run_finish_flow "$worktree_path" "$worktree_branch"; then
+    if ! sandbox_has_commits_ahead "$worktree_path"; then
+      auto_finish_completed=1
+      echo "[codex-agent] Auto-finish: nothing to finish for '${worktree_branch}' (no commits ahead of base); not pushing or opening a PR."
+    elif run_finish_flow "$worktree_path" "$worktree_branch"; then
       auto_finish_completed=1
       echo "[codex-agent] Auto-finish completed for '${worktree_branch}'."
     else
