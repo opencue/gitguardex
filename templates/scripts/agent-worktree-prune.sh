@@ -305,6 +305,11 @@ load_open_pr_lookup() {
   if [[ "$OPEN_PR_LOOKUP_LOADED" -eq 1 ]]; then
     return 0
   fi
+  # A truncated or failed bulk list stays unusable for the rest of this run;
+  # without this, every caller re-ran the full `gh pr list` (one per worktree).
+  if [[ "$OPEN_PR_LOOKUP_TRUNCATED" -eq 1 || "${OPEN_PR_LOOKUP_FAILED:-0}" -eq 1 ]]; then
+    return 1
+  fi
   if ! command -v "$GH_BIN" >/dev/null 2>&1; then
     return 1
   fi
@@ -312,6 +317,7 @@ load_open_pr_lookup() {
   if ! open_branches="$(
     "$GH_BIN" pr list --state open --limit "$OPEN_PR_LOOKUP_LIMIT" --json headRefName --jq '.[].headRefName' 2>/dev/null
   )"; then
+    OPEN_PR_LOOKUP_FAILED=1
     return 1
   fi
   local count=0
@@ -449,6 +455,27 @@ closed_pr_has_remote_recovery() {
   [[ -n "$classified_head" ]] || return 1
   remote_head="$(git -C "$repo_root" ls-remote --heads origin "refs/heads/${branch}" 2>/dev/null | awk 'NR == 1 { print $1 }')"
   [[ "$remote_head" == "$classified_head" ]]
+}
+
+# Open-PR state for a non-agent linked worktree's branch, independent of
+# --preserve-open-prs: 0 = has an open PR, 1 = none, 2 = unknown (fail closed).
+# Uses the bulk list when complete, else one cached per-branch probe.
+declare -A LINKED_OPEN_PR_CACHE=()
+linked_branch_open_pr_state() {
+  local branch="$1" cached="${LINKED_OPEN_PR_CACHE[$1]:-}" head=""
+  if [[ -n "$cached" ]]; then
+    return "$cached"
+  fi
+  local state=2
+  if ! command -v "$GH_BIN" >/dev/null 2>&1; then
+    state=2
+  elif load_open_pr_lookup; then
+    if [[ -n "${OPEN_PR_BRANCHES[$branch]:-}" ]]; then state=0; else state=1; fi
+  elif head="$("$GH_BIN" pr list --state open --head "$branch" --limit 1 --json headRefName --jq '.[0].headRefName // ""' 2>/dev/null)"; then
+    if [[ -n "$head" ]]; then state=0; else state=1; fi
+  fi
+  LINKED_OPEN_PR_CACHE["$branch"]="$state"
+  return "$state"
 }
 
 should_preserve_open_pr_branch() {
@@ -1248,16 +1275,13 @@ process_entry() {
       && [[ "$branch" != agent/* && "$branch" != work/* ]] \
       && ! is_protected_linked_branch "$branch" \
       && [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 || "$linked_merged_only" -eq 1 ]]; then
-    local _linked_open_unavailable=0
-    if load_open_pr_lookup; then
-      if [[ -n "${OPEN_PR_BRANCHES[$branch]:-}" ]]; then
-        skipped_open_pr=$((skipped_open_pr + 1))
-        echo "[agent-worktree-prune] Skipping linked worktree with open PR: ${wt}"
-        return
-      fi
-    else
-      # Bulk lookup failed or was truncated — fail closed.
-      _linked_open_unavailable=1
+    local _linked_open_state=0
+    linked_branch_open_pr_state "$branch" || _linked_open_state=$?
+    if [[ "$_linked_open_state" -eq 0 ]]; then
+      skipped_open_pr=$((skipped_open_pr + 1))
+      echo "[agent-worktree-prune] Skipping linked worktree with open PR: ${wt}"
+      return
+    elif [[ "$_linked_open_state" -eq 2 ]]; then
       skipped_open_pr=$((skipped_open_pr + 1))
       echo "[agent-worktree-prune] Skipping linked worktree because open-PR state is unavailable (fail closed): ${wt}"
       return
@@ -1406,9 +1430,12 @@ process_entry() {
       echo "[agent-worktree-prune] Worktree changed or became active during pre-remove: ${wt}" >&2
       return
     fi
-    if [[ "$FORCE_DIRTY" -ne 1 ]] && ! is_clean_worktree "$wt"; then
-      echo "[agent-worktree-prune] pre-remove left changes; preserving: ${wt}" >&2
-      return
+    if ! is_clean_worktree "$wt"; then
+      if [[ "$FORCE_DIRTY" -ne 1 ]]; then
+        echo "[agent-worktree-prune] pre-remove left changes; preserving: ${wt}" >&2
+        return
+      fi
+      warn_force_dirty_removal "$wt" "${remove_reason} after pre-remove hook"
     fi
   fi
   # Refused for non-temporary worktrees that contain precious ignored files
@@ -1428,6 +1455,17 @@ process_entry() {
         [[ -n "$_pi_path" ]] && echo "[agent-worktree-prune]   ignored: ${_pi_path}"
       done <<< "$_precious_ignored"
       return
+    fi
+  else
+    # gx's own scratch worktrees (integration / source probes) stay disposable,
+    # but never lose ignored files silently.
+    local _tmp_ignored=""
+    _tmp_ignored="$(worktree_has_precious_ignored_files "$wt" 2>/dev/null || true)"
+    if [[ -n "$_tmp_ignored" ]]; then
+      echo "[agent-worktree-prune] WARNING: removing temporary worktree with ignored files: ${wt}" >&2
+      while IFS= read -r _pi_path; do
+        [[ -n "$_pi_path" ]] && echo "[agent-worktree-prune]   ignored: ${_pi_path}" >&2
+      done <<< "$_tmp_ignored"
     fi
   fi
 

@@ -1,15 +1,7 @@
-// Regression tests for Fix 1 (CRITICAL): --force-dirty must NOT remove a worktree
-// that has uncommitted/untracked changes when the removal reason is based on a merged
-// or closed PR (remove_reason: merged-pr:*, closed-pr:*, merged-linked-pr,
-// merged-agent-pr, merged-agent-branch).
-//
-// --force-dirty is only valid for transient/recoverable reasons:
-//   temporary-worktree, detached-worktree, missing-branch,
-//   clean-agent-worktree, clean-linked-worktree, stale-no-pr-worktree
-//
-// Verification strategy for each assertion:
-//   BEFORE fix: test fails (dirty worktree gets removed with --force-dirty)
-//   AFTER fix:  test passes (dirty worktree is preserved)
+// --force-dirty is an explicit operator override ("Allow cleanup of dirty
+// worktrees"); no automated caller passes it. It removes dirty worktrees for
+// every reason, but must first print a WARNING naming the uncommitted paths
+// that are about to be lost. These tests pin both halves of that contract.
 
 const {
   test,
@@ -97,7 +89,7 @@ defineSpawnSuite('agent-worktree-prune — --force-dirty safety (explicit overri
   test('--force-dirty removes a dirty merged-pr worktree (--prune-stale-lanes) but lists the lost files first', () => {
     // The branch has an untracked file (uncommitted work).
     // The PR is "merged" per the forge.
-    // With --prune-stale-lanes + --force-dirty the worktree must be preserved.
+    // With --prune-stale-lanes + --force-dirty it is removed, after a warning.
     const repoDir = initRepo({ branch: 'main' });
     seedCommit(repoDir);
 
@@ -162,7 +154,7 @@ defineSpawnSuite('agent-worktree-prune — --force-dirty safety (explicit overri
   test('--force-dirty removes a dirty merged-agent-branch worktree and warns', () => {
     // Branch is an ancestor of main (merged by git ancestry).
     // Worktree has uncommitted changes.
-    // With --force-dirty the worktree must be preserved when reason is merged-agent-branch.
+    // With --force-dirty it is removed, after a warning naming wip.txt.
     const repoDir = initRepo({ branch: 'main' });
     seedCommit(repoDir);
 
