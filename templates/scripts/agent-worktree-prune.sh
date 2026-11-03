@@ -1144,7 +1144,14 @@ process_entry() {
     echo "[agent-worktree-prune] Skipping live process worktree: ${wt}"
     return
   fi
-  if [[ "$branch" == agent/* || "$branch" == work/* ]] && should_preserve_open_pr_branch "$branch"; then
+  # Apply open-PR guard to every named non-protected branch when PRESERVE_OPEN_PRS=1.
+  # Previously only agent/* and work/* were checked; broadening to all named branches
+  # ensures that --include-clean-linked-worktrees / --include-merged-linked-worktrees
+  # cannot accidentally reclaim a feat/*, fix/*, or personal lane with an open PR.
+  # (should_preserve_open_pr_branch returns false immediately when PRESERVE_OPEN_PRS=0,
+  # so this change is a no-op when the flag is not set.)
+  if [[ -n "$branch" ]] && ! is_protected_linked_branch "$branch" \
+      && should_preserve_open_pr_branch "$branch"; then
     skipped_open_pr=$((skipped_open_pr + 1))
     if [[ "$OPEN_PR_LOOKUP_UNAVAILABLE" -eq 1 ]]; then
       echo "[agent-worktree-prune] Skipping open-PR worktree because PR state is unavailable (fail closed): ${wt}"
@@ -1152,6 +1159,31 @@ process_entry() {
       echo "[agent-worktree-prune] Skipping open-PR worktree: ${wt}"
     fi
     return
+  fi
+
+  # For linked-worktree reclaim modes (--include-clean-linked-worktrees or
+  # --include-merged-linked-worktrees), ALWAYS check for an open PR on non-agent
+  # branches — regardless of PRESERVE_OPEN_PRS. We use the bulk open-PR lookup
+  # and fail closed when it is unavailable or truncated, because a false
+  # "no open PR" answer would silently destroy someone's in-flight work.
+  if [[ -n "$branch" ]] && ! is_managed_worktree_path "$wt" \
+      && [[ "$branch" != agent/* && "$branch" != work/* ]] \
+      && ! is_protected_linked_branch "$branch" \
+      && [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 || "$linked_merged_only" -eq 1 ]]; then
+    local _linked_open_unavailable=0
+    if load_open_pr_lookup; then
+      if [[ -n "${OPEN_PR_BRANCHES[$branch]:-}" ]]; then
+        skipped_open_pr=$((skipped_open_pr + 1))
+        echo "[agent-worktree-prune] Skipping linked worktree with open PR: ${wt}"
+        return
+      fi
+    else
+      # Bulk lookup failed or was truncated — fail closed.
+      _linked_open_unavailable=1
+      skipped_open_pr=$((skipped_open_pr + 1))
+      echo "[agent-worktree-prune] Skipping linked worktree because open-PR state is unavailable (fail closed): ${wt}"
+      return
+    fi
   fi
 
   local remove_reason=""
