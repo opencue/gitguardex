@@ -596,6 +596,89 @@ is_clean_worktree() {
     && [[ -z "$(git -C "$wt" ls-files --others --exclude-standard -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}")" ]]
 }
 
+# Directories / patterns whose .gitignore-excluded presence is safe to discard.
+# Addable via GUARDEX_PRUNE_DISPOSABLE_IGNORED (space-separated, appended).
+PRUNE_DISPOSABLE_IGNORED_DEFAULT=(
+  node_modules dist build out .next .nuxt .turbo .cache .parcel-cache .vite
+  coverage target .venv venv __pycache__ .pytest_cache .mypy_cache .codegraph
+  .omc .omx
+)
+PRUNE_DISPOSABLE_IGNORED=("${PRUNE_DISPOSABLE_IGNORED_DEFAULT[@]}")
+if [[ -n "${GUARDEX_PRUNE_DISPOSABLE_IGNORED:-}" ]]; then
+  read -ra _extra_disposable <<< "$GUARDEX_PRUNE_DISPOSABLE_IGNORED"
+  PRUNE_DISPOSABLE_IGNORED+=("${_extra_disposable[@]}")
+fi
+
+# Returns 0 and prints offending paths (up to 5) when the worktree has
+# .gitignore-excluded files that are NOT under a disposable directory and are
+# NOT matched by the existing STATE_EXCLUDE_PATHSPEC globs or *.log/.DS_Store.
+# Returns 1 when all ignored content is disposable.
+worktree_has_precious_ignored_files() {
+  local wt="$1"
+  local ignored_paths=""
+  ignored_paths="$(
+    git -C "$wt" ls-files --others --ignored --exclude-standard \
+      --directory --no-empty-directory 2>/dev/null || true
+  )"
+  [[ -n "$ignored_paths" ]] || return 1
+
+  local -a offenders=()
+  local entry clean base
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    # Strip trailing slash from directory entries.
+    clean="${entry%/}"
+    base="${clean%%/*}"
+
+    # Check disposable dirs.
+    local disposable=0
+    local d
+    for d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
+      if [[ "$base" == "$d" ]]; then
+        disposable=1
+        break
+      fi
+    done
+    [[ "$disposable" -eq 1 ]] && continue
+
+    # Check *.log and .DS_Store.
+    case "$clean" in
+      *.log|.DS_Store) continue ;;
+    esac
+
+    # Check the existing STATE_EXCLUDE_PATHSPEC globs (simple prefix match).
+    local globs_raw="${WORKTREE_STATE_EXCLUDE_GLOBS_RAW:-}"
+    if [[ -n "$globs_raw" ]]; then
+      local glob matched_state=0
+      local -a globs_arr=()
+      IFS=':' read -ra globs_arr <<< "$globs_raw"
+      for glob in "${globs_arr[@]}"; do
+        [[ -z "$glob" ]] && continue
+        # Strip leading ** or ./ for a simple prefix match.
+        local bare_glob="${glob#\*\*/}"
+        bare_glob="${bare_glob#./}"
+        if [[ "$clean" == $bare_glob || "$clean" == ${bare_glob%%\**}* ]]; then
+          matched_state=1
+          break
+        fi
+      done
+      [[ "$matched_state" -eq 1 ]] && continue
+    fi
+
+    offenders+=("$entry")
+    [[ "${#offenders[@]}" -ge 5 ]] && break
+  done <<< "$ignored_paths"
+
+  if [[ "${#offenders[@]}" -gt 0 ]]; then
+    local o
+    for o in "${offenders[@]}"; do
+      printf '%s\n' "$o"
+    done
+    return 0
+  fi
+  return 1
+}
+
 # Returns 0 (true) when --force-dirty is permitted to bypass the dirty check
 # for the given remove_reason.
 #
@@ -1218,6 +1301,26 @@ process_entry() {
       return
     fi
   fi
+  # Refused for non-temporary worktrees that contain precious ignored files
+  # (gitignored content NOT under a disposable directory such as node_modules,
+  # dist, .next, .venv, etc.).  `git worktree remove --force` deletes the
+  # working tree unconditionally; .env, local certs, and similar secrets-or-
+  # state files would be gone forever.  --force-dirty does NOT override this
+  # check — an ignored file is never covered by is_clean_worktree(), so the
+  # caller never saw it as "dirty" and explicitly chose to override it.
+  if [[ "$remove_reason" != "temporary-worktree" ]]; then
+    local _precious_ignored=""
+    _precious_ignored="$(worktree_has_precious_ignored_files "$wt" 2>/dev/null || true)"
+    if [[ -n "$_precious_ignored" ]]; then
+      skipped_dirty=$((skipped_dirty + 1))
+      echo "[agent-worktree-prune] Skipping worktree with precious ignored files (${remove_reason}): ${wt}"
+      while IFS= read -r _pi_path; do
+        [[ -n "$_pi_path" ]] && echo "[agent-worktree-prune]   ignored: ${_pi_path}"
+      done <<< "$_precious_ignored"
+      return
+    fi
+  fi
+
   if remove_worktree_with_lock_guard "$wt" "$remove_reason" "$branch"; then
     # The worktree list just changed; branch_has_worktree must re-read it.
     invalidate_worktree_branches
