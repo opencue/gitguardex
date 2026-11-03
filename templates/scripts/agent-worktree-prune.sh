@@ -32,7 +32,11 @@ NOW_EPOCH=0
 GH_BIN="${GUARDEX_GH_BIN:-gh}"
 PR_MERGED_LOOKUP_DISABLED=0
 PR_MERGED_LOOKUP_LOADED=0
+PR_MERGED_LOOKUP_TRUNCATED=0
+MERGED_PR_LOOKUP_LIMIT="${GUARDEX_MERGED_PR_LOOKUP_LIMIT:-500}"
 declare -A MERGED_PR_BRANCHES=()
+# Per-branch merged-PR fallback cache used when the bulk lookup was truncated.
+declare -A MERGED_PR_BRANCH_FALLBACK_CACHE=()
 # `git worktree list --porcelain` was re-run for EVERY branch (104 times in one
 # traced sweep) even though the answer only changes when this script itself
 # removes a worktree. Same for `rev-parse --verify refs/heads/<b>`: one branch
@@ -213,6 +217,9 @@ load_merged_pr_branches() {
     return 1
   fi
   if [[ "$PR_MERGED_LOOKUP_LOADED" -eq 1 ]]; then
+    # Loaded but truncated is still "loaded" for the bulk-lookup; callers that
+    # need a definitive answer for a specific branch use the per-branch fallback
+    # via branch_has_merged_pr_checked().
     return 0
   fi
   if ! command -v "$GH_BIN" >/dev/null 2>&1; then
@@ -223,19 +230,64 @@ load_merged_pr_branches() {
   # Name -> space-separated merged PR head SHAs. The SHA is what makes the
   # name match safe: a reused branch name, or commits pushed after the PR
   # merged, must not read as "merged" (see branch_has_merged_pr).
+  #
+  # Limit is configurable (GUARDEX_MERGED_PR_LOOKUP_LIMIT, default 500).
+  # When the result count hits the limit the lookup may be incomplete, so we
+  # set PR_MERGED_LOOKUP_TRUNCATED=1 and fall back to a per-branch probe in
+  # branch_has_merged_pr() — fail closed: a branch not in the truncated set is
+  # only treated as "not merged" after the per-branch check confirms it.
   local merged_branches=""
   merged_branches="$(
-    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" --limit 200 --json headRefName,headRefOid --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
+    "$GH_BIN" pr list --state merged --base "$BASE_BRANCH" \
+      --limit "$MERGED_PR_LOOKUP_LIMIT" \
+      --json headRefName,headRefOid \
+      --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
   )"
+  local row_count=0
   if [[ -n "$merged_branches" ]]; then
     local merged_branch merged_oid
     while IFS=' ' read -r merged_branch merged_oid; do
       [[ -z "$merged_branch" || -z "$merged_oid" ]] && continue
       MERGED_PR_BRANCHES["$merged_branch"]="${MERGED_PR_BRANCHES[$merged_branch]:-} ${merged_oid}"
+      row_count=$((row_count + 1))
     done <<< "$merged_branches"
+  fi
+  if (( row_count >= MERGED_PR_LOOKUP_LIMIT )); then
+    PR_MERGED_LOOKUP_TRUNCATED=1
   fi
   PR_MERGED_LOOKUP_LOADED=1
   return 0
+}
+
+# Per-branch fallback for merged-PR detection, used when the bulk lookup was
+# truncated (PR_MERGED_LOOKUP_TRUNCATED=1).  Caches each result so a branch
+# is never queried twice in one run.
+#
+# Returns 0 when the branch has a confirmed merged PR; 1 otherwise.
+# Never fail-open: a gh failure is treated as "not confirmed merged".
+_load_merged_pr_branch_fallback() {
+  local branch="$1"
+  if [[ -n "${MERGED_PR_BRANCH_FALLBACK_CACHE[$branch]+set}" ]]; then
+    [[ "${MERGED_PR_BRANCH_FALLBACK_CACHE[$branch]}" == "1" ]]
+    return
+  fi
+  local result=""
+  result="$(
+    "$GH_BIN" pr list --state merged --head "$branch" --base "$BASE_BRANCH" \
+      --limit 5 --json headRefName,headRefOid \
+      --jq '.[] | "\(.headRefName) \(.headRefOid)"' 2>/dev/null || true
+  )"
+  if [[ -n "$result" ]]; then
+    local fb_branch fb_oid
+    while IFS=' ' read -r fb_branch fb_oid; do
+      [[ -z "$fb_branch" || -z "$fb_oid" ]] && continue
+      MERGED_PR_BRANCHES["$fb_branch"]="${MERGED_PR_BRANCHES[$fb_branch]:-} ${fb_oid}"
+    done <<< "$result"
+    MERGED_PR_BRANCH_FALLBACK_CACHE["$branch"]="1"
+    return 0
+  fi
+  MERGED_PR_BRANCH_FALLBACK_CACHE["$branch"]="0"
+  return 1
 }
 
 # One `gh pr list` for every open PR instead of one per branch. The merged
@@ -285,6 +337,13 @@ branch_has_merged_pr() {
   fi
   load_merged_pr_branches || return 1
   local merged_oids="${MERGED_PR_BRANCHES[$branch]:-}"
+  # When the bulk lookup was truncated and this branch was not in the result,
+  # fall back to a per-branch query rather than treating "not in truncated set"
+  # as "not merged" (which would be fail-open and potentially delete live work).
+  if [[ -z "$merged_oids" && "$PR_MERGED_LOOKUP_TRUNCATED" -eq 1 ]]; then
+    _load_merged_pr_branch_fallback "$branch" || return 1
+    merged_oids="${MERGED_PR_BRANCHES[$branch]:-}"
+  fi
   [[ -n "$merged_oids" ]] || return 1
   # Merged only if every tip we can see — the local branch AND origin's —
   # IS a merged PR's head or is contained in one. Anything newer (commits
@@ -1083,6 +1142,12 @@ branch_is_exact_merged_pr_head() {
   [[ "$INCLUDE_PR_MERGED" -eq 1 ]] || return 1
   load_merged_pr_branches || return 1
   local merged_oids=" ${MERGED_PR_BRANCHES[$branch]:-} "
+  # Same truncation fallback as branch_has_merged_pr: if the bulk list was
+  # capped and this branch was not found, probe it individually.
+  if [[ -z "${merged_oids// /}" && "$PR_MERGED_LOOKUP_TRUNCATED" -eq 1 ]]; then
+    _load_merged_pr_branch_fallback "$branch" || return 1
+    merged_oids=" ${MERGED_PR_BRANCHES[$branch]:-} "
+  fi
   [[ -n "${merged_oids// /}" ]] || return 1
   local ref resolved seen=0
   for ref in "refs/heads/${branch}" "refs/remotes/origin/${branch}"; do
