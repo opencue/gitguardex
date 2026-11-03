@@ -21,7 +21,7 @@ const {
   runNodeWithEnv,
   initRepo,
   seedCommit,
-  defineSpawnSuite,
+  defineSpawnSuite
 } = require('./helpers/install-test-helpers');
 
 // No-op sleep that always returns success — never blocks the test runner.
@@ -47,7 +47,7 @@ test('(a) watch loop catches a failed cycle and continues to the next cycle', ()
     maxFailures: 2,
     repoRoot: os.tmpdir(),
     once: false,
-    _runSleep: noSleep,
+    _runSleep: noSleep
   });
 
   assert.equal(calls, 2, 'loop ran two cycles (not one) before exiting');
@@ -66,7 +66,7 @@ test('(b) N consecutive failures exit non-zero', () => {
     maxFailures: 3,
     repoRoot: os.tmpdir(),
     once: false,
-    _runSleep: noSleep,
+    _runSleep: noSleep
   });
 
   assert.equal(calls, 3, 'ran exactly maxFailures cycles');
@@ -90,27 +90,29 @@ test('(c) a successful cycle resets the consecutive-failure counter', () => {
     maxFailures: 3,
     repoRoot: os.tmpdir(),
     once: false,
-    _runSleep: noSleep,
+    _runSleep: noSleep
   });
 
   assert.equal(result, 1, 'exits non-zero after reset + 3 more failures');
   assert.equal(
     calls,
     6,
-    'success on cycle 3 reset the counter, so 3 additional failures were needed to reach max',
+    'success on cycle 3 reset the counter, so 3 additional failures were needed to reach max'
   );
 });
 
 test('watch loop with --once exits 0 on success', () => {
   let calls = 0;
-  const runCycle = () => { calls += 1; };
+  const runCycle = () => {
+    calls += 1;
+  };
 
   const result = runCleanupWatchLoop(runCycle, {
     intervalSeconds: 5,
     maxFailures: 10,
     repoRoot: os.tmpdir(),
     once: true,
-    _runSleep: noSleep,
+    _runSleep: noSleep
   });
 
   assert.equal(calls, 1);
@@ -119,14 +121,17 @@ test('watch loop with --once exits 0 on success', () => {
 
 test('watch loop with --once exits 1 on failure (mirrors one-shot mode)', () => {
   let calls = 0;
-  const runCycle = () => { calls += 1; throw new Error('prune failed'); };
+  const runCycle = () => {
+    calls += 1;
+    throw new Error('prune failed');
+  };
 
   const result = runCleanupWatchLoop(runCycle, {
     intervalSeconds: 5,
     maxFailures: 10,
     repoRoot: os.tmpdir(),
     once: true,
-    _runSleep: noSleep,
+    _runSleep: noSleep
   });
 
   assert.equal(calls, 1);
@@ -135,7 +140,9 @@ test('watch loop with --once exits 1 on failure (mirrors one-shot mode)', () => 
 
 test('watch loop exits cleanly when sleep is interrupted by SIGINT', () => {
   let calls = 0;
-  const runCycle = () => { calls += 1; };
+  const runCycle = () => {
+    calls += 1;
+  };
   let sleepCalls = 0;
   const signalSleep = (_seconds) => {
     sleepCalls += 1;
@@ -147,7 +154,7 @@ test('watch loop exits cleanly when sleep is interrupted by SIGINT', () => {
     maxFailures: 10,
     repoRoot: os.tmpdir(),
     once: false,
-    _runSleep: signalSleep,
+    _runSleep: signalSleep
   });
 
   assert.equal(calls, 1, 'ran one cycle before sleep was interrupted');
@@ -157,8 +164,13 @@ test('watch loop exits cleanly when sleep is interrupted by SIGINT', () => {
 
 test('exponential backoff: sleep duration doubles after each consecutive failure', () => {
   const sleepDurations = [];
-  const runCycle = () => { throw new Error('always fails'); };
-  const recordSleep = (s) => { sleepDurations.push(s); return { status: 0, signal: null }; };
+  const runCycle = () => {
+    throw new Error('always fails');
+  };
+  const recordSleep = (s) => {
+    sleepDurations.push(s);
+    return { status: 0, signal: null };
+  };
 
   // maxFailures=4: fail 1→sleep, fail 2→sleep, fail 3→sleep, fail 4→exit
   runCleanupWatchLoop(runCycle, {
@@ -166,32 +178,40 @@ test('exponential backoff: sleep duration doubles after each consecutive failure
     maxFailures: 4,
     repoRoot: os.tmpdir(),
     once: false,
-    _runSleep: recordSleep,
+    _runSleep: recordSleep
   });
 
   // After failure n, sleep = min(10 * 2^n, 900)
   assert.deepEqual(sleepDurations, [
     Math.min(10 * Math.pow(2, 1), 900), // 20
     Math.min(10 * Math.pow(2, 2), 900), // 40
-    Math.min(10 * Math.pow(2, 3), 900), // 80
+    Math.min(10 * Math.pow(2, 3), 900) // 80
   ]);
 });
 
 test('backoff is capped at 900 seconds (15 min)', () => {
   const sleepDurations = [];
-  const runCycle = () => { throw new Error('always fails'); };
-  const recordSleep = (s) => { sleepDurations.push(s); return { status: 0, signal: null }; };
+  const runCycle = () => {
+    throw new Error('always fails');
+  };
+  const recordSleep = (s) => {
+    sleepDurations.push(s);
+    return { status: 0, signal: null };
+  };
 
   runCleanupWatchLoop(runCycle, {
     intervalSeconds: 600,
     maxFailures: 3,
     repoRoot: os.tmpdir(),
     once: false,
-    _runSleep: recordSleep,
+    _runSleep: recordSleep
   });
 
   // 600 * 2^1 = 1200 > 900 → capped at 900
-  assert.ok(sleepDurations.every((d) => d <= 900), 'all sleep durations are within the 15-minute cap');
+  assert.ok(
+    sleepDurations.every((d) => d <= 900),
+    'all sleep durations are within the 15-minute cap'
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -214,7 +234,7 @@ defineSpawnSuite('cleanup watch resilience (spawn)', () => {
       const result = runNodeWithEnv(
         ['cleanup', '--target', repoDir, '--watch', '--once', '--interval', '5'],
         repoDir,
-        { PATH: fakeDir + path.delimiter + process.env.PATH },
+        { PATH: fakeDir + path.delimiter + process.env.PATH }
       );
 
       assert.equal(result.status, 1, 'watch exits non-zero when prune fails');
@@ -235,7 +255,7 @@ defineSpawnSuite('cleanup watch resilience (spawn)', () => {
 
     const result = runNode(
       ['cleanup', '--target', repoDir, '--watch', '--once', '--interval', '5'],
-      repoDir,
+      repoDir
     );
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /Cleanup watch cycle=1 \(interval=5s/);
@@ -257,7 +277,7 @@ defineSpawnSuite('cleanup watch resilience (spawn)', () => {
     // A valid max-failures flag should not cause an "Unknown option" error.
     const result = runNode(
       ['cleanup', '--target', repoDir, '--watch', '--once', '--max-failures', '5'],
-      repoDir,
+      repoDir
     );
     assert.equal(result.status, 0, result.stderr || result.stdout);
   });
