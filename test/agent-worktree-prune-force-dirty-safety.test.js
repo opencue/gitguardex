@@ -93,8 +93,8 @@ echo ""
   );
 }
 
-defineSpawnSuite('agent-worktree-prune — --force-dirty safety (Fix 1)', () => {
-  test('--force-dirty does NOT remove dirty worktree when reason is merged-pr (--prune-stale-lanes)', () => {
+defineSpawnSuite('agent-worktree-prune — --force-dirty safety (explicit override, always warns)', () => {
+  test('--force-dirty removes a dirty merged-pr worktree (--prune-stale-lanes) but lists the lost files first', () => {
     // The branch has an untracked file (uncommitted work).
     // The PR is "merged" per the forge.
     // With --prune-stale-lanes + --force-dirty the worktree must be preserved.
@@ -122,21 +122,9 @@ defineSpawnSuite('agent-worktree-prune — --force-dirty safety (Fix 1)', () => 
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
-    assert.ok(
-      fs.existsSync(wt),
-      `--force-dirty must NOT remove dirty worktree with reason merged-pr:*, got stdout: ${res.stdout}`,
-    );
-    // Should log that force-dirty does not apply.
-    assert.match(
-      res.stdout + res.stderr,
-      /force-dirty does not apply|Skipping dirty worktree/i,
-      `output should explain that force-dirty was blocked: ${res.stdout}`,
-    );
-    // The file must still be there.
-    assert.ok(
-      fs.existsSync(path.join(wt, 'in-progress.txt')),
-      'uncommitted file must survive',
-    );
+    assert.ok(!fs.existsSync(wt), `explicit --force-dirty removes it, stdout: ${res.stdout}`);
+    assert.match(res.stderr, /WARNING: --force-dirty removes a dirty worktree \(merged-pr:/);
+    assert.match(res.stderr, /in-progress\.txt/, 'the lost file is named before removal');
   });
 
   test('--force-dirty DOES remove dirty worktree when reason is detached-worktree', () => {
@@ -171,7 +159,7 @@ defineSpawnSuite('agent-worktree-prune — --force-dirty safety (Fix 1)', () => 
     );
   });
 
-  test('--force-dirty does NOT remove dirty worktree with merged-agent-branch reason', () => {
+  test('--force-dirty removes a dirty merged-agent-branch worktree and warns', () => {
     // Branch is an ancestor of main (merged by git ancestry).
     // Worktree has uncommitted changes.
     // With --force-dirty the worktree must be preserved when reason is merged-agent-branch.
@@ -209,9 +197,8 @@ defineSpawnSuite('agent-worktree-prune — --force-dirty safety (Fix 1)', () => 
     );
 
     assert.equal(res.status, 0, res.stderr || res.stdout);
-    assert.ok(
-      fs.existsSync(wt),
-      `--force-dirty must NOT remove dirty worktree with merged-agent-branch reason, stdout: ${res.stdout}`,
-    );
+    assert.ok(!fs.existsSync(wt), `explicit --force-dirty removes it, stdout: ${res.stdout}`);
+    assert.match(res.stderr, /WARNING: --force-dirty removes a dirty worktree \(merged-agent-branch\)/);
+    assert.match(res.stderr, /wip\.txt/);
   });
 });

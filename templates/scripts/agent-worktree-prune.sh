@@ -738,35 +738,15 @@ worktree_has_precious_ignored_files() {
   return 1
 }
 
-# Returns 0 (true) when --force-dirty is permitted to bypass the dirty check
-# for the given remove_reason.
-#
-# --force-dirty is intended for transient/recoverable situations (scratch
-# worktrees, detached heads, branches whose ref is already gone) where the
-# operator knows the files are disposable. It must NEVER skip the dirty check
-# when the removal reason is rooted in a PR event (merged or closed) or a
-# branch-merge conclusion, because uncommitted work may still live there even
-# though a PR was merged or a branch was merged — the two are independent facts.
-#
-# Allowed: temporary-worktree, detached-worktree, missing-branch,
-#          clean-agent-worktree, clean-linked-worktree, stale-no-pr-worktree
-# Blocked: merged-pr:*, closed-pr:*, merged-linked-pr, merged-agent-pr,
-#          merged-agent-branch
-force_dirty_applies_to_reason() {
-  local reason="$1"
-  case "$reason" in
-    temporary-worktree|detached-worktree|missing-branch|clean-agent-worktree|clean-linked-worktree|stale-no-pr-worktree)
-      return 0
-      ;;
-    merged-pr:*|closed-pr:*|merged-linked-pr|merged-agent-pr|merged-agent-branch)
-      # PR-based or merge-based reasons: never override the dirty check.
-      return 1
-      ;;
-    *)
-      # Unknown reason: fail closed — do not allow force-dirty.
-      return 1
-      ;;
-  esac
+# --force-dirty is an explicit operator override ("Allow cleanup of dirty
+# worktrees"); no automated caller passes it. It therefore applies to every
+# removal reason, but the uncommitted files it is about to destroy are always
+# printed first (warn_force_dirty_removal) so the loss is never silent.
+# It does NOT override the precious-ignored-files guard below.
+warn_force_dirty_removal() {
+  local wt="$1" reason="$2"
+  echo "[agent-worktree-prune] WARNING: --force-dirty removes a dirty worktree (${reason}); these uncommitted changes will be lost: ${wt}" >&2
+  summarize_worktree_dirt "$wt" >&2
 }
 
 # Returns a short, human-readable summary of why a worktree is considered dirty:
@@ -1390,15 +1370,15 @@ process_entry() {
     git -C "$wt" merge --abort >/dev/null 2>&1 || true
   fi
 
-  if ! { [[ "$FORCE_DIRTY" -eq 1 ]] && force_dirty_applies_to_reason "$remove_reason"; } && ! is_clean_worktree "$wt"; then
-    skipped_dirty=$((skipped_dirty + 1))
-    if [[ "$FORCE_DIRTY" -eq 1 ]] && ! force_dirty_applies_to_reason "$remove_reason"; then
-      echo "[agent-worktree-prune] Skipping dirty worktree (${remove_reason}): --force-dirty does not apply to PR/merge-based reasons; uncommitted work may still be present: ${wt}"
+  if ! is_clean_worktree "$wt"; then
+    if [[ "$FORCE_DIRTY" -eq 1 ]]; then
+      warn_force_dirty_removal "$wt" "$remove_reason"
     else
+      skipped_dirty=$((skipped_dirty + 1))
       echo "[agent-worktree-prune] Skipping dirty worktree (${remove_reason}): ${wt}"
+      summarize_worktree_dirt "$wt"
+      return
     fi
-    summarize_worktree_dirt "$wt"
-    return
   fi
 
   if [[ "$remove_reason" == closed-pr:* ]] && ! closed_pr_has_remote_recovery "$branch"; then
@@ -1426,7 +1406,7 @@ process_entry() {
       echo "[agent-worktree-prune] Worktree changed or became active during pre-remove: ${wt}" >&2
       return
     fi
-    if ! { [[ "$FORCE_DIRTY" -eq 1 ]] && force_dirty_applies_to_reason "$remove_reason"; } && ! is_clean_worktree "$wt"; then
+    if [[ "$FORCE_DIRTY" -ne 1 ]] && ! is_clean_worktree "$wt"; then
       echo "[agent-worktree-prune] pre-remove left changes; preserving: ${wt}" >&2
       return
     fi
