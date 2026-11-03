@@ -961,6 +961,17 @@ reserve_branch_slot() {
 
 relocate_foreign_worktree_entries
 
+# Never reclaim a linked worktree that has the base or a long-lived branch
+# checked out, whatever a forge says about a same-named PR.
+is_protected_linked_branch() {
+  local branch="$1"
+  [[ -z "$branch" || "$branch" == "$BASE_BRANCH" ]] && return 0
+  case "$branch" in
+    main|master|dev|develop|trunk|release/*|hotfix/*) return 0 ;;
+  esac
+  return 1
+}
+
 process_entry() {
   local wt="$1"
   local branch_ref="$2"
@@ -1063,13 +1074,24 @@ process_entry() {
     remove_reason="temporary-worktree"
   elif [[ "$INCLUDE_CLEAN_LINKED_WORKTREES" -eq 1 ]] && is_clean_worktree "$wt"; then
     remove_reason="clean-linked-worktree"
+  elif [[ "$linked_merged_only" -eq 1 && "$branch" != work/* ]] \
+    && ! is_protected_linked_branch "$branch" && branch_has_merged_pr "$branch"; then
+    # A non-agent worktree (feat/*, fix/*, a person's own lane) goes ONLY on
+    # forge evidence: a MERGED PR whose head contains every local/origin tip.
+    # Ancestry alone is not enough here — a freshly created branch with no
+    # commits yet is an ancestor of the base too. The branch itself is kept.
+    remove_reason="merged-linked-pr"
   fi
 
   if [[ "$linked_merged_only" -eq 1 ]]; then
-    [[ "$branch" == agent/* ]] || return 0
     case "$remove_reason" in
-      merged-agent-branch|merged-agent-pr|merged-pr:*) ;;
-      *) return 0 ;;
+      merged-agent-branch|merged-agent-pr|merged-pr:*|merged-linked-pr) ;;
+      *)
+        if [[ -n "$branch" && "$branch" != agent/* ]]; then
+          echo "[agent-worktree-prune] Keeping non-agent linked worktree (no merged PR for ${branch}): ${wt}"
+        fi
+        return 0
+        ;;
     esac
   fi
 
