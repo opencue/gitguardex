@@ -1452,13 +1452,8 @@ is_match_head_commit_error() {
   if [[ "$output" == *"merge_commit_sha is not equal"* ]] \
        || [[ "$output" == *"HEAD doesn't match expected SHA"* ]] \
        || [[ "$output" == *"Head doesn't match expected SHA"* ]] \
+       || [[ "$output" == *"Head branch was modified"* ]] \
        || [[ "$output" == *"head commit"*"not match"* ]]; then
-    return 0
-  fi
-  # Broader fallback: any HTTP 422 when --match-head-commit is armed is almost
-  # certainly a SHA mismatch (conflict and pending-checks 422s appear as
-  # different error classes by this point in the flow).
-  if [[ "$output" == *"422"* ]]; then
     return 0
   fi
   return 1

@@ -67,13 +67,13 @@ function runWaitFn(ghOutput, ghExitCode, extraEnv = {}) {
     `WAIT_TIMEOUT_SECONDS=5`,
     `WAIT_POLL_SECONDS=0`,
     `pr_url=https://github.com/owner/repo/pull/42`,
-    `wait_for_pr_merge`,
+    `wait_for_pr_merge`
   ].join('\n');
 
   return cp.spawnSync('bash', ['-eu', '-c', bashSrc], {
     encoding: 'utf8',
     env: { ...process.env, ...extraEnv },
-    timeout: 10_000,
+    timeout: 10_000
   });
 }
 
@@ -84,7 +84,7 @@ test('is_match_head_commit_error returns 0 for merge_commit_sha mismatch', () =>
     helperBlock,
     waitFnBlock,
     `merge_head_args=(--match-head-commit sha123)`,
-    `is_match_head_commit_error "HTTP 422: merge_commit_sha is not equal to actual sha: deadbeef"`,
+    `is_match_head_commit_error "HTTP 422: merge_commit_sha is not equal to actual sha: deadbeef"`
   ].join('\n');
   const r = cp.spawnSync('bash', ['-eu', '-c', src], { encoding: 'utf8', timeout: 5_000 });
   assert.equal(r.status, 0, 'must match GitHub merge_commit_sha mismatch message');
@@ -95,21 +95,32 @@ test('is_match_head_commit_error returns 0 for HEAD does not match expected SHA'
     helperBlock,
     waitFnBlock,
     `merge_head_args=(--match-head-commit sha123)`,
-    `is_match_head_commit_error "PUT https://api.github.com/…: 422 HEAD doesn't match expected SHA"`,
+    `is_match_head_commit_error "PUT https://api.github.com/…: 422 HEAD doesn't match expected SHA"`
   ].join('\n');
   const r = cp.spawnSync('bash', ['-eu', '-c', src], { encoding: 'utf8', timeout: 5_000 });
   assert.equal(r.status, 0, 'must match HEAD-does-not-match-expected-SHA message');
 });
 
-test('is_match_head_commit_error returns 0 for bare 422 when match-head-commit is armed', () => {
+test('is_match_head_commit_error returns 1 for an unrelated 422 when match-head-commit is armed', () => {
   const src = [
     helperBlock,
     waitFnBlock,
     `merge_head_args=(--match-head-commit sha123)`,
-    `is_match_head_commit_error "422 Unprocessable Entity"`,
+    `is_match_head_commit_error "422 Unprocessable Entity"`
   ].join('\n');
   const r = cp.spawnSync('bash', ['-eu', '-c', src], { encoding: 'utf8', timeout: 5_000 });
-  assert.equal(r.status, 0, 'any 422 with match-head-commit is a SHA mismatch');
+  assert.equal(r.status, 1, 'a 422 without a SHA-mismatch message is another validation failure');
+});
+
+test('is_match_head_commit_error returns 0 for the gh GraphQL head-modified error', () => {
+  const src = [
+    helperBlock,
+    waitFnBlock,
+    `merge_head_args=(--match-head-commit sha123)`,
+    `is_match_head_commit_error "GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)"`
+  ].join('\n');
+  const r = cp.spawnSync('bash', ['-eu', '-c', src], { encoding: 'utf8', timeout: 5_000 });
+  assert.equal(r.status, 0, 'gh reports a stale --match-head-commit this way');
 });
 
 test('is_match_head_commit_error returns 1 when merge_head_args is empty', () => {
@@ -119,7 +130,7 @@ test('is_match_head_commit_error returns 1 when merge_head_args is empty', () =>
     helperBlock,
     waitFnBlock,
     `merge_head_args=()`,
-    `is_match_head_commit_error "422 Unprocessable Entity"`,
+    `is_match_head_commit_error "422 Unprocessable Entity"`
   ].join('\n');
   const r = cp.spawnSync('bash', ['-eu', '-c', src], { encoding: 'utf8', timeout: 5_000 });
   assert.notEqual(r.status, 0, 'empty merge_head_args must not match — guard must stay off');
@@ -130,7 +141,7 @@ test('is_match_head_commit_error returns 1 for unrelated gh error', () => {
     helperBlock,
     waitFnBlock,
     `merge_head_args=(--match-head-commit sha123)`,
-    `is_match_head_commit_error "failed to delete local branch: cannot delete branch"`,
+    `is_match_head_commit_error "failed to delete local branch: cannot delete branch"`
   ].join('\n');
   const r = cp.spawnSync('bash', ['-eu', '-c', src], { encoding: 'utf8', timeout: 5_000 });
   assert.notEqual(r.status, 0, 'local branch-delete error is not a SHA mismatch');
@@ -157,10 +168,7 @@ test('wait_for_pr_merge exits immediately on 422 SHA mismatch with actionable me
 });
 
 test('wait_for_pr_merge exits immediately on HEAD-does-not-match-SHA with actionable message', () => {
-  const result = runWaitFn(
-    "GraphQL: HEAD doesn't match expected SHA (mergePullRequest)",
-    1
-  );
+  const result = runWaitFn("GraphQL: HEAD doesn't match expected SHA (mergePullRequest)", 1);
   assert.notEqual(result.status, 0, 'must exit non-zero on HEAD SHA mismatch');
   assert.match(result.stderr, /re-run gx ship|branch was updated/i);
   assert.doesNotMatch(result.stderr, /Waiting for required checks/i);
@@ -170,10 +178,7 @@ test('wait_for_pr_merge retries normally when gh fails without a SHA-mismatch ma
   // A non-mismatch failure (e.g. checks still pending) must still enter the
   // polling loop. With WAIT_TIMEOUT_SECONDS=5 and WAIT_POLL_SECONDS=0 it times
   // out quickly, but must have printed "Waiting for required checks/reviews".
-  const result = runWaitFn(
-    'pull request is not in a mergeable state',
-    1
-  );
+  const result = runWaitFn('pull request is not in a mergeable state', 1);
   // Must eventually time out (exit 2) or loop until the stub returns success —
   // either way it must have attempted retry, not exited immediately as failure 1.
   assert.notEqual(result.status, 1, 'non-mismatch failure must not exit 1 immediately');
