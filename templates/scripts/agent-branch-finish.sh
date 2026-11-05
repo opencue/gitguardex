@@ -1438,6 +1438,27 @@ is_remote_branch_missing_error() {
   return 1
 }
 
+# Returns 0 when the gh pr merge failure is caused by the PR head having
+# advanced past the SHA recorded in --match-head-commit. This is distinct from
+# "checks still pending": the problem is a concurrent push, not CI state, so
+# retrying for 30 minutes will never succeed and only wastes operator time.
+# Matching on the GitHub merge API's 422 body and known gh error strings.
+is_match_head_commit_error() {
+  local output="$1"
+  # Only relevant when --match-head-commit was armed; a plain merge gets
+  # different 422 causes (e.g. merge conflict) that the loop should still retry.
+  [[ "${#merge_head_args[@]}" -eq 0 ]] && return 1
+  # GitHub merge API: sha parameter did not match the PR's current head.
+  if [[ "$output" == *"merge_commit_sha is not equal"* ]] \
+       || [[ "$output" == *"HEAD doesn't match expected SHA"* ]] \
+       || [[ "$output" == *"Head doesn't match expected SHA"* ]] \
+       || [[ "$output" == *"Head branch was modified"* ]] \
+       || [[ "$output" == *"head commit"*"not match"* ]]; then
+    return 0
+  fi
+  return 1
+}
+
 local_branch_exists() {
   local branch="$1"
   git -C "$repo_root" show-ref --verify --quiet "refs/heads/${branch}"
@@ -1706,6 +1727,17 @@ wait_for_pr_merge() {
     if is_local_branch_delete_error "$merge_output"; then
       echo "[agent-branch-finish] PR merged but gh could not delete the local branch (active worktree); continuing local cleanup." >&2
       return 0
+    fi
+    # A SHA mismatch (--match-head-commit vs current PR head) will never resolve
+    # by waiting: a new commit was pushed after the review gate ran. Exit now
+    # with an actionable message rather than looping for 30 minutes.
+    if is_match_head_commit_error "$merge_output"; then
+      echo "[agent-branch-finish] Branch was updated after the review gate passed (SHA mismatch). Re-run gx ship to re-review and merge the latest commit." >&2
+      if [[ -n "$pr_url" ]]; then
+        echo "[agent-branch-finish] PR: ${pr_url}" >&2
+      fi
+      echo "$merge_output" >&2
+      return 1
     fi
 
     PR_STATE=""

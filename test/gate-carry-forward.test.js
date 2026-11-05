@@ -123,3 +123,64 @@ test('an aborted fix still blocks on the original finding, not the carry-forward
   });
   assert.throws(() => gate(deps, { gateAutofix: true }), /1 blocking finding/);
 });
+
+// ---- pathless blocker guard ------------------------------------------------
+
+test('a pathless blocking finding that vanishes after an autofix blocks the merge', () => {
+  // A CRITICAL finding with no file path (e.g. hardcoded credential, SQL
+  // injection) blocks round 1. The fix edits a file and round 2 is clean.
+  // Without the pathless-blocker flag the gate would pass — the file edited by
+  // the fix is not in blockedPaths, so resolveCarriedFindings returns nothing.
+  const PATHLESS_CRIT = { severity: 'critical', message: 'hardcoded credential in env init' };
+  let round = 0;
+  const deps = gateDeps({
+    runPrReview: () => {
+      round += 1;
+      return { findings: round === 1 ? [PATHLESS_CRIT] : [], posted: true };
+    },
+    runReviewFix: () => ({ status: 'fixed', changedFiles: ['src/config/env.ts'], sha: 'abc' }),
+  });
+
+  assert.throws(
+    () => gate(deps, { gateAutofix: true }),
+    /no file path|pathless/i,
+    'a pathless blocker that vanishes must not be treated as fixed'
+  );
+  assert.equal(round, 2, 'both review rounds must run');
+});
+
+test('a pathless blocking finding still present in the last round blocks via verdict.clean', () => {
+  // This is the base case: a pathless blocker that never disappears is caught
+  // by the existing !verdict.clean branch, not the new guard. Verify the two
+  // paths do not interfere with each other.
+  const PATHLESS_CRIT = { severity: 'critical', message: 'hardcoded credential' };
+  const deps = gateDeps({
+    runPrReview: () => ({ findings: [PATHLESS_CRIT], posted: true }),
+    runReviewFix: () => ({ status: 'no-op', changedFiles: [], reason: 'nothing changed' }),
+  });
+  assert.throws(
+    () => gate(deps, { gateAutofix: true }),
+    /1 blocking finding/,
+    'persistent pathless blocker must still be caught by the standard verdict check'
+  );
+});
+
+test('a path-keyed finding next to a pathless one: both paths are enforced', () => {
+  // Mixed round: one finding has a path, one does not. The path-keyed one is
+  // resolved by the fix; the pathless one disappears — the gate must still block.
+  const PATH_CRIT = { severity: 'critical', path: 'src/db.ts', line: 10, message: 'sql injection' };
+  const PATHLESS_CRIT = { severity: 'critical', message: 'hardcoded credential' };
+  let round = 0;
+  const deps = gateDeps({
+    runPrReview: () => {
+      round += 1;
+      return { findings: round === 1 ? [PATH_CRIT, PATHLESS_CRIT] : [], posted: true };
+    },
+    runReviewFix: () => ({ status: 'fixed', changedFiles: ['src/db.ts'], sha: 'abc' }),
+  });
+  assert.throws(
+    () => gate(deps, { gateAutofix: true }),
+    /no file path|pathless/i,
+    'the disappeared pathless finding must block even when the path-keyed one was fixed'
+  );
+});

@@ -408,6 +408,10 @@ function runReviewGate(
   // treated as repaired when its file was touched — see resolveCarriedFindings.
   const blockedPaths = new Set();
   const repairedPaths = new Set();
+  // A finding with no .path cannot be keyed into blockedPaths, so it needs its
+  // own flag: if one ever blocked a round and then disappears, the gate must
+  // fail closed rather than silently treating its absence as a fix.
+  let hasPathlessBlocker = false;
   let autofixAttempted = false;
   // Pin CI from the first review, and advance only after a reviewed autofix.
   let pushedHeadSha = initialHeadSha;
@@ -458,7 +462,11 @@ function runReviewGate(
 
     verdict = evaluate(review.findings);
     for (const finding of verdict.blocking) {
-      if (finding && finding.path) blockedPaths.add(finding.path);
+      if (finding && finding.path) {
+        blockedPaths.add(finding.path);
+      } else if (finding) {
+        hasPathlessBlocker = true;
+      }
     }
     if (verdict.clean || round === maxFixRounds) break;
 
@@ -569,6 +577,24 @@ function runReviewGate(
           .map((p) => `  - ${p} (blocked earlier, never edited, no current finding)`)
           .join('\n') +
         '\nRe-run the review, fix these by hand, or bypass with --skip-review-gate.'
+    );
+  }
+  // A pathless blocker (no .path on the finding) cannot be keyed into
+  // blockedPaths or verified by resolveCarriedFindings. If one appeared in any
+  // earlier round and is absent from the final clean verdict, it may still
+  // exist — the gate must fail closed rather than read the silence as a fix.
+  if (hasPathlessBlocker) {
+    reportProgress(
+      progress,
+      'fail',
+      'review',
+      'blocking finding with no file path disappeared without explanation'
+    );
+    throw new Error(
+      `review gate: a blocking finding with no file path was present in an earlier review round ` +
+        `but is absent from the final round. ` +
+        `Refusing to merge — a finding absent from one review is not a fixed finding.\n` +
+        `Re-run the review, fix the issue by hand, or bypass with --skip-review-gate.`
     );
   }
   const threadResolution = resolveThreads(prNumber, repoRoot, review.findings);
