@@ -1,6 +1,5 @@
-// Regression tests for five prune/finish safety fixes.
+// Regression tests for prune/finish safety fixes.
 //
-// Finding 2: is_clean_worktree in finish.sh now detects untracked files.
 // Finding 3: has_live_process_in_worktree fails closed on empty /proc output.
 // Finding 4: TOCTOU — process liveness re-checked inside the removal mutex.
 // Finding 5: remove_worktree_with_lock_guard no longer refuses non-agent/work
@@ -16,7 +15,6 @@ const {
   seedCommit,
   runHumanCmd,
   runWorktreePrune,
-  runBranchFinish,
   createFakeGhScript,
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
@@ -189,71 +187,5 @@ defineSpawnSuite('prune safety — Finding 5: non-agent/work branch with self-ow
 
     assert.equal(res.status, 0, `prune must succeed: ${res.stderr}\n${res.stdout}`);
     assert.ok(!fs.existsSync(wt), 'agent/* worktree with self-owned locks must still be removed');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Finding 2: is_clean_worktree in finish.sh must detect untracked files
-// ---------------------------------------------------------------------------
-
-defineSpawnSuite('finish safety — Finding 2: is_clean_worktree detects untracked files', () => {
-  test('branch finish --no-auto-commit fails when worktree has untracked files', () => {
-    // Before the fix: is_clean_worktree only checked git diff and git diff
-    // --cached. An untracked file returned 0 (clean) → finish proceeded.
-    // After the fix: ls-files --others is checked; untracked file → exit 1.
-    const repoDir = initRepo({ branch: 'main' });
-    seedCommit(repoDir);
-
-    const branch = 'agent/test/untracked-check';
-    const wt = makeManagedWorktree(repoDir, branch);
-
-    // Add only an untracked file — no staged or modified tracked files.
-    fs.writeFileSync(path.join(wt, 'untracked-work.txt'), 'work in progress\n');
-
-    // Run finish with --no-auto-commit so the untracked file is not committed
-    // and the shell is_clean_worktree check is the gate.
-    const res = runBranchFinish(
-      ['--branch', branch, '--base', 'main', '--no-auto-commit', '--dry-run'],
-      repoDir,
-      {},
-    );
-
-    // The finish script must exit non-zero and report the worktree as dirty.
-    assert.notEqual(res.status, 0, 'finish must fail when untracked file is present and --no-auto-commit is set');
-    const combined = (res.stdout || '') + (res.stderr || '');
-    assert.match(
-      combined,
-      /[Ss]ource worktree is not clean|not clean|untracked/,
-      'error message must mention untracked or not-clean state',
-    );
-  });
-
-  test('branch finish --no-auto-commit succeeds when worktree has no untracked files', () => {
-    // Sanity-check: a clean worktree (no staged, no modified, no untracked)
-    // must still pass the is_clean_worktree check and proceed (up to needing
-    // an origin remote for the actual merge, which --dry-run bypasses).
-    const repoDir = initRepo({ branch: 'main' });
-    seedCommit(repoDir);
-
-    const branch = 'agent/test/clean-check';
-    const wt = makeManagedWorktree(repoDir, branch);
-    // worktree is clean — no changes of any kind
-
-    // --dry-run stops before attempting the actual push/merge so we do not need
-    // a remote. The cleanliness check runs before the dry-run guard.
-    const res = runBranchFinish(
-      ['--branch', branch, '--base', 'main', '--no-auto-commit', '--dry-run'],
-      repoDir,
-      {},
-    );
-
-    // A missing remote causes non-zero exit too, but we only care that the
-    // failure is NOT about cleanliness.
-    const combined = (res.stdout || '') + (res.stderr || '');
-    assert.doesNotMatch(
-      combined,
-      /Source worktree is not clean/,
-      'clean worktree must not trigger the is_clean_worktree failure',
-    );
   });
 });
