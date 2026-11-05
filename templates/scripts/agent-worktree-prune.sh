@@ -911,6 +911,10 @@ has_live_process_in_worktree() {
   # (exit status 1 = "inactive"). When 0, an empty /proc scan is inconclusive
   # and must be treated as "possibly live" (fail closed).
   local lease_authoritative=0
+  # GUARDEX_PROC_DIR overrides the /proc root for the outer liveness check.
+  # Used by tests to inject a fake proc tree without affecting the in-mutex
+  # Python re-check (proc_has_live_process), which always reads real /proc.
+  local _proc_dir="${GUARDEX_PROC_DIR:-/proc}"
 
   if [[ -d "${repo_common_dir}/gx-process-leases" ]]; then
     local lease_probe="${GUARDEX_CLI_ENTRY:-}"
@@ -924,7 +928,7 @@ has_live_process_in_worktree() {
     lease_authoritative=1
   fi
 
-  [[ -d /proc ]] || return 1
+  [[ -d "$_proc_dir" ]] || return 1
 
   # ONE readlink for every process, not one per process. `readlink` takes many
   # operands and prints a line each, and this check only needs the SET of live
@@ -945,11 +949,11 @@ has_live_process_in_worktree() {
   # while in use. GNU find's -printf '%l' reads each link in one process and
   # skips unreadable entries.
   local live_cwds=""
-  live_cwds="$(find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%l\n' 2>/dev/null || true)"
+  live_cwds="$(find "$_proc_dir" -mindepth 2 -maxdepth 2 -name cwd -printf '%l\n' 2>/dev/null || true)"
   if [[ -z "$live_cwds" ]]; then
     # No GNU find (-printf unsupported): one readlink per entry.
     local proc_entry=""
-    for proc_entry in /proc/[0-9]*; do
+    for proc_entry in "${_proc_dir}"/[0-9]*; do
       proc_cwd="$(readlink "${proc_entry}/cwd" 2>/dev/null || true)"
       [[ -n "$proc_cwd" ]] && live_cwds+="${proc_cwd}"$'\n'
     done

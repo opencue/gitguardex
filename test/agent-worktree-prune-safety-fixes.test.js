@@ -6,6 +6,8 @@
 //            branches unconditionally; it refuses only when a lock entry belongs
 //            to a *different* branch.
 
+const cp = require('node:child_process');
+const os = require('node:os');
 const {
   test,
   assert,
@@ -16,7 +18,7 @@ const {
   runHumanCmd,
   runWorktreePrune,
   createFakeGhScript,
-  defineSpawnSuite,
+  defineSpawnSuite
 } = require('./helpers/install-test-helpers');
 
 // ---------------------------------------------------------------------------
@@ -29,7 +31,7 @@ function makeManagedWorktree(repoDir, branch) {
   assert.equal(
     runHumanCmd('git', ['worktree', 'add', '-b', branch, wt, 'main'], repoDir).status,
     0,
-    `create managed worktree for ${branch}`,
+    `create managed worktree for ${branch}`
   );
   return wt;
 }
@@ -43,7 +45,7 @@ function makeLinkedWorktree(repoDir, branch) {
   assert.equal(
     runHumanCmd('git', ['worktree', 'add', '-b', branch, wt, 'main'], repoDir).status,
     0,
-    `create linked worktree for ${branch}`,
+    `create linked worktree for ${branch}`
   );
   return wt;
 }
@@ -53,12 +55,16 @@ function writeLockEntry(wt, ownerBranch) {
   fs.mkdirSync(lockDir, { recursive: true });
   fs.writeFileSync(
     path.join(lockDir, 'agent-file-locks.json'),
-    JSON.stringify({
-      locks: {
-        'src/example.js': { branch: ownerBranch, claimed_at: new Date().toISOString() },
+    JSON.stringify(
+      {
+        locks: {
+          'src/example.js': { branch: ownerBranch, claimed_at: new Date().toISOString() }
+        }
       },
-    }, null, 2) + '\n',
-    'utf8',
+      null,
+      2
+    ) + '\n',
+    'utf8'
   );
 }
 
@@ -93,6 +99,174 @@ echo ""
 }
 
 // ---------------------------------------------------------------------------
+// Finding 3: has_live_process_in_worktree fails closed on empty /proc output
+// ---------------------------------------------------------------------------
+//
+// Before the fix: when every /proc/*/cwd was unreadable (other UIDs in a
+// multi-user or container setup) the scan produced zero readable entries and
+// the function returned 1 (safe-to-remove), even though it had no actual
+// evidence of absence.
+//
+// The fix introduced lease_authoritative tracking: if no entry was readable
+// and the process-lease guard was not consulted, the function returns 0
+// (assume live / fail closed) rather than 1.
+//
+// GUARDEX_PROC_DIR overrides /proc in the outer bash check only; the inner
+// Python re-check (proc_has_live_process) always reads real /proc.
+
+defineSpawnSuite('prune safety — Finding 3: empty /proc scan fails closed', () => {
+  test('worktree is preserved when /proc scan yields no entries (inconclusive empty scan)', () => {
+    // The fake proc dir has no numeric subdirectories, so both the find and
+    // the readlink fallback return nothing → live_cwds is empty → empty-scan
+    // path triggers.  With the fix (lease_authoritative=0) the function
+    // returns 0 (fail closed) and the worktree is skipped, not removed.
+    //
+    // Without the fix the old code would have returned 1 (safe to remove) and
+    // the worktree would have been deleted, even though the scan was
+    // inconclusive.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const branch = 'feat/proc-scan-empty';
+    const wt = makeLinkedWorktree(repoDir, branch);
+
+    // Fake proc dir: exists but contains no PID subdirectories.
+    const fakeProc = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-proc-'));
+    try {
+      const { fakeBin } = fakeGhNoProjects();
+
+      const res = runWorktreePrune(
+        ['--base', 'main', '--include-clean-linked-worktrees'],
+        repoDir,
+        {
+          GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+          GUARDEX_PRUNE_NOW_EPOCH: '0',
+          GUARDEX_PROC_DIR: fakeProc
+        }
+      );
+
+      assert.equal(res.status, 0, `prune must exit 0: ${res.stderr}\n${res.stdout}`);
+      assert.ok(
+        fs.existsSync(wt),
+        `worktree must NOT be removed when /proc scan is inconclusive (empty): ${res.stdout}`
+      );
+    } finally {
+      fs.rmSync(fakeProc, { recursive: true, force: true });
+    }
+  });
+
+  test('worktree IS removed when /proc scan finds processes but none in worktree (scan conclusive)', () => {
+    // Sanity check: when at least one /proc entry is readable but none of the
+    // cwds match the worktree, the scan IS conclusive and removal still proceeds.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const branch = 'feat/proc-scan-no-match';
+    const wt = makeLinkedWorktree(repoDir, branch);
+
+    // Fake proc dir: one process whose cwd points somewhere unrelated.
+    const fakeProc = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-proc-'));
+    try {
+      const fakePidDir = path.join(fakeProc, '12345');
+      fs.mkdirSync(fakePidDir);
+      fs.symlinkSync('/tmp', path.join(fakePidDir, 'cwd'));
+
+      const { fakeBin } = fakeGhNoProjects();
+
+      const res = runWorktreePrune(
+        ['--base', 'main', '--include-clean-linked-worktrees'],
+        repoDir,
+        {
+          GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+          GUARDEX_PRUNE_NOW_EPOCH: '0',
+          GUARDEX_PROC_DIR: fakeProc
+        }
+      );
+
+      assert.equal(res.status, 0, `prune must succeed: ${res.stderr}\n${res.stdout}`);
+      assert.ok(
+        !fs.existsSync(wt),
+        `worktree must be removed when no live process occupies it: ${res.stdout}`
+      );
+    } finally {
+      fs.rmSync(fakeProc, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 4: proc_has_live_process re-checks liveness inside removal mutex
+// ---------------------------------------------------------------------------
+//
+// Before the fix: has_live_process_in_worktree ran before acquiring the flock,
+// so a process could move into the worktree between the outer check and the
+// actual git worktree remove call.
+//
+// The fix added proc_has_live_process() (Python) called inside
+// remove_worktree_with_lock_guard after acquiring the flock.  This function
+// reads real /proc regardless of GUARDEX_PROC_DIR, so it catches a process
+// that entered the worktree after the outer bash check "passed".
+//
+// Test strategy: GUARDEX_PROC_DIR points to a fake proc dir whose sole entry
+// is NOT in the worktree, so the outer bash check returns "safe to remove".
+// A real background process sitting in the worktree is then visible to the
+// inner Python check via real /proc → removal is blocked (exit 10 → skipped).
+
+defineSpawnSuite('prune safety — Finding 4: TOCTOU re-check inside mutex', () => {
+  test('worktree with live process is preserved by in-mutex re-check even after outer check passes', () => {
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const branch = 'feat/toctou-process';
+    const wt = makeLinkedWorktree(repoDir, branch);
+
+    // Fake proc dir for the outer bash check: one process NOT in the worktree.
+    // The outer has_live_process_in_worktree call therefore returns "safe to
+    // remove" (live_cwds non-empty but no match).
+    const fakeProc = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-proc-'));
+    const fakePidDir = path.join(fakeProc, '12345');
+    fs.mkdirSync(fakePidDir);
+    fs.symlinkSync('/tmp', path.join(fakePidDir, 'cwd'));
+
+    // Real background process whose cwd IS the worktree.  It is visible in
+    // real /proc and will be caught by the inner Python re-check.
+    const child = cp.spawn('sleep', ['30'], {
+      cwd: wt,
+      detached: true,
+      stdio: 'ignore'
+    });
+    child.unref();
+
+    const { fakeBin } = fakeGhNoProjects();
+
+    try {
+      const res = runWorktreePrune(
+        ['--base', 'main', '--include-clean-linked-worktrees'],
+        repoDir,
+        {
+          GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+          GUARDEX_PRUNE_NOW_EPOCH: '0',
+          GUARDEX_PROC_DIR: fakeProc
+        }
+      );
+
+      assert.equal(res.status, 0, `prune must exit 0 (skipped): ${res.stderr}\n${res.stdout}`);
+      assert.ok(
+        fs.existsSync(wt),
+        `worktree with live process must NOT be removed by inner mutex re-check: ${res.stdout}`
+      );
+    } finally {
+      try {
+        process.kill(child.pid);
+      } catch {
+        // process may have already exited
+      }
+      fs.rmSync(fakeProc, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Finding 5: remove_worktree_with_lock_guard non-agent/work branch fix
 // ---------------------------------------------------------------------------
 
@@ -118,19 +292,15 @@ defineSpawnSuite('prune safety — Finding 5: non-agent/work branch with self-ow
 
     const { fakeBin } = fakeGhNoProjects();
 
-    const res = runWorktreePrune(
-      ['--base', 'main', '--include-clean-linked-worktrees'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const res = runWorktreePrune(['--base', 'main', '--include-clean-linked-worktrees'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
 
     assert.equal(res.status, 0, `prune must succeed: ${res.stderr}\n${res.stdout}`);
     assert.ok(
       !fs.existsSync(wt),
-      `feat/* linked worktree with self-owned locks must be removed, stdout: ${res.stdout}`,
+      `feat/* linked worktree with self-owned locks must be removed, stdout: ${res.stdout}`
     );
   });
 
@@ -148,14 +318,10 @@ defineSpawnSuite('prune safety — Finding 5: non-agent/work branch with self-ow
 
     const { fakeBin } = fakeGhNoProjects();
 
-    const res = runWorktreePrune(
-      ['--base', 'main', '--include-clean-linked-worktrees'],
-      repoDir,
-      {
-        GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
-    );
+    const res = runWorktreePrune(['--base', 'main', '--include-clean-linked-worktrees'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
 
     assert.equal(res.status, 0, `prune must exit 0: ${res.stderr}`);
     assert.ok(fs.existsSync(wt), 'worktree with foreign lock entry must NOT be removed');
@@ -181,8 +347,8 @@ defineSpawnSuite('prune safety — Finding 5: non-agent/work branch with self-ow
       repoDir,
       {
         GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-        GUARDEX_PRUNE_NOW_EPOCH: '0',
-      },
+        GUARDEX_PRUNE_NOW_EPOCH: '0'
+      }
     );
 
     assert.equal(res.status, 0, `prune must succeed: ${res.stderr}\n${res.stdout}`);
