@@ -907,6 +907,14 @@ skipped_recent=0
 has_live_process_in_worktree() {
   local wt="$1"
   local proc_cwd=""
+  # Set to 1 when the process-lease probe explicitly confirmed no live process
+  # (exit status 1 = "inactive"). When 0, an empty /proc scan is inconclusive
+  # and must be treated as "possibly live" (fail closed).
+  local lease_authoritative=0
+  # GUARDEX_PROC_DIR overrides the /proc root for the outer liveness check.
+  # Used by tests to inject a fake proc tree without affecting the in-mutex
+  # Python re-check (proc_has_live_process), which always reads real /proc.
+  local _proc_dir="${GUARDEX_PROC_DIR:-/proc}"
 
   if [[ -d "${repo_common_dir}/gx-process-leases" ]]; then
     local lease_probe="${GUARDEX_CLI_ENTRY:-}"
@@ -917,9 +925,10 @@ has_live_process_in_worktree() {
     "${GUARDEX_NODE_BIN:-node}" "$lease_probe" "$wt" || lease_status=$?
     # Unknown probes fail closed too; only explicit inactive (1) can continue.
     [[ "$lease_status" -eq 1 ]] || return 0
+    lease_authoritative=1
   fi
 
-  [[ -d /proc ]] || return 1
+  [[ -d "$_proc_dir" ]] || return 1
 
   # ONE readlink for every process, not one per process. `readlink` takes many
   # operands and prints a line each, and this check only needs the SET of live
@@ -940,17 +949,23 @@ has_live_process_in_worktree() {
   # while in use. GNU find's -printf '%l' reads each link in one process and
   # skips unreadable entries.
   local live_cwds=""
-  live_cwds="$(find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%l\n' 2>/dev/null || true)"
+  live_cwds="$(find "$_proc_dir" -mindepth 2 -maxdepth 2 -name cwd -printf '%l\n' 2>/dev/null || true)"
   if [[ -z "$live_cwds" ]]; then
-    # No GNU find (-printf unsupported): one readlink per entry. Slow, but never
-    # wrong. Empty output is never a real answer — this shell's own cwd is readable.
+    # No GNU find (-printf unsupported): one readlink per entry.
     local proc_entry=""
-    for proc_entry in /proc/[0-9]*; do
+    for proc_entry in "${_proc_dir}"/[0-9]*; do
       proc_cwd="$(readlink "${proc_entry}/cwd" 2>/dev/null || true)"
       [[ -n "$proc_cwd" ]] && live_cwds+="${proc_cwd}"$'\n'
     done
   fi
-  [[ -n "$live_cwds" ]] || return 1
+  if [[ -z "$live_cwds" ]]; then
+    # Empty result: either no processes exist or every /proc/*/cwd belongs to
+    # another UID and is unreadable by the current user (multi-user / container
+    # setups). An empty scan is inconclusive — it cannot prove absence of live
+    # processes. Only trust "no live process" when the lease guard explicitly
+    # confirmed inactivity; otherwise fail closed (assume possibly live).
+    [[ "$lease_authoritative" -eq 1 ]] && return 1 || return 0
+  fi
   local live_cwd=""
   while IFS= read -r live_cwd; do
     [[ -n "$live_cwd" ]] || continue
@@ -986,6 +1001,42 @@ try:
 except ImportError:
     print('[agent-worktree-prune] OS file locking is unavailable; prune blocked', file=sys.stderr)
     raise SystemExit(10)
+
+
+def proc_has_live_process(wt_path):
+    """Return True when a live process has wt_path as its cwd, or when the
+    result is inconclusive (all /proc/*/cwd entries were unreadable, meaning
+    agent processes may belong to a different UID). Returns False only when
+    at least one /proc entry was readable and none matched the worktree.
+    Fails closed so that an unreadable /proc never silently authorises removal.
+    """
+    if not os.path.isdir('/proc'):
+        return False  # Non-Linux: skip the re-check
+    real_wt = os.path.realpath(wt_path)
+    any_readable = False
+    try:
+        for entry in os.scandir('/proc'):
+            if not entry.name.isdigit():
+                continue
+            try:
+                cwd = os.readlink(entry.path + '/cwd')
+                any_readable = True
+                # Strip the " (deleted)" suffix that Linux appends after an
+                # unlink, mirroring the shell function's handling.
+                if cwd.endswith(' (deleted)'):
+                    cwd = cwd[:-len(' (deleted)')]
+                if cwd == real_wt or cwd.startswith(real_wt + '/'):
+                    return True
+            except (OSError, PermissionError):
+                continue
+    except OSError:
+        return True  # Cannot read /proc at all — fail closed
+    if not any_readable:
+        # Every /proc/*/cwd was unreadable (other UIDs in a multi-user or
+        # container setup). We cannot prove absence of live processes.
+        return True  # fail closed
+    return False
+
 
 shared_lock, lock_file, repo_root, worktree, remove_reason, branch, dry_run = sys.argv[1:]
 try:
@@ -1032,7 +1083,11 @@ try:
                     file=sys.stderr,
                 )
                 raise SystemExit(10)
-            if not branch.startswith(('agent/', 'work/')) or entry.get('branch') != branch:
+            # Block removal only when a lock entry belongs to a *different*
+            # branch. The old prefix guard (`not branch.startswith(('agent/',
+            # 'work/'))`) unconditionally refused feat/* and fix/* worktrees
+            # even when every lock entry was self-owned, leaving them stranded.
+            if entry.get('branch') != branch:
                 raise SystemExit(10)
 
         if locks:
@@ -1042,6 +1097,14 @@ try:
                 f'while removing terminal worktree: {worktree}',
                 flush=True,
             )
+
+        # TOCTOU guard: re-check process liveness after acquiring the mutex.
+        # A process may have entered the worktree between the shell-side check
+        # and this point. git worktree remove --force deletes the working tree
+        # unconditionally; removing it under a live process leaves the process
+        # with an unlinked CWD and causes ENOENT on every subsequent file op.
+        if dry_run != '1' and proc_has_live_process(worktree):
+            raise SystemExit(10)
 
         print(f'[agent-worktree-prune] Removing worktree ({remove_reason}): {worktree}', flush=True)
         command = ['git', '-C', repo_root, 'worktree', 'remove', worktree, '--force']

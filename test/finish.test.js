@@ -1438,7 +1438,8 @@ test('agent-branch-finish waits for required checks in PR mode and merges when r
   assert.equal(result.status, 0, result.stderr);
   commitFile(repoDir, 'agent-pr-wait.txt', 'agent wait merge\n', 'agent wait merge change');
 
-  const ghMergeState = path.join(repoDir, '.finish-gh-merge-attempts');
+  // State file lives outside the repo so git ls-files never sees it as untracked.
+  const ghMergeState = path.join(path.dirname(repoDir), '.finish-gh-merge-attempts');
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
@@ -1541,7 +1542,8 @@ test('agent-branch-finish defaults bare PR finish to wait, cleanup, and base ref
   result = runCmd('git', ['worktree', 'add', auxWorktree, 'dev'], repoDir);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
-  const ghMergeState = path.join(repoDir, '.finish-gh-default-merge-attempts');
+  // State file lives outside the repo so git ls-files never sees it as untracked.
+  const ghMergeState = path.join(path.dirname(repoDir), '.finish-gh-default-merge-attempts');
   const { fakePath: fakeGhPath } = createFakeGhScript(`
 if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
