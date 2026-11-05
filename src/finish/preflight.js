@@ -137,12 +137,16 @@ function runPreflight(repoRoot, worktreePath, branch, baseBranch, options = {}) 
       const ok = !result.error && result.status === 0;
       ran.push({ label, ok, status: result.status, cmd, args });
       if (!ok) {
+        let errorMessage = result.error ? result.error.message : null;
+        if (result.error?.code === 'ETIMEDOUT') {
+          errorMessage = `${label} timed out after 5 min. Run with --skip-preflight to bypass, or check for a hung tsc/eslint process.`;
+        }
         failures.push({
           label,
           status: result.status,
           stdout: stdout.slice(-2000),
           stderr: stderr.slice(-2000),
-          error: result.error ? result.error.message : null,
+          error: errorMessage,
         });
       }
     }
