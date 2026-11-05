@@ -171,7 +171,11 @@ test('restoreLockBackupSafe: preserves concurrent claims added during sync', () 
   assert.equal(parsed.locks['src/bar.js'].branch, 'agent/b');
 });
 
-test('restoreLockBackupSafe: backup entry wins over same key in concurrent state', () => {
+test('restoreLockBackupSafe: current entry wins over same key in backup (current-first merge)', () => {
+  // After the sync resets the lock file, another agent may legitimately claim
+  // a file that was previously owned by the syncing agent (they believed it
+  // was free because the reset cleared the original claim). The current-first
+  // merge preserves the concurrent claim rather than restoring the original.
   const tmpDir = makeTmpDir();
   const lockPath = path.join(tmpDir, '.omx', 'state', 'agent-file-locks.json');
 
@@ -193,8 +197,8 @@ test('restoreLockBackupSafe: backup entry wins over same key in concurrent state
   const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
   assert.equal(
     parsed.locks['src/shared.js'].branch,
-    'agent/original',
-    'backup entry must win for same key'
+    'agent/interloper',
+    'concurrent current entry must win over same key in backup (current-first merge)'
   );
 });
 
@@ -488,4 +492,101 @@ test('finish error message includes status in parentheses and retry hint', () =>
     /re-run: gx branch finish --branch/,
     'retry hint must be present in the error message'
   );
+});
+
+// ---------------------------------------------------------------------------
+// Tests: ghost-claim fix (syncBranch parameter)
+// ---------------------------------------------------------------------------
+
+test('restoreLockBackupSafe: drops current-only entries belonging to syncBranch (ghost-claim fix)', () => {
+  // A failed prior commit/finish for agent/x may have left a claim for
+  // src/ghost.js in the lock file (current state). The claim was added
+  // AFTER the backup was taken (so it is current-only). On restore with
+  // syncBranch='agent/x', this ghost claim must be dropped.
+  const tmpDir = makeTmpDir();
+  const lockPath = path.join(tmpDir, '.omx', 'state', 'agent-file-locks.json');
+
+  // Backup: agent/x had a pre-existing claim on src/real.js.
+  const backup = lockState({
+    'src/real.js': { branch: 'agent/x', claimed_at: '2024-01-01T00:00:00Z' }
+  });
+
+  // Current: src/real.js still present, plus a ghost claim on src/ghost.js
+  // that was added by agent/x after the backup was taken.
+  const current = lockState({
+    'src/real.js': { branch: 'agent/x', claimed_at: '2024-01-01T00:00:00Z' },
+    'src/ghost.js': { branch: 'agent/x', claimed_at: '2024-01-02T00:00:00Z' }
+  });
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, current, 'utf8');
+
+  const { restoreLockBackupSafe } = loadFinish({
+    gitRun: () => ({ status: 1, stdout: '', stderr: '' })
+  });
+
+  restoreLockBackupSafe(tmpDir, lockPath, backup, 'agent/x');
+
+  const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  assert.ok('src/real.js' in parsed.locks, 'pre-existing backup claim must be preserved');
+  assert.ok(!('src/ghost.js' in parsed.locks), 'current-only ghost claim for syncBranch must be dropped');
+});
+
+test('restoreLockBackupSafe: preserves current-only entries from OTHER branches (not ghost-claimed)', () => {
+  // A claim added during the sync period by a DIFFERENT agent (agent/y) must
+  // not be dropped, even when syncBranch is provided.
+  const tmpDir = makeTmpDir();
+  const lockPath = path.join(tmpDir, '.omx', 'state', 'agent-file-locks.json');
+
+  const backup = lockState({
+    'src/a.js': { branch: 'agent/x', claimed_at: '2024-01-01T00:00:00Z' }
+  });
+
+  // agent/y claimed src/b.js concurrently — current-only but not from syncBranch.
+  const current = lockState({
+    'src/a.js': { branch: 'agent/x', claimed_at: '2024-01-01T00:00:00Z' },
+    'src/b.js': { branch: 'agent/y', claimed_at: '2024-01-02T00:00:00Z' }
+  });
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, current, 'utf8');
+
+  const { restoreLockBackupSafe } = loadFinish({
+    gitRun: () => ({ status: 1, stdout: '', stderr: '' })
+  });
+
+  restoreLockBackupSafe(tmpDir, lockPath, backup, 'agent/x');
+
+  const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  assert.ok('src/a.js' in parsed.locks, 'backup entry must be preserved');
+  assert.ok('src/b.js' in parsed.locks, 'concurrent claim from other agent must be preserved');
+  assert.equal(parsed.locks['src/b.js'].branch, 'agent/y');
+});
+
+test('restoreLockBackupSafe: backup-only entries still restored when syncBranch provided', () => {
+  // Pre-sync claims by other agents (in backup but not in current because the
+  // sync reset cleared the lock file) must be restored even when syncBranch is set.
+  const tmpDir = makeTmpDir();
+  const lockPath = path.join(tmpDir, '.omx', 'state', 'agent-file-locks.json');
+
+  const backup = lockState({
+    'src/a.js': { branch: 'agent/x', claimed_at: '2024-01-01T00:00:00Z' },
+    'src/b.js': { branch: 'agent/y', claimed_at: '2024-01-01T00:00:00Z' }
+  });
+
+  // After reset, only a new concurrent claim by agent/z exists in current.
+  const current = lockState({
+    'src/c.js': { branch: 'agent/z', claimed_at: '2024-01-02T00:00:00Z' }
+  });
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, current, 'utf8');
+
+  const { restoreLockBackupSafe } = loadFinish({
+    gitRun: () => ({ status: 1, stdout: '', stderr: '' })
+  });
+
+  restoreLockBackupSafe(tmpDir, lockPath, backup, 'agent/x');
+
+  const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  assert.ok('src/a.js' in parsed.locks, 'backup entry for syncBranch must be restored');
+  assert.ok('src/b.js' in parsed.locks, 'backup entry for other agent must be restored');
+  assert.ok('src/c.js' in parsed.locks, 'concurrent claim by agent/z must be preserved');
 });

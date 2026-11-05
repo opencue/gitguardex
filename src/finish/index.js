@@ -792,15 +792,25 @@ function finish(rawArgs, defaults = {}) {
  * against concurrent `gx locks claim` calls. Falls back to a lock-free merge
  * when python3 or the helper script is unavailable.
  *
- * Merge rule: entries present in the backup are restored as-is; entries that
- * appear in the current on-disk state but are absent from the backup (i.e.
- * added concurrently during the sync) are preserved.
+ * Merge rule (current-first):
+ *   1. Start with the current on-disk state as the base, which preserves:
+ *      - concurrent claims added by other agents during the sync, and
+ *      - intentional releases (entries absent from current were removed
+ *        while the lock file was reset, and must not be re-introduced).
+ *   2. Add backup-only entries (those in backup but absent from current)
+ *      so original pre-sync claims by other agents survive the reset.
+ *   3. Drop current-only entries that belong to `syncBranch`, the branch
+ *      performing the sync. These are ghost claims left by a failed prior
+ *      commit/finish step and must not be re-introduced.
  *
- * @param {string} repoRoot  Working-tree root of the repository.
- * @param {string} lockPath  Absolute path to `.omx/state/agent-file-locks.json`.
- * @param {string} backup    Raw JSON text saved before the sync began.
+ * @param {string} repoRoot    Working-tree root of the repository.
+ * @param {string} lockPath    Absolute path to `.omx/state/agent-file-locks.json`.
+ * @param {string} backup      Raw JSON text saved before the sync began.
+ * @param {string} [syncBranch] The agent branch performing the sync. When
+ *   provided, current-only entries whose `branch` field matches are dropped
+ *   (ghost-claim prevention). Omit when the caller does not know the branch.
  */
-function restoreLockBackupSafe(repoRoot, lockPath, backup) {
+function restoreLockBackupSafe(repoRoot, lockPath, backup, syncBranch) {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
   // Resolve the common .git dir so we can find the cross-worktree flock path
@@ -821,20 +831,32 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
     fs.writeFileSync(backupTmpPath, backup, 'utf8');
 
     // Compact inline Node script executed under the OS flock.
-    // Reads the backup temp file and the current on-disk state, folds in new
-    // concurrent entries (those absent from the backup), then writes via
-    // temp+rename for an atomic replacement. Uses Object.create(null) to avoid
-    // prototype-property false positives on filenames like "constructor".
+    // Applies a current-first merge: starts with current on-disk state
+    // (preserves concurrent claims and intentional releases), adds backup-only
+    // entries (pre-sync claims by other agents), and drops current-only entries
+    // that belong to syncBranch (ghost claims from a failed prior step).
+    // Uses Object.create(null) to avoid prototype-property false positives on
+    // filenames like "constructor". Writes via temp+rename for atomicity.
     const mergeScript = [
       'var fs=require("fs"),p=require("path");',
-      `var lp=${JSON.stringify(lockPath)},bkp=${JSON.stringify(backupTmpPath)};`,
+      `var lp=${JSON.stringify(lockPath)},bkp=${JSON.stringify(backupTmpPath)},sb=${JSON.stringify(syncBranch || '')};`,
       'var b={},c={};',
       'b=JSON.parse(fs.readFileSync(bkp,"utf8"));',
       'try{fs.unlinkSync(bkp);}catch(e){}',
       'try{c=JSON.parse(fs.readFileSync(lp,"utf8"));}catch(e){if(e.code!=="ENOENT")throw e;}',
+      'var bl=b.locks||{},cl=c.locks||{};',
       'var ml=Object.create(null);',
-      'Object.keys(b.locks||{}).forEach(function(k){ml[k]=b.locks[k];});',
-      'Object.keys(c.locks||{}).forEach(function(k){if(!Object.prototype.hasOwnProperty.call(ml,k))ml[k]=c.locks[k];});',
+      // Step 1: start with current state, dropping current-only ghost claims
+      // (entries in current but NOT in backup that belong to syncBranch).
+      'Object.keys(cl).forEach(function(k){',
+      '  var e=cl[k];',
+      '  if(sb&&e&&e.branch===sb&&!Object.prototype.hasOwnProperty.call(bl,k))return;',
+      '  ml[k]=e;',
+      '});',
+      // Step 2: add backup-only entries (pre-sync claims not yet in current).
+      'Object.keys(bl).forEach(function(k){',
+      '  if(!Object.prototype.hasOwnProperty.call(ml,k))ml[k]=bl[k];',
+      '});',
       'var out=JSON.stringify(Object.assign({},b,{locks:ml}),null,2)+"\\n";',
       'var tmp=lp+".tmp";',
       'fs.mkdirSync(p.dirname(lp),{recursive:true});',
@@ -871,20 +893,36 @@ function restoreLockBackupSafe(repoRoot, lockPath, backup) {
   // Fallback: merge without flock. Only reached when python3 or the helper
   // script is unavailable (flockPath resolved but withLockScript absent, no
   // common .git dir, or python3 could not be spawned). Best-effort — no mutex
-  // protection — but still
-  // preserves new entries instead of silently overwriting them.
+  // protection — but still preserves new entries instead of silently
+  // overwriting them. Applies the same current-first merge as the flock path.
   // Uses Object.create(null) so filenames like "constructor" / "toString"
   // cannot match inherited properties. Per-process unique temp name prevents
   // two concurrent fallback restores from clobbering each other's temp file.
   let merged;
   try {
     const backupState = JSON.parse(backup);
+    const backupLocks = backupState.locks || {};
     let currentState = {};
     try {
       currentState = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
     } catch (_) {}
-    const mergedLocks = Object.assign(Object.create(null), backupState.locks || {});
-    for (const [k, v] of Object.entries(currentState.locks || {})) {
+    const currentLocks = currentState.locks || {};
+    const mergedLocks = Object.create(null);
+    // Step 1: start with current state, dropping current-only ghost claims
+    // (entries in current but NOT in backup that belong to syncBranch).
+    for (const [k, v] of Object.entries(currentLocks)) {
+      if (
+        syncBranch &&
+        v &&
+        v.branch === syncBranch &&
+        !Object.prototype.hasOwnProperty.call(backupLocks, k)
+      ) {
+        continue; // ghost claim — skip
+      }
+      mergedLocks[k] = v;
+    }
+    // Step 2: add backup-only entries (pre-sync claims not yet in current).
+    for (const [k, v] of Object.entries(backupLocks)) {
       if (!Object.prototype.hasOwnProperty.call(mergedLocks, k)) mergedLocks[k] = v;
     }
     merged = JSON.stringify({ ...backupState, locks: { ...mergedLocks } }, null, 2) + '\n';
@@ -1040,7 +1078,7 @@ function sync(rawArgs) {
     syncOperation(repoRoot, strategy, baseRef, options.ffOnly);
   } finally {
     if (lockBackup !== null) {
-      restoreLockBackupSafe(repoRoot, lockPath, lockBackup);
+      restoreLockBackupSafe(repoRoot, lockPath, lockBackup, branch);
     }
   }
   const after = aheadBehind(repoRoot, branch, baseRef);
