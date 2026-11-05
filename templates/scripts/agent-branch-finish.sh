@@ -1093,7 +1093,12 @@ if [[ -z "$source_worktree" ]]; then
   created_source_probe=1
 fi
 
-if ! is_clean_worktree "$source_worktree"; then
+# Untracked files count only here: finishing would strand them when the source
+# worktree is pruned. The other is_clean_worktree callers look at checkouts where
+# untracked files are normal and harmless.
+if ! is_clean_worktree "$source_worktree" \
+  || [[ -n "$(git -C "$source_worktree" ls-files --others --exclude-standard -- . \
+    ':(exclude).omx/state/agent-file-locks.json' ':(exclude).omx/state/finish-runs/')" ]]; then
   echo "[agent-branch-finish] Source worktree is not clean for '${SOURCE_BRANCH}': ${source_worktree}" >&2
   echo "[agent-branch-finish] Commit/stash changes on the source branch before finishing." >&2
   exit 1
