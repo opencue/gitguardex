@@ -380,7 +380,7 @@ test('agents start keeps lanes intact and prints Kitty recovery when terminal is
     },
   });
 
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 2);
   assert.equal(terminalCalls.length, 1);
   assert.match(result.stderr, /Kitty terminal not launched: spawn kitty ENOENT/);
   assert.match(result.stderr, /Kitty session file:/);

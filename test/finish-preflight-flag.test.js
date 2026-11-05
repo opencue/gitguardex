@@ -4,6 +4,7 @@ const cp = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const Module = require('node:module');
 
 // agent-branch-finish.sh parses --no-preflight/--preflight and
 // --no-auto-promote/--auto-promote into *_RAW vars INSIDE the arg loop, then
@@ -472,4 +473,66 @@ test('placing the hold disarms auto-merge and demotes a ready PR', () => {
   assert.notEqual(disarmIdx, -1, 'hold must disarm previously-enabled GitHub auto-merge');
   assert.notEqual(demoteIdx, -1, 'hold must demote a pre-existing ready PR back to draft');
   assert.notEqual(placeIdx, -1, 'hold must persist the marker on the PR body');
+});
+
+test('runPreflight() reports human-readable message when spawnSync times out (ETIMEDOUT)', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-preflight-etimedout-'));
+  const appsDir = path.join(repoRoot, 'apps', 'mypkg');
+  fs.mkdirSync(appsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(appsDir, 'package.json'),
+    JSON.stringify({ name: 'mypkg', scripts: { typecheck: 'tsc --noEmit' } }),
+  );
+
+  const preflightPath = require.resolve('../src/finish/preflight');
+  const cpPath = require.resolve('child_process');
+  // Capture the real child_process BEFORE installing the mock to avoid infinite recursion.
+  const realCp = require(cpPath);
+  const originalLoad = Module._load;
+
+  delete require.cache[preflightPath];
+  Module._load = function mockLoad(request, parent, isMain) {
+    const resolved = Module._resolveFilename(request, parent, isMain);
+    if (resolved === cpPath) {
+      return {
+        ...realCp,
+        spawnSync(cmd, args, opts) {
+          // git calls: satisfy detectTouchedDirs with a touched file
+          if (cmd === 'git') {
+            return { status: 0, stdout: Buffer.from('apps/mypkg/src/index.ts\n'), stderr: Buffer.from('') };
+          }
+          // Package-manager script invocations: simulate ETIMEDOUT
+          return {
+            status: null,
+            error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+            stdout: Buffer.from(''),
+            stderr: Buffer.from(''),
+          };
+        },
+      };
+    }
+    return originalLoad.apply(this, arguments);
+  };
+
+  let result;
+  try {
+    const { runPreflight } = require(preflightPath);
+    result = runPreflight(repoRoot, repoRoot, 'HEAD', null, {});
+  } finally {
+    Module._load = originalLoad;
+    delete require.cache[preflightPath];
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+
+  assert.equal(result.status, 'failed', 'preflight must report failed on timeout');
+  assert.equal(result.failures.length, 1);
+  const failure = result.failures[0];
+  assert.ok(
+    failure.error && failure.error.includes('timed out'),
+    `failure.error must mention "timed out"; got: ${failure.error}`,
+  );
+  assert.ok(
+    !failure.error.includes('spawnSync ETIMEDOUT'),
+    'cryptic "spawnSync ETIMEDOUT" message must not be exposed to the user',
+  );
 });

@@ -107,6 +107,41 @@ test('panel-launched single agent opens a Kitty terminal session', () => {
   assert.ok(sessionBody.indexOf("new_tab 'gx welcome'") < sessionBody.indexOf("new_tab '1: codex fix-auth'"));
 });
 
+test('panel single agent exits 2 when kitty is absent (terminal probe fails)', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-kitty-missing-'));
+  const worktreePath = path.join(repoRoot, '.omx/agent-worktrees/repo__codex__fix-auth');
+  const branch = 'agent/codex/fix-auth';
+  const start = loadStartWithMocks({
+    runPackageAsset() {
+      return { status: 0, stdout: branchStartOutput(branch, worktreePath), stderr: '' };
+    },
+    createAgentSession(repoRootArg, payload) {
+      return payload;
+    },
+    updateAgentSession() {
+      throw new Error('unexpected update');
+    },
+    currentBranchName: () => 'main',
+  });
+
+  const result = start.startAgentLane(repoRoot, {
+    task: 'fix auth',
+    agent: 'codex',
+    base: 'main',
+    claims: [],
+    panel: true,
+  }, {
+    terminalRunner(cmd, args) {
+      // Simulate kitty --version failing (kitty not installed)
+      return { status: 1, error: { message: 'kitty: command not found' }, stdout: '', stderr: '' };
+    },
+  });
+
+  assert.equal(result.status, 2, 'must exit 2 when terminal launch fails, not 0');
+  assert.equal(result.terminal.status, 'missing');
+  assert.match(result.stderr, /Kitty terminal not launched/);
+});
+
 test('non-panel single agent start keeps terminal launch opt-in unchanged', () => {
   const terminalCalls = [];
   const start = loadStartWithMocks({

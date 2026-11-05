@@ -528,8 +528,10 @@ function startAgentLane(repoRoot, options, deps = {}) {
       kittyBin: deps.kittyBin,
     });
 
+    const terminalOk = terminalResult.status === 'launched' || terminalResult.status === 'skipped';
     return {
       ...result,
+      status: terminalOk ? result.status : 2,
       stdout: `${String(result.stdout || '')}${String(terminalResult.stdout || '')}`,
       stderr: `${String(result.stderr || '')}${String(terminalResult.stderr || '')}`,
       terminal: terminalResult,
@@ -569,8 +571,9 @@ function startAgentLane(repoRoot, options, deps = {}) {
   stdout += String(terminalResult.stdout || '');
   stderr += String(terminalResult.stderr || '');
 
+  const terminalOk = terminalResult.status === 'launched' || terminalResult.status === 'skipped';
   return {
-    status: 0,
+    status: terminalOk ? 0 : 2,
     stdout,
     stderr,
     terminal: terminalResult,
