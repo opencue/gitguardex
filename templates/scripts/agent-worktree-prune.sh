@@ -684,12 +684,19 @@ is_clean_worktree() {
 
 # Directories / patterns whose .gitignore-excluded presence is safe to discard.
 # Addable via GUARDEX_PRUNE_DISPOSABLE_IGNORED (space-separated, appended).
-# Matched against EVERY path component, so a monorepo's apps/web/.next or
-# packages/x/dist counts the same as a top-level .next or dist.
+# Matched against the FIRST path component only: generic names (build, out,
+# target, dist, ...) also name real directories that can hold secrets deeper in
+# a tree (config/out/secrets.json), so they are trusted only at the top.
 PRUNE_DISPOSABLE_IGNORED_DEFAULT=(
   node_modules dist dist-server build out .next .nuxt .turbo .cache
   .parcel-cache .vite coverage target .venv venv __pycache__ .pytest_cache
   .mypy_cache .codegraph .omc .omx
+)
+# Matched at ANY depth: names only build tools produce, so a monorepo's
+# apps/web/.next or packages/x/node_modules is disposable too.
+PRUNE_DISPOSABLE_IGNORED_ANY_DEPTH=(
+  node_modules .next .nuxt .turbo .parcel-cache .vite dist-server
+  __pycache__ .pytest_cache .mypy_cache
 )
 PRUNE_DISPOSABLE_IGNORED=("${PRUNE_DISPOSABLE_IGNORED_DEFAULT[@]}")
 if [[ -n "${GUARDEX_PRUNE_DISPOSABLE_IGNORED:-}" ]]; then
@@ -711,25 +718,34 @@ worktree_has_precious_ignored_files() {
   [[ -n "$ignored_paths" ]] || return 1
 
   local -a offenders=()
-  local entry clean base
+  local entry clean
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     # Strip trailing slash from directory entries.
     clean="${entry%/}"
 
-    # Check disposable dirs at any depth (apps/web/.next, not only .next).
+    # Disposable dirs: any listed name as the first component, or a
+    # build-tool-only name at any depth (apps/web/.next).
     local disposable=0
     local d part
     local -a parts=()
     IFS='/' read -ra parts <<< "$clean"
-    for part in "${parts[@]}"; do
-      for d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
-        if [[ "$part" == "$d" ]]; then
-          disposable=1
-          break 2
-        fi
-      done
+    for d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
+      if [[ "${parts[0]}" == "$d" ]]; then
+        disposable=1
+        break
+      fi
     done
+    if [[ "$disposable" -eq 0 ]]; then
+      for part in "${parts[@]}"; do
+        for d in "${PRUNE_DISPOSABLE_IGNORED_ANY_DEPTH[@]}"; do
+          if [[ "$part" == "$d" ]]; then
+            disposable=1
+            break 2
+          fi
+        done
+      done
+    fi
     [[ "$disposable" -eq 1 ]] && continue
 
     # Check generated files: logs, .DS_Store, TypeScript build info, Next's
