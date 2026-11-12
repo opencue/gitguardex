@@ -47,6 +47,15 @@ function addGitignore(wt, pattern) {
   assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', 'add .gitignore'], wt).status, 0);
 }
 
+// A tracked file under apps/web, as in a real monorepo: without it git reports
+// the whole untracked apps/ tree as one collapsed entry.
+function trackAppsWeb(wt) {
+  fs.mkdirSync(path.join(wt, 'apps', 'web'), { recursive: true });
+  fs.writeFileSync(path.join(wt, 'apps', 'web', 'package.json'), '{}\n');
+  assert.equal(runHumanCmd('git', ['add', 'apps/web/package.json'], wt).status, 0);
+  assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', 'add apps/web'], wt).status, 0);
+}
+
 defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () => {
   test('worktree with .env (precious ignored file) is NOT removed', () => {
     // A merged-ancestor agent branch whose worktree contains a .gitignore-
@@ -207,5 +216,70 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
       !fs.existsSync(wt),
       `with GUARDEX_PRUNE_DISPOSABLE_IGNORED=certs, worktree must be removed, stdout: ${resAllowed.stdout}`
     );
+  });
+  test('monorepo build output at any depth is disposable (apps/web/.next, dist-server, tsbuildinfo)', () => {
+    // Field 2026-11-12 (Next.js monorepo): merged worktrees were kept forever
+    // because apps/web/.next/ was only checked by its first path component.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const branch = 'agent/test/monorepo-build-output';
+    const wt = makeWorktree(repoDir, branch);
+    addGitignore(wt, '.next/\ndist-server/\n*.tsbuildinfo\nnext-env.d.ts');
+    trackAppsWeb(wt);
+
+    fs.mkdirSync(path.join(wt, 'apps', 'web', '.next', 'cache'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'apps', 'web', '.next', 'cache', 'x'), 'x\n');
+    fs.writeFileSync(path.join(wt, 'apps', 'web', 'next-env.d.ts'), '// generated\n');
+    fs.mkdirSync(path.join(wt, 'dist-server'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'dist-server', 'server.js'), '// built\n');
+    fs.writeFileSync(path.join(wt, 'tsconfig.tsbuildinfo'), '{}\n');
+
+    assert.equal(
+      runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
+      0
+    );
+
+    const { fakeBin } = fakeGhNoProjects();
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.ok(
+      !fs.existsSync(wt),
+      `worktree with only nested build output must be removed, stdout: ${res.stdout}`
+    );
+  });
+
+  test('a nested .env.local still blocks removal', () => {
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const branch = 'agent/test/nested-env-local';
+    const wt = makeWorktree(repoDir, branch);
+    addGitignore(wt, '.env.local\n.next/');
+    trackAppsWeb(wt);
+
+    fs.mkdirSync(path.join(wt, 'apps', 'web', '.next'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'apps', 'web', '.next', 'x'), 'x\n');
+    fs.writeFileSync(path.join(wt, 'apps', 'web', '.env.local'), 'SECRET=1\n');
+
+    assert.equal(
+      runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
+      0
+    );
+
+    const { fakeBin } = fakeGhNoProjects();
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.ok(fs.existsSync(wt), `nested .env.local must keep the worktree, stdout: ${res.stdout}`);
+    assert.ok(fs.existsSync(path.join(wt, 'apps', 'web', '.env.local')), '.env.local must survive');
+    assert.match(res.stdout, /apps\/web\/\.env\.local/);
   });
 });
