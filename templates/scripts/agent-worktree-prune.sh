@@ -684,10 +684,12 @@ is_clean_worktree() {
 
 # Directories / patterns whose .gitignore-excluded presence is safe to discard.
 # Addable via GUARDEX_PRUNE_DISPOSABLE_IGNORED (space-separated, appended).
+# Matched against EVERY path component, so a monorepo's apps/web/.next or
+# packages/x/dist counts the same as a top-level .next or dist.
 PRUNE_DISPOSABLE_IGNORED_DEFAULT=(
-  node_modules dist build out .next .nuxt .turbo .cache .parcel-cache .vite
-  coverage target .venv venv __pycache__ .pytest_cache .mypy_cache .codegraph
-  .omc .omx
+  node_modules dist dist-server build out .next .nuxt .turbo .cache
+  .parcel-cache .vite coverage target .venv venv __pycache__ .pytest_cache
+  .mypy_cache .codegraph .omc .omx
 )
 PRUNE_DISPOSABLE_IGNORED=("${PRUNE_DISPOSABLE_IGNORED_DEFAULT[@]}")
 if [[ -n "${GUARDEX_PRUNE_DISPOSABLE_IGNORED:-}" ]]; then
@@ -714,22 +716,26 @@ worktree_has_precious_ignored_files() {
     [[ -n "$entry" ]] || continue
     # Strip trailing slash from directory entries.
     clean="${entry%/}"
-    base="${clean%%/*}"
 
-    # Check disposable dirs.
+    # Check disposable dirs at any depth (apps/web/.next, not only .next).
     local disposable=0
-    local d
-    for d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
-      if [[ "$base" == "$d" ]]; then
-        disposable=1
-        break
-      fi
+    local d part
+    local -a parts=()
+    IFS='/' read -ra parts <<< "$clean"
+    for part in "${parts[@]}"; do
+      for d in "${PRUNE_DISPOSABLE_IGNORED[@]}"; do
+        if [[ "$part" == "$d" ]]; then
+          disposable=1
+          break 2
+        fi
+      done
     done
     [[ "$disposable" -eq 1 ]] && continue
 
-    # Check *.log and .DS_Store.
-    case "$clean" in
-      *.log|.DS_Store) continue ;;
+    # Check generated files: logs, .DS_Store, TypeScript build info, Next's
+    # generated type stub.
+    case "${clean##*/}" in
+      *.log|.DS_Store|*.tsbuildinfo|next-env.d.ts) continue ;;
     esac
 
     # Check the existing STATE_EXCLUDE_PATHSPEC globs (simple prefix match).
