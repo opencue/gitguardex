@@ -253,6 +253,38 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     );
   });
 
+  test('a generic dir name deeper in the tree is not disposable (config/out/secrets.json)', () => {
+    // Review of the depth change: build/out/target/dist/... are trusted only
+    // at the top level; nested they can hold secrets.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const branch = 'agent/test/nested-generic-dir';
+    const wt = makeWorktree(repoDir, branch);
+    fs.mkdirSync(path.join(wt, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'config', 'tracked'), 'x\n');
+    assert.equal(runHumanCmd('git', ['add', 'config/tracked'], wt).status, 0);
+    assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', 'add config'], wt).status, 0);
+    addGitignore(wt, 'config/out/');
+    fs.mkdirSync(path.join(wt, 'config', 'out'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'config', 'out', 'secrets.json'), '{"k":1}\n');
+
+    assert.equal(
+      runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
+      0
+    );
+
+    const { fakeBin } = fakeGhNoProjects();
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.ok(fs.existsSync(wt), `config/out/ must keep the worktree, stdout: ${res.stdout}`);
+    assert.ok(fs.existsSync(path.join(wt, 'config', 'out', 'secrets.json')), 'secrets.json must survive');
+  });
+
   test('a nested .env.local still blocks removal', () => {
     const repoDir = initRepo({ branch: 'main' });
     seedCommit(repoDir);
