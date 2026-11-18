@@ -690,7 +690,7 @@ is_clean_worktree() {
 PRUNE_DISPOSABLE_IGNORED_DEFAULT=(
   node_modules dist dist-server build out .next .nuxt .turbo .cache
   .parcel-cache .vite coverage target .venv venv __pycache__ .pytest_cache
-  .mypy_cache .codegraph .omc .omx
+  .mypy_cache .codegraph .omc .omx .vercel
 )
 # Matched at ANY depth: names only build tools produce, so a monorepo's
 # apps/web/.next or packages/x/node_modules is disposable too.
@@ -698,6 +698,13 @@ PRUNE_DISPOSABLE_IGNORED_ANY_DEPTH=(
   node_modules .next .nuxt .turbo .parcel-cache .vite dist-server
   __pycache__ .pytest_cache .mypy_cache
 )
+# Generic build-output names that are disposable below the top level too, but
+# ONLY directly inside a directory with a tracked package.json — a workspace
+# package's own build output (web/dist, packages/cli/dist). Field 2026-11-18: a
+# pnpm workspace kept 35 merged worktrees forever because web/dist/ counted as
+# precious, and the disk filled up. config/out/secrets.json stays precious:
+# config/ has no package.json.
+PRUNE_DISPOSABLE_PACKAGE_OUTPUT=(dist build out coverage .cache)
 PRUNE_DISPOSABLE_IGNORED=("${PRUNE_DISPOSABLE_IGNORED_DEFAULT[@]}")
 if [[ -n "${GUARDEX_PRUNE_DISPOSABLE_IGNORED:-}" ]]; then
   read -ra _extra_disposable <<< "$GUARDEX_PRUNE_DISPOSABLE_IGNORED"
@@ -742,6 +749,21 @@ worktree_has_precious_ignored_files() {
           if [[ "$part" == "$d" ]]; then
             disposable=1
             break 2
+          fi
+        done
+      done
+    fi
+    if [[ "$disposable" -eq 0 && "${#parts[@]}" -ge 2 ]]; then
+      # A package's own build output: <pkg>/dist where <pkg>/package.json is tracked.
+      local i parent
+      for (( i = 1; i < ${#parts[@]}; i++ )); do
+        for d in "${PRUNE_DISPOSABLE_PACKAGE_OUTPUT[@]}"; do
+          if [[ "${parts[$i]}" == "$d" ]]; then
+            parent="$(IFS=/; printf '%s' "${parts[*]:0:$i}")"
+            if git -C "$wt" ls-files --error-unmatch -- "${parent}/package.json" >/dev/null 2>&1; then
+              disposable=1
+              break 2
+            fi
           fi
         done
       done

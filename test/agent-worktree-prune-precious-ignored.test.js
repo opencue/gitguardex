@@ -253,6 +253,42 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     );
   });
 
+  test("a workspace package's own build output is disposable (apps/web/dist, .vercel)", () => {
+    // Field 2026-11-18 (pnpm workspace): 35 merged worktrees were kept forever
+    // because web/dist/ and .vercel/ counted as precious, and the disk filled up.
+    // dist directly inside a directory with a tracked package.json is that
+    // package's build output.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const branch = 'agent/test/package-build-output';
+    const wt = makeWorktree(repoDir, branch);
+    addGitignore(wt, 'dist/\n.vercel/');
+    trackAppsWeb(wt);
+
+    fs.mkdirSync(path.join(wt, 'apps', 'web', 'dist', 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'apps', 'web', 'dist', 'assets', 'index.js'), '// built\n');
+    fs.mkdirSync(path.join(wt, '.vercel', 'output'), { recursive: true });
+    fs.writeFileSync(path.join(wt, '.vercel', 'output', 'config.json'), '{}\n');
+
+    assert.equal(
+      runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status,
+      0
+    );
+
+    const { fakeBin } = fakeGhNoProjects();
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.ok(
+      !fs.existsSync(wt),
+      `worktree with only a package's build output must be removed, stdout: ${res.stdout}`
+    );
+  });
+
   test('a generic dir name deeper in the tree is not disposable (config/out/secrets.json)', () => {
     // Review of the depth change: build/out/target/dist/... are trusted only
     // at the top level; nested they can hold secrets.
