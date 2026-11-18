@@ -1040,6 +1040,55 @@ has_live_process_in_worktree() {
   return 1
 }
 
+# ── Interrupted removals ─────────────────────────────────────────────────────
+# `git worktree remove` deletes the worktree's .git entry first. If the process
+# is killed after that (field 2026-11-18: an OOM killer hit the removal on a
+# loaded machine), a half-deleted directory stays behind that no later cycle
+# can judge any more, so it is kept forever. A marker written AFTER the worktree
+# passed every safety check lets the next cycle finish exactly that removal.
+PENDING_REMOVALS_DIR="${repo_common_dir}/guardex-pending-removals"
+
+pending_removal_marker() {
+  printf '%s/%s' "$PENDING_REMOVALS_DIR" "$(printf '%s' "$1" | cksum | tr -c -d '0-9')"
+}
+
+mark_pending_removal() {
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  mkdir -p "$PENDING_REMOVALS_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$1" > "$(pending_removal_marker "$1")" 2>/dev/null || true
+}
+
+clear_pending_removal() {
+  rm -f -- "$(pending_removal_marker "$1")" 2>/dev/null || true
+}
+
+# Finish removals a previous cycle started but did not complete. Only a
+# directory that has already lost its .git entry is deleted: an intact worktree
+# (the removal never began, or the path was reused) is left to the normal checks.
+finish_interrupted_removals() {
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  [[ -d "$PENDING_REMOVALS_DIR" ]] || return 0
+  local marker path finished=0
+  for marker in "$PENDING_REMOVALS_DIR"/*; do
+    [[ -f "$marker" ]] || continue
+    path="$(head -n 1 "$marker" 2>/dev/null || true)"
+    if [[ "$path" == /* && "$path" != "/" && "$path" != "$repo_root" && "$repo_root" != "$path"/* \
+      && -d "$path" && ! -e "${path}/.git" ]]; then
+      echo "[agent-worktree-prune] Finishing interrupted removal: ${path}"
+      if ! rm -rf -- "$path" 2>/dev/null; then
+        echo "[agent-worktree-prune] Warning: could not finish interrupted removal: ${path}" >&2
+        continue
+      fi
+      finished=1
+    fi
+    rm -f -- "$marker" 2>/dev/null || true
+  done
+  if [[ "$finished" -eq 1 ]]; then
+    git -C "$repo_root" worktree prune >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 remove_worktree_with_lock_guard() {
   local worktree="$1"
   local remove_reason="$2"
@@ -1609,7 +1658,9 @@ process_entry() {
     fi
   fi
 
+  mark_pending_removal "$wt"
   if remove_worktree_with_lock_guard "$wt" "$remove_reason" "$branch"; then
+    clear_pending_removal "$wt"
     # The worktree list just changed; branch_has_worktree must re-read it.
     invalidate_worktree_branches
     removed_worktrees=$((removed_worktrees + 1))
@@ -1619,6 +1670,8 @@ process_entry() {
     fi
   else
     remove_status=$?
+    # Refused or failed before anything was deleted: nothing to finish later.
+    [[ -e "${wt}/.git" ]] && clear_pending_removal "$wt"
     if [[ "$remove_status" -eq 11 ]]; then
       skipped_active=$((skipped_active + 1))
       echo "[agent-worktree-prune] Skipping worktree with registered descendants: ${wt}"
@@ -1663,6 +1716,9 @@ process_entry() {
     fi
   fi
 }
+
+# Before listing worktrees: finish what a killed cycle left half-done.
+finish_interrupted_removals
 
 current_wt=""
 current_branch_ref=""

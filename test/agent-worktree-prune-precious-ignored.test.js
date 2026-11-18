@@ -386,6 +386,43 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     assert.match(res.stdout, /skipped_broken=1/);
   });
 
+  test('an interrupted removal is finished by the next cycle; an intact worktree with a stale marker is not touched', () => {
+    // Field 2026-11-18: the removal process was killed after `git worktree remove`
+    // had deleted .git, leaving a half-deleted directory no cycle could judge.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const halfWt = makeWorktree(repoDir, 'agent/test/half-removed');
+    const intactWt = makeWorktree(repoDir, 'agent/test/unmerged-intact');
+    fs.writeFileSync(path.join(intactWt, 'work.txt'), 'unmerged work\n');
+    assert.equal(runHumanCmd('git', ['add', 'work.txt'], intactWt).status, 0);
+    assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', 'unmerged work'], intactWt).status, 0);
+
+    // What a killed removal leaves: the marker, and a directory without .git.
+    fs.rmSync(path.join(halfWt, '.git'));
+    fs.mkdirSync(path.join(halfWt, 'node_modules'), { recursive: true });
+    const pending = path.join(repoDir, '.git', 'guardex-pending-removals');
+    fs.mkdirSync(pending, { recursive: true });
+    fs.writeFileSync(path.join(pending, '1'), `${halfWt}\n`);
+    fs.writeFileSync(path.join(pending, '2'), `${intactWt}\n`);
+    fs.writeFileSync(path.join(pending, '3'), `${repoDir}\n`);
+
+    const { fakeBin } = fakeGhNoProjects();
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.match(res.stdout, /Finishing interrupted removal/);
+    assert.ok(!fs.existsSync(halfWt), `the half-removed directory must be gone, stdout: ${res.stdout}`);
+    assert.ok(fs.existsSync(path.join(intactWt, 'work.txt')), 'an intact worktree is never deleted through a marker');
+    assert.ok(fs.existsSync(path.join(repoDir, '.git')), 'the main checkout is never deleted through a marker');
+    assert.deepEqual(fs.readdirSync(pending), [], 'all markers are consumed');
+    const list = runHumanCmd('git', ['worktree', 'list'], repoDir).stdout;
+    assert.ok(!list.includes('agent__test__half-removed'), 'the stale registration is pruned');
+  });
+
   test('a nested .env.local still blocks removal', () => {
     const repoDir = initRepo({ branch: 'main' });
     seedCommit(repoDir);
