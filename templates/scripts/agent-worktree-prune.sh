@@ -698,6 +698,19 @@ PRUNE_DISPOSABLE_IGNORED_ANY_DEPTH=(
   node_modules .next .nuxt .turbo .parcel-cache .vite dist-server
   __pycache__ .pytest_cache .mypy_cache
 )
+# Generic build-output names that are disposable below the top level too, but
+# ONLY directly inside a directory with a tracked package.json — a workspace
+# package's own build output (web/dist, packages/cli/dist). Field 2026-11-18: a
+# pnpm workspace kept 35 merged worktrees forever because web/dist/ counted as
+# precious, and the disk filled up. Only names that mean build output and
+# nothing else: `out` and `build` are left out on purpose, because a package
+# can keep exports or script results there (api/out/db-snapshot.json), and
+# config/out/secrets.json stays precious either way (no package.json beside it).
+PRUNE_DISPOSABLE_PACKAGE_OUTPUT=(dist coverage .cache)
+# A top-level .vercel/ is disposable only while it holds nothing but what the
+# Vercel CLI regenerates; anything else in it (an env file pulled with
+# --filename .vercel/...) keeps the worktree.
+PRUNE_VERCEL_REGENERABLE=(output project.json README.txt cache)
 PRUNE_DISPOSABLE_IGNORED=("${PRUNE_DISPOSABLE_IGNORED_DEFAULT[@]}")
 if [[ -n "${GUARDEX_PRUNE_DISPOSABLE_IGNORED:-}" ]]; then
   read -ra _extra_disposable <<< "$GUARDEX_PRUNE_DISPOSABLE_IGNORED"
@@ -742,6 +755,33 @@ worktree_has_precious_ignored_files() {
           if [[ "$part" == "$d" ]]; then
             disposable=1
             break 2
+          fi
+        done
+      done
+    fi
+    if [[ "$disposable" -eq 0 && "$clean" == ".vercel" && -d "${wt}/.vercel" ]]; then
+      disposable=1
+      local vercel_entry vercel_ok
+      while IFS= read -r vercel_entry; do
+        [[ -n "$vercel_entry" ]] || continue
+        vercel_ok=0
+        for d in "${PRUNE_VERCEL_REGENERABLE[@]}"; do
+          [[ "$vercel_entry" == "$d" ]] && { vercel_ok=1; break; }
+        done
+        [[ "$vercel_ok" -eq 1 ]] || { disposable=0; break; }
+      done < <(ls -A "${wt}/.vercel" 2>/dev/null)
+    fi
+    if [[ "$disposable" -eq 0 && "${#parts[@]}" -ge 2 ]]; then
+      # A package's own build output: <pkg>/dist where <pkg>/package.json is tracked.
+      local i parent
+      for (( i = 1; i < ${#parts[@]}; i++ )); do
+        for d in "${PRUNE_DISPOSABLE_PACKAGE_OUTPUT[@]}"; do
+          if [[ "${parts[$i]}" == "$d" ]]; then
+            parent="$(IFS=/; printf '%s' "${parts[*]:0:$i}")"
+            if git -C "$wt" ls-files --error-unmatch -- "${parent}/package.json" >/dev/null 2>&1; then
+              disposable=1
+              break 2
+            fi
           fi
         done
       done
