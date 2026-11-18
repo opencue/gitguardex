@@ -438,6 +438,60 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     assert.ok(!list.includes('agent__test__half-removed'), 'the stale registration is pruned');
   });
 
+  test('unused dependency snapshots are removed at the end of a cycle', () => {
+    // Field 2026-11-18: 4 x 1.6 GB of gx-dependency-snapshots in one repo —
+    // a cache that nothing ever deleted.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const store = path.join(repoDir, '.git', 'gx-dependency-snapshots');
+    const name = (c) => `${c.repeat(64)}-${c.repeat(64)}`;
+    const day = 24 * 60 * 60 * 1000;
+    const make = (dirName, daysOld) => {
+      const dir = path.join(store, dirName);
+      fs.mkdirSync(path.join(dir, 'tree', 'pkg'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'tree', 'pkg', 'index.js'), 'x\n');
+      // Sealed read-only, like a real snapshot.
+      fs.chmodSync(path.join(dir, 'tree', 'pkg', 'index.js'), 0o444);
+      fs.chmodSync(path.join(dir, 'tree', 'pkg'), 0o555);
+      fs.chmodSync(path.join(dir, 'tree'), 0o555);
+      const at = new Date(Date.now() - daysOld * day);
+      fs.utimesSync(dir, at, at);
+      return dir;
+    };
+    const oldest = make(name('a'), 60);
+    const old = make(name('b'), 30);
+    const recent = make(name('c'), 3);
+    const newest = make(name('d'), 1);
+    const foreign = make('not-a-snapshot', 90);
+    const deadStage = make('.snapshot-dead', 5);
+    const liveStage = make('.snapshot-live', 0);
+
+    const { fakeBin } = fakeGhNoProjects();
+    const env = { GUARDEX_GH_BIN: path.join(fakeBin, 'gh'), GUARDEX_PRUNE_NOW_EPOCH: '0' };
+
+    const dry = runWorktreePrune(['--base', 'main', '--dry-run'], repoDir, env);
+    assert.equal(dry.status, 0, dry.stderr || dry.stdout);
+    assert.match(dry.stdout, /Would remove unused dependency snapshot/);
+    assert.ok(fs.existsSync(oldest), 'dry run removes nothing');
+
+    const res = runWorktreePrune(['--base', 'main'], repoDir, {
+      ...env,
+      GUARDEX_DEPENDENCY_SNAPSHOT_KEEP: '1'
+    });
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.ok(!fs.existsSync(oldest) && !fs.existsSync(old), `old snapshots must be gone, stdout: ${res.stdout}`);
+    assert.ok(fs.existsSync(recent), 'a snapshot used within the age limit is kept');
+    assert.ok(fs.existsSync(newest), 'the newest snapshot is kept');
+    assert.ok(fs.existsSync(foreign), 'a directory that is not a snapshot is not touched');
+    assert.match(res.stdout, /removed_snapshots=2/);
+    assert.ok(!fs.existsSync(deadStage), 'a staging directory of a dead provision is removed');
+    assert.ok(fs.existsSync(liveStage), 'a fresh staging directory is left alone');
+    for (const dir of [recent, newest, foreign, liveStage]) {
+      fs.chmodSync(path.join(dir, 'tree'), 0o755);
+      fs.chmodSync(path.join(dir, 'tree', 'pkg'), 0o755);
+    }
+  });
+
   test('a nested .env.local still blocks removal', () => {
     const repoDir = initRepo({ branch: 'main' });
     seedCommit(repoDir);

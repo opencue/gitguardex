@@ -104,6 +104,71 @@ function defaultStore(repoRoot) {
   );
 }
 
+const SNAPSHOT_NAME = /^[0-9a-f]{64}-[0-9a-f]{64}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function retentionSetting(value, envName, fallback) {
+  const raw = value ?? process.env[envName];
+  const parsed = Number(raw);
+  return raw !== undefined && raw !== '' && Number.isInteger(parsed) && parsed >= 0
+    ? parsed
+    : fallback;
+}
+
+function removeSnapshotDir(dir) {
+  const tree = path.join(dir, 'tree');
+  try {
+    // Sealed read-only: make it writable again or the removal fails half-way.
+    if (fs.existsSync(tree) && !fs.lstatSync(tree).isSymbolicLink()) setWritable(tree, true);
+  } catch {
+    // best effort — rmSync below reports nothing either way
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// A snapshot is only a cache: every consumer copies out of it and nothing links
+// into it, so an unused one can always be rebuilt. Without retention each
+// lockfile or dependency change left another full copy behind for good (field
+// 2026-11-18: 4 x 1.6 GB in one repo). Keeps the newest `keep` snapshots and any
+// used within `maxAgeDays`; the snapshot just provisioned is never removed.
+// Never throws: retention must not fail a provision.
+function pruneSnapshots(store, currentContainer, options = {}) {
+  const removed = [];
+  try {
+    const keep = retentionSetting(options.snapshotKeep, 'GUARDEX_DEPENDENCY_SNAPSHOT_KEEP', 2);
+    const maxAgeMs =
+      retentionSetting(
+        options.snapshotMaxAgeDays,
+        'GUARDEX_DEPENDENCY_SNAPSHOT_MAX_AGE_DAYS',
+        14
+      ) * DAY_MS;
+    const now = options.now ?? Date.now();
+    const snapshots = [];
+    for (const entry of fs.readdirSync(store, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(store, entry.name);
+      const mtimeMs = fs.statSync(dir).mtimeMs;
+      if (entry.name.startsWith('.snapshot-')) {
+        // Staging directory of a provision that died; a live one is seconds old.
+        if (now - mtimeMs > DAY_MS) {
+          removeSnapshotDir(dir);
+          removed.push(dir);
+        }
+      } else if (SNAPSHOT_NAME.test(entry.name)) snapshots.push({ dir, mtimeMs });
+    }
+    snapshots.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    snapshots.forEach((snapshot, index) => {
+      if (index < keep || snapshot.dir === currentContainer) return;
+      if (now - snapshot.mtimeMs < maxAgeMs) return;
+      removeSnapshotDir(snapshot.dir);
+      removed.push(snapshot.dir);
+    });
+  } catch {
+    // retention is best effort
+  }
+  return removed;
+}
+
 // Snapshots are never worktree symlink targets. Every consumer gets a reflink or
 // ordinary copy with independent writable inodes; internal links stay internal.
 function provisionDependency(repoRoot, relativePath, destination, options) {
@@ -127,6 +192,15 @@ function provisionDependency(repoRoot, relativePath, destination, options) {
   const container = path.join(store, key);
   const snapshot = path.join(container, 'tree');
   const reused = fs.existsSync(container);
+  if (reused) {
+    // The directory's mtime is "last used": retention goes by it.
+    try {
+      const now = new Date();
+      fs.utimesSync(container, now, now);
+    } catch {
+      // read-only store: retention then goes by creation time
+    }
+  }
   if (!reused) {
     const stage = fs.mkdtempSync(path.join(store, '.snapshot-'));
     const tree = path.join(stage, 'tree');
@@ -153,7 +227,8 @@ function provisionDependency(repoRoot, relativePath, destination, options) {
     throw new Error('dependency snapshot integrity mismatch');
   options.copyDirectory(snapshot, destination, {});
   setWritable(destination, true);
+  pruneSnapshots(store, container, options);
   return { key, snapshot, reused };
 }
 
-module.exports = { dependencyKey, provisionDependency };
+module.exports = { dependencyKey, provisionDependency, pruneSnapshots };
