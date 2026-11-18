@@ -1884,6 +1884,8 @@ prune_dependency_snapshots() {
     [[ "${mtime%.*}" -ge "$cutoff" ]] && continue
     dir="${store}/${name}"
     [[ -d "$dir" && ! -L "$dir" ]] || continue
+    # A provision that reused it since the listing has touched it: still in use.
+    [[ "$(stat -c %Y -- "$dir" 2>/dev/null || echo "$now")" -lt "$cutoff" ]] || continue
     if [[ "$DRY_RUN" -eq 1 ]]; then
       echo "[agent-worktree-prune] [dry-run] Would remove unused dependency snapshot: ${dir}"
       continue
@@ -1897,6 +1899,15 @@ prune_dependency_snapshots() {
       echo "[agent-worktree-prune] Warning: could not remove dependency snapshot: ${dir}" >&2
     fi
   done < <(find "$store" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%f\n' 2>/dev/null | sort -rn || true)
+
+  # Staging directories of provisions that died (a live one is seconds old).
+  if [[ "$DRY_RUN" -ne 1 ]]; then
+    while IFS= read -r -d '' dir; do
+      [[ -d "$dir" && ! -L "$dir" ]] || continue
+      chmod -R u+w -- "$dir" 2>/dev/null || true
+      rm -rf -- "$dir" 2>/dev/null || true
+    done < <(find "$store" -mindepth 1 -maxdepth 1 -type d -name '.snapshot-*' -mmin +1440 -print0 2>/dev/null || true)
+  fi
   return 0
 }
 removed_snapshots=0

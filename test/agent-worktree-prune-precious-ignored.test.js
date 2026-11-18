@@ -463,6 +463,8 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     const recent = make(name('c'), 3);
     const newest = make(name('d'), 1);
     const foreign = make('not-a-snapshot', 90);
+    const deadStage = make('.snapshot-dead', 5);
+    const liveStage = make('.snapshot-live', 0);
 
     const { fakeBin } = fakeGhNoProjects();
     const env = { GUARDEX_GH_BIN: path.join(fakeBin, 'gh'), GUARDEX_PRUNE_NOW_EPOCH: '0' };
@@ -482,7 +484,9 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     assert.ok(fs.existsSync(newest), 'the newest snapshot is kept');
     assert.ok(fs.existsSync(foreign), 'a directory that is not a snapshot is not touched');
     assert.match(res.stdout, /removed_snapshots=2/);
-    for (const dir of [recent, newest, foreign]) {
+    assert.ok(!fs.existsSync(deadStage), 'a staging directory of a dead provision is removed');
+    assert.ok(fs.existsSync(liveStage), 'a fresh staging directory is left alone');
+    for (const dir of [recent, newest, foreign, liveStage]) {
       fs.chmodSync(path.join(dir, 'tree'), 0o755);
       fs.chmodSync(path.join(dir, 'tree', 'pkg'), 0o755);
     }
