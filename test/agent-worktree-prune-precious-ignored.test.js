@@ -407,6 +407,18 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     fs.writeFileSync(path.join(pending, '2'), `${intactWt}\n`);
     fs.writeFileSync(path.join(pending, '3'), `${repoDir}\n`);
 
+    // A leftover someone kept working in: a file newer than its marker.
+    const reusedDir = path.join(repoDir, '..', `reused-${path.basename(repoDir)}`);
+    fs.mkdirSync(reusedDir, { recursive: true });
+    fs.writeFileSync(path.join(pending, '4'), `${reusedDir}\n`);
+    const past = new Date(Date.now() - 3600 * 1000);
+    fs.utimesSync(path.join(pending, '4'), past, past);
+    fs.writeFileSync(path.join(reusedDir, 'new-work.txt'), 'written after the removal began\n');
+    for (const f of fs.readdirSync(halfWt, { recursive: true })) {
+      const full = path.join(halfWt, f);
+      if (fs.statSync(full).isFile()) fs.utimesSync(full, past, past);
+    }
+
     const { fakeBin } = fakeGhNoProjects();
     const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
       GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
@@ -418,6 +430,9 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     assert.ok(!fs.existsSync(halfWt), `the half-removed directory must be gone, stdout: ${res.stdout}`);
     assert.ok(fs.existsSync(path.join(intactWt, 'work.txt')), 'an intact worktree is never deleted through a marker');
     assert.ok(fs.existsSync(path.join(repoDir, '.git')), 'the main checkout is never deleted through a marker');
+    assert.ok(fs.existsSync(path.join(reusedDir, 'new-work.txt')), 'a leftover with newer files is never deleted');
+    assert.match(res.stderr, /NOT finished, files changed since/);
+    fs.rmSync(reusedDir, { recursive: true, force: true });
     assert.deepEqual(fs.readdirSync(pending), [], 'all markers are consumed');
     const list = runHumanCmd('git', ['worktree', 'list'], repoDir).stdout;
     assert.ok(!list.includes('agent__test__half-removed'), 'the stale registration is pruned');

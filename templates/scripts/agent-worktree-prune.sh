@@ -1049,7 +1049,13 @@ has_live_process_in_worktree() {
 PENDING_REMOVALS_DIR="${repo_common_dir}/guardex-pending-removals"
 
 pending_removal_marker() {
-  printf '%s/%s' "$PENDING_REMOVALS_DIR" "$(printf '%s' "$1" | cksum | tr -c -d '0-9')"
+  local key
+  if command -v sha256sum >/dev/null 2>&1; then
+    key="$(printf '%s' "$1" | sha256sum | cut -c1-40)"
+  else
+    key="$(printf '%s' "$1" | cksum | tr -c -d '0-9')"
+  fi
+  printf '%s/%s' "$PENDING_REMOVALS_DIR" "$key"
 }
 
 mark_pending_removal() {
@@ -1063,8 +1069,10 @@ clear_pending_removal() {
 }
 
 # Finish removals a previous cycle started but did not complete. Only a
-# directory that has already lost its .git entry is deleted: an intact worktree
-# (the removal never began, or the path was reused) is left to the normal checks.
+# directory that has already lost its .git entry is deleted, and only while no
+# file in it is newer than the marker: an intact worktree (the removal never
+# began, or the path was reused) and a leftover someone has written to since
+# are both left alone.
 finish_interrupted_removals() {
   [[ "$DRY_RUN" -eq 1 ]] && return 0
   [[ -d "$PENDING_REMOVALS_DIR" ]] || return 0
@@ -1073,7 +1081,14 @@ finish_interrupted_removals() {
     [[ -f "$marker" ]] || continue
     path="$(head -n 1 "$marker" 2>/dev/null || true)"
     if [[ "$path" == /* && "$path" != "/" && "$path" != "$repo_root" && "$repo_root" != "$path"/* \
-      && -d "$path" && ! -e "${path}/.git" ]]; then
+      && -d "$path" && ! -L "$path" && ! -e "${path}/.git" ]]; then
+      # Someone kept working in the leftover (or put a new directory there):
+      # a file written after the removal began is not ours to delete.
+      if [[ -n "$(find "$path" -type f -newer "$marker" -print -quit 2>/dev/null)" ]]; then
+        echo "[agent-worktree-prune] Warning: interrupted removal NOT finished, files changed since: ${path}" >&2
+        rm -f -- "$marker" 2>/dev/null || true
+        continue
+      fi
       echo "[agent-worktree-prune] Finishing interrupted removal: ${path}"
       if ! rm -rf -- "$path" 2>/dev/null; then
         echo "[agent-worktree-prune] Warning: could not finish interrupted removal: ${path}" >&2
