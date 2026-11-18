@@ -3,7 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { dependencyKey, provisionDependency } = require('../src/scaffold/dependency-store');
+const {
+  dependencyKey,
+  provisionDependency,
+  pruneSnapshots
+} = require('../src/scaffold/dependency-store');
 const { copyDirectory } = require('../src/scaffold/provision-config');
 
 function fixture(t) {
@@ -124,3 +128,62 @@ test('snapshot supports absolute internal links and internal symlink chains', (t
   fs.writeFileSync(path.join(root, 'out/chain'), 'private');
   assert.equal(fs.readFileSync(path.join(dependencies, 'chain'), 'utf8'), 'original');
 });
+
+test('unused snapshots are removed; recent, newest and the current one are kept', (t) => {
+  const { root, repo, storeDir } = fixture(t);
+  const options = { storeDir, copyDirectory };
+  const day = 24 * 60 * 60 * 1000;
+  const age = (dir, days) => {
+    const at = new Date(Date.now() - days * day);
+    fs.utimesSync(dir, at, at);
+  };
+  // Five snapshots: one per lockfile state, as dependency bumps produce them.
+  const containers = [];
+  for (let i = 0; i < 5; i += 1) {
+    fs.writeFileSync(path.join(repo, 'package-lock.json'), `lock-${i}`);
+    const result = provisionDependency(repo, 'node_modules', path.join(root, `out-${i}`), {
+      ...options,
+      snapshotKeep: 100
+    });
+    containers.push(path.dirname(result.snapshot));
+  }
+  assert.equal(fs.readdirSync(storeDir).length, 5);
+  [60, 40, 30, 3, 1].forEach((days, i) => age(containers[i], days));
+  // A staging directory left by a provision that died, and unrelated content.
+  const deadStage = path.join(storeDir, '.snapshot-dead');
+  fs.mkdirSync(path.join(deadStage, 'tree'), { recursive: true });
+  age(deadStage, 5);
+  fs.mkdirSync(path.join(storeDir, 'not-a-snapshot'));
+  age(path.join(storeDir, 'not-a-snapshot'), 90);
+
+  // The 40-day-old one is the snapshot just provisioned: it must survive.
+  const removed = pruneSnapshots(storeDir, containers[1], { snapshotKeep: 1, snapshotMaxAgeDays: 14 });
+
+  assert.deepEqual(removed.sort(), [containers[0], containers[2], deadStage].sort());
+  assert.ok(!fs.existsSync(containers[0]), 'old unused snapshot is gone, although it was sealed read-only');
+  assert.ok(fs.existsSync(containers[1]), 'the current snapshot is never removed');
+  assert.ok(fs.existsSync(containers[3]), 'a snapshot used within the age limit is kept');
+  assert.ok(fs.existsSync(containers[4]), 'the newest snapshot is kept');
+  assert.ok(fs.existsSync(path.join(storeDir, 'not-a-snapshot')), 'unrelated directories are not touched');
+});
+
+test('reusing a snapshot marks it as used, and provisioning applies retention', (t) => {
+  const { root, repo, storeDir } = fixture(t);
+  const options = { storeDir, copyDirectory, snapshotKeep: 0, snapshotMaxAgeDays: 14 };
+  const first = provisionDependency(repo, 'node_modules', path.join(root, 'first'), options);
+  const oldContainer = path.dirname(first.snapshot);
+  const longAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(oldContainer, longAgo, longAgo);
+
+  // Reuse refreshes the timestamp, so the snapshot is no longer "unused".
+  provisionDependency(repo, 'node_modules', path.join(root, 'second'), options);
+  assert.ok(Date.now() - fs.statSync(oldContainer).mtimeMs < 60 * 1000);
+
+  // A dependency change makes a new snapshot; the stale old one goes.
+  fs.utimesSync(oldContainer, longAgo, longAgo);
+  fs.writeFileSync(path.join(repo, 'package-lock.json'), 'lock-two');
+  const next = provisionDependency(repo, 'node_modules', path.join(root, 'third'), options);
+  assert.ok(!fs.existsSync(oldContainer));
+  assert.ok(fs.existsSync(next.snapshot));
+});
+

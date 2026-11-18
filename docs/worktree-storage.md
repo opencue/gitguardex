@@ -81,7 +81,11 @@ External symlinks and corrupted snapshots are refused. Python virtual
 environments are not relocatable: recreate them with an approved setup command.
 Snapshot validation reads dependency contents; it is not a claimed startup-speed
 improvement. Without reflink support, copies consume additional space. Snapshots
-are not automatically deleted by run-artifact retention.
+are not deleted by run-artifact retention; they have their own: after each
+provision, and at the end of every `gx cleanup` cycle, snapshots that are not
+among the newest 2 and were last used more than 14 days ago are removed
+(`GUARDEX_DEPENDENCY_SNAPSHOT_KEEP`, `GUARDEX_DEPENDENCY_SNAPSHOT_MAX_AGE_DAYS`).
+A removed snapshot is rebuilt on the next provision that needs it.
 
 ## Live process ownership and cleanup
 

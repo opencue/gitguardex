@@ -1861,7 +1861,48 @@ fi
 
 run_cmd git -C "$repo_root" worktree prune
 
-echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_open_pr=${skipped_open_pr}, skipped_recent=${skipped_recent}, skipped_limited=${skipped_limited}, skipped_broken=${skipped_broken}"
+# ── Dependency snapshot retention ────────────────────────────────────────────
+# <git-common-dir>/gx-dependency-snapshots holds full copies of node_modules &
+# co., one per lockfile/content key. They are a cache (consumers copy out of
+# them, nothing links in), but nothing ever deleted one: field 2026-11-18,
+# 4 x 1.6 GB in a single repo. Keep the newest KEEP and any used within
+# MAX_AGE_DAYS; mirrors pruneSnapshots() in src/scaffold/dependency-store.js.
+prune_dependency_snapshots() {
+  local store="${repo_common_dir}/gx-dependency-snapshots"
+  [[ -d "$store" && ! -L "$store" ]] || return 0
+  local keep="${GUARDEX_DEPENDENCY_SNAPSHOT_KEEP:-2}"
+  local max_age_days="${GUARDEX_DEPENDENCY_SNAPSHOT_MAX_AGE_DAYS:-14}"
+  [[ "$keep" =~ ^[0-9]+$ ]] || keep=2
+  [[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=14
+  local now cutoff index=0 mtime name dir
+  now="$(date +%s)"
+  cutoff=$((now - max_age_days * 86400))
+  while IFS=$'\t' read -r mtime name; do
+    [[ "$name" =~ ^[0-9a-f]{64}-[0-9a-f]{64}$ ]] || continue
+    index=$((index + 1))
+    [[ "$index" -le "$keep" ]] && continue
+    [[ "${mtime%.*}" -ge "$cutoff" ]] && continue
+    dir="${store}/${name}"
+    [[ -d "$dir" && ! -L "$dir" ]] || continue
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      echo "[agent-worktree-prune] [dry-run] Would remove unused dependency snapshot: ${dir}"
+      continue
+    fi
+    # Sealed read-only on creation.
+    chmod -R u+w -- "$dir" 2>/dev/null || true
+    if rm -rf -- "$dir" 2>/dev/null; then
+      removed_snapshots=$((removed_snapshots + 1))
+      echo "[agent-worktree-prune] Removed unused dependency snapshot: ${dir}"
+    else
+      echo "[agent-worktree-prune] Warning: could not remove dependency snapshot: ${dir}" >&2
+    fi
+  done < <(find "$store" -mindepth 1 -maxdepth 1 -type d -printf '%T@\t%f\n' 2>/dev/null | sort -rn || true)
+  return 0
+}
+removed_snapshots=0
+prune_dependency_snapshots
+
+echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_open_pr=${skipped_open_pr}, skipped_recent=${skipped_recent}, skipped_limited=${skipped_limited}, skipped_broken=${skipped_broken}, removed_snapshots=${removed_snapshots}"
 if [[ "$relocated_foreign" -gt 0 || "$skipped_foreign" -gt 0 ]]; then
   echo "[agent-worktree-prune] Foreign routing: relocated=${relocated_foreign}, skipped=${skipped_foreign}"
 fi
