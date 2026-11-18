@@ -354,6 +354,38 @@ defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () =
     assert.ok(fs.existsSync(path.join(wt, 'config', 'out', 'secrets.json')), 'secrets.json must survive');
   });
 
+  test('a broken worktree (.git missing) is skipped and does not abort the cycle', () => {
+    // Field 2026-11-18: a half-removed worktree made `git diff` exit 129 inside
+    // the dirt summary, and `set -e` ended the whole cycle — every worktree
+    // after it in the list was never cleaned.
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+
+    const brokenWt = makeWorktree(repoDir, 'agent/test/a-broken');
+    const okWt = makeWorktree(repoDir, 'agent/test/b-merged');
+    for (const [wt, file] of [[brokenWt, 'a.txt'], [okWt, 'b.txt']]) {
+      fs.writeFileSync(path.join(wt, file), 'x\n');
+      assert.equal(runHumanCmd('git', ['add', file], wt).status, 0);
+      assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', `add ${file}`], wt).status, 0);
+    }
+    for (const branch of ['agent/test/a-broken', 'agent/test/b-merged']) {
+      assert.equal(runHumanCmd('git', ['merge', '--no-ff', '--no-verify', branch], repoDir).status, 0);
+    }
+    fs.rmSync(path.join(brokenWt, '.git'));
+
+    const { fakeBin } = fakeGhNoProjects();
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: '0'
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.match(res.stdout, /Skipping broken worktree/);
+    assert.ok(fs.existsSync(path.join(brokenWt, 'a.txt')), 'the broken worktree is left alone');
+    assert.ok(!fs.existsSync(okWt), `the worktree after it must still be removed, stdout: ${res.stdout}`);
+    assert.match(res.stdout, /skipped_broken=1/);
+  });
+
   test('a nested .env.local still blocks removal', () => {
     const repoDir = initRepo({ branch: 'main' });
     seedCommit(repoDir);

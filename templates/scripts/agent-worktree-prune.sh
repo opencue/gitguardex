@@ -845,12 +845,12 @@ warn_force_dirty_removal() {
 summarize_worktree_dirt() {
   local wt="$1"
   local modified_paths untracked_paths
-  modified_paths="$(git -C "$wt" diff --name-only --diff-filter=AMDR -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | head -3)"
+  modified_paths="$(git -C "$wt" diff --name-only --diff-filter=AMDR -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | head -3 || true)"
   local modified_count
-  modified_count="$(git -C "$wt" diff --name-only --diff-filter=AMDR -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | wc -l | tr -d ' ')"
-  untracked_paths="$(git -C "$wt" ls-files --others --exclude-standard -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | head -3)"
+  modified_count="$(git -C "$wt" diff --name-only --diff-filter=AMDR -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | wc -l | tr -d ' ' || true)"
+  untracked_paths="$(git -C "$wt" ls-files --others --exclude-standard -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | head -3 || true)"
   local untracked_count
-  untracked_count="$(git -C "$wt" ls-files --others --exclude-standard -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | wc -l | tr -d ' ')"
+  untracked_count="$(git -C "$wt" ls-files --others --exclude-standard -- . "${STATE_EXCLUDE_PATHSPEC_ARGS[@]}" 2>/dev/null | wc -l | tr -d ' ' || true)"
 
   if [[ -n "$modified_paths" ]]; then
     while IFS= read -r p; do
@@ -1283,6 +1283,7 @@ removed_worktrees=0
 removed_branches=0
 skipped_active=0
 skipped_dirty=0
+skipped_broken=0
 skipped_open_pr=0
 processed_branches=0
 skipped_limited=0
@@ -1511,6 +1512,20 @@ process_entry() {
   fi
 
   if ! branch_idle_gate "$branch" "$wt" "$remove_reason"; then
+    return
+  fi
+
+  # A registered worktree whose directory is no longer a git checkout (its .git
+  # file is gone — an interrupted removal). Every git command in it fails, and
+  # `git diff` there even exits 129, which used to abort the WHOLE prune cycle
+  # under `set -e` (field 2026-11-18: two such leftovers kept 400+ worktrees
+  # from ever being cleaned). Its content cannot be judged, so leave it alone
+  # and carry on with the rest.
+  # Test the worktree's own .git entry: `git rev-parse` would succeed for a
+  # worktree nested inside the main checkout by resolving to the parent repo.
+  if [[ ! -e "${wt}/.git" ]]; then
+    skipped_broken=$((skipped_broken + 1))
+    echo "[agent-worktree-prune] Skipping broken worktree (${remove_reason}; not a git checkout, .git is missing): ${wt}"
     return
   fi
 
@@ -1775,12 +1790,15 @@ fi
 
 run_cmd git -C "$repo_root" worktree prune
 
-echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_open_pr=${skipped_open_pr}, skipped_recent=${skipped_recent}, skipped_limited=${skipped_limited}"
+echo "[agent-worktree-prune] Summary: base=${BASE_BRANCH}, idle_minutes=${IDLE_MINUTES}, removed_worktrees=${removed_worktrees}, removed_branches=${removed_branches}, skipped_active=${skipped_active}, skipped_dirty=${skipped_dirty}, skipped_open_pr=${skipped_open_pr}, skipped_recent=${skipped_recent}, skipped_limited=${skipped_limited}, skipped_broken=${skipped_broken}"
 if [[ "$relocated_foreign" -gt 0 || "$skipped_foreign" -gt 0 ]]; then
   echo "[agent-worktree-prune] Foreign routing: relocated=${relocated_foreign}, skipped=${skipped_foreign}"
 fi
 if [[ "$skipped_active" -gt 0 ]]; then
   echo "[agent-worktree-prune] Tip: leave active agent worktree directories, then run this command again for full cleanup." >&2
+fi
+if [[ "$skipped_broken" -gt 0 ]]; then
+  echo "[agent-worktree-prune] Tip: broken worktrees (no .git) were left alone. Check their content, delete the directory, then run 'git worktree prune'." >&2
 fi
 if [[ "$skipped_dirty" -gt 0 ]]; then
   echo "[agent-worktree-prune] Tip: dirty worktrees were preserved. Clean/finish them first, or pass --force-dirty to remove anyway." >&2
