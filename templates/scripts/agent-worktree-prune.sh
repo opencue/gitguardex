@@ -1400,6 +1400,22 @@ is_protected_linked_branch() {
   return 1
 }
 
+# True when the detached HEAD of worktree $1 is contained in the base branch,
+# locally or on origin (the local base is often behind: deploys check out
+# origin/<base>).
+detached_head_is_merged() {
+  local wt="$1" head ref
+  head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)" || return 1
+  [[ -n "$head" ]] || return 1
+  for ref in "$BASE_BRANCH" "refs/remotes/origin/${BASE_BRANCH}"; do
+    git -C "$repo_root" rev-parse --verify --quiet "$ref" >/dev/null 2>&1 || continue
+    if git -C "$repo_root" merge-base --is-ancestor "$head" "$ref" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 process_entry() {
   local wt="$1"
   local branch_ref="$2"
@@ -1558,9 +1574,19 @@ process_entry() {
     remove_reason="merged-linked-pr"
   fi
 
+  # A detached linked worktree (e.g. checked out at origin/main to build a deploy
+  # after its PR merged) holds no branch and nothing to lose when its HEAD is
+  # already in the base branch: it goes as a merged lane too. A detached HEAD
+  # with commits the base does not have stays (no branch points at them). The
+  # dirty check below still protects uncommitted changes.
+  if [[ "$linked_merged_only" -eq 1 && "$remove_reason" == "detached-worktree" ]] \
+    && detached_head_is_merged "$wt"; then
+    remove_reason="merged-detached-worktree"
+  fi
+
   if [[ "$linked_merged_only" -eq 1 ]]; then
     case "$remove_reason" in
-      merged-agent-branch|merged-agent-pr|merged-pr:*|merged-linked-pr) ;;
+      merged-agent-branch|merged-agent-pr|merged-pr:*|merged-linked-pr|merged-detached-worktree) ;;
       *)
         if [[ -z "$remove_reason" && -n "$branch" && "$branch" != agent/* ]] \
           && git -C "$repo_root" show-ref --verify --quiet "refs/heads/${branch}"; then
