@@ -27,15 +27,23 @@ echo ""
 
 function prune(repoDir, extraArgs = [], nowEpoch = '0') {
   const { fakeBin } = fakeGhNoPrs();
-  return runWorktreePrune(['--base', 'main', '--include-merged-linked-worktrees', ...extraArgs], repoDir, {
-    GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-    GUARDEX_PRUNE_NOW_EPOCH: nowEpoch
-  });
+  return runWorktreePrune(
+    ['--base', 'main', '--include-merged-linked-worktrees', ...extraArgs],
+    repoDir,
+    {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_PRUNE_NOW_EPOCH: nowEpoch
+    }
+  );
 }
 
 function addDetached(repoDir, name, ref) {
   const wt = path.join(path.dirname(repoDir), name);
-  assert.equal(runHumanCmd('git', ['worktree', 'add', '--detach', wt, ref], repoDir).status, 0, `add ${name}`);
+  assert.equal(
+    runHumanCmd('git', ['worktree', 'add', '--detach', wt, ref], repoDir).status,
+    0,
+    `add ${name}`
+  );
   return wt;
 }
 
@@ -47,7 +55,10 @@ defineSpawnSuite('agent-worktree-prune — merged detached linked worktrees', ()
 
     const res = prune(repoDir);
     assert.equal(res.status, 0, res.stderr || res.stdout);
-    assert.ok(!fs.existsSync(wt), `merged detached worktree must be removed, stdout: ${res.stdout}`);
+    assert.ok(
+      !fs.existsSync(wt),
+      `merged detached worktree must be removed, stdout: ${res.stdout}`
+    );
   });
 
   test('a detached worktree at origin/<base> ahead of a stale local base is reclaimed', () => {
@@ -59,11 +70,17 @@ defineSpawnSuite('agent-worktree-prune — merged detached linked worktrees', ()
     assert.equal(runHumanCmd('git', ['add', 'merged.txt'], wt).status, 0);
     assert.equal(runHumanCmd('git', ['commit', '--no-verify', '-m', 'merged PR'], wt).status, 0);
     const head = runHumanCmd('git', ['rev-parse', 'HEAD'], wt).stdout.trim();
-    assert.equal(runHumanCmd('git', ['update-ref', 'refs/remotes/origin/main', head], repoDir).status, 0);
+    assert.equal(
+      runHumanCmd('git', ['update-ref', 'refs/remotes/origin/main', head], repoDir).status,
+      0
+    );
 
     const res = prune(repoDir);
     assert.equal(res.status, 0, res.stderr || res.stdout);
-    assert.ok(!fs.existsSync(wt), `detached worktree at origin/main must be removed, stdout: ${res.stdout}`);
+    assert.ok(
+      !fs.existsSync(wt),
+      `detached worktree at origin/main must be removed, stdout: ${res.stdout}`
+    );
   });
 
   test('a detached worktree with commits the base does not have is kept', () => {
