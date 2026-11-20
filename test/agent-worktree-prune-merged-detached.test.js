@@ -25,11 +25,11 @@ echo ""
 `);
 }
 
-function prune(repoDir) {
+function prune(repoDir, extraArgs = [], nowEpoch = '0') {
   const { fakeBin } = fakeGhNoPrs();
-  return runWorktreePrune(['--base', 'main', '--include-merged-linked-worktrees'], repoDir, {
+  return runWorktreePrune(['--base', 'main', '--include-merged-linked-worktrees', ...extraArgs], repoDir, {
     GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
-    GUARDEX_PRUNE_NOW_EPOCH: '0'
+    GUARDEX_PRUNE_NOW_EPOCH: nowEpoch
   });
 }
 
@@ -88,5 +88,34 @@ defineSpawnSuite('agent-worktree-prune — merged detached linked worktrees', ()
     const res = prune(repoDir);
     assert.equal(res.status, 0, res.stderr || res.stdout);
     assert.ok(fs.existsSync(wt), `dirty detached worktree must be kept, stdout: ${res.stdout}`);
+  });
+
+  test('a detached worktree with a rebase in progress is kept', () => {
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const wt = addDetached(repoDir, 'detached-rebasing', 'main');
+    const gitDir = runHumanCmd('git', ['rev-parse', '--absolute-git-dir'], wt).stdout.trim();
+    fs.mkdirSync(path.join(gitDir, 'rebase-merge'));
+
+    const res = prune(repoDir);
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.ok(fs.existsSync(wt), `rebasing worktree must be kept, stdout: ${res.stdout}`);
+    assert.match(res.stdout, /operation in progress \(rebase-merge\)/);
+  });
+
+  test('with an idle threshold a freshly added detached worktree is kept, an old one goes', () => {
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const wt = addDetached(repoDir, 'detached-fresh', 'main');
+    const now = Math.floor(Date.now() / 1000);
+
+    const fresh = prune(repoDir, ['--idle-minutes', '60'], String(now));
+    assert.equal(fresh.status, 0, fresh.stderr || fresh.stdout);
+    assert.ok(fs.existsSync(wt), `fresh worktree must be kept, stdout: ${fresh.stdout}`);
+    assert.match(fresh.stdout, /Skipping recent detached worktree/);
+
+    const later = prune(repoDir, ['--idle-minutes', '60'], String(now + 2 * 3600));
+    assert.equal(later.status, 0, later.stderr || later.stdout);
+    assert.ok(!fs.existsSync(wt), `idle worktree must be removed, stdout: ${later.stdout}`);
   });
 });

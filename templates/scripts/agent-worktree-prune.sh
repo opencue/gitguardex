@@ -1403,8 +1403,36 @@ is_protected_linked_branch() {
 # True when the detached HEAD of worktree $1 is contained in the base branch,
 # locally or on origin (the local base is often behind: deploys check out
 # origin/<base>).
+# Also refuses (returns 1) while a rebase / merge / cherry-pick / revert /
+# bisect is in progress there — HEAD is detached at a base commit then, but the
+# operation's state lives in the worktree's git dir and would be lost — and,
+# when an idle threshold is set, while the worktree was touched recently (a
+# fresh `git worktree add --detach` an agent has not started using yet).
 detached_head_is_merged() {
-  local wt="$1" head ref
+  local wt="$1" head ref marker path newest=0 mtime
+  for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
+    path="$(git -C "$wt" rev-parse --git-path "$marker" 2>/dev/null)" || return 1
+    [[ "$path" == /* ]] || path="${wt}/${path}"
+    if [[ -e "$path" ]]; then
+      echo "[agent-worktree-prune] Keeping detached worktree with an operation in progress (${marker}): ${wt}"
+      return 1
+    fi
+  done
+  if [[ "$IDLE_SECONDS" -gt 0 ]]; then
+    for marker in HEAD index; do
+      path="$(git -C "$wt" rev-parse --git-path "$marker" 2>/dev/null)" || continue
+      [[ "$path" == /* ]] || path="${wt}/${path}"
+      mtime="$(stat -c %Y -- "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo "")"
+      [[ "$mtime" =~ ^[0-9]+$ && "$mtime" -gt "$newest" ]] && newest="$mtime"
+    done
+    mtime="$(stat -c %Y -- "$wt" 2>/dev/null || stat -f %m "$wt" 2>/dev/null || echo "")"
+    [[ "$mtime" =~ ^[0-9]+$ && "$mtime" -gt "$newest" ]] && newest="$mtime"
+    if [[ "$newest" -le 0 || $((NOW_EPOCH - newest)) -lt "$IDLE_SECONDS" ]]; then
+      skipped_recent=$((skipped_recent + 1))
+      echo "[agent-worktree-prune] Skipping recent detached worktree (merged-detached-worktree): ${wt}"
+      return 1
+    fi
+  fi
   head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)" || return 1
   [[ -n "$head" ]] || return 1
   for ref in "$BASE_BRANCH" "refs/remotes/origin/${BASE_BRANCH}"; do
