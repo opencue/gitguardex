@@ -763,7 +763,7 @@ echo "unexpected gh args: $*" >&2
 exit 1
 `);
   const fakeClaude = createFakeBin('claude', `
-printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenance","impact":"neutral","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)"}],"improvements":["Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$"]}}'
+printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenance","impact":"neutral","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)"}],"improvements":["1) Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$","---"]}}'
 `);
 
   const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
@@ -782,7 +782,7 @@ printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenan
   assert.match(artifact, /No findings/);
   assert.match(artifact, /PR value: 50\/100/);
   assert.match(artifact, /Neutral — Maintainability & developer experience:.*preserves behavior/);
-  assert.match(artifact, /What would make this PR better\?\*\*\n\n- Test the fallback .*&#36;x&#36;/);
+  assert.match(artifact, /What would make this PR better\?\*\*\n\n- 1&#41; Test the fallback .*&#36;x&#36;\n- &#45;&#45;&#45;/);
   assert.doesNotMatch(artifact, /\n### fake heading|@example|<!-- gitguardex:fake -->|\[fake\]\(https:/);
 
   const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, {

@@ -276,7 +276,7 @@ function normalizeReviewValue(value) {
 
 function escapeValueText(text) {
   // Model output is plain text, not a source of Markdown, mentions, or hidden metadata.
-  return text.replace(/[&<>@\\[\]_*\x60~!|:.#$]/g, (char) => `&#${char.charCodeAt(0)};`);
+  return text.replace(/[&<>@\\[\]_*\x60~!|:.#$()+-]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
 function reviewValueLines(value, truncated) {
