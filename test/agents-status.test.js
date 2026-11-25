@@ -5,6 +5,7 @@ const {
   path,
   runCmd,
   runNode,
+  runNodeWithEnv,
   initRepo,
   seedCommit,
 } = require('./helpers/install-test-helpers');
@@ -53,6 +54,44 @@ function makeRepo() {
   seedCommit(repoDir);
   return repoDir;
 }
+
+test('status probes each branch once and reuses Git config and shared base refs', () => {
+  const repo = makeRepo();
+  const git = (cwd, ...args) => {
+    const result = runCmd('git', args, cwd);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const first = 'agent/Status-First';
+  const second = 'agent/Status-Second';
+  const base = git(repo, 'branch', '--show-current');
+  git(repo, 'update-ref', `refs/remotes/origin/${base}`, 'HEAD');
+  const lanes = [[first, 'one.txt'], [second, 'two.txt']];
+  for (const [branch, file] of lanes) {
+    const worktreePath = path.join(repo, '.omx', branch);
+    git(repo, 'worktree', 'add', '-qb', branch, worktreePath, 'HEAD');
+    git(repo, 'config', '--add', `branch.${branch}.guardexBase`, 'nonexistent');
+    git(repo, 'config', '--add', `branch.${branch}.guardexBase`, base);
+    fs.writeFileSync(path.join(worktreePath, file), 'untracked');
+    const session = { id: file, branch, worktreePath };
+    createAgentSession(repo, session);
+    if (branch === first) createAgentSession(repo, { ...session, id: 'duplicate' });
+  }
+  const result = runNodeWithEnv(['agents', 'status', '--json'], repo, { GUARDEX_PROBE_TRACE: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  const sessions = JSON.parse(result.stdout).sessions;
+  assert.deepEqual(sessions.map((session) => session.changedFiles), [['one.txt'], ['one.txt'], ['two.txt']]);
+  const probes = result.stderr.split('\n').filter((line) => line.startsWith('[probe] git '));
+  assert.equal(probes.filter((line) => line.includes(' config --null --get-regexp ')).length, 1);
+  assert.equal(probes.filter((line) => line.includes(' show-ref --verify --quiet refs/remotes/origin/')).length, 1);
+  assert.equal(probes.filter((line) => line.includes(' diff --name-only ')).length, 2);
+  assert.equal(probes.filter((line) => line.includes(' ls-files --others ')).length, 2);
+
+  const { buildAgentsStatusPayload } = require('../src/agents/status');
+  assert.deepEqual(buildAgentsStatusPayload(repo).sessions[0].changedFiles, ['one.txt']);
+  fs.writeFileSync(path.join(repo, '.omx', first, 'later.txt'), 'arrived after the first snapshot');
+  assert.deepEqual(buildAgentsStatusPayload(repo).sessions[0].changedFiles, ['later.txt', 'one.txt']);
+});
 
 test('agents status prints a compact empty state', () => {
   const repoDir = makeRepo();

@@ -1,5 +1,5 @@
 const { fs, path, LOCK_FILE_RELATIVE, TOOL_NAME } = require('../context');
-const { changedFiles, listWorktrees } = require('./inspect');
+const { createChangedFilesReader, listWorktrees } = require('./inspect');
 const { listAgentSessions } = require('./sessions');
 
 function uniqueSorted(values) {
@@ -35,13 +35,21 @@ function readLockDetails(repoRoot) {
   return { counts, files };
 }
 
-function readChangedFiles(repoRoot, branch, worktrees) {
-  if (!branch) return [];
-  try {
-    return changedFiles({ target: repoRoot, branch, worktrees }).files || [];
-  } catch (_error) {
-    return [];
-  }
+function statusChangedFilesReader() {
+  let readFiles;
+  const byBranch = new Map();
+  return (repoRoot, branch, worktrees) => {
+    if (!branch) return [];
+    if (!byBranch.has(branch)) {
+      try {
+        readFiles ||= createChangedFilesReader(repoRoot, worktrees);
+        byBranch.set(branch, readFiles(branch));
+      } catch (_error) {
+        byBranch.set(branch, []);
+      }
+    }
+    return [...byBranch.get(branch)];
+  };
 }
 
 function normalizePr(session) {
@@ -53,7 +61,7 @@ function normalizePr(session) {
   };
 }
 
-function normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, readChanges = readChangedFiles) {
+function normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, readChanges) {
   const branch = session.branch || '';
   const worktreePath = session.worktreePath || '';
   const claimedFiles = uniqueSorted([
@@ -84,14 +92,17 @@ function normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, re
 }
 
 function buildAgentsStatusPayload(repoRoot) {
+  const sessions = listAgentSessions(repoRoot);
+  if (!sessions.length) return { schemaVersion: 1, repoRoot, sessions };
   const lockDetails = readLockDetails(repoRoot);
   // Hoist the invariant `git worktree list` out of the per-session loop: fetch it
   // once here instead of once inside every session's changedFiles() (~6N -> ~6+N).
   const worktrees = listWorktrees(repoRoot);
+  const readChanges = statusChangedFilesReader();
   return {
     schemaVersion: 1,
     repoRoot,
-    sessions: listAgentSessions(repoRoot).map((session) => normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees)),
+    sessions: sessions.map((session) => normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, readChanges)),
   };
 }
 
@@ -151,8 +162,9 @@ function writeStatusCommand(repoRoot, options = {}, output = process.stdout, dep
   output.write(`[${TOOL_NAME}] Agent sessions: ${sessions.length} (${repoRoot})\n`);
   const lockDetails = readLockDetails(repoRoot);
   const worktrees = (deps.listWorktrees || listWorktrees)(repoRoot);
+  const readChanges = deps.readChangedFiles || statusChangedFilesReader();
   for (const session of sessions) {
-    const row = normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, deps.readChangedFiles);
+    const row = normalizeSessionForStatus(session, lockDetails, repoRoot, worktrees, readChanges);
     output.write(`${renderSession(row)}\n`);
   }
 }

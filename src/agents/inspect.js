@@ -67,11 +67,11 @@ function worktreePathForBranch(repoRoot, branch, worktrees = null) {
   };
 }
 
-function resolveBaseBranch(repoRoot, branch) {
-  const perBranch = readGitConfig(repoRoot, `branch.${branch}.guardexBase`);
+function resolveBaseBranch(repoRoot, branch, readConfig = readGitConfig) {
+  const perBranch = readConfig(repoRoot, `branch.${branch}.guardexbase`);
   if (perBranch) return perBranch;
 
-  const configuredBase = readGitConfig(repoRoot, 'multiagent.baseBranch');
+  const configuredBase = readConfig(repoRoot, 'multiagent.basebranch');
   // Infer from history; do NOT persist (inspect is read-only display).
   const inferred = inferBaseBranchFromHistory(repoRoot, branch, {
     configuredBase,
@@ -131,25 +131,57 @@ function readUntrackedFiles(worktreePath) {
 }
 
 function inspectAgentBranch(options) {
-  const repoRoot = resolveRepoRoot(options.target || process.cwd());
+  return inspectBranch(resolveRepoRoot(options.target || process.cwd()), options);
+}
+
+function inspectBranch(repoRoot, options, readConfig, compareBase = compareRefForBase) {
   const branch = String(options.branch || '').trim();
   if (!branch) {
     throw new Error('--branch requires an agent branch name');
   }
 
-  const baseBranch = resolveBaseBranch(repoRoot, branch);
-  const compareRef = compareRefForBase(repoRoot, baseBranch);
+  const baseBranch = resolveBaseBranch(repoRoot, branch, readConfig);
+  const compareRef = compareBase(repoRoot, baseBranch);
   const { worktreePath, worktreeFound } = worktreePathForBranch(repoRoot, branch, options.worktrees);
   return { repoRoot, branch, baseBranch, compareRef, worktreePath, worktreeFound };
 }
 
 function changedFiles(options) {
-  const context = inspectAgentBranch(options);
+  return changedFilesInContext(inspectAgentBranch(options));
+}
+
+function changedFilesInContext(context) {
   const diffTarget = context.worktreeFound ? context.compareRef : `${context.compareRef}...${context.branch}`;
   const result = git(context.worktreePath, ['diff', '--name-only', diffTarget, '--', '.', `:(exclude)${LOCK_FILE_RELATIVE}`]);
   const files = [...splitGitLines(result.stdout), ...(context.worktreeFound ? readUntrackedFiles(context.worktreePath) : [])];
   const uniqueFiles = Array.from(new Set(files)).sort((left, right) => left.localeCompare(right));
   return { ...context, files: uniqueFiles };
+}
+
+function createChangedFilesReader(target, worktrees) {
+  const repoRoot = resolveRepoRoot(target);
+  // Git's scalar config getter takes the last value. Preserve that precedence
+  // and the subsection's case; only the section and key are canonicalized.
+  const result = git(repoRoot, ['config', '--null', '--get-regexp', '^(branch\\..*\\.guardexbase|multiagent\\.basebranch)$'],
+    { allowFailure: true });
+  const config = new Map();
+  if (result.status === 0) {
+    for (const entry of String(result.stdout || '').split('\0')) {
+      if (!entry) continue;
+      const separator = entry.indexOf('\n');
+      if (separator < 0) config.set(entry, '');
+      else config.set(entry.slice(0, separator), entry.slice(separator + 1).trim());
+    }
+  }
+  const readConfig = result.status === 0 || result.status === 1
+    ? (_repo, key) => config.get(key) || ''
+    : readGitConfig;
+  const compareRefs = new Map();
+  const compareBase = (repo, base) => {
+    if (!compareRefs.has(base)) compareRefs.set(base, compareRefForBase(repo, base));
+    return compareRefs.get(base);
+  };
+  return (branch) => changedFilesInContext(inspectBranch(repoRoot, { branch, worktrees }, readConfig, compareBase)).files;
 }
 
 function branchDiff(options) {
@@ -198,6 +230,7 @@ module.exports = {
   branchDiff,
   branchLocks,
   changedFiles,
+  createChangedFilesReader,
   inspectAgentBranch,
   listWorktrees,
   parseWorktreeList,
