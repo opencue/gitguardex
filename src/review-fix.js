@@ -14,7 +14,7 @@
 
 const { run } = require('./core/runtime');
 const { gitRun, currentBranchName, readProtectedBranches } = require('./git');
-const { codexReviewEffort, resolveProviderBin } = require('./provider-binary');
+const { codexReviewEffort, resolveProviderBin, withProviderStderr } = require('./provider-binary');
 
 const DEFAULT_FIX_TIMEOUT_MS = 15 * 60 * 1000;
 const TOOL_PREFIX = '[gitguardex]';
@@ -191,16 +191,17 @@ function runReviewFix({
     `${TOOL_PREFIX} code-assist ${provider} auto-fix started for ${findings.length} finding(s)`
     + `${selectedModel ? ` with model ${selectedModel}` : ''}${agentQuiet ? '' : '; provider progress follows'}`,
   );
-  const result = runner(command.cmd, command.args, {
-    cwd: repoRoot,
-    timeout: timeoutMs,
-    input: command.input,
-    // No provider output is parsed in fix mode; keep only quiet-mode diagnostics.
-    stdio: agentQuiet ? ['pipe', 'ignore', 'pipe'] : ['pipe', 'inherit', 'inherit'],
-  });
+  const result = withProviderStderr(agentQuiet, (stderr) =>
+    runner(command.cmd, command.args, {
+      cwd: repoRoot,
+      timeout: timeoutMs,
+      input: command.input,
+      // No provider output is parsed in fix mode.
+      stdio: ['pipe', agentQuiet ? 'ignore' : 'inherit', stderr],
+    })
+  );
   if (result.status !== 0) {
-    const stderr = String(result.stderr || '').trim();
-    const detail = agentQuiet ? stderr.slice(-2000) : stderr;
+    const detail = String(result.stderr || '').trim();
     throw new Error(`${provider} fix run failed${detail ? `\n${detail}` : ''}`);
   }
   console.log(

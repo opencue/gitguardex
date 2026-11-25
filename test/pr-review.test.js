@@ -141,16 +141,19 @@ test('posting a review skips inline comment pagination only when there are no in
   }
 });
 
-test('quiet reviewer captures verbose output and only returns a bounded error tail on failure', () => {
-  const runCase = (agentQuiet) => prReview.runProviderReview(
+test('quiet reviewer keeps the verdict and bounded failure diagnostics past the spawn buffer limit', () => {
+  const { spawnSync } = require('node:child_process');
+  const runCase = (fail) => prReview.runProviderReview(
     'codex', 'diff --git a/a.js b/a.js', '/repo', 1000,
-    (_cmd, _args, options) => {
-      assert.deepEqual(options.stdio, ['pipe', 'pipe', agentQuiet ? 'pipe' : 'inherit']);
-      return { status: 1, stderr: 'PROMPT_REPLAY\n' + 'x'.repeat(3000) + '\nprovider error detail' };
-    },
-    { agentQuiet },
+    (_cmd, _args, options) => spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      fs.writeSync(2, 'PROMPT_REPLAY\\n' + 'x'.repeat(16_384) + '\\nprovider error detail\\n');
+      fs.writeSync(1, '{"findings":[]}');
+      process.exit(${fail ? 1 : 0});
+    `], { ...options, encoding: 'utf8', maxBuffer: 4096 }),
+    { agentQuiet: true },
   );
-  assert.throws(() => runCase(false), /PROMPT_REPLAY/);
+  assert.deepEqual(runCase(false), []);
   assert.throws(() => runCase(true), (err) => {
     assert.match(err.message, /provider error detail/);
     assert.doesNotMatch(err.message, /PROMPT_REPLAY/);

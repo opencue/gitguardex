@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const { fs, path, os, GH_BIN } = require('./context');
 const { run } = require('./core/runtime');
 const { repoApiPath, repoNameWithOwner } = require('./github-api');
-const { codexReviewEffort, resolveProviderBin } = require('./provider-binary');
+const { codexReviewEffort, resolveProviderBin, withProviderStderr } = require('./provider-binary');
 const { partitionByAnchor } = require('./review-diff');
 const abide = require('./abide');
 const {
@@ -774,17 +774,16 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
         `${TOOL_PREFIX} code-assist ${provider} ${settings.graphRepair ? 'graph repair' : 'review'} attempt ${attempt + 1}/${attempts} started` +
           `${model ? ` with model ${model}` : ''}${settings.agentQuiet ? '' : '; provider progress follows'}`
       );
-      const result = runner(providerCommand, command.args, {
-        cwd: sandboxRoot,
-        timeout: limitMs,
-        input: command.input,
-        ...(settings.graphRepair ? { maxBuffer: 256_000 } : {}),
-        // Provider CLIs reserve stdout for their final machine-readable answer
-        // and write live agent progress to stderr. Keep stdout piped for JSON
-        // parsing. Interactive runs still stream; quiet runs retain only a
-        // bounded diagnostic on failure, not the provider's replay of the diff.
-        stdio: ['pipe', 'pipe', settings.agentQuiet ? 'pipe' : 'inherit']
-      });
+      const result = withProviderStderr(settings.agentQuiet, (stderr) =>
+        runner(providerCommand, command.args, {
+          cwd: sandboxRoot,
+          timeout: limitMs,
+          input: command.input,
+          ...(settings.graphRepair ? { maxBuffer: 256_000 } : {}),
+          // Stdout alone is machine-readable; the provider replays the diff on stderr.
+          stdio: ['pipe', 'pipe', stderr]
+        })
+      );
       // spawnSync reports a timeout as error.code ETIMEDOUT with a null status, so
       // name it: "review failed" with empty stderr sends the operator hunting for a
       // provider bug that is really just a run that never came back.
@@ -803,8 +802,7 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
         );
       }
       if (result.status !== 0) {
-        const stderr = String(result.stderr || '').trim();
-        const detail = settings.agentQuiet ? stderr.slice(-2000) : stderr;
+        const detail = String(result.stderr || '').trim();
         throw new Error(`${provider} review failed${detail ? `\n${detail}` : ''}`);
       }
       // A compliant provider always emits the findings JSON object (empty array
