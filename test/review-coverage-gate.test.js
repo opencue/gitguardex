@@ -59,7 +59,8 @@ test('a standalone review still labels a truncated diff as partial', (t) => {
             findings: [],
             value: {
               score: 100,
-              drivers: [{ area: 'product', impact: 'benefit', reason: 'A claimed benefit' }]
+              drivers: [{ area: 'product', impact: 'benefit', reason: 'A claimed benefit' }],
+              improvements: ['Test subscription cancellation']
             }
           })
         };
@@ -70,5 +71,5 @@ test('a standalone review still labels a truncated diff as partial', (t) => {
   const artifact = fs.readFileSync(result.artifactPath, 'utf8');
   assert.match(artifact, /review is partial/);
   assert.match(artifact, /PR value: unavailable.*diff is incomplete/);
-  assert.doesNotMatch(artifact, /100\/100|A claimed benefit/);
+  assert.doesNotMatch(artifact, /100\/100|A claimed benefit|What would make this PR better|Test subscription cancellation/);
 });

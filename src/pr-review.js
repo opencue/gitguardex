@@ -148,8 +148,9 @@ function compactReviewPrompt(
           'Also add a top-level "value" alongside "findings", even for clean diffs.',
           'Estimate the net repository impact of merging this diff as written vs. not merging: weigh evidenced benefits against costs and risks, not finding count or diff size.',
           'Use integer anchors: 0 severe net harm, 25 material harm, 50 neutral or trivial, 75 material benefit, 100 exceptional repository-level benefit.',
-          `"value":{"score":75,"drivers":[{"area":"${Object.keys(VALUE_AREAS).join('|')}","impact":"${Object.keys(VALUE_IMPACTS).join('|')}","reason":"changed behavior or file and its consequence"}]}`,
-          'Give 1–3 distinct, diff-grounded drivers, up to 200 characters each. Use plain text. Do not invent benchmark results, test passes, or adoption. Return "value":null if there is not enough evidence.'
+          `"value":{"score":75,"drivers":[{"area":"${Object.keys(VALUE_AREAS).join('|')}","impact":"${Object.keys(VALUE_IMPACTS).join('|')}","reason":"changed behavior or file and its consequence"}],"improvements":[]}`,
+          'Give 1–3 distinct, diff-grounded drivers, up to 200 characters each. Use plain text. Do not invent benchmark results, test passes, or adoption. Return "value":null if there is not enough evidence.',
+          'In "improvements", list at most two distinct, actionable changes or checks tied to the diff, highest impact first, up to 200 plain-text characters each. Omit generic advice, repeated findings, and predicted point gains. Use [] if nothing material is worth suggesting. Score only the PR as written.'
         ]
       : []),
     ...(compactedLockContext ? [
@@ -243,8 +244,14 @@ function findingsFromPayload(payload) {
   return rawFindings.map(normalizeFinding).filter(Boolean);
 }
 
+function normalizeValueText(text) {
+  if (typeof text !== 'string') return '';
+  const clean = text.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim();
+  return clean.length <= 200 ? clean : '';
+}
+
 function normalizeReviewValue(value) {
-  const { score, drivers } = value ?? {};
+  const { score, drivers, improvements } = value ?? {};
   if (!Number.isInteger(score) || score < 0 || score > 100) return null;
   if (!Array.isArray(drivers) || drivers.length < 1 || drivers.length > 3) return null;
   const normalized = [];
@@ -252,12 +259,24 @@ function normalizeReviewValue(value) {
     const { area, impact, reason } = driver ?? {};
     if (typeof area !== 'string' || !Object.hasOwn(VALUE_AREAS, area)) return null;
     if (typeof impact !== 'string' || !Object.hasOwn(VALUE_IMPACTS, impact)) return null;
-    if (typeof reason !== 'string') return null;
-    const clean = reason.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim();
-    if (!clean || clean.length > 200) return null;
+    const clean = normalizeValueText(reason);
+    if (!clean) return null;
     normalized.push({ area, impact, reason: clean });
   }
-  return { score, drivers: normalized };
+  const actions = new Set();
+  if (Array.isArray(improvements)) {
+    for (const improvement of improvements) {
+      const clean = normalizeValueText(improvement);
+      if (clean) actions.add(clean);
+      if (actions.size === 2) break;
+    }
+  }
+  return { score, drivers: normalized, improvements: [...actions] };
+}
+
+function escapeValueText(text) {
+  // Model output is plain text, not a source of Markdown, mentions, or hidden metadata.
+  return text.replace(/[&<>@\\[\]_*\x60~!|:.#$]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
 function reviewValueLines(value, truncated) {
@@ -266,11 +285,17 @@ function reviewValueLines(value, truncated) {
   return [
     `**PR value: ${value.score}/100** — AI estimate from the diff; 50 = neutral. Not a merge verdict.`,
     '',
-    ...value.drivers.map(({ area, impact, reason }) => {
-      // Model output is plain text, not a source of Markdown, mentions, or hidden metadata.
-      const escaped = reason.replace(/[&<>@\\[\]_*\x60~!|:.#]/g, (char) => `&#${char.charCodeAt(0)};`);
-      return `- **${VALUE_IMPACTS[impact]} — ${VALUE_AREAS[area]}:** ${escaped}`;
-    })
+    ...value.drivers.map(({ area, impact, reason }) =>
+      `- **${VALUE_IMPACTS[impact]} — ${VALUE_AREAS[area]}:** ${escapeValueText(reason)}`
+    ),
+    ...(value.improvements?.length
+      ? [
+          '',
+          '**What would make this PR better?**',
+          '',
+          ...value.improvements.map((action) => `- ${escapeValueText(action)}`)
+        ]
+      : [])
   ];
 }
 

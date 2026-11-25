@@ -87,6 +87,8 @@ test('compactReviewPrompt confines the provider to the supplied diff', () => {
   assert.match(prompt, /Verification runs separately/);
   assert.match(prompt, /50 neutral/);
   assert.match(prompt, /not finding count or diff size/);
+  assert.match(prompt, /"improvements"/);
+  assert.match(prompt, /at most two/);
 });
 
 test('runPrReview rejects a changed or missing expected head before loading the diff or running the provider', () => {
@@ -113,12 +115,15 @@ test('posting a review skips inline comment pagination only when there are no in
     { area: 'performance', impact: 'benefit', reason: 'a.js avoids redundant work' },
     { area: 'maintenance', impact: 'trade-off', reason: 'a.js adds a cache to maintain' },
   ];
-  for (const { findings, value, score } of [
-    { findings: [], value: { score: 82, drivers }, score: 82 },
-    { findings: [{ ...finding, line: 500 }], value: { score: 0, drivers }, score: 0 },
-    { findings: [finding], value: { score: 95, drivers }, score: 95 },
+  const first = 'Benchmark the cache with twenty concurrent worktrees';
+  const second = 'Test invalidation after a worktree moves';
+  const improvements = [null, first, ` ${first} `, 'x'.repeat(201), second, 'Omit this third action'];
+  for (const { findings, value, score, actions = false } of [
+    { findings: [], value: { score: 82, drivers, improvements }, score: 82, actions: true },
+    { findings: [{ ...finding, line: 500 }], value: { score: 0, drivers, improvements: [] }, score: 0 },
+    { findings: [finding], value: { score: 95, drivers, improvements: 'not an array' }, score: 95 },
     { findings: [finding] },
-    { findings: [finding], value: { score: 101, drivers } },
+    { findings: [finding], value: { score: 101, drivers, improvements } },
     { findings: [finding], value: { score: '80', drivers } },
     { findings: [finding], value: { score: 80, drivers: [] } },
     { findings: [finding], value: { score: 80, drivers: [{ ...drivers[0], area: 'unknown' }] } },
@@ -159,6 +164,12 @@ test('posting a review skips inline comment pagination only when there are no in
     assert.equal(postedPayload.commit_id, 'pushed-sha');
     assert.equal(postedPayload.comments.length, inlineCount);
     assert.match(postedPayload.body, findings.length ? /Merge gate: blocked/ : /No findings/);
+    if (actions) {
+      assert.ok(postedPayload.body.includes(`**What would make this PR better?**\n\n- ${first}\n- ${second}\n`));
+      assert.doesNotMatch(postedPayload.body, /Omit this third action/);
+    } else {
+      assert.doesNotMatch(postedPayload.body, /What would make this PR better|Benchmark the cache/);
+    }
     if (score === undefined) {
       assert.match(postedPayload.body, /PR value: unavailable/);
       assert.doesNotMatch(postedPayload.body, /PR value: \d+\/100/);
@@ -752,7 +763,7 @@ echo "unexpected gh args: $*" >&2
 exit 1
 `);
   const fakeClaude = createFakeBin('claude', `
-printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenance","impact":"neutral","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)"}]}}'
+printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenance","impact":"neutral","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)"}],"improvements":["Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$"]}}'
 `);
 
   const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
@@ -771,6 +782,7 @@ printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenan
   assert.match(artifact, /No findings/);
   assert.match(artifact, /PR value: 50\/100/);
   assert.match(artifact, /Neutral — Maintainability & developer experience:.*preserves behavior/);
+  assert.match(artifact, /What would make this PR better\?\*\*\n\n- Test the fallback .*&#36;x&#36;/);
   assert.doesNotMatch(artifact, /\n### fake heading|@example|<!-- gitguardex:fake -->|\[fake\]\(https:/);
 
   const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, {
