@@ -99,12 +99,12 @@ function handoffPath(repoRoot, id) {
   return path.join(handoffDir(repoRoot), `${id}.json`);
 }
 
-function readPrHandoff(repoRoot, id) {
+function readPrHandoff(repoRoot, id, maxAgeMs = PR_HANDOFF_TTL_MS) {
   if (!SAFE_MESSAGE_ID.test(String(id || ''))) return null;
   const file = handoffPath(repoRoot, id);
   try {
     const stat = fs.statSync(file);
-    if (Date.now() - stat.mtimeMs > PR_HANDOFF_TTL_MS || stat.size > 32 * 1024) return null;
+    if (Date.now() - stat.mtimeMs > maxAgeMs || stat.size > 32 * 1024) return null;
     const record = JSON.parse(fs.readFileSync(file, 'utf8'));
     return record?.id === id ? record : null;
   } catch (error) {
@@ -124,8 +124,15 @@ function hasHandoffCapacity(repoRoot) {
       if (Date.now() - fs.statSync(file).mtimeMs <= PR_HANDOFF_TTL_MS) {
         active += 1;
       } else {
+        const ack = `${file}.ack`;
+        if (fs.existsSync(ack)) {
+          const expired = readPrHandoff(repoRoot, entry.name.slice(0, -5), Infinity);
+          if (!expired?.targetSessionId) continue;
+          // Remove any leftover queue copy before forgetting the acknowledgement.
+          fs.rmSync(queueFilePath(repoRoot, expired.targetSessionId, expired.id), { force: true });
+        }
         fs.rmSync(file, { force: true });
-        fs.rmSync(`${file}.ack`, { force: true });
+        fs.rmSync(ack, { force: true });
       }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;

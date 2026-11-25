@@ -559,6 +559,15 @@ test('PR handoff without a summary queues the linked message but does not write 
     calls.map(({ args }) => args[1]),
     ['view']
   );
+  // Receipt expiration must not resurrect the leftover acknowledged queue entry.
+  const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(handoffPath, old, old);
+  const next = runSendCommand(repoRoot, { ...options, message: 'another handoff' }, deps);
+  assert.equal(next.status, 0);
+  assert.deepEqual(
+    readAgentInbox(repoRoot, { sessionId: options.sessionId }, deps).messages.map(({ id }) => id),
+    [next.result.messageId]
+  );
 });
 
 test('PR handoff never posts a summary if resolution or authenticated delivery fails', () => {
