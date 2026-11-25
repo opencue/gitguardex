@@ -37,6 +37,7 @@ test('release workflow publishes with provenance in CI', () => {
   assert.match(workflow, /name:\s+Verify npm trusted-publishing support/);
   assert.match(workflow, /npm_version="\$\(npm --version\)"/);
   assert.match(workflow, /requires npm >=11\.5\.1/);
+  assert.match(workflow, /echo "package_path=\.\/dist\/\$package_file"/);
   assert.match(workflow, /npm publish "\$PACKAGE_PATH" --provenance --access public/);
   // Cosign installer must be pinned to a 40-char SHA on the v4.1.x line.
   // The patch version floats so a renovate/dependabot bump
