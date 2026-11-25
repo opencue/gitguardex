@@ -432,6 +432,10 @@ function prHandoffFixture(activity = 'done') {
   const deps = {
     listAgentSessions: () => [target, source],
     verifySourceCaller: () => ({ ok: true }),
+    readGitConfig: (_repoRoot, key) => {
+      assert.equal(key, 'remote.origin.url');
+      return 'git@github.com:org/repo.git';
+    },
     acquireDeliveryLock: () => () => {},
     inspectAgentPane: () => ({
       ok: true,
@@ -459,17 +463,56 @@ test('PR handoff publishes only the explicit summary after the terminal accepts 
   assert.equal(receipt.status, 0);
   assert.equal(receipt.result.prSummaryStatus, 'posted');
   assert.deepEqual(calls[0], {
-    args: ['pr', 'view', '42', '--json', 'url', '--jq', '.url'],
+    args: ['pr', 'view', '42', '--repo', 'github.com/org/repo', '--json', 'url', '--jq', '.url'],
     cwd: '/repo',
     input: undefined
   });
   assert.ok(calls[1].envelope.includes(`${options.message}\n\nPR: ${HANDOFF_PR_URL}`));
   assert.ok(!calls[1].envelope.includes('public handoff'));
   assert.deepEqual(calls[2], {
-    args: ['pr', 'comment', HANDOFF_PR_URL, '--body-file', '-'],
+    args: ['pr', 'comment', HANDOFF_PR_URL, '--repo', 'github.com/org/repo', '--body-file', '-'],
     cwd: '/repo',
     input: 'public handoff'
   });
+});
+
+test('PR handoff passes only the public summary to the GitHub CLI subprocess stdin', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-handoff-cli-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const gh = path.join(repoRoot, 'fake-gh');
+  const captured = path.join(repoRoot, 'gh-input.json');
+  fs.writeFileSync(
+    gh,
+    `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const input = fs.readFileSync(0, 'utf8');
+if (args[1] === 'view') {
+  if (input) process.exit(1);
+  console.log(${JSON.stringify(HANDOFF_PR_URL)});
+} else {
+  fs.writeFileSync(${JSON.stringify(captured)}, JSON.stringify({ args, input }));
+}
+`,
+    { mode: 0o700 }
+  );
+  t.mock.getter(require('../src/context'), 'GH_BIN', () => gh);
+  const { options, deps } = prHandoffFixture();
+  delete deps.runGh;
+  const summary = 'public handoff\nwith a second line';
+  const receipt = runSendCommand(repoRoot, { ...options, prSummary: summary }, deps);
+  assert.equal(receipt.status, 0);
+  const result = JSON.parse(fs.readFileSync(captured, 'utf8'));
+  assert.equal(result.input, summary);
+  assert.deepEqual(result.args, [
+    'pr',
+    'comment',
+    HANDOFF_PR_URL,
+    '--repo',
+    'github.com/org/repo',
+    '--body-file',
+    '-'
+  ]);
 });
 
 test('PR handoff without a summary queues the linked message but does not write to GitHub', (t) => {
@@ -494,15 +537,22 @@ test('PR handoff never posts a summary if resolution or authenticated delivery f
   const { options, deps, calls } = prHandoffFixture();
   const request = { ...options, prSummary: 'public handoff' };
   const runGh = deps.runGh;
-  const invalid = runSendCommand('/repo', request, {
-    ...deps,
-    runGh: (...args) => ({ ...runGh(...args), stdout: HANDOFF_PR_URL.replace('/42', '/43') })
-  });
-  assert.equal(invalid.result.kind, 'pr-unavailable');
-  assert.deepEqual(
-    calls.map(({ args }) => args[1]),
-    ['view']
-  );
+  for (const url of [
+    HANDOFF_PR_URL.replace('/42', '/43'),
+    HANDOFF_PR_URL.replace('/org/repo/', '/another-org/repo/'),
+    HANDOFF_PR_URL.replace('github.com', 'another.example')
+  ]) {
+    calls.length = 0;
+    const invalid = runSendCommand('/repo', request, {
+      ...deps,
+      runGh: (...args) => ({ ...runGh(...args), stdout: url })
+    });
+    assert.equal(invalid.result.kind, 'pr-unavailable');
+    assert.deepEqual(
+      calls.map(({ args }) => args[1]),
+      ['view']
+    );
+  }
 
   calls.length = 0;
   const denied = runSendCommand('/repo', request, {

@@ -7,6 +7,7 @@ const path = require('node:path');
 const context = require('../context');
 const { TOOL_NAME } = context;
 const { run } = require('../core/runtime');
+const { readGitConfig } = require('../git');
 const tmuxCommand = require('../tmux/command');
 const { getAgentDefinition } = require('./registry');
 const { agentStateDir, listAgentSessions } = require('./sessions');
@@ -726,13 +727,30 @@ function sendPrHandoff(repoRoot, options, deps) {
     );
   }
 
+  const origin = (deps.readGitConfig || readGitConfig)(repoRoot, 'remote.origin.url');
+  const remote =
+    /^(?:(?:https|ssh):\/\/(?:[^/@\s]+@)?|git@)([a-z0-9][a-z0-9.-]*)(?:\/|:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i.exec(
+      origin
+    );
+  if (!remote)
+    return refusal('pr-unavailable', 'could not identify a GitHub repository from origin');
+  const repo = `${remote[1]}/${remote[2]}`;
+
   const runGh = deps.runGh || ((args, execution) => run(context.GH_BIN, args, execution));
   const execution = { cwd: repoRoot, timeout: 30_000 };
-  const view = runGh(['pr', 'view', options.pr, '--json', 'url', '--jq', '.url'], execution);
+  const view = runGh(
+    ['pr', 'view', options.pr, '--repo', repo, '--json', 'url', '--jq', '.url'],
+    execution
+  );
   const prUrl = view.stdout?.trim() || '';
-  const url = /^https:\/\/[a-z0-9.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/([1-9]\d*)$/i.exec(prUrl);
-  if (view.status !== 0 || url?.[1] !== options.pr) {
-    return refusal('pr-unavailable', `could not resolve PR #${options.pr} in this repository`);
+  if (
+    view.status !== 0 ||
+    prUrl.toLowerCase() !== `https://${repo}/pull/${options.pr}`.toLowerCase()
+  ) {
+    return refusal(
+      'pr-unavailable',
+      `could not resolve PR #${options.pr} in the origin repository`
+    );
   }
 
   const result = sendOrQueueAgentMessage(
@@ -744,7 +762,7 @@ function sendPrHandoff(repoRoot, options, deps) {
   if (!summary) return { ...result, prUrl };
 
   // The explicitly public summary alone crosses the GitHub boundary.
-  const comment = runGh(['pr', 'comment', prUrl, '--body-file', '-'], {
+  const comment = runGh(['pr', 'comment', prUrl, '--repo', repo, '--body-file', '-'], {
     ...execution,
     input: summary
   });
