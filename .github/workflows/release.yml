@@ -98,7 +98,8 @@ jobs:
             npm pkg set version="$PACKAGE_VERSION" gitHead="$GITHUB_SHA"
             package_file="$(npm pack --pack-destination dist)"
           fi
-          echo "package_path=dist/$package_file" >> "$GITHUB_OUTPUT"
+          # A bare dist/file.tgz is parsed by npm as GitHub shorthand.
+          echo "package_path=./dist/$package_file" >> "$GITHUB_OUTPUT"
 
       - name: Check that main is still current
         id: source
