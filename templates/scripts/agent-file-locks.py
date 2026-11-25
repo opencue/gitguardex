@@ -900,7 +900,14 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
         if run_git(['--literal-pathspecs', 'status', '--porcelain', '--untracked-files=all',
                     '--ignored=matching', '--ignore-submodules=none', '--', file_path], cwd=cwd):
             raise LockError(f'Cannot hand off {file_path}: uncommitted changes in {cwd}')
-    commit = run_git(['rev-parse', 'HEAD'], cwd=repo_root)
+    resumed = target_entry and target_entry.get('handoff_id') == args.id
+    commit = target_entry['handoff_commit'] if resumed else run_git(['rev-parse', 'HEAD'], cwd=repo_root)
+    if resumed:
+        try:
+            run_git(['--literal-pathspecs', 'diff', '--quiet', '--ignore-submodules=none', commit, 'HEAD',
+                     '--', file_path], cwd=repo_root)
+        except LockError as exc:
+            raise LockError(f'Cannot resume: {file_path} changed after recorded handoff commit {commit}') from exc
     try:
         run_git(['merge-base', '--is-ancestor', commit, 'HEAD'], cwd=target)
     except LockError as exc:
@@ -909,7 +916,7 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
     # Write destination first. If interrupted across worktrees, both claims
     # block one another; rerun the same approval to finish. No unlocked gap.
     check = args.check
-    if check is None and target_entry and target_entry.get('handoff_id') == args.id:
+    if check is None and resumed:
         check = target_entry.get('handoff_check')
     target_state['locks'][file_path] = {
         **LockEntry(recipient['branch'], now_iso(), agent=recipient['agent'], pane=request.get('pane', '')).__dict__,

@@ -481,6 +481,7 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     // Interrupt after writing the recipient lock, but before releasing the source.
     fs.writeFileSync(sourceRegistry, originalClaim);
     fs.writeFileSync(receipt, pendingReceipt);
+    git(owner, 'commit', '--no-verify', '--allow-empty', '-m', 'Unrelated commit after interruption');
     const resumed = locksAt(owner, ['handoff-approve', id], a);
     assert.equal(resumed.status, 0, resumed.stderr);
     assert.match(locksAt(next, ['handoffs'], b).stdout, new RegExp(commit));
