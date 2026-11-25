@@ -87,7 +87,8 @@ test('compactReviewPrompt confines the provider to the supplied diff', () => {
   assert.match(prompt, /Verification runs separately/);
   assert.match(prompt, /50 neutral/);
   assert.match(prompt, /not finding count or diff size/);
-  assert.match(prompt, /"evidence":\{"path":"file","line":123\}/);
+  assert.match(prompt, /"evidence":\{"path":"new\/file","line":12\}/);
+  assert.match(prompt, /Do not return a numeric score/);
   assert.match(prompt, /"improvements"/);
   assert.match(prompt, /at most two/);
 });
@@ -115,23 +116,21 @@ test('posting a review skips inline comment pagination only when there are no in
   const evidence = { path: 'a.js', line: 1 };
   const anchor = '/opencue/gitguardex/pull/42/files#diff-dc5985b2a377c4ea735c99979da277be3bd24be88cf411c11b52b5c3f9570536R1';
   const drivers = [
-    { area: 'performance', impact: 'benefit', reason: 'a.js avoids redundant work', evidence },
-    { area: 'maintenance', impact: 'trade-off', reason: 'a.js adds a cache to maintain', evidence: { ...evidence, line: 500 } },
+    { area: 'performance', impact: 'benefit', weight: 'notable', reason: 'a.js avoids redundant work', evidence },
+    { area: 'maintenance', impact: 'trade-off', weight: 'limited', reason: 'a.js adds a cache to maintain', evidence },
   ];
   const first = 'Benchmark the cache with twenty concurrent worktrees';
   const second = 'Test invalidation after a worktree moves';
   const improvements = [null, first, ` ${first} `, 'x'.repeat(201), second, 'Omit this third action'];
-  for (const { findings, value, score, actions = false, noLink = false } of [
-    { findings: [], value: { score: 82, drivers, improvements }, score: 82, actions: true },
-    { findings: [{ ...finding, line: 500 }], value: { score: 0, drivers, improvements: [] }, score: 0 },
-    { findings: [finding], value: { score: 95, drivers, improvements: 'not an array' }, score: 95 },
-    { findings: [], value: { score: 82, drivers: [{ ...drivers[0], evidence: { ...evidence, line: '1' } }, drivers[1]] }, score: 82, noLink: true },
-    { findings: [], value: { score: 82, drivers: [{ ...drivers[0], evidence: { ...evidence, path: 'https://example.test/a.js' } }, drivers[1]] }, score: 82, noLink: true },
+  for (const { findings, value, score, actions = false } of [
+    { findings: [], value: { score: 82, drivers, improvements }, score: 55, actions: true },
+    { findings: [{ ...finding, line: 500 }], value: { drivers, improvements: [] }, score: 55 },
+    { findings: [finding], value: { drivers, improvements: 'not an array' }, score: 55 },
+    { findings: [], value: { drivers: [{ ...drivers[0], evidence: { ...evidence, line: '1' } }, drivers[1]] } },
+    { findings: [], value: { drivers: [{ ...drivers[0], evidence: { ...evidence, path: 'https://example.test/a.js' } }, drivers[1]] } },
     { findings: [finding] },
-    { findings: [finding], value: { score: 101, drivers, improvements } },
-    { findings: [finding], value: { score: '80', drivers } },
     { findings: [finding], value: { score: 80, drivers: [] } },
-    { findings: [finding], value: { score: 80, drivers: [{ ...drivers[0], area: 'unknown' }] } },
+    { findings: [finding], value: { drivers: [{ ...drivers[0], area: 'unknown' }] } },
   ]) {
     let providerCalls = 0;
     let commentReads = 0;
@@ -170,21 +169,22 @@ test('posting a review skips inline comment pagination only when there are no in
     assert.equal(postedPayload.comments.length, inlineCount);
     assert.match(postedPayload.body, findings.length ? /Merge gate: blocked/ : /No findings/);
     if (actions) {
-      assert.ok(postedPayload.body.includes(`**What would make this PR better?**\n\n- ${first}\n- ${second}\n`));
+      assert.ok(postedPayload.body.includes(`**Suggested next steps**\n\n1. ${first}\n2. ${second}\n`));
       assert.doesNotMatch(postedPayload.body, /Omit this third action/);
     } else {
-      assert.doesNotMatch(postedPayload.body, /What would make this PR better|Benchmark the cache/);
+      assert.doesNotMatch(postedPayload.body, /Suggested next steps|Benchmark the cache/);
     }
     if (score === undefined) {
       assert.match(postedPayload.body, /PR value: unavailable/);
       assert.doesNotMatch(postedPayload.body, /PR value: \d+\/100/);
+      assert.doesNotMatch(postedPayload.body, /\/files#diff-/);
     } else {
       assert.ok(postedPayload.body.includes(`PR value: ${score}/100`));
-      assert.match(postedPayload.body, /Benefit — Performance & cost:.*avoids redundant work/);
-      assert.match(postedPayload.body, /Trade-off — Maintainability & developer experience:.*adds a cache/);
+      assert.match(postedPayload.body, /Benefit\*\* · Performance & cost.*\+10.*avoids redundant work/);
+      assert.match(postedPayload.body, /Trade-off\*\* · Maintainability & developer experience.*-5.*adds a cache/);
       assert.match(postedPayload.body, /not a merge verdict/i);
-      assert.equal(postedPayload.body.match(/\/files#diff-/g)?.length ?? 0, noLink ? 0 : 1);
-      if (!noLink) assert.ok(postedPayload.body.includes(` — [a&#46;js&#58;1](${anchor})`));
+      assert.equal(postedPayload.body.match(/\/files#diff-/g)?.length ?? 0, 2);
+      assert.ok(postedPayload.body.includes(` — [a&#46;js&#58;1](${anchor})`));
     }
   }
 });
@@ -771,7 +771,7 @@ echo "unexpected gh args: $*" >&2
 exit 1
 `);
   const fakeClaude = createFakeBin('claude', `
-printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenance","impact":"neutral","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)","evidence":{"path":"src/a.js","line":1}}],"improvements":["1) Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$","---"]}}'
+printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact":"neutral","weight":"none","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)","evidence":{"path":"src/a.js","line":1}}],"improvements":["1) Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$","---"]}}'
 `);
 
   const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
@@ -789,10 +789,10 @@ printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenan
   const artifact = fs.readFileSync(artifactPath, 'utf8');
   assert.match(artifact, /No findings/);
   assert.match(artifact, /PR value: 50\/100/);
-  assert.match(artifact, /Neutral — Maintainability & developer experience:.*preserves behavior/);
-  assert.match(artifact, / — src\/a&#46;js&#58;1$/m);
+  assert.match(artifact, /Neutral\*\* · Maintainability & developer experience.*preserves behavior/);
+  assert.match(artifact, / — src\/a&#46;js&#58;1 \|$/m);
   assert.doesNotMatch(artifact, /\/files#diff-/);
-  assert.match(artifact, /What would make this PR better\?\*\*\n\n- 1&#41; Test the fallback .*&#36;x&#36;\n- &#45;&#45;&#45;/);
+  assert.match(artifact, /Suggested next steps\*\*\n\n1\. 1&#41; Test the fallback .*&#36;x&#36;\n2\. &#45;&#45;&#45;/);
   assert.doesNotMatch(artifact, /\n### fake heading|@example|<!-- gitguardex:fake -->|\[fake\]\(https:/);
 
   const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, {
