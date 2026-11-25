@@ -104,6 +104,61 @@ test('runPrReview rejects a changed or missing expected head before loading the 
   }
 });
 
+test('posting a review skips inline comment pagination only when there are no inline findings', () => {
+  const diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+new\n';
+  const finding = { path: 'a.js', line: 1, severity: 'high', message: 'bug' };
+  for (const findings of [[], [{ ...finding, line: 500 }], [finding]]) {
+    let commentReads = 0;
+    let headReads = 0;
+    let postedPayload;
+    const result = prReview.runPrReview(
+      { pr: 42, post: true, expectedHeadSha: 'pushed-sha', prLens: false, abide: false },
+      { run(_cmd, args) {
+        if (args[0] === 'exec') return { status: 0, stdout: JSON.stringify({ findings }) };
+        if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+        if (args[0] === 'auth') return { status: 0 };
+        if (args[1] === 'view') {
+          headReads += 1;
+          return { status: 0, stdout: 'pushed-sha' };
+        }
+        if (args[1] === 'diff') return { status: 0, stdout: diff };
+        if (args.includes('--paginate')) {
+          commentReads += 1;
+          return { status: 0, stdout: '' };
+        }
+        assert.equal(args[0], 'api');
+        postedPayload = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
+        return { status: 0 };
+      } },
+    );
+    const inlineCount = findings[0]?.line === 1 ? 1 : 0;
+    assert.equal(commentReads, inlineCount);
+    assert.equal(headReads, 2, 'the pre-review and pre-post head guards both remain');
+    assert.equal(result.posted, true);
+    assert.equal(result.findings.length, findings.length);
+    assert.equal(postedPayload.commit_id, 'pushed-sha');
+    assert.equal(postedPayload.comments.length, inlineCount);
+  }
+});
+
+test('quiet reviewer captures verbose output and only returns a bounded error tail on failure', () => {
+  const runCase = (agentQuiet) => prReview.runProviderReview(
+    'codex', 'diff --git a/a.js b/a.js', '/repo', 1000,
+    (_cmd, _args, options) => {
+      assert.deepEqual(options.stdio, ['pipe', 'pipe', agentQuiet ? 'pipe' : 'inherit']);
+      return { status: 1, stderr: 'PROMPT_REPLAY\n' + 'x'.repeat(3000) + '\nprovider error detail' };
+    },
+    { agentQuiet },
+  );
+  assert.throws(() => runCase(false), /PROMPT_REPLAY/);
+  assert.throws(() => runCase(true), (err) => {
+    assert.match(err.message, /provider error detail/);
+    assert.doesNotMatch(err.message, /PROMPT_REPLAY/);
+    assert.ok(err.message.length <= 2200);
+    return true;
+  });
+});
+
 test('default PR review uses Codex, falling back to Claude only when Codex cannot launch', (t) => {
   const target = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-review-fallback-'));
   t.after(() => fs.rmSync(target, { recursive: true, force: true }));
@@ -155,10 +210,12 @@ test('pr-review CLI reviews and fixes with Claude when the Codex binary does not
   seedCommit(repo);
   const fakeGh = createFakeBin('gh', 'echo "diff --git a/a.js b/a.js"');
   const fakeClaude = createFakeBin('claude', `
+    echo "PROVIDER-STderr-TRANSCRIPT" >&2
     case "$*" in
       '--safe-mode --tools  -p')
         printf '%s\\n' '{"findings":[{"path":"a.js","line":1,"severity":"high","message":"bug"}]}' ;;
       '--safe-mode --permission-mode acceptEdits -p')
+        echo "PROVIDER-STDOUT-TRANSCRIPT"
         printf 'fixed\\n' > a.js ;;
       *) exit 9 ;;
     esac
@@ -169,7 +226,7 @@ test('pr-review CLI reviews and fixes with Claude when the Codex binary does not
     }
   });
   const result = runNodeWithEnv(
-    ['pr-review', '--pr', '42', '--artifact', 'review.md', '--no-pr-lens', '--no-abide', '--fix'],
+    ['pr-review', '--pr', '42', '--artifact', 'review.md', '--no-pr-lens', '--no-abide', '--fix', '--agent-quiet'],
     repo,
     {
       PATH: `${fakeGh.fakeBin}:${process.env.PATH}`,
@@ -182,6 +239,7 @@ test('pr-review CLI reviews and fixes with Claude when the Codex binary does not
   assert.match(result.stdout, /codex review unavailable.*falling back to Claude/);
   assert.match(result.stdout, /code-assist claude review completed/);
   assert.match(result.stdout, /Auto-fix committed 1 file\(s\): a.js/);
+  assert.doesNotMatch(result.stderr + result.stdout, /PROVIDER-(?:STderr|STDOUT)-TRANSCRIPT/);
   assert.equal(fs.readFileSync(path.join(repo, 'a.js'), 'utf8'), 'fixed\n');
   assert.match(fs.readFileSync(path.join(repo, 'review.md'), 'utf8'), /Provider: claude/i);
 });

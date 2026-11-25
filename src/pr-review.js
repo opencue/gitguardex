@@ -679,8 +679,11 @@ function postReviewPayload(pr, payload, repoRoot, runner = run) {
  */
 function postGithubReview(pr, context, repoRoot, runner = run) {
   const { provider, findings, anchored, unanchored, truncated, gate } = context;
-  const alreadyPosted = fetchPostedFingerprints(pr, repoRoot, runner);
-  const fresh = anchored.filter((finding) => !alreadyPosted.has(findingFingerprint(finding)));
+  let fresh = anchored;
+  if (anchored.length > 0) {
+    const alreadyPosted = fetchPostedFingerprints(pr, repoRoot, runner);
+    fresh = anchored.filter((finding) => !alreadyPosted.has(findingFingerprint(finding)));
+  }
   const duplicates = anchored.length - fresh.length;
   const commit = fetchHeadSha(pr, repoRoot, runner);
   if (context.reviewedHeadSha && commit !== context.reviewedHeadSha) {
@@ -769,7 +772,7 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
       const startedAt = Date.now();
       console.log(
         `${TOOL_PREFIX} code-assist ${provider} ${settings.graphRepair ? 'graph repair' : 'review'} attempt ${attempt + 1}/${attempts} started` +
-          `${model ? ` with model ${model}` : ''}; provider progress follows`
+          `${model ? ` with model ${model}` : ''}${settings.agentQuiet ? '' : '; provider progress follows'}`
       );
       const result = runner(providerCommand, command.args, {
         cwd: sandboxRoot,
@@ -778,9 +781,9 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
         ...(settings.graphRepair ? { maxBuffer: 256_000 } : {}),
         // Provider CLIs reserve stdout for their final machine-readable answer
         // and write live agent progress to stderr. Keep stdout piped for JSON
-        // parsing, but let stderr flow straight through gx so a 10-minute review
-        // no longer looks like a hung background terminal.
-        stdio: ['pipe', 'pipe', 'inherit']
+        // parsing. Interactive runs still stream; quiet runs retain only a
+        // bounded diagnostic on failure, not the provider's replay of the diff.
+        stdio: ['pipe', 'pipe', settings.agentQuiet ? 'pipe' : 'inherit']
       });
       // spawnSync reports a timeout as error.code ETIMEDOUT with a null status, so
       // name it: "review failed" with empty stderr sends the operator hunting for a
@@ -800,9 +803,9 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
         );
       }
       if (result.status !== 0) {
-        throw new Error(
-          `${provider} review failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`
-        );
+        const stderr = String(result.stderr || '').trim();
+        const detail = settings.agentQuiet ? stderr.slice(-2000) : stderr;
+        throw new Error(`${provider} review failed${detail ? `\n${detail}` : ''}`);
       }
       // A compliant provider always emits the findings JSON object (empty array
       // when nothing is wrong). Empty stdout means the review did NOT run — fail
@@ -935,6 +938,7 @@ function runPrReview(options, deps = {}) {
   const reviewWithProvider = () =>
     runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
       model,
+      agentQuiet: options.agentQuiet,
       prLens: Boolean(lensContext)
     });
   let review;
@@ -988,6 +992,7 @@ function runPrReview(options, deps = {}) {
             throw new Error('PR Lens graph exceeds repair input limit');
           return runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
             model,
+            agentQuiet: options.agentQuiet,
             graphRepair: { graph: invalidGraph, errors }
           }).graph;
         }

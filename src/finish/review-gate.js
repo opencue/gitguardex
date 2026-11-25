@@ -462,6 +462,7 @@ function runReviewGate(
         expectedHeadSha: pushedHeadSha,
         model: options.reviewModel,
         timeoutMs: options.reviewTimeoutMs,
+        agentQuiet: options.agentQuiet,
         // abide's AGENTS.md verdicts ride along with the AI review; `act`
         // verdicts block like a high finding. --no-gate-abide turns them off.
         abide: options.gateAbide !== false
@@ -518,6 +519,7 @@ function runReviewGate(
         repoRoot: fixCwd,
         provider: review.provider || provider,
         model: !provider && review.provider === 'claude' ? null : undefined,
+        agentQuiet: options.agentQuiet,
         findings: verdict.blocking,
         expectBranch: branch
       });

@@ -336,6 +336,10 @@ function parsePrReviewArgs(rawArgs) {
       options.abide = arg === '--abide';
       continue;
     }
+    if (arg === '--agent-quiet') {
+      options.agentQuiet = true;
+      continue;
+    }
     if (arg === '--fix') {
       options.fix = true;
       continue;

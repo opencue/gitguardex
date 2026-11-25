@@ -31,6 +31,7 @@ function prReview(rawArgs) {
     const fix = reviewFixModule.runReviewFix({
       repoRoot: resolveRepoRoot(options.target),
       provider: result.provider,
+      agentQuiet: options.agentQuiet,
       model: !options.provider && result.provider === 'claude' ? null : undefined,
       findings: result.findings,
     });

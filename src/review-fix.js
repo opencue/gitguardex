@@ -142,6 +142,7 @@ function runReviewFix({
   timeoutMs = DEFAULT_FIX_TIMEOUT_MS,
   expectBranch = '',
   model = '',
+  agentQuiet = false,
 }, deps = {}) {
   const runner = deps.run || run;
   if (findings.length === 0) {
@@ -188,19 +189,19 @@ function runReviewFix({
   const startedAt = Date.now();
   console.log(
     `${TOOL_PREFIX} code-assist ${provider} auto-fix started for ${findings.length} finding(s)`
-    + `${selectedModel ? ` with model ${selectedModel}` : ''}; provider progress follows`,
+    + `${selectedModel ? ` with model ${selectedModel}` : ''}${agentQuiet ? '' : '; provider progress follows'}`,
   );
   const result = runner(command.cmd, command.args, {
     cwd: repoRoot,
     timeout: timeoutMs,
     input: command.input,
-    // No provider output is parsed in fix mode. Inherit both streams so edits,
-    // tool calls, and progress remain visible to the parent Codex session.
-    // stdin is 'pipe' so the fix prompt arrives via input instead of a CLI arg.
-    stdio: ['pipe', 'inherit', 'inherit'],
+    // No provider output is parsed in fix mode; keep only quiet-mode diagnostics.
+    stdio: agentQuiet ? ['pipe', 'ignore', 'pipe'] : ['pipe', 'inherit', 'inherit'],
   });
   if (result.status !== 0) {
-    throw new Error(`${provider} fix run failed${result.stderr ? `\n${result.stderr.trim()}` : ''}`);
+    const stderr = String(result.stderr || '').trim();
+    const detail = agentQuiet ? stderr.slice(-2000) : stderr;
+    throw new Error(`${provider} fix run failed${detail ? `\n${detail}` : ''}`);
   }
   console.log(
     `${TOOL_PREFIX} code-assist ${provider} auto-fix completed in ${Math.round((Date.now() - startedAt) / 1000)}s`,

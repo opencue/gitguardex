@@ -816,13 +816,13 @@ test('runReviewGate uses the fallback provider for the fix and reviews the new r
   let sha = 'initial-sha';
   const deps = gateDeps({
     runPrReview: (options) => {
-      calls.push(['review', options.provider, options.expectedHeadSha]);
+      calls.push(['review', options.provider, options.expectedHeadSha, options.agentQuiet]);
       const findings = options.expectedHeadSha === 'initial-sha'
         ? [{ severity: 'high', path: 'a.js', line: 1, message: 'bug' }] : [];
       return { provider: 'claude', posted: true, findings };
     },
     runReviewFix: (options) => {
-      calls.push(['fix', options.provider, options.model]);
+      calls.push(['fix', options.provider, options.model, options.agentQuiet]);
       sha = 'repaired-sha';
       return { status: 'fixed', changedFiles: ['a.js'] };
     },
@@ -830,11 +830,11 @@ test('runReviewGate uses the fallback provider for the fix and reviews the new r
     readHeadSha: () => sha,
     waitForPullRequestHead: (_r, _b, headSha) => ({ status: 'current', pr: { headSha } }),
   });
-  runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps);
+  runReviewGate({ ...gateArgs, options: { gateAutofix: true, agentQuiet: true } }, deps);
   assert.deepEqual(calls, [
-    ['review', undefined, 'initial-sha'],
-    ['fix', 'claude', null],
-    ['review', undefined, 'repaired-sha'],
+    ['review', undefined, 'initial-sha', true],
+    ['fix', 'claude', null, true],
+    ['review', undefined, 'repaired-sha', true],
   ]);
 });
 
