@@ -40,6 +40,7 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
       require.resolve('./review-gate'),
       require.resolve('../pr-review'),
       require.resolve('../provider-binary'),
+      require.resolve('../review-diff'),
       require.resolve('../review-diff-context')
     ].map((source) => hash(fs.readFileSync(source)));
   } catch {

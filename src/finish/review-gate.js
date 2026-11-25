@@ -457,6 +457,13 @@ function runReviewGate(
   let autofixAttempted = false;
   // Pin CI from the first review, and advance only after a reviewed autofix.
   let pushedHeadSha = initialHeadSha;
+  const assertReviewedRevision = () => {
+    if (headSha(fixCwd) !== pushedHeadSha || baseSha(fixCwd, baseBranch) !== reviewedBaseSha) {
+      throw new Error(
+        'review gate: source or base changed during review. Rerun the review gate before merging.'
+      );
+    }
+  };
   for (let round = 0; !reusable && round <= maxFixRounds; round += 1) {
     reportProgress(
       progress,
@@ -673,7 +680,11 @@ function runReviewGate(
     logProgress(
       `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`
     );
-    if (threadResolution.ok !== false) getReceipt(pushedHeadSha)?.write(review);
+    const receipt = threadResolution.ok !== false && getReceipt(pushedHeadSha);
+    if (receipt) {
+      assertReviewedRevision();
+      receipt.write(review);
+    }
   }
 
   // 3. Promote draft -> ready so required CI checks fire. Already done in step
@@ -782,11 +793,7 @@ function runReviewGate(
     throw new Error(`review gate: PR #${prNumber} not in a mergeable state (${ci.status}).`);
   }
 
-  if (headSha(fixCwd) !== pushedHeadSha || baseSha(fixCwd, baseBranch) !== reviewedBaseSha) {
-    throw new Error(
-      'review gate: source or base changed during review. Rerun the review gate before merging.'
-    );
-  }
+  assertReviewedRevision();
   const mss = ci.pr && ci.pr.mergeStateStatus;
   const billingChecksWaived = Array.isArray(ci.billingWaivedNames) ? ci.billingWaivedNames : [];
   if (billingChecksWaived.length > 0) {

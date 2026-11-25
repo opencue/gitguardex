@@ -89,6 +89,8 @@ test('a started CI run survives retry; preflight still precedes the merge verdic
   };
   let ready = false;
   let saved;
+  let base = 'base-1';
+  let moveBaseDuringReview = false;
   let ci = 'timeout';
   const deps = {
     openPullRequest: () => ({
@@ -101,9 +103,10 @@ test('a started CI run survives retry; preflight still precedes the merge verdic
       }
     }),
     readHeadSha: () => 'head-1',
-    readBaseSha: () => 'base-1',
+    readBaseSha: () => base,
     runPrReview: () => {
       events.push('review');
+      if (moveBaseDuringReview) base = 'base-2';
       return clean;
     },
     reviewReceipt: (_repo, { head, base }) => {
@@ -131,6 +134,12 @@ test('a started CI run survives retry; preflight still precedes the merge verdic
       return { status: ci, pr: { mergeStateStatus: 'CLEAN' } };
     }
   };
+  moveBaseDuringReview = true;
+  assert.throws(() => runReviewGate(args, deps), /source or base changed during review/i);
+  assert.equal(saved, undefined, 'a review spanning a base change is not reusable');
+  assert.deepEqual(events.splice(0), ['review'], 'do not promote the PR on a stale verdict');
+  moveBaseDuringReview = false;
+  base = 'base-1';
   assert.throws(() => runReviewGate(args, deps), /timed out/i);
   assert.deepEqual(events.splice(0), ['review', 'ready', 'preflight', 'ci']);
   ci = 'green';
