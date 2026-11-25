@@ -87,6 +87,7 @@ test('compactReviewPrompt confines the provider to the supplied diff', () => {
   assert.match(prompt, /Verification runs separately/);
   assert.match(prompt, /50 neutral/);
   assert.match(prompt, /not finding count or diff size/);
+  assert.match(prompt, /"evidence":\{"path":"file","line":123\}/);
   assert.match(prompt, /"improvements"/);
   assert.match(prompt, /at most two/);
 });
@@ -111,17 +112,21 @@ test('runPrReview rejects a changed or missing expected head before loading the 
 test('posting a review skips inline comment pagination only when there are no inline findings', () => {
   const diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+new\n';
   const finding = { path: 'a.js', line: 1, severity: 'high', message: 'bug' };
+  const evidence = { path: 'a.js', line: 1 };
+  const anchor = '/opencue/gitguardex/pull/42/files#diff-dc5985b2a377c4ea735c99979da277be3bd24be88cf411c11b52b5c3f9570536R1';
   const drivers = [
-    { area: 'performance', impact: 'benefit', reason: 'a.js avoids redundant work' },
-    { area: 'maintenance', impact: 'trade-off', reason: 'a.js adds a cache to maintain' },
+    { area: 'performance', impact: 'benefit', reason: 'a.js avoids redundant work', evidence },
+    { area: 'maintenance', impact: 'trade-off', reason: 'a.js adds a cache to maintain', evidence: { ...evidence, line: 500 } },
   ];
   const first = 'Benchmark the cache with twenty concurrent worktrees';
   const second = 'Test invalidation after a worktree moves';
   const improvements = [null, first, ` ${first} `, 'x'.repeat(201), second, 'Omit this third action'];
-  for (const { findings, value, score, actions = false } of [
+  for (const { findings, value, score, actions = false, noLink = false } of [
     { findings: [], value: { score: 82, drivers, improvements }, score: 82, actions: true },
     { findings: [{ ...finding, line: 500 }], value: { score: 0, drivers, improvements: [] }, score: 0 },
     { findings: [finding], value: { score: 95, drivers, improvements: 'not an array' }, score: 95 },
+    { findings: [], value: { score: 82, drivers: [{ ...drivers[0], evidence: { ...evidence, line: '1' } }, drivers[1]] }, score: 82, noLink: true },
+    { findings: [], value: { score: 82, drivers: [{ ...drivers[0], evidence: { ...evidence, path: 'https://example.test/a.js' } }, drivers[1]] }, score: 82, noLink: true },
     { findings: [finding] },
     { findings: [finding], value: { score: 101, drivers, improvements } },
     { findings: [finding], value: { score: '80', drivers } },
@@ -178,6 +183,8 @@ test('posting a review skips inline comment pagination only when there are no in
       assert.match(postedPayload.body, /Benefit — Performance & cost:.*avoids redundant work/);
       assert.match(postedPayload.body, /Trade-off — Maintainability & developer experience:.*adds a cache/);
       assert.match(postedPayload.body, /not a merge verdict/i);
+      assert.equal(postedPayload.body.match(/\/files#diff-/g)?.length ?? 0, noLink ? 0 : 1);
+      if (!noLink) assert.ok(postedPayload.body.includes(` — [a&#46;js&#58;1](${anchor})`));
     }
   }
 });
@@ -602,6 +609,7 @@ if [[ "$1" == "pr" && "$2" == "diff" ]]; then
   printf '%s\\n' '--- a/src/a.js'
   printf '%s\\n' '+++ b/src/a.js'
   printf '%s\\n' '@@ -1 +1 @@'
+  printf '%s\\n' '-const broken = false'
   printf '%s\\n' '+const broken = true'
   exit 0
 fi
@@ -763,7 +771,7 @@ echo "unexpected gh args: $*" >&2
 exit 1
 `);
   const fakeClaude = createFakeBin('claude', `
-printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenance","impact":"neutral","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)"}],"improvements":["1) Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$","---"]}}'
+printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenance","impact":"neutral","reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)","evidence":{"path":"src/a.js","line":1}}],"improvements":["1) Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$","---"]}}'
 `);
 
   const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
@@ -782,6 +790,8 @@ printf '%s\\n' '{"findings":[],"value":{"score":50,"drivers":[{"area":"maintenan
   assert.match(artifact, /No findings/);
   assert.match(artifact, /PR value: 50\/100/);
   assert.match(artifact, /Neutral — Maintainability & developer experience:.*preserves behavior/);
+  assert.match(artifact, / — src\/a&#46;js&#58;1$/m);
+  assert.doesNotMatch(artifact, /\/files#diff-/);
   assert.match(artifact, /What would make this PR better\?\*\*\n\n- 1&#41; Test the fallback .*&#36;x&#36;\n- &#45;&#45;&#45;/);
   assert.doesNotMatch(artifact, /\n### fake heading|@example|<!-- gitguardex:fake -->|\[fake\]\(https:/);
 
