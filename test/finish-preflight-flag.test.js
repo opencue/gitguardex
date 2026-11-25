@@ -93,7 +93,7 @@ test('overlapping preflight verifies only the pinned revision and never publishe
   fs.mkdirSync(path.join(repoDir, 'scripts'));
   fs.writeFileSync(
     path.join(repoDir, 'scripts/agent-preflight.sh'),
-    '#!/usr/bin/env bash\necho checked >> "$PREFLIGHT_COUNTER"\nexit "${PREFLIGHT_EXIT:-0}"\n',
+    '#!/usr/bin/env bash\n[[ ! -v GUARDEX_FINISH_PREFLIGHT_ONLY ]] || exit 77\necho checked >> "$PREFLIGHT_COUNTER"\nexit "${PREFLIGHT_EXIT:-0}"\n',
     { mode: 0o755 }
   );
   git('add', '.');

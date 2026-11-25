@@ -794,6 +794,9 @@ function runReviewGate(
   }
 
   assertReviewedRevision();
+  if (reusable && getReceipt(pushedHeadSha)?.read()?.id !== reusable.id) {
+    throw new Error('review gate: the saved Codex review changed during CI. Rerun before merging.');
+  }
   const mss = ci.pr && ci.pr.mergeStateStatus;
   const billingChecksWaived = Array.isArray(ci.billingWaivedNames) ? ci.billingWaivedNames : [];
   if (billingChecksWaived.length > 0) {

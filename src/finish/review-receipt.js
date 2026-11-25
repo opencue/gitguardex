@@ -105,7 +105,7 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
           hash(posted.body) !== receipt.body
         )
           return null;
-        return { count: receipt.count };
+        return { id: receipt.id, count: receipt.count };
       } catch {
         return null;
       }

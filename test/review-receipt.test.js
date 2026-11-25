@@ -49,7 +49,7 @@ test('a verified receipt is reusable only for the same revision, policy and post
     assert.equal(receipt().read(), null);
   }
   receipt().write(review);
-  assert.deepEqual(receipt().read(), { count: 1 });
+  assert.deepEqual(receipt().read(), { id: 123, count: 1 });
   assert.equal(receipt({ ...revision, head: 'head-2' }).read(), null);
   assert.equal(receipt({ ...revision, base: 'base-2' }).read(), null);
   assert.equal(receipt(revision, { reviewModel: 'different' }).read(), null);
@@ -92,6 +92,7 @@ test('a started CI run survives retry; preflight still precedes the merge verdic
   let base = 'base-1';
   let moveBaseDuringReview = false;
   let ci = 'timeout';
+  let supersedeDuringCi = false;
   const deps = {
     openPullRequest: () => ({
       pr: {
@@ -116,7 +117,7 @@ test('a started CI run survives retry; preflight still precedes the merge verdic
         read: () => saved,
         write: (review) => {
           assert.equal(review, clean);
-          saved = { count: 0 };
+          saved = { id: 123, count: 0 };
         }
       };
     },
@@ -131,6 +132,7 @@ test('a started CI run survives retry; preflight still precedes the merge verdic
     },
     waitForGreenCi: () => {
       events.push('ci');
+      if (supersedeDuringCi) saved = null;
       return { status: ci, pr: { mergeStateStatus: 'CLEAN' } };
     }
   };
@@ -162,5 +164,8 @@ test('a started CI run survives retry; preflight still precedes the merge verdic
     'no draft/review/CI wait if resumed local verification fails'
   );
   assert.deepEqual(runReviewGate(args, deps), { prNumber: 42, ...revision });
-  assert.deepEqual(events, ['preflight', 'ci'], 'same review reused, CI still verified');
+  assert.deepEqual(events.splice(0), ['preflight', 'ci'], 'same review reused, CI still verified');
+  supersedeDuringCi = true;
+  assert.throws(() => runReviewGate(args, deps), /saved Codex review changed/i);
+  assert.deepEqual(events, ['preflight', 'ci']);
 });

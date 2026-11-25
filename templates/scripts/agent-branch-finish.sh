@@ -28,6 +28,9 @@ PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
 PREFLIGHT_REQUIRED_RAW="${GUARDEX_FINISH_REQUIRE_PREFLIGHT:-false}"
 PREFLIGHT_CACHE_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT_CACHE:-true}"
+# This invocation's mode must not leak into tests or any nested finish command.
+PREFLIGHT_ONLY="${GUARDEX_FINISH_PREFLIGHT_ONLY:-0}"
+unset GUARDEX_FINISH_PREFLIGHT_ONLY
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
 FINISH_CHECKLIST_RAW="${GUARDEX_FINISH_CHECKLIST:-false}"
 FINISH_GATE_DONE_RAW="${GUARDEX_FINISH_GATE_DONE:-false}"
@@ -1162,7 +1165,7 @@ assert_synchronous_merge() {
 # PR, while GitHub runs CI. This branch exits before any publish/merge action.
 # The final invocation still verifies the revision and preflight receipt, and
 # will always re-run a mandatory trusted-base preflight if CI fallback needs it.
-if [[ "${GUARDEX_FINISH_PREFLIGHT_ONLY:-0}" == 1 ]]; then
+if [[ "${PREFLIGHT_ONLY:-0}" == 1 ]]; then
   [[ "$FINISH_GATE_DONE" -eq 1 ]] || exit 1
   [[ "$PREFLIGHT_CACHE_ENABLED" -eq 1 && "$PREFLIGHT_ENABLED" -eq 1 && "$PREFLIGHT_REQUIRED" -eq 0 ]] || exit 0
   [[ -n "$(resolve_preflight_script "$source_worktree" "$PREFLIGHT_SCRIPT_RAW")" ]] || exit 0
