@@ -231,7 +231,7 @@ test('disabled Actions fallback requires an explicit local repo opt-in', (t) => 
   assert.equal(probe.mock.callCount(), 1);
 });
 
-test('getPullRequestStatus waives only a GitHub check run with the exact billing-blocked annotation', () => {
+test('a verified unstarted billing check requires local preflight and never makes PR watch green', () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-'));
   const fakeGh = path.join(fixtureRoot, 'gh');
   const response = [{
@@ -278,7 +278,10 @@ test('getPullRequestStatus waives only a GitHub check run with the exact billing
   try {
     const script = [
       `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
-      "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
+      "const options = { repoRoot: process.argv[1], branch: 'agent/test/lane', timeoutMs: 1 };",
+      'const phases = [];',
+      'pr.watchPullRequest({ ...options, onEvent: ({ phase }) => phases.push(phase) })',
+      '  .then((result) => console.log(JSON.stringify({ ...result, phases })));',
     ].join('\n');
     const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
       encoding: 'utf8',
@@ -286,7 +289,9 @@ test('getPullRequestStatus waives only a GitHub check run with the exact billing
     });
 
     assert.equal(result.status, 0, result.stderr);
-    const status = JSON.parse(result.stdout);
+    const { status: outcome, pr: status, phases } = JSON.parse(result.stdout);
+    assert.equal(outcome, 'billing-blocked');
+    assert.ok(!phases.includes('ready'), 'billing is not a successful check');
     assert.equal(status.checks.failed, 0);
     assert.equal(status.checks.waived, 1);
     assert.deepEqual(status.failedNames, []);
