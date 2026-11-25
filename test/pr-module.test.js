@@ -301,6 +301,13 @@ test('a verified unstarted billing check requires local preflight and never make
 
     const [build] = response[0].statusCheckRollup;
     const optional = { ...build, name: 'optional', detailsUrl: undefined };
+    response[0].statusCheckRollup.push({ ...optional, status: 'IN_PROGRESS', conclusion: null });
+    const pending = watch();
+    assert.equal(pending.pr.checks.waived, 1);
+    assert.equal(pending.pr.checks.pending, 1);
+    assert.equal(pending.status, 'timeout', 'do not return billing-blocked while other checks are running');
+
+    response[0].statusCheckRollup.pop();
     response[0].statusCheckRollup.push({ ...optional, conclusion: 'CANCELLED' });
     const cancelled = watch();
     assert.equal(cancelled.pr.checks.waived, 1);
