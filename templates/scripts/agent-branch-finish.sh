@@ -28,6 +28,9 @@ PREFLIGHT_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT:-true}"
 PREFLIGHT_SCRIPT_RAW="${GUARDEX_FINISH_PREFLIGHT_SCRIPT:-scripts/agent-preflight.sh}"
 PREFLIGHT_REQUIRED_RAW="${GUARDEX_FINISH_REQUIRE_PREFLIGHT:-false}"
 PREFLIGHT_CACHE_ENABLED_RAW="${GUARDEX_FINISH_PREFLIGHT_CACHE:-true}"
+# This invocation's mode must not leak into tests or any nested finish command.
+PREFLIGHT_ONLY="${GUARDEX_FINISH_PREFLIGHT_ONLY:-0}"
+unset GUARDEX_FINISH_PREFLIGHT_ONLY
 AUTO_PROMOTE_DRAFT_RAW="${GUARDEX_FINISH_AUTO_PROMOTE:-true}"
 FINISH_CHECKLIST_RAW="${GUARDEX_FINISH_CHECKLIST:-false}"
 FINISH_GATE_DONE_RAW="${GUARDEX_FINISH_GATE_DONE:-false}"
@@ -283,8 +286,6 @@ run_preflight() {
     echo "[agent-branch-finish] No executable pre-flight script at ${PREFLIGHT_SCRIPT_RAW} (in ${worktree}); skipping pre-flight." >&2
     return 0
   fi
-  finish_progress running preflight "final verification before publish"
-  echo "[agent-branch-finish] Running pre-flight: ${script_path}" >&2
   local preflight_cwd="$worktree"
   local trusted_tree=""
   if [[ "$PREFLIGHT_REQUIRED" -eq 1 && "$PREFLIGHT_SCRIPT_RAW" != /* ]]; then
@@ -328,6 +329,8 @@ run_preflight() {
       fi
     fi
   fi
+  finish_progress running preflight "final verification before publish"
+  echo "[agent-branch-finish] Running pre-flight: ${script_path}" >&2
   local preflight_status=0
   if [[ -n "$trusted_tree" ]]; then
     ( cd "$preflight_cwd" && "$script_path" --guardex-target-worktree "$worktree" ) || preflight_status=$?
@@ -1157,6 +1160,23 @@ assert_synchronous_merge() {
   fi
   assert_reviewed_revision
 }
+
+# The CLI can run the repository preflight as soon as it promotes the reviewed
+# PR, while GitHub runs CI. This branch exits before any publish/merge action.
+# The final invocation still verifies the revision and preflight receipt, and
+# will always re-run a mandatory trusted-base preflight if CI fallback needs it.
+if [[ "${PREFLIGHT_ONLY:-0}" == 1 ]]; then
+  [[ "$FINISH_GATE_DONE" -eq 1 ]] || exit 1
+  [[ "$PREFLIGHT_CACHE_ENABLED" -eq 1 && "$PREFLIGHT_ENABLED" -eq 1 && "$PREFLIGHT_REQUIRED" -eq 0 ]] || exit 0
+  [[ -n "$(resolve_preflight_script "$source_worktree" "$PREFLIGHT_SCRIPT_RAW")" ]] || exit 0
+  start_ref="origin/${BASE_BRANCH}"
+  cached_base_sha="$(git -C "$source_worktree" rev-parse --verify "${start_ref}^{commit}" 2>/dev/null || true)"
+  [[ -n "$cached_base_sha" && "$cached_base_sha" == "${GUARDEX_FINISH_REVIEWED_BASE:-}" ]] || exit 0
+  assert_reviewed_revision || exit 1
+  run_preflight "$source_worktree" || exit 1
+  assert_reviewed_revision || exit 1
+  exit 0
+fi
 
 merge_head_args=()
 if [[ "$FINISH_GATE_DONE" -eq 1 ]]; then

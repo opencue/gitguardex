@@ -356,6 +356,18 @@ Both `gx pr-review` and the finish gate use Codex first. If the Codex CLI cannot
 launch, they try Claude. Timeouts, failed or invalid reviews, and findings do not
 trigger a switch. Use `--provider` or `--review-provider` to pin one provider.
 
+After a clean review, normal gated finishes run the repository preflight while
+GitHub CI runs. The final publish still requires both and checks the exact head
+and base. After an interruption, rerun the same finish command: an unchanged
+review policy and revision can reuse a recent Codex verdict if it is still the
+latest, unchanged review on GitHub. A mandatory trusted-base CI fallback
+preflight is never replaced by the regular preflight receipt.
+
+Set `GUARDEX_REVIEW_COMPACT_DIFF=1` to try a smaller review prompt for large npm
+lockfile patches. Only unchanged generated context is compacted; changed lines
+and their coordinates are kept. The original diff is still used for coverage,
+anchors and Abide. This opt-in does not apply to PR Lens.
+
 For a repository that intentionally disables its GitHub Actions workflows,
 enable the local CI fallback from that checkout:
 

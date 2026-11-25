@@ -949,3 +949,66 @@ printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","ca
   assert.notEqual(result.status, 0, 'review must fail when PR head changed between snapshot and post');
   assert.match(result.stderr || result.stdout, /PR changed before posting/);
 });
+
+test('lockfile prompt compaction is opt-in; Abide, inline anchors and the posted receipt stay exact', () => {
+  const filename = 'package-lock.json';
+  const rawDiff = [
+    `diff --git a/${filename} b/${filename}`, 'index 0123456..fedcba9 100644',
+    `--- a/${filename}`, `+++ b/${filename}`,
+    ...Array.from({ length: 45 }, (_, index) => [
+      `@@ -${20 + index * 10},7 +${20 + index * 10},7 @@`,
+      `     "node_modules/dep-${index}": {`,
+      '       "resolved": "https://registry.npmjs.org/dep/-/long-package-name-1.0.0.tgz",',
+      `       "integrity": "sha512-${'a'.repeat(86)}==",`,
+      '       "dev": true,',
+      '       "hasInstallScript": true,',
+      '-      "version": "1.0.0"',
+      '+      "version": "2.0.0"',
+      '     },',
+    ]).flat(), '',
+  ].join('\n');
+  const sha = '1234567890abcdef';
+  const result = (enabled) => {
+    let prompt;
+    let payload;
+    const review = prReview.runPrReview({
+      target: process.cwd(), provider: 'codex', pr: 22, post: true, prLens: false,
+      expectedHeadSha: sha, agentQuiet: true,
+    }, {
+      env: { GUARDEX_REVIEW_COMPACT_DIFF: enabled ? '1' : '0' },
+      runAbideCheck: (_repo, diff) => {
+        assert.equal(diff, rawDiff);
+        return { skipped: 'test stub' };
+      },
+      run: (_bin, args, options) => {
+        if (args[0] === 'exec') {
+          prompt = options.input;
+          return { status: 0, stdout: JSON.stringify({ findings: [{
+            path: filename, line: 25, severity: 'medium', category: 'tests',
+            message: 'Provide dependency compatibility coverage',
+          }] }) };
+        }
+        if (args[0] === 'repo') return { status: 0, stdout: 'owner/repo' };
+        if (args[0] === 'auth') return { status: 0 };
+        if (args[1] === 'view') return { status: 0, stdout: sha };
+        if (args[1] === 'diff') return { status: 0, stdout: rawDiff };
+        if (args.includes('--paginate')) return { status: 0, stdout: '' };
+        assert.equal(args[0], 'api');
+        payload = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
+        return { status: 0, stdout: JSON.stringify({ id: 123, commit_id: sha }) };
+      },
+    });
+    assert.equal(review.reviewedHeadSha, sha);
+    assert.equal(review.reviewId, 123);
+    assert.match(review.reviewBodyHash, /^[a-f0-9]{64}$/);
+    assert.equal(payload.comments[0].line, 25);
+    return { prompt, payload };
+  };
+  const before = result(false);
+  const after = result(true);
+  assert.ok(before.prompt.endsWith(rawDiff));
+  assert.match(after.prompt, /old and new are original line numbers/);
+  assert.match(after.prompt, /\[unchanged lockfile context: old 21-23, new 21-23\]/);
+  assert.ok(after.prompt.length < before.prompt.length);
+  assert.deepEqual(after.payload, before.payload);
+});

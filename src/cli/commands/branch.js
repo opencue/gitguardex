@@ -19,6 +19,7 @@ const {
   invokePackageAsset,
 } = require('../../core/runtime');
 const { runReviewGate } = require('../../finish/review-gate');
+const { branchPreflightDuringCi } = require('../../finish/preflight');
 const { createFinishProgress, summarizeFinishRun } = require('../../finish/progress');
 const { autoCommitWorktreeForFinish } = require('../../finish');
 const { finish, merge } = require('./finish');
@@ -343,6 +344,7 @@ function branch(rawArgs) {
           agentQuiet,
         },
         progress,
+        preflight: branchPreflightDuringCi(repoRoot, scriptArgs, { activeCwd, agentQuiet, progress }),
       });
     } else {
       progress.skip('review', 'review gate disabled');
@@ -355,6 +357,7 @@ function branch(rawArgs) {
         GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
         GUARDEX_FINISH_CHECKLIST: '1',
         GUARDEX_FINISH_GATE_DONE: gateReview ? '1' : '0',
+        GUARDEX_FINISH_PREFLIGHT_ONLY: '0',
         GUARDEX_FINISH_REVIEWED_HEAD: gateResult?.reviewedHeadSha || '',
         GUARDEX_FINISH_REVIEWED_BASE: gateResult?.reviewedBaseSha || '',
         GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.requiresLocalPreflight ? '1' : '0',

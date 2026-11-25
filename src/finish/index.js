@@ -29,7 +29,7 @@ const {
   parseSyncArgs,
 } = require('../cli/args');
 const submoduleModule = require('../submodule');
-const { runPreflight, summarizePreflight } = require('./preflight');
+const { runPreflight, summarizePreflight, branchPreflightDuringCi } = require('./preflight');
 const { runReviewGate } = require('./review-gate');
 const { createFinishProgress, summarizeFinishRun } = require('./progress');
 
@@ -673,18 +673,20 @@ function finish(rawArgs, defaults = {}) {
       // green CI + GitHub-mergeable verdict BEFORE the shell merge runs. Throws on
       // failure, which the catch below turns into a finish failure (no merge).
       let gateResult;
+      if (shouldSkipBranchPreflight(options)) {
+        finishArgs.push('--no-preflight');
+      }
       if (options.mergeMode === 'pr' && options.gateReview) {
         gateResult = runReviewGate({
           repoRoot, worktreePath, branch, baseBranch, options, progress,
+          preflight: branchPreflightDuringCi(repoRoot, finishArgs, {
+            activeCwd, agentQuiet: options.agentQuiet, progress,
+          }),
         });
       } else {
         progress.skip('review', 'review gate disabled');
         progress.skip('autofix', 'review gate disabled');
         progress.skip('ci', 'review gate disabled; repository policy controls merge readiness');
-      }
-
-      if (shouldSkipBranchPreflight(options)) {
-        finishArgs.push('--no-preflight');
       }
 
       // Streamed, not piped: the script can sit for minutes waiting on the PR
@@ -705,6 +707,7 @@ function finish(rawArgs, defaults = {}) {
           GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
           GUARDEX_FINISH_CHECKLIST: '1',
           GUARDEX_FINISH_GATE_DONE: options.gateReview ? '1' : '0',
+          GUARDEX_FINISH_PREFLIGHT_ONLY: '0',
           GUARDEX_FINISH_REVIEWED_HEAD: gateResult?.reviewedHeadSha || '',
           GUARDEX_FINISH_REVIEWED_BASE: gateResult?.reviewedBaseSha || '',
           GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.requiresLocalPreflight ? '1' : '0',
