@@ -834,13 +834,22 @@ def cmd_handoff_request(args: argparse.Namespace, repo_root: Path) -> int:
 
 
 def cmd_handoffs(repo_root: Path) -> int:
+    locks = load_all_locks(repo_root)
     for path in sorted(handoff_dir(repo_root).glob('*.json')):
         entry = read_handoff(path)
         commit = entry.get('commit')
-        status = f'approved at {commit}' if commit else 'pending'
+        check = entry.get('check')
+        owners = locks.get(entry['file'], [])
+        stale = entry['owner'] not in owners
+        if not commit and stale:
+            # A process may have moved the lock without writing the receipt yet.
+            transferred = next((lock for lock in owners if lock.get('handoff_id') == entry['id']), {})
+            commit = transferred.get('handoff_commit')
+            check = transferred.get('handoff_check')
+        status = f'approved at {commit}' if commit else ('stale (owner lock changed)' if stale else 'pending')
         print(f"{entry['id']} {status}: {entry['file']} — {owner_label(entry['owner'])} → {owner_label(entry['recipient'])}")
-        if entry.get('check'):
-            print(f"  Verify: {entry['check']}")
+        if check:
+            print(f"  Verify: {check}")
     return 0
 
 
@@ -886,7 +895,7 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
         raise LockError('The recipient already has a different lock')
     for cwd in {repo_root, target}:
         if run_git(['--literal-pathspecs', 'status', '--porcelain', '--untracked-files=all',
-                    '--ignore-submodules=none', '--', file_path], cwd=cwd):
+                    '--ignored=matching', '--ignore-submodules=none', '--', file_path], cwd=cwd):
             raise LockError(f'Cannot hand off {file_path}: uncommitted changes in {cwd}')
     commit = run_git(['rev-parse', 'HEAD'], cwd=repo_root)
     try:
@@ -1338,10 +1347,9 @@ def main() -> int:
 
     try:
         repo_root = resolve_repo_root()
-        # Serialize state-changing commands (and validate's snapshot read) across
-        # ALL worktrees with one shared lock, so concurrent runs can't clobber
-        # each other or both win the same file. status is a pure read -> unlocked.
-        if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate', 'handoff-request', 'handoff-approve'}:
+        # Serialize mutations and consistent snapshot reads across all worktrees.
+        # The informational status command remains an unlocked read.
+        if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate', 'handoff-request', 'handoff-approve', 'handoffs'}:
             with cross_worktree_lock(repo_root):
                 if args.command == 'claim':
                     with adaptive_direct_owner_lock(repo_root) as adaptive_owner:

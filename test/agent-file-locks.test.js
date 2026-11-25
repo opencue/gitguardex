@@ -461,9 +461,10 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.match(runLockTool(['handoffs'], next, { GUARDEX_SHARED_STATE: 'git' }).stderr, /only supported for local worktrees/);
     assert.equal(locksAt(next, ['claim', '--branch', 'agent/b', file], b).status, 1);
 
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), `\n${file}\n`);
     writeFile(owner, file, 'the owner\'s changes\n');
     assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /uncommitted/);
-    git(owner, 'add', file);
+    git(owner, 'add', '-f', file);
     git(owner, 'commit', '--no-verify', '-m', 'Owner edits');
     const commit = git(owner, 'rev-parse', 'HEAD');
     assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /does not contain/);
@@ -490,6 +491,12 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.equal(locksAt(next, ['release', '--branch', 'agent/b', file], b).status, 0);
     assert.match(locksAt(next, ['handoffs'], b).stdout, new RegExp(`approved at ${commit}`));
     assert.match(locksAt(next, ['handoffs'], b).stdout, /npm test/);
+
+    const obsolete = 'obsolete.txt';
+    assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', obsolete], a).status, 0);
+    assert.equal(locksAt(next, ['handoff-request', obsolete], b).status, 0);
+    assert.equal(locksAt(owner, ['release', '--branch', 'agent/a', obsolete], a).status, 0);
+    assert.match(locksAt(next, ['handoffs'], b).stdout, /stale \(owner lock changed\): obsolete\.txt/);
   });
 
   test('a lane can still claim + commit a file no other worktree owns', () => {
