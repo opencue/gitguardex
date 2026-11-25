@@ -446,9 +446,13 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     git(repo, 'worktree', 'add', '-q', '-b', 'agent/a', owner);
     git(repo, 'worktree', 'add', '-q', '-b', 'agent/b', next);
     assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', file], a).status, 0);
+    assert.equal(locksAt(owner, ['allow-delete', '--branch', 'agent/a', file], a).status, 0);
     const pending = runLockTool(['handoff-request', '--', file], next, b);
     assert.equal(pending.status, 0, pending.stderr);
     const id = pending.stdout.match(/\b[0-9a-f]{32}\b/)[0];
+    assert.match(pending.stdout, /GUARDEX_AGENT_ID=alice gx locks handoff-approve/);
+    const receipt = path.join(repo, '.git', 'agent-file-lock-handoffs', `${id}.json`);
+    const pendingReceipt = fs.readFileSync(receipt, 'utf8');
     assert.match(locksAt(next, ['handoff-request', file], b).stdout, new RegExp(`${id} is already pending`));
     assert.match(locksAt(owner, ['handoffs'], a).stdout, /agent\/b.*bob/);
     assert.equal(locksAt(next, ['handoff-approve', id], b).status, 2);
@@ -471,6 +475,14 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', file], a).status, 1);
     assert.equal(locksAt(next, ['validate', '--branch', 'agent/b', file], b).status, 0);
     assert.match(locksAt(owner, ['handoff-approve', id], a).stdout, /was already approved/);
+    fs.unlinkSync(path.join(next, file));
+    git(next, 'add', '-u', '--', file);
+    assert.match(locksAt(next, ['validate', '--branch', 'agent/b', '--staged'], b).stderr, /allow-delete/);
+    // Simulate interruption after the lock moved but before recording the receipt.
+    fs.writeFileSync(receipt, pendingReceipt);
+    assert.equal(locksAt(next, ['release', '--branch', 'agent/b', file], b).status, 0);
+    assert.match(locksAt(next, ['handoffs'], b).stdout, new RegExp(`approved at ${commit}`));
+    assert.match(locksAt(next, ['handoffs'], b).stdout, /npm test/);
   });
 
   test('a lane can still claim + commit a file no other worktree owns', () => {

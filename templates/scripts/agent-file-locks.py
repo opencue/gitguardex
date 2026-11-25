@@ -221,6 +221,23 @@ def load_state(repo_root: Path) -> dict[str, Any]:
 
 
 def write_state(repo_root: Path, state: dict[str, Any]) -> None:
+    # Preserve an interrupted transfer's receipt before the recipient can
+    # release, reap, or replace its only durable completion marker.
+    for file_path, existing in load_state(repo_root)['locks'].items():
+        request_id = existing.get('handoff_id')
+        replacement = state['locks'].get(file_path, {})
+        if (not isinstance(request_id, str) or not re.fullmatch(r'[a-f0-9]{32}', request_id)
+                or replacement.get('handoff_id') == request_id):
+            continue
+        receipt = handoff_dir(repo_root) / f'{request_id}.json'
+        request = read_handoff(receipt)
+        if request.get('commit'):
+            continue
+        owner = request['owner']
+        source = Path(owner['_worktree'])
+        source_entry = load_state(source)['locks'].get(file_path)
+        if not source_entry or {**source_entry, '_worktree': str(source)} != owner:
+            record_handoff(receipt, request, existing)
     write_json(lock_file_path(repo_root), state)
 
 
@@ -811,7 +828,8 @@ def cmd_handoff_request(args: argparse.Namespace, repo_root: Path) -> int:
         'pane': resolve_pane(),
     })
     print(f'Handoff {request_id} pending for {file_path}. The current lock is unchanged.')
-    print(f'Owner ({owner_description(owner)}): gx locks handoff-approve {request_id}')
+    identity = f'{AGENT_ID_ENV}={shlex.quote(owner["agent"])} ' if owner['agent'] else ''
+    print(f'Owner ({owner_description(owner)}): {identity}gx locks handoff-approve {request_id}')
     return 0
 
 
@@ -824,6 +842,10 @@ def cmd_handoffs(repo_root: Path) -> int:
         if entry.get('check'):
             print(f"  Verify: {entry['check']}")
     return 0
+
+
+def record_handoff(path: Path, request: dict[str, Any], entry: dict[str, Any]) -> None:
+    write_json(path, {**request, 'commit': entry['handoff_commit'], 'check': entry.get('handoff_check')})
 
 
 def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
@@ -855,7 +877,7 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
     # A retry can complete the receipt if the locks were moved before the process exited.
     if target_entry and target_entry.get('handoff_id') == args.id and (
             not source_entry or target == repo_root):
-        write_json(path, {**request, 'commit': target_entry['handoff_commit'], 'check': target_entry.get('handoff_check')})
+        record_handoff(path, request, target_entry)
         print(f"Handoff {args.id} already transferred at {target_entry['handoff_commit']}.")
         return 0
     if not source_entry or {**source_entry, '_worktree': str(repo_root)} != owner:
@@ -881,7 +903,7 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
     if target != repo_root:
         del source_state['locks'][file_path]
         write_state(repo_root, source_state)
-    write_json(path, {**request, 'commit': commit, 'check': args.check})
+    record_handoff(path, request, target_state['locks'][file_path])
     print(f"Handoff {args.id} approved for {owner_label(recipient)} at {commit}.")
     return 0
 
