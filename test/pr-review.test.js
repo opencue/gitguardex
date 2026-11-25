@@ -149,20 +149,27 @@ test('default PR review uses Codex, falling back to Claude only when Codex canno
   }, undefined, ['exec']);
 });
 
-test('pr-review CLI falls back when the configured Codex binary does not exist', (t) => {
-  const repo = initRepo({ branch: 'main' });
+test('pr-review CLI reviews and fixes with Claude when the Codex binary does not exist', (t) => {
+  const repo = initRepo({ branch: 'agent/test/fallback' });
+  fs.writeFileSync(path.join(repo, 'a.js'), 'old\n');
+  seedCommit(repo);
   const fakeGh = createFakeBin('gh', 'echo "diff --git a/a.js b/a.js"');
   const fakeClaude = createFakeBin('claude', `
-    [[ "$*" != *--model* ]] || exit 9
-    printf '%s\\n' '{"findings":[]}'
+    case "$*" in
+      '--safe-mode --tools  -p')
+        printf '%s\\n' '{"findings":[{"path":"a.js","line":1,"severity":"high","message":"bug"}]}' ;;
+      '--safe-mode --permission-mode acceptEdits -p')
+        printf 'fixed\\n' > a.js ;;
+      *) exit 9 ;;
+    esac
   `);
   t.after(() => {
-    for (const dir of [repo, fakeGh.fakeBin, fakeClaude.fakeBin]) {
+    for (const dir of [path.dirname(repo), fakeGh.fakeBin, fakeClaude.fakeBin]) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
   const result = runNodeWithEnv(
-    ['pr-review', '--pr', '42', '--artifact', 'review.md', '--no-pr-lens', '--no-abide'],
+    ['pr-review', '--pr', '42', '--artifact', 'review.md', '--no-pr-lens', '--no-abide', '--fix'],
     repo,
     {
       PATH: `${fakeGh.fakeBin}:${process.env.PATH}`,
@@ -174,6 +181,8 @@ test('pr-review CLI falls back when the configured Codex binary does not exist',
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /codex review unavailable.*falling back to Claude/);
   assert.match(result.stdout, /code-assist claude review completed/);
+  assert.match(result.stdout, /Auto-fix committed 1 file\(s\): a.js/);
+  assert.equal(fs.readFileSync(path.join(repo, 'a.js'), 'utf8'), 'fixed\n');
   assert.match(fs.readFileSync(path.join(repo, 'review.md'), 'utf8'), /Provider: claude/i);
 });
 
