@@ -260,6 +260,14 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
   const prOptions = parseAgentsArgs([...handoff, '--pr', '42', '--pr-summary', 'public']);
   assert.equal(prOptions.pr, '42');
   assert.equal(prOptions.prSummary, 'public');
+  const retry = ['send', '--retry-pr-summary', 'handoff-42'];
+  assert.equal(parseAgentsArgs(retry).retryPrSummaryId, 'handoff-42');
+  assert.throws(() => parseAgentsArgs([...retry, '--message', 'private']), /cannot be combined/);
+  assert.equal(parseAgentsArgs(['inbox', '--receipt', 'handoff-42']).receiptId, 'handoff-42');
+  assert.throws(
+    () => parseAgentsArgs(['inbox', '--ack', 'handoff-42', '--receipt', 'handoff-42']),
+    /cannot be combined/
+  );
   for (const invalid of ['0', '1e3', '9007199254740992', 'https://github.com/org/repo/pull/42']) {
     assert.throws(
       () => parseAgentsArgs([...handoff, '--pr', invalid]),

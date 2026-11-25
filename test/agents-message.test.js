@@ -12,6 +12,7 @@ const {
   inspectAgentPane,
   pasteEnvelope,
   readAgentInbox,
+  runInboxCommand,
   runSendCommand,
   sendAgentMessage,
   sendOrQueueAgentMessage,
@@ -457,22 +458,24 @@ function prHandoffFixture(activity = 'done') {
   return { options, deps, calls };
 }
 
-test('PR handoff publishes only the explicit summary after the terminal accepts the message', () => {
+test('PR handoff publishes only the explicit summary after the terminal accepts the message', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-handoff-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
   const { options, deps, calls } = prHandoffFixture();
-  const receipt = runSendCommand('/repo', { ...options, prSummary: 'public handoff' }, deps);
+  const receipt = runSendCommand(repoRoot, { ...options, prSummary: 'public handoff' }, deps);
   assert.equal(receipt.status, 0);
   assert.equal(receipt.result.prSummaryStatus, 'posted');
   assert.deepEqual(calls[0], {
     args: ['pr', 'view', '42', '--repo', 'github.com/org/repo', '--json', 'url', '--jq', '.url'],
-    cwd: '/repo',
+    cwd: repoRoot,
     input: undefined
   });
   assert.ok(calls[1].envelope.includes(`${options.message}\n\nPR: ${HANDOFF_PR_URL}`));
   assert.ok(!calls[1].envelope.includes('public handoff'));
   assert.deepEqual(calls[2], {
     args: ['pr', 'comment', HANDOFF_PR_URL, '--repo', 'github.com/org/repo', '--body-file', '-'],
-    cwd: '/repo',
-    input: 'public handoff'
+    cwd: repoRoot,
+    input: `public handoff\n\n<!-- gx-handoff:${receipt.result.messageId} -->`
   });
 });
 
@@ -503,7 +506,7 @@ if (args[1] === 'view') {
   const receipt = runSendCommand(repoRoot, { ...options, prSummary: summary }, deps);
   assert.equal(receipt.status, 0);
   const result = JSON.parse(fs.readFileSync(captured, 'utf8'));
-  assert.equal(result.input, summary);
+  assert.equal(result.input, `${summary}\n\n<!-- gx-handoff:${receipt.result.messageId} -->`);
   assert.deepEqual(result.args, [
     'pr',
     'comment',
@@ -526,7 +529,23 @@ test('PR handoff without a summary queues the linked message but does not write 
   assert.equal(result.prUrl, HANDOFF_PR_URL);
   assert.equal(result.prSummaryStatus, undefined);
   const inbox = readAgentInbox(repoRoot, { sessionId: options.sessionId }, deps);
+  assert.equal(inbox.messages[0].id, result.messageId);
   assert.equal(inbox.messages[0].body, `${options.message}\n\nPR: ${HANDOFF_PR_URL}`);
+  const source = { sessionId: options.sourceSessionId, receiptId: result.messageId };
+  assert.equal(runInboxCommand(repoRoot, source, deps).result.delivery, 'queued');
+  assert.equal(
+    runInboxCommand(
+      repoRoot,
+      {
+        sessionId: options.sessionId,
+        ackMessageId: result.messageId
+      },
+      deps
+    ).status,
+    0
+  );
+  assert.equal(runInboxCommand(repoRoot, source, deps).result.delivery, 'acknowledged');
+  assert.equal(readAgentInbox(repoRoot, { sessionId: options.sessionId }, deps).messages.length, 0);
   assert.deepEqual(
     calls.map(({ args }) => args[1]),
     ['view']
@@ -577,14 +596,16 @@ test('PR handoff never posts a summary if resolution or authenticated delivery f
   assert.deepEqual(calls, []);
 });
 
-test('PR handoff reports an unconfirmed comment separately from successful local delivery', () => {
+test('PR handoff reports an unconfirmed comment separately from successful local delivery', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-handoff-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
   const { options, deps, calls } = prHandoffFixture();
   const runGh = deps.runGh;
   deps.runGh = (args, opts) => ({
     ...runGh(args, opts),
     status: args[1] === 'comment' ? 1 : 0
   });
-  const receipt = runSendCommand('/repo', { ...options, prSummary: 'public handoff' }, deps);
+  const receipt = runSendCommand(repoRoot, { ...options, prSummary: 'public handoff' }, deps);
   assert.equal(receipt.status, 1);
   assert.equal(receipt.result.ok, true);
   assert.equal(receipt.result.kind, 'sent');
@@ -592,6 +613,64 @@ test('PR handoff reports an unconfirmed comment separately from successful local
   assert.match(receipt.stdout, /pasted and submitted/);
   assert.match(receipt.stderr, /Do not resend the terminal message/);
   assert.equal(calls.length, 3);
+});
+
+test('a PR handoff receipt is acknowledged by its recipient and retry never sends locally again', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-handoff-retry-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { options, deps, calls } = prHandoffFixture();
+  const original = deps.runGh;
+  let comments = 0;
+  deps.runGh = (args, opts) => {
+    const response = original(args, opts);
+    if (args[0] === 'api') return { status: 0, stdout: '' };
+    if (args[1] === 'comment') return { status: comments++ === 0 ? 1 : 0 };
+    return response;
+  };
+  const send = runSendCommand(root, { ...options, prSummary: 'explicit summary' }, deps);
+  const id = send.result.messageId;
+  assert.match(id ?? '', /^[\w-]{8,}$/);
+  assert.match(calls.find((call) => call.envelope).envelope, new RegExp(`--ack ${id}`));
+  const receive = (sessionId, flags) => runInboxCommand(root, { sessionId, ...flags }, deps);
+  assert.equal(receive(options.sourceSessionId, { receiptId: id }).result.delivery, 'sent');
+  assert.equal(receive(options.sourceSessionId, { ackMessageId: id }).status, 1);
+  assert.equal(receive(options.sessionId, { ackMessageId: id }).status, 0);
+  assert.equal(receive(options.sourceSessionId, { receiptId: id }).result.delivery, 'acknowledged');
+
+  const retry = { retryPrSummaryId: id };
+  assert.equal(
+    runSendCommand(root, retry, {
+      ...deps,
+      verifySourceCaller: (source) => ({ ok: source.id === options.sessionId })
+    }).status,
+    1
+  );
+  assert.equal(runSendCommand(root, retry, deps).result.prSummaryStatus, 'posted');
+  assert.equal(runSendCommand(root, retry, deps).result.prSummaryStatus, 'posted');
+  assert.equal(calls.filter((call) => call.envelope).length, 1);
+  assert.equal(comments, 2);
+});
+
+test('a PR handoff retry does not post when the comment lookup fails or finds the original', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-handoff-reconcile-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { options, deps, calls } = prHandoffFixture();
+  const original = deps.runGh;
+  let lookup = { status: 1 };
+  deps.runGh = (args, opts) => {
+    const response = original(args, opts);
+    if (args[0] === 'api') return lookup;
+    if (args[1] === 'comment') return { status: 1 };
+    return response;
+  };
+  const sent = runSendCommand(root, { ...options, prSummary: 'public' }, deps);
+  const retry = { retryPrSummaryId: sent.result.messageId };
+  assert.equal(runSendCommand(root, retry, deps).result.prSummaryStatus, 'unconfirmed');
+  lookup = { status: 0, stdout: '12345\n' };
+  assert.equal(runSendCommand(root, retry, deps).result.prSummaryStatus, 'posted');
+  assert.equal(calls.filter((call) => call.envelope).length, 1);
+  assert.equal(calls.filter(({ args }) => args?.[1] === 'comment').length, 1);
+  assert.ok(calls.some(({ args }) => args?.some((arg) => arg.includes('issues/42/comments'))));
 });
 
 test('sendAgentMessage rechecks activity under the target delivery lock before writing', () => {

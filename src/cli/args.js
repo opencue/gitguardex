@@ -509,6 +509,13 @@ function parseAgentsArgs(rawArgs) {
       index += 1;
       continue;
     }
+    if (arg === '--receipt' || arg === '--retry-pr-summary') {
+      const id = requireValue(rest, index, arg);
+      if (!/^[a-zA-Z0-9_-]{8,128}$/.test(id)) throw new Error(`${arg} requires a handoff id`);
+      options[arg === '--receipt' ? 'receiptId' : 'retryPrSummaryId'] = id;
+      index += 1;
+      continue;
+    }
     if (arg === '--activity' || arg === '--status') {
       const next = rest[index + 1];
       if (!next || next.startsWith('-')) {
@@ -812,6 +819,21 @@ function parseAgentsArgs(rawArgs) {
   }
   if (options.ackMessageId && options.subcommand !== 'inbox') {
     throw new Error('--ack is only supported with `gx agents inbox`');
+  }
+  if (options.receiptId && options.subcommand !== 'inbox') {
+    throw new Error('--receipt is only supported with `gx agents inbox`');
+  }
+  if (options.receiptId && options.ackMessageId) {
+    throw new Error('--receipt cannot be combined with --ack');
+  }
+  if (options.retryPrSummaryId) {
+    if (options.subcommand !== 'send') {
+      throw new Error('--retry-pr-summary is only supported with `gx agents send`');
+    }
+    if (options.message || options.pr || options.sessionId || options.branch || options.sourceSessionId) {
+      throw new Error('--retry-pr-summary cannot be combined with a new send');
+    }
+    return options;
   }
   if (options.subcommand === 'send') {
     if (!options.message) {
