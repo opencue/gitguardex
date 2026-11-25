@@ -123,6 +123,8 @@ function renderChecksLine(checks) {
   if (checks.pending) parts.push(`${checks.pending} pending`);
   if (checks.failed) parts.push(`${checks.failed} failed`);
   if (checks.cancelled) parts.push(`${checks.cancelled} cancelled`);
+  if (checks.waived) parts.push(`${checks.waived} did not start (GitHub billing)`);
+  if (checks.skipped) parts.push(`${checks.skipped} skipped`);
   if (checks.other) parts.push(`${checks.other} other`);
   return parts.length ? parts.join(', ') : `${checks.total} checks`;
 }
@@ -293,6 +295,15 @@ async function cmdWatch(opts) {
   if (result.status === 'checks-failed') {
     process.exitCode = 2;
     logError(`CI checks failed. Investigate the PR before retrying.${buildChecksFailedDetail(result.pr)}`);
+    return;
+  }
+  if (result.status === 'billing-blocked') {
+    process.exitCode = 2;
+    logError(
+      `GitHub Actions did not start due to billing or a spending limit${buildTimeoutDetail(result.pr)}. ` +
+      'Restore Actions and rerun CI, or use the review-gated finish with a trusted base preflight. ' +
+      'GitHub merge requirements still apply.',
+    );
     return;
   }
   if (result.status === 'timeout') {

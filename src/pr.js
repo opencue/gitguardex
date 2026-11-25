@@ -609,9 +609,8 @@ async function watchPullRequest(options) {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    // Check open PRs first.
-    const open = findOpenPrForBranch(repoRoot, branch);
-    if (!open) {
+    const snapshot = getPullRequestStatus(repoRoot, branch);
+    if (!snapshot) {
       const latest = findLatestPrForBranch(repoRoot, branch);
       if (latest && latest.state === 'MERGED') {
         onEvent({ phase: 'merged', pr: latest });
@@ -625,19 +624,21 @@ async function watchPullRequest(options) {
       return { status: 'no-pr', pr: null };
     }
 
-    const snapshot = getPullRequestStatus(repoRoot, branch);
     onEvent({ phase: 'polling', pr: snapshot });
 
-    if (snapshot && snapshot.checks.failed > 0) {
+    const { checks } = snapshot;
+    if (checks.failed > 0 || checks.cancelled > 0) {
       return { status: 'checks-failed', pr: snapshot };
     }
+    if (checks.waived > 0 && checks.pending === 0) {
+      return { status: 'billing-blocked', pr: snapshot };
+    }
     if (
-      snapshot
-      && !snapshot.isDraft
+      !snapshot.isDraft
       && snapshot.mergeable === 'MERGEABLE'
-      && snapshot.checks.pending === 0
-      && snapshot.checks.failed === 0
-      && snapshot.checks.total > 0
+      && (snapshot.mergeStateStatus === 'CLEAN' || snapshot.mergeStateStatus === 'HAS_HOOKS')
+      && checks.total > 0
+      && checks.success + (checks.skipped || 0) === checks.total
     ) {
       // CI is green and PR is non-draft + mergeable; the merge itself will be
       // driven by auto-merge or a separate `gh pr merge` invocation.

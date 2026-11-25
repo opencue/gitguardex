@@ -231,7 +231,7 @@ test('disabled Actions fallback requires an explicit local repo opt-in', (t) => 
   assert.equal(probe.mock.callCount(), 1);
 });
 
-test('getPullRequestStatus waives only a GitHub check run with the exact billing-blocked annotation', () => {
+test('a verified unstarted billing check requires local preflight and never makes PR watch green', () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-'));
   const fakeGh = path.join(fixtureRoot, 'gh');
   const response = [{
@@ -272,13 +272,14 @@ test('getPullRequestStatus waives only a GitHub check run with the exact billing
     id: 789, name: 'build', details_url: response[0].statusCheckRollup[0].detailsUrl,
     status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' },
   }] };
-  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/789/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
-  fs.chmodSync(fakeGh, 0o755);
-
-  try {
+  const watch = () => {
+    fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/789/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`, { mode: 0o755 });
     const script = [
       `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
-      "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
+      "const options = { repoRoot: process.argv[1], branch: 'agent/test/lane', timeoutMs: 1 };",
+      'const phases = [];',
+      'pr.watchPullRequest({ ...options, onEvent: ({ phase }) => phases.push(phase) })',
+      '  .then((result) => console.log(JSON.stringify({ ...result, phases })));',
     ].join('\n');
     const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
       encoding: 'utf8',
@@ -286,11 +287,38 @@ test('getPullRequestStatus waives only a GitHub check run with the exact billing
     });
 
     assert.equal(result.status, 0, result.stderr);
-    const status = JSON.parse(result.stdout);
+    return JSON.parse(result.stdout);
+  };
+
+  try {
+    const { status: outcome, pr: status, phases } = watch();
+    assert.equal(outcome, 'billing-blocked');
+    assert.ok(!phases.includes('ready'), 'billing is not a successful check');
     assert.equal(status.checks.failed, 0);
     assert.equal(status.checks.waived, 1);
     assert.deepEqual(status.failedNames, []);
     assert.deepEqual(status.billingWaivedNames, ['build']);
+
+    const [build] = response[0].statusCheckRollup;
+    const optional = { ...build, name: 'optional', detailsUrl: undefined };
+    response[0].statusCheckRollup.push({ ...optional, status: 'IN_PROGRESS', conclusion: null });
+    const pending = watch();
+    assert.equal(pending.pr.checks.waived, 1);
+    assert.equal(pending.pr.checks.pending, 1);
+    assert.equal(pending.status, 'timeout', 'do not return billing-blocked while other checks are running');
+
+    response[0].statusCheckRollup.pop();
+    response[0].statusCheckRollup.push({ ...optional, conclusion: 'CANCELLED' });
+    const cancelled = watch();
+    assert.equal(cancelled.pr.checks.waived, 1);
+    assert.equal(cancelled.status, 'checks-failed');
+
+    response[0].mergeStateStatus = 'CLEAN';
+    response[0].statusCheckRollup = [
+      { ...build, conclusion: 'SUCCESS' },
+      { ...optional, conclusion: 'SKIPPED' },
+    ];
+    assert.ok(watch().phases.includes('ready'), 'intentional skips do not block readiness');
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

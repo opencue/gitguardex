@@ -36,6 +36,22 @@ does not. By default the PR remains draft until the AI review passes. The
 explicit `--no-gate-serial-ci` fast mode overlaps CI with the review, but it does
 not disable pre-flight. Only an explicit pre-flight opt-out bypasses this gate.
 
+### When GitHub Actions cannot start due to billing
+
+`gx pr status` distinguishes checks that never started from passing checks.
+Once the other jobs stop running, `gx pr watch` reports `billing-blocked`
+instead of announcing green CI or waiting for auto-merge. A real failing
+or cancelled check still takes precedence.
+
+To continue during a verified billing outage, the reviewed revision must pass
+an executable pre-flight committed on the **trusted base branch** (by default
+`scripts/agent-preflight.sh`), not just on the PR. The script must report
+`guardex-target-worktree-v1` for `--guardex-capabilities` and verify the reviewed
+checkout passed to `--guardex-target-worktree <path>`. It should run the repo's
+required checks and fail if it cannot verify them. If the trusted script is
+absent or GitHub requires the hosted check, leave the PR open until the required
+verification can run. This fallback does not bypass GitHub protections.
+
 ## Convention
 
 `gx branch finish` looks for `scripts/agent-preflight.sh` inside the
