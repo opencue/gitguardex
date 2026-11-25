@@ -16,6 +16,7 @@ routing with `GUARDEX_WORKTREE_MODE=adaptive` in `.env` or
 - Claim files before editing in isolated lanes. Confirm a path is in your claim before deleting it.
 - Use CodeGraph first for repository symbol, relationship, architecture, and impact lookup. If the project is not initialized, run `codegraph init -i` once and retry.
 - Use `opensrc path <package-or-owner/repo[@ref|#ref]>` before generic clone/download when inspecting dependency or external repository source.
+- On Linux, run foreground builds, typechecks and full test suites with `gx run-heavy -- <command>`; inspect local capacity with `gx mem-doctor`.
 - Commit, push, and open/update a PR for completed work unless the user says keep-local.
 - Keep outputs and notes compact. Less word, same proof.
 

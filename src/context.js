@@ -386,6 +386,8 @@ const SUGGESTIBLE_COMMANDS = [
   'print-agents-snippet',
   'release',
   'budget',
+  'mem-doctor',
+  'run-heavy',
   'ci-init',
   'speckit',
 ];
@@ -403,6 +405,8 @@ const CLI_COMMAND_GROUPS = [
       ['setup', 'Install, repair, and verify guardrails (flags: --repair, --install-only, --target, --current)'],
       ['doctor', 'Repair drift + verify (flags: --target, --current; auto-sandboxes on protected main)'],
       ['status', 'Show GitGuardex CLI + service health without modifying files'],
+      ['mem-doctor', 'Show live RAM, swap, and heavy-job queue capacity'],
+      ['run-heavy', 'Run a local build or test through the adaptive memory queue'],
       ['migrate', 'Convert legacy repo-local installs to the zero-copy CLI-owned surface'],
     ],
   },
@@ -487,6 +491,18 @@ const CLI_COMMAND_HELP = {
   protect: { nativeHelp: true },
   speckit: { nativeHelp: true },
   prompt: { nativeHelp: true },
+
+  'mem-doctor': {
+    usage: 'gx mem-doctor [--json]',
+    summary: 'Read RAM, swap, memory pressure, and local heavy-job capacity without making changes.',
+    flags: [['--json', 'Machine-readable report']],
+    examples: ['gx mem-doctor', 'gx mem-doctor --json'],
+  },
+  'run-heavy': {
+    usage: 'gx run-heavy -- <command> [args...]',
+    summary: 'Wait for local RAM and a shared foreground job slot before running a command.',
+    examples: ['gx run-heavy -- npm run build', 'gx run-heavy -- pnpm test'],
+  },
 
   setup: {
     usage: 'gx setup [options]',

@@ -332,10 +332,14 @@ run_preflight() {
   finish_progress running preflight "final verification before publish"
   echo "[agent-branch-finish] Running pre-flight: ${script_path}" >&2
   local preflight_status=0
+  local runner=()
+  if [[ -n "$CLI_ENTRY" ]]; then
+    runner=(run_guardex_cli run-heavy --)
+  fi
   if [[ -n "$trusted_tree" ]]; then
-    ( cd "$preflight_cwd" && "$script_path" --guardex-target-worktree "$worktree" ) || preflight_status=$?
+    ( cd "$preflight_cwd" && "${runner[@]}" "$script_path" --guardex-target-worktree "$worktree" ) || preflight_status=$?
   else
-    ( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" ) || preflight_status=$?
+    ( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "${runner[@]}" "$script_path" ) || preflight_status=$?
   fi
   if [[ -n "$trusted_tree" ]]; then
     rm -rf -- "$trusted_tree"

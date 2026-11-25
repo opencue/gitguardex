@@ -10,6 +10,11 @@ Use when a GitGuardex-managed repository needs safe edits or multi-agent coordin
 Bootstrap: `gx setup`
 Ops: `gx branch start "<task>" "<agent>"`, `gx locks claim --branch "<agent-branch>" <file...>`, `gx branch finish --branch "<agent-branch>" --base <base> --via-pr --wait-for-merge --cleanup`, `gx finish --all`, `gx cleanup`
 
+On Linux, use `gx run-heavy -- <command> [args...]` for foreground builds,
+typechecks and full test suites. Codex and Claude share the same local RAM-based
+queue; `gx mem-doctor` explains why a job would wait. Leave lightweight reads
+and edits unwrapped.
+
 ## Choose the lane before editing
 
 Worktree policy is strict `always` unless the repo opts into `adaptive` with

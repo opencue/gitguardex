@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { run, runPackageAsset } = require('../core/runtime');
+const { heavyInvocation, needsPythonFallback } = require('../heavy');
 
 const PREFLIGHT_SCRIPTS = ['typecheck', 'lint'];
 
@@ -128,11 +129,14 @@ function runPreflight(repoRoot, worktreePath, branch, baseBranch, options = {}) 
       if (options.verbose) {
         process.stdout.write(`[preflight] running ${label}…\n`);
       }
-      const result = spawnSync(cmd, args, {
+      const spawnOptions = {
         cwd: repoRoot,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 5 * 60_000,
-      });
+      };
+      const invocation = heavyInvocation(cmd, args);
+      let result = spawnSync(invocation.command, invocation.args, spawnOptions);
+      if (needsPythonFallback(result, invocation)) result = spawnSync(cmd, args, spawnOptions);
       const stdout = (result.stdout || '').toString();
       const stderr = (result.stderr || '').toString();
       const ok = !result.error && result.status === 0;

@@ -272,12 +272,11 @@ test('a CI fallback makes local preflight mandatory and fail-closed', () => {
     'mandatory preflight resolution must happen before the optional absolute-path fallback',
   );
   assert.ok(
-    script.includes('( cd "$preflight_cwd" && GUARDEX_PREFLIGHT_TARGET_WORKTREE="$worktree" "$script_path" )'),
+    script.includes('( cd "$preflight_cwd" && "${runner[@]}" "$script_path" --guardex-target-worktree "$worktree" )'),
     'a mandatory preflight must execute from its trusted tree while receiving the target worktree explicitly',
   );
   assert.ok(script.includes('"$script_path" --guardex-capabilities'));
   assert.ok(script.includes('"$capabilities" != "guardex-target-worktree-v1"'));
-  assert.ok(script.includes('"$script_path" --guardex-target-worktree "$worktree"'));
 });
 
 test('a mandatory relative preflight executes the trusted base script and its relative helpers', () => {
@@ -314,6 +313,7 @@ test('a mandatory relative preflight executes the trusted base script and its re
     const command = [
       extractPreflightFunctions(),
       'finish_progress() { :; }',
+      'run_guardex_cli() { "$GUARDEX_NODE_BIN" "$CLI_ENTRY" "$@"; }',
       'PREFLIGHT_ENABLED=1',
       'PREFLIGHT_REQUIRED=1',
       'PREFLIGHT_SCRIPT_RAW=scripts/agent-preflight.sh',
@@ -322,6 +322,12 @@ test('a mandatory relative preflight executes the trusted base script and its re
     ].join('\n');
     const result = cp.spawnSync('bash', ['-c', command, 'trusted-preflight-test', repoDir], {
       encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLI_ENTRY: path.resolve(__dirname, '../bin/multiagent-safety.js'),
+        GUARDEX_NODE_BIN: process.execPath,
+        GUARDEX_HEAVY_QUEUE: '0',
+      },
     });
 
     assert.equal(result.status, 0, result.stderr);
