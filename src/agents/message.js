@@ -4,13 +4,15 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { TOOL_NAME } = require('../context');
+const context = require('../context');
+const { TOOL_NAME } = context;
 const { run } = require('../core/runtime');
 const tmuxCommand = require('../tmux/command');
 const { getAgentDefinition } = require('./registry');
 const { agentStateDir, listAgentSessions } = require('./sessions');
 
 const MAX_MESSAGE_BYTES = 64 * 1024;
+const MAX_PR_SUMMARY_BYTES = 4 * 1024;
 const MAX_INBOX_MESSAGES = 1000;
 const SAFE_MESSAGE_ID = /^[a-zA-Z0-9_-]{8,128}$/;
 const SAFE_PANE_ID = /^%\d+$/;
@@ -709,12 +711,73 @@ function renderSendResult(result, json = false) {
   return `[${TOOL_NAME}] Message not sent (${result.kind}): ${result.detail}.${retry}\n`;
 }
 
+function sendPrHandoff(repoRoot, options, deps) {
+  const body = sanitizeBody(options.message);
+  if (!body.trim()) return refusal('empty-message', 'message must not be empty');
+
+  const summary = sanitizeBody(options.prSummary).trim();
+  if (
+    options.prSummary !== undefined &&
+    (!summary || Buffer.byteLength(summary, 'utf8') > MAX_PR_SUMMARY_BYTES)
+  ) {
+    return refusal(
+      'invalid-pr-summary',
+      `PR summary must be non-empty and at most ${MAX_PR_SUMMARY_BYTES} bytes`
+    );
+  }
+
+  const runGh = deps.runGh || ((args, execution) => run(context.GH_BIN, args, execution));
+  const execution = { cwd: repoRoot, timeout: 30_000 };
+  const view = runGh(['pr', 'view', options.pr, '--json', 'url', '--jq', '.url'], execution);
+  const prUrl = view.stdout?.trim() || '';
+  const url = /^https:\/\/[a-z0-9.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/([1-9]\d*)$/i.exec(prUrl);
+  if (view.status !== 0 || url?.[1] !== options.pr) {
+    return refusal('pr-unavailable', `could not resolve PR #${options.pr} in this repository`);
+  }
+
+  const result = sendOrQueueAgentMessage(
+    repoRoot,
+    { ...options, message: `${body}\n\nPR: ${prUrl}` },
+    deps
+  );
+  if (!result.ok) return result;
+  if (!summary) return { ...result, prUrl };
+
+  // The explicitly public summary alone crosses the GitHub boundary.
+  const comment = runGh(['pr', 'comment', prUrl, '--body-file', '-'], {
+    ...execution,
+    input: summary
+  });
+  return { ...result, prUrl, prSummaryStatus: comment.status === 0 ? 'posted' : 'unconfirmed' };
+}
+
 function runSendCommand(repoRoot, options = {}, deps = {}) {
-  const result = sendOrQueueAgentMessage(repoRoot, options, deps);
+  const result = options.pr
+    ? sendPrHandoff(repoRoot, options, deps)
+    : sendOrQueueAgentMessage(repoRoot, options, deps);
   const output = renderSendResult(result, options.json);
-  return result.ok
-    ? { status: 0, stdout: output, stderr: '', result }
-    : { status: 1, stdout: options.json ? output : '', stderr: options.json ? '' : output, result };
+  if (!result.ok) {
+    return {
+      status: 1,
+      stdout: options.json ? output : '',
+      stderr: options.json ? '' : output,
+      result
+    };
+  }
+  const partial = result.prSummaryStatus === 'unconfirmed';
+  const prLine =
+    result.prUrl && !options.json
+      ? `[${TOOL_NAME}] PR: ${result.prUrl}${result.prSummaryStatus === 'posted' ? ' (summary posted)' : ''}\n`
+      : '';
+  return {
+    status: partial ? 1 : 0,
+    stdout: output + prLine,
+    stderr:
+      partial && !options.json
+        ? `[${TOOL_NAME}] PR comment not confirmed. Check the PR before retrying the comment. Do not resend the terminal message.\n`
+        : '',
+    result
+  };
 }
 
 function renderInboxResult(result, json = false) {

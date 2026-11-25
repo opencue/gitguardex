@@ -12,6 +12,7 @@ const {
   inspectAgentPane,
   pasteEnvelope,
   readAgentInbox,
+  runSendCommand,
   sendAgentMessage,
   sendOrQueueAgentMessage,
   verifySourceCaller
@@ -414,6 +415,133 @@ test('sendAgentMessage delivers only after source, target, pane, and post-write 
     pasted[0].envelope,
     /reply-to: gx agents send --session source-session --message <text>/
   );
+});
+
+const HANDOFF_PR_URL = 'https://github.com/org/repo/pull/42';
+
+function prHandoffFixture(activity = 'done') {
+  const target = session({ activity });
+  const source = session({ id: 'source-session', worktreePath: '/repo/source' });
+  const calls = [];
+  const options = {
+    sessionId: target.id,
+    sourceSessionId: source.id,
+    message: 'private terminal instructions',
+    pr: '42'
+  };
+  const deps = {
+    listAgentSessions: () => [target, source],
+    verifySourceCaller: () => ({ ok: true }),
+    acquireDeliveryLock: () => () => {},
+    inspectAgentPane: () => ({
+      ok: true,
+      paneId: '%7',
+      panePid: 100,
+      agentPid: 200,
+      observed: 'codex'
+    }),
+    inspectAgentComposer: () => ({ ok: true }),
+    pasteEnvelope: (_pane, envelope) => {
+      calls.push({ envelope });
+      return { ok: true };
+    },
+    runGh: (args, { cwd, input }) => {
+      calls.push({ args, cwd, input });
+      return { status: 0, stdout: `${HANDOFF_PR_URL}\n` };
+    }
+  };
+  return { options, deps, calls };
+}
+
+test('PR handoff publishes only the explicit summary after the terminal accepts the message', () => {
+  const { options, deps, calls } = prHandoffFixture();
+  const receipt = runSendCommand('/repo', { ...options, prSummary: 'public handoff' }, deps);
+  assert.equal(receipt.status, 0);
+  assert.equal(receipt.result.prSummaryStatus, 'posted');
+  assert.deepEqual(calls[0], {
+    args: ['pr', 'view', '42', '--json', 'url', '--jq', '.url'],
+    cwd: '/repo',
+    input: undefined
+  });
+  assert.ok(calls[1].envelope.includes(`${options.message}\n\nPR: ${HANDOFF_PR_URL}`));
+  assert.ok(!calls[1].envelope.includes('public handoff'));
+  assert.deepEqual(calls[2], {
+    args: ['pr', 'comment', HANDOFF_PR_URL, '--body-file', '-'],
+    cwd: '/repo',
+    input: 'public handoff'
+  });
+});
+
+test('PR handoff without a summary queues the linked message but does not write to GitHub', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-handoff-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const { options, deps, calls } = prHandoffFixture('working');
+  const receipt = runSendCommand(repoRoot, { ...options, json: true }, deps);
+  assert.equal(receipt.status, 0);
+  const result = JSON.parse(receipt.stdout);
+  assert.equal(result.kind, 'queued');
+  assert.equal(result.prUrl, HANDOFF_PR_URL);
+  assert.equal(result.prSummaryStatus, undefined);
+  const inbox = readAgentInbox(repoRoot, { sessionId: options.sessionId }, deps);
+  assert.equal(inbox.messages[0].body, `${options.message}\n\nPR: ${HANDOFF_PR_URL}`);
+  assert.deepEqual(
+    calls.map(({ args }) => args[1]),
+    ['view']
+  );
+});
+
+test('PR handoff never posts a summary if resolution or authenticated delivery fails', () => {
+  const { options, deps, calls } = prHandoffFixture();
+  const request = { ...options, prSummary: 'public handoff' };
+  const runGh = deps.runGh;
+  const invalid = runSendCommand('/repo', request, {
+    ...deps,
+    runGh: (...args) => ({ ...runGh(...args), stdout: HANDOFF_PR_URL.replace('/42', '/43') })
+  });
+  assert.equal(invalid.result.kind, 'pr-unavailable');
+  assert.deepEqual(
+    calls.map(({ args }) => args[1]),
+    ['view']
+  );
+
+  calls.length = 0;
+  const denied = runSendCommand('/repo', request, {
+    ...deps,
+    verifySourceCaller: () => ({ ok: false, kind: 'source-caller-unverified' })
+  });
+  assert.equal(denied.result.kind, 'source-caller-unverified');
+  assert.deepEqual(
+    calls.map(({ args }) => args[1]),
+    ['view']
+  );
+
+  calls.length = 0;
+  assert.equal(
+    runSendCommand('/repo', { ...request, prSummary: '   ' }, deps).result.kind,
+    'invalid-pr-summary'
+  );
+  assert.equal(
+    runSendCommand('/repo', { ...request, message: '\u001b' }, deps).result.kind,
+    'empty-message'
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('PR handoff reports an unconfirmed comment separately from successful local delivery', () => {
+  const { options, deps, calls } = prHandoffFixture();
+  const runGh = deps.runGh;
+  deps.runGh = (args, opts) => ({
+    ...runGh(args, opts),
+    status: args[1] === 'comment' ? 1 : 0
+  });
+  const receipt = runSendCommand('/repo', { ...options, prSummary: 'public handoff' }, deps);
+  assert.equal(receipt.status, 1);
+  assert.equal(receipt.result.ok, true);
+  assert.equal(receipt.result.kind, 'sent');
+  assert.equal(receipt.result.prSummaryStatus, 'unconfirmed');
+  assert.match(receipt.stdout, /pasted and submitted/);
+  assert.match(receipt.stderr, /Do not resend the terminal message/);
+  assert.equal(calls.length, 3);
 });
 
 test('sendAgentMessage rechecks activity under the target delivery lock before writing', () => {

@@ -256,6 +256,25 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
   assert.equal(sendOptions.message, 'continue with the tests');
   assert.equal(sendOptions.json, true);
 
+  const handoff = ['send', '--session', 'target-session', '--message', 'private'];
+  const prOptions = parseAgentsArgs([...handoff, '--pr', '42', '--pr-summary', 'public']);
+  assert.equal(prOptions.pr, '42');
+  assert.equal(prOptions.prSummary, 'public');
+  for (const invalid of ['0', '1e3', '9007199254740992', 'https://github.com/org/repo/pull/42']) {
+    assert.throws(
+      () => parseAgentsArgs([...handoff, '--pr', invalid]),
+      /--pr requires a positive PR number/
+    );
+  }
+  assert.throws(
+    () => parseAgentsArgs([...handoff, '--pr-summary', 'public']),
+    /--pr-summary requires --pr/
+  );
+  assert.throws(
+    () => parseAgentsArgs(['inbox', '--pr', '42']),
+    /only supported with `gx agents send`/
+  );
+
   assert.throws(
     () => parseAgentsArgs(['send', '--session', 'target-session']),
     /gx agents send requires --message/,

@@ -487,6 +487,19 @@ function parseAgentsArgs(rawArgs) {
       index += 1;
       continue;
     }
+    if (arg === '--pr' || arg === '--pr-summary') {
+      const value = requireValue(rest, index, arg);
+      if (arg === '--pr') {
+        if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
+          throw new Error('--pr requires a positive PR number');
+        }
+        options.pr = value;
+      } else {
+        options.prSummary = value;
+      }
+      index += 1;
+      continue;
+    }
     if (arg === '--ack') {
       const next = rest[index + 1];
       if (!next || next.startsWith('-')) {
@@ -790,6 +803,12 @@ function parseAgentsArgs(rawArgs) {
   }
   if ((options.message || options.sourceSessionId) && options.subcommand !== 'send') {
     throw new Error('--message and --from-session are only supported with `gx agents send`');
+  }
+  if ((options.pr || options.prSummary) && options.subcommand !== 'send') {
+    throw new Error('--pr and --pr-summary are only supported with `gx agents send`');
+  }
+  if (options.prSummary && !options.pr) {
+    throw new Error('--pr-summary requires --pr <number>');
   }
   if (options.ackMessageId && options.subcommand !== 'inbox') {
     throw new Error('--ack is only supported with `gx agents inbox`');
