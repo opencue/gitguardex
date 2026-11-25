@@ -151,6 +151,31 @@ test('disabled Actions fallback needs zero checks, the reviewed head and a posit
   }).status, 'no-checks');
 });
 
+test('disabled Actions fallback rechecks the PR for changes during the workflow probe', () => {
+  const zero = { ...GREEN, headSha: 'reviewed-sha', checks: { failed: 0, pending: 0, total: 0 } };
+  for (const [snapshotAfterProbe, expected] of [
+    [{ ...zero, checks: { failed: 1, pending: 0, total: 1 } }, 'checks-failed'],
+    [{ ...zero, checks: { failed: 0, pending: 1, total: 1 } }, 'timeout'],
+    [{ ...zero, headSha: 'new-head' }, 'stale-head'],
+    [{ ...zero, mergeStateStatus: 'BLOCKED' }, 'merge-blocked'],
+  ]) {
+    let probed = false;
+    const result = waitForGreenCi('repo', 'br', {
+      ...makeClock(),
+      expectHeadSha: 'reviewed-sha',
+      noChecksGraceSeconds: 30,
+      timeoutSeconds: 45,
+      getStatus: () => (probed ? snapshotAfterProbe : zero),
+      disabledActionsFallback: () => {
+        probed = true;
+        return true;
+      },
+    });
+    assert.equal(result.status, expected);
+    assert.equal(result.requiresLocalPreflight, undefined);
+  }
+});
+
 test('waitForGreenCi fails closed on a CANCELLED check (the H1 fail-open)', () => {
   const c = makeClock();
   const r = waitForGreenCi('repo', 'br', {

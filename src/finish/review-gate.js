@@ -179,9 +179,12 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
   const start = now();
   const deadline = start + timeoutSeconds * 1000;
   const graceDeadline = start + graceSeconds * 1000;
+  let workflowsJustConfirmedDisabled = false;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    const confirmedBeforeSnapshot = workflowsJustConfirmedDisabled;
+    workflowsJustConfirmedDisabled = false;
     const snap = getStatus(repoRoot, branch);
     if (!snap) return { status: 'no-pr' };
     // A verdict about the wrong commit is not a verdict. Judge nothing — not
@@ -285,9 +288,15 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
       // No checks yet — give CI a grace window to create check runs before
       // concluding the PR is genuinely check-less (avoids the promote->merge race).
       if (now() >= graceDeadline) {
-        if (expectHeadSha && MERGEABLE_STATES.has(mss)
-          && (options.disabledActionsFallback || disabledActionsFallback)(repoRoot)) {
-          return { status: 'green', pr: snap, requiresLocalPreflight: true };
+        if (expectHeadSha && MERGEABLE_STATES.has(mss)) {
+          if (confirmedBeforeSnapshot) return { status: 'green', pr: snap, requiresLocalPreflight: true };
+          if ((options.disabledActionsFallback || disabledActionsFallback)(repoRoot)) {
+            // A check or head change may have arrived during the workflow API call.
+            if (now() >= deadline) return { status: 'timeout', pr: snap };
+            workflowsJustConfirmedDisabled = true;
+            // eslint-disable-next-line no-continue
+            continue;
+          }
         }
         return { status: 'no-checks', pr: snap };
       }
