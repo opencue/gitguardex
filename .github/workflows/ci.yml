@@ -54,7 +54,7 @@ jobs:
         run: npm run format:check:changed
 
       - name: Lint (Biome)
-        run: npm run lint
+        run: npm run lint -- --reporter=github
 
       - name: Unit tests (with coverage)
         run: npm run test:coverage

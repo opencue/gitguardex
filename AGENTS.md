@@ -65,6 +65,7 @@ When writing complex features or significant refactors, use an ExecPlan (as desc
 - Never edit, stage, or commit on `dev` / `main`. Open an `agent/*` branch + worktree first.
 - Claim files before edits: `gx locks claim --branch "<agent-branch>" <file...>` (or Colony `task_claim_file` on an active task).
 - Finish completed work with `gx branch finish --branch "<agent-branch>" --via-pr --wait-for-merge --cleanup`. Never stop at bare `--via-pr`. `gx ship` is the short alias for that exact gated finish.
+- In this repo, add `--gate-review --gate-autofix --review-provider claude` when shipping. Use a locally signed-in Claude Code CLI for the independent review of the final PR head; a Codex implementation session or automated Codex review is not a substitute. Do not provision model API keys in GitHub Actions for this review.
 - When work is complete, always offer to finish and merge it — never leave commits stranded in a worktree. Set `GUARDEX_AUTO_SHIP=1` to make a bare `gx finish` / `gx branch finish` default to that gated ship automatically (see Toggle).
 - Commit, push, and open/update a PR for completed work unless the user explicitly says to keep it local.
 - OpenSpec is opt-in. Work directly in code/tests unless the user requests it, an existing change is being continued, or T2/T3 is explicitly selected.
@@ -92,7 +93,8 @@ openspec validate --specs
 # 4. Finish via PR + cleanup (the non-negotiable default):
 gx branch finish \
   --branch "agent/claude-<name>/<slug>" \
-  --base main --via-pr --wait-for-merge --cleanup
+  --base main --via-pr --wait-for-merge --cleanup \
+  --gate-review --gate-autofix --review-provider claude
 
 # Branch protection blocks merge? Enable auto-merge once PR URL is known:
 gh pr merge <PR-NUMBER> --repo <owner>/<repo> --auto --squash
