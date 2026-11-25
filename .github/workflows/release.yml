@@ -1,17 +1,26 @@
 name: Release to npm (provenance + signed assets)
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
   release:
     types: [published]
 
 permissions:
   contents: read
-  id-token: write
+
+concurrency:
+  group: npm-release
+  queue: max
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   publish:
-    if: github.repository == 'opencue/gitguardex'
+    if: github.repository == 'opencue/gitguardex' && (github.ref == 'refs/heads/main' || (github.event_name == 'release' && github.event.release.prerelease == false))
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -23,6 +32,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # npm run verify compares new files with origin/main.
+          persist-credentials: false
+
+      - name: Verify release source
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -56,63 +69,78 @@ jobs:
       - name: Audit dependencies
         run: scripts/npm-audit-retry.sh --audit-level=high
 
+      - name: Check that main is still current
+        id: source
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+        run: |
+          if [[ "$RELEASE_EVENT" != release ]]; then
+            main="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+            if [[ "$GITHUB_SHA" != "$main" ]]; then
+              echo "A newer main commit supersedes this run."
+              exit 0
+            fi
+          fi
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+
       - name: Resolve package metadata
         id: pkg
-        run: |
-          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: Check npm registry for current version
-        id: registry
+        if: steps.source.outputs.eligible == 'true'
         env:
-          PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
-          PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: node scripts/resolve-npm-release.js
+
+      - name: Reject a conflicting GitHub tag before publishing
+        if: steps.source.outputs.eligible == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.pkg.outputs.tag }}
         run: |
-          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          fi
+          refs="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")"
+          tag_sha="$(awk 'END {print $1}' <<< "$refs")"
+          [[ -z "$tag_sha" || "$tag_sha" == "$GITHUB_SHA" ]]
 
       - name: Pack release tarball
         id: pack
-        run: |
-          mkdir -p dist
-          package_file="$(npm pack --pack-destination dist | tail -n 1)"
-          echo "package_file=${package_file}" >> "$GITHUB_OUTPUT"
-          echo "package_path=dist/${package_file}" >> "$GITHUB_OUTPUT"
-
-      - name: Publish with provenance
-        if: ${{ steps.registry.outputs.already_published != 'true' }}
-        run: npm publish --provenance --access public
-
-      - name: Skip already-published npm version
-        if: ${{ steps.registry.outputs.already_published == 'true' }}
+        if: steps.source.outputs.eligible == 'true'
         env:
           PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
           PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
-        run: echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already on npm; skipping publish."
-
-      - name: Generate release checksum
-        if: ${{ always() && steps.pack.outputs.package_path != '' }}
+          PACKAGE_PUBLISHED: ${{ steps.pkg.outputs.published }}
         run: |
-          sha256sum "${{ steps.pack.outputs.package_path }}" > "${{ steps.pack.outputs.package_path }}.sha256"
+          mkdir -p dist
+          if [[ "$PACKAGE_PUBLISHED" == true ]]; then
+            echo "$PACKAGE_NAME@$PACKAGE_VERSION is already on npm; skipping publish."
+            package_file="$(npm pack "$PACKAGE_NAME@$PACKAGE_VERSION" --pack-destination dist)"
+          else
+            npm pkg set version="$PACKAGE_VERSION" gitHead="$GITHUB_SHA"
+            package_file="$(npm pack --pack-destination dist)"
+          fi
+          echo "package_path=dist/$package_file" >> "$GITHUB_OUTPUT"
 
-      - name: Sign release tarball with Sigstore
-        if: ${{ always() && steps.pack.outputs.package_path != '' }}
-        run: |
-          cosign sign-blob "${{ steps.pack.outputs.package_path }}" \
-            --bundle "${{ steps.pack.outputs.package_path }}.sigstore.json" \
-            --yes
+      - name: Publish with provenance
+        id: publish
+        if: steps.pack.outcome == 'success' && steps.pkg.outputs.published == 'false'
+        env:
+          PACKAGE_PATH: ${{ steps.pack.outputs.package_path }}
+        run: npm publish "$PACKAGE_PATH" --provenance --access public
 
-      - name: Upload signed release assets
-        if: ${{ always() && steps.pack.outputs.package_path != '' }}
+      - name: Sign tarball and attach GitHub release assets
+        # For manually published GitHub releases, keep the signed assets even if npm fails.
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' && (success() || (github.event_name == 'release' && steps.publish.outcome == 'failure')) }}
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || format('v{0}', steps.pkg.outputs.version) }}
+          PACKAGE_PATH: ${{ steps.pack.outputs.package_path }}
+          RELEASE_TAG: ${{ steps.pkg.outputs.tag }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            "${{ steps.pack.outputs.package_path }}" \
-            "${{ steps.pack.outputs.package_path }}.sha256" \
-            "${{ steps.pack.outputs.package_path }}.sigstore.json" \
-            --clobber
+          sha256sum "$PACKAGE_PATH" > "$PACKAGE_PATH.sha256"
+          cosign sign-blob "$PACKAGE_PATH" --bundle "$PACKAGE_PATH.sigstore.json" --yes
+          assets=("$PACKAGE_PATH" "$PACKAGE_PATH.sha256" "$PACKAGE_PATH.sigstore.json")
+          refs="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")"
+          tag_sha="$(awk 'END {print $1}' <<< "$refs")"
+          [[ -z "$tag_sha" || "$tag_sha" == "$GITHUB_SHA" ]]
+          if gh release view "$RELEASE_TAG" >/dev/null; then
+            [[ "$tag_sha" == "$GITHUB_SHA" ]]
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --target "$GITHUB_SHA" --generate-notes
+          fi
