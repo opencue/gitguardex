@@ -702,6 +702,7 @@ const CLI_COMMAND_HELP = {
       ['--artifact <path>', 'Write the findings to a file'],
       ['--output <path>', 'Exact alias for --artifact; both write the findings file'],
       ['--fix', 'Let the provider apply and commit the fixes'],
+      ['--agent-quiet', 'Suppress verbose provider transcripts; keep results and errors'],
       ['--timeout-ms <n>', 'Give up on the provider after this long'],
       ['--target <path>', 'Act on another repo instead of the current directory'],
     ],

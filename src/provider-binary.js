@@ -92,10 +92,31 @@ function resolveProviderBin(provider, env = process.env) {
   return findRealProviderBin(normalized, env) || normalized;
 }
 
+function withProviderStderr(agentQuiet, execute) {
+  if (!agentQuiet) return execute('inherit');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitguardex-provider-'));
+  let fd;
+  try {
+    // Don't pipe stderr: verbose diagnostics must not consume the stdout
+    // buffer budget or cause spawnSync to terminate a successful provider.
+    fd = fs.openSync(path.join(dir, 'stderr'), 'wx+', 0o600);
+    const result = execute(fd);
+    if (result.status === 0) return result;
+    const size = fs.fstatSync(fd).size;
+    const tail = Buffer.alloc(Math.min(size, 2000));
+    const read = fs.readSync(fd, tail, 0, tail.length, size - tail.length);
+    return { ...result, stderr: tail.toString('utf8', 0, read) };
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 module.exports = {
   codexReviewEffort,
   cueShimDir,
   findRealProviderBin,
   isCueAgentShim,
   resolveProviderBin,
+  withProviderStderr,
 };
