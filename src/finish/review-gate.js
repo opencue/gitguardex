@@ -26,6 +26,14 @@ const MERGEABLE_STATES = new Set(['CLEAN', 'HAS_HOOKS']);
 // check unmet; DIRTY = conflicts; BEHIND = base moved. All fail closed.
 const BLOCKED_STATES = new Set(['DIRTY', 'BLOCKED', 'BEHIND', 'UNSTABLE']);
 
+function disabledActionsFallback(repoRoot) {
+  const config = run('git', ['config', '--local', '--type=bool', '--get', 'multiagent.ciFallbackWhenDisabled'], {
+    cwd: repoRoot, allowFailure: true,
+  });
+  return config.status === 0 && String(config.stdout || '').trim() === 'true'
+    && pr.githubActionsWorkflowsDisabled(repoRoot);
+}
+
 function gateLog(message) {
   console.log(`[${TOOL_NAME}] [gate] ${message}`);
 }
@@ -276,7 +284,13 @@ function waitForGreenCi(repoRoot, branch, options = {}) {
       if (!requireChecks) return { status: 'green', pr: snap };
       // No checks yet — give CI a grace window to create check runs before
       // concluding the PR is genuinely check-less (avoids the promote->merge race).
-      if (now() >= graceDeadline) return { status: 'no-checks', pr: snap };
+      if (now() >= graceDeadline) {
+        if (expectHeadSha && MERGEABLE_STATES.has(mss)
+          && (options.disabledActionsFallback || disabledActionsFallback)(repoRoot)) {
+          return { status: 'green', pr: snap, requiresLocalPreflight: true };
+        }
+        return { status: 'no-checks', pr: snap };
+      }
     }
     if (now() >= deadline) return { status: 'timeout', pr: snap };
     sleep(pollSeconds);
@@ -744,7 +758,12 @@ function runReviewGate(
       `PR #${prNumber}: review clean; GitHub billing prevented [${billingChecksWaived.join(', ')}] from starting. ` +
         'Proceeding only with mandatory repository preflight.'
     );
-    return { prNumber, ...revision, billingChecksWaived };
+    return { prNumber, ...revision, billingChecksWaived, requiresLocalPreflight: true };
+  }
+  if (ci.requiresLocalPreflight) {
+    reportProgress(progress, 'complete', 'ci', 'GitHub Actions workflows disabled; local preflight required');
+    gateLog(`PR #${prNumber}: review clean; GitHub confirms workflows are disabled. Proceeding only with mandatory repository preflight.`);
+    return { prNumber, ...revision, requiresLocalPreflight: true };
   }
   reportProgress(progress, 'complete', 'ci', `green${mss ? `, mergeStateStatus=${mss}` : ''}`);
   logProgress(

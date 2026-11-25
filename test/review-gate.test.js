@@ -115,6 +115,42 @@ test('waitForGreenCi passes a check-less PR when --allow-no-checks (requireCheck
   assert.equal(r.status, 'green');
 });
 
+test('disabled Actions fallback needs zero checks, the reviewed head and a positive GitHub merge verdict', () => {
+  const zero = { ...GREEN, headSha: 'reviewed-sha', checks: { failed: 0, pending: 0, total: 0 } };
+  for (const [snap, expected, probeCount] of [
+    [zero, 'green', 1],
+    [{ ...zero, mergeStateStatus: 'UNKNOWN' }, 'timeout', 0],
+    [{ ...zero, mergeStateStatus: 'BLOCKED' }, 'merge-blocked', 0],
+    [{ ...zero, headSha: 'unreviewed-sha' }, 'stale-head', 0],
+    [{ ...zero, checks: { failed: 1, pending: 0, total: 1 } }, 'checks-failed', 0],
+    [{ ...zero, checks: { failed: 0, pending: 1, total: 1 } }, 'timeout', 0],
+  ]) {
+    let calls = 0;
+    const clock = makeClock();
+    const result = waitForGreenCi('repo', 'br', {
+      ...clock,
+      expectHeadSha: 'reviewed-sha',
+      noChecksGraceSeconds: 30,
+      timeoutSeconds: 45,
+      getStatus: constStatus(snap),
+      disabledActionsFallback: () => {
+        calls += 1;
+        assert.equal(clock.now(), 30_000, 'wait for CI registration before probing');
+        return true;
+      },
+    });
+    assert.equal(result.status, expected);
+    assert.equal(result.requiresLocalPreflight, expected === 'green' ? true : undefined);
+    assert.equal(calls, probeCount);
+  }
+  assert.equal(waitForGreenCi('repo', 'br', {
+    ...makeClock(),
+    expectHeadSha: 'reviewed-sha',
+    getStatus: constStatus(zero),
+    disabledActionsFallback: () => false,
+  }).status, 'no-checks');
+});
+
 test('waitForGreenCi fails closed on a CANCELLED check (the H1 fail-open)', () => {
   const c = makeClock();
   const r = waitForGreenCi('repo', 'br', {
@@ -463,8 +499,26 @@ test('runReviewGate reports billing-waived checks so callers can require local p
   assert.deepEqual(runReviewGate(gateArgs, deps), {
     prNumber: 42,
     billingChecksWaived: ['build', 'review'],
+    requiresLocalPreflight: true,
     reviewedHeadSha: 'initial-sha',
     reviewedBaseSha: 'base-sha',
+  });
+});
+
+test('runReviewGate returns the reviewed revision and requires local preflight when Actions is disabled', () => {
+  const deps = gateDeps({
+    waitForGreenCi: () => ({
+      status: 'green',
+      pr: { mergeStateStatus: 'CLEAN' },
+      requiresLocalPreflight: true,
+    }),
+  });
+
+  assert.deepEqual(runReviewGate(gateArgs, deps), {
+    prNumber: 42,
+    reviewedHeadSha: 'initial-sha',
+    reviewedBaseSha: 'base-sha',
+    requiresLocalPreflight: true,
   });
 });
 

@@ -121,9 +121,9 @@ test('branch finish --gate-review runs the gate and keeps the flag out of the sh
   assert.deepEqual(argv, ['--branch', 'agent/claude/x', '--base', 'dev', '--via-pr', '--auto-resolve=safe']);
 });
 
-test('branch finish requires repository preflight when GitHub billing checks were waived', () => {
+test('branch finish requires repository preflight when the review gate uses a CI fallback', () => {
   const { branch, calls } = loadBranchWithStubs({
-    gateResult: { prNumber: 42, billingChecksWaived: ['build'] },
+    gateResult: { prNumber: 42, requiresLocalPreflight: true },
   });
 
   branch(['finish', '--branch', 'agent/claude/x', '--base', 'main', '--via-pr', '--gate-review']);

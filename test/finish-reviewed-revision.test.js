@@ -201,6 +201,6 @@ test('unattended doctor finish preserves the billing-waiver preflight requiremen
   const source = fs.readFileSync(path.join(__dirname, '../src/doctor/index.js'), 'utf8');
   assert.match(
     source,
-    /GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateOutcome\.gateResult\?\.billingChecksWaived\?\.length > 0 \? '1' : '0'/
+    /GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateOutcome\.gateResult\?\.requiresLocalPreflight \? '1' : '0'/
   );
 });
