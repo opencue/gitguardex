@@ -37,7 +37,7 @@ test('release workflow publishes with provenance in CI', () => {
   assert.match(workflow, /name:\s+Verify npm trusted-publishing support/);
   assert.match(workflow, /npm_version="\$\(npm --version\)"/);
   assert.match(workflow, /requires npm >=11\.5\.1/);
-  assert.match(workflow, /npm publish --provenance --access public/);
+  assert.match(workflow, /npm publish "\$PACKAGE_PATH" --provenance --access public/);
   // Cosign installer must be pinned to a 40-char SHA on the v4.1.x line.
   // The patch version floats so a renovate/dependabot bump
   // (e.g. v4.1.1 -> v4.1.2) doesn't break this gate; a major or minor
@@ -45,14 +45,13 @@ test('release workflow publishes with provenance in CI', () => {
   assert.match(workflow, /name:\s+Install Cosign\s+uses:\s+sigstore\/cosign-installer@[0-9a-f]{40}[^\n]*# v4\.1\.\d+/s);
 });
 
-test('release workflow skips publish when the current version is already on npm', () => {
+test('release workflow retries with the exact npm tarball instead of publishing again', () => {
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'release.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   assert.match(workflow, /name:\s+Resolve package metadata/);
-  assert.match(workflow, /name:\s+Check npm registry for current version/);
-  assert.match(workflow, /npm view "\$\{PACKAGE_NAME\}@\$\{PACKAGE_VERSION\}" version/);
-  assert.match(workflow, /if:\s+\$\{\{\s*steps\.registry\.outputs\.already_published != 'true'\s*\}\}/);
-  assert.match(workflow, /if:\s+\$\{\{\s*steps\.registry\.outputs\.already_published == 'true'\s*\}\}/);
+  assert.match(workflow, /node scripts\/resolve-npm-release\.js/);
+  assert.match(workflow, /npm pack "\$PACKAGE_NAME@\$PACKAGE_VERSION" --pack-destination dist/);
+  assert.match(workflow, /if: steps\.source\.outputs\.eligible == 'true' && steps\.pkg\.outputs\.published == 'false'/);
   assert.match(workflow, /skipping publish\./);
 });
 
@@ -61,34 +60,24 @@ test('release workflow uploads signed GitHub release assets for the package tarb
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   assert.match(workflow, /name:\s+Pack release tarball/);
   assert.match(workflow, /npm pack --pack-destination dist/);
-  assert.match(workflow, /sha256sum "\$\{\{\s*steps\.pack\.outputs\.package_path\s*\}\}" > "\$\{\{\s*steps\.pack\.outputs\.package_path\s*\}\}\.sha256"/);
-  assert.match(workflow, /cosign sign-blob "\$\{\{\s*steps\.pack\.outputs\.package_path\s*\}\}"/);
-  assert.match(workflow, /--bundle "\$\{\{\s*steps\.pack\.outputs\.package_path\s*\}\}\.sigstore\.json"/);
-  assert.match(workflow, /name:\s+Upload signed release assets/);
-  const resilientReleaseSteps = workflow.match(
-    /- name:\s+Generate release checksum[\s\S]*?- name:\s+Upload signed release assets[\s\S]*?--clobber/,
-  )?.[0] ?? '';
-  assert.equal(
-    resilientReleaseSteps.match(/if:\s+\$\{\{\s*always\(\)\s*&&\s*steps\.pack\.outputs\.package_path != ''\s*\}\}/g)?.length,
-    3,
-    'checksum, signing, and upload must still run when npm publishing fails after packing',
-  );
+  assert.match(workflow, /sha256sum "\$PACKAGE_PATH" > "\$PACKAGE_PATH\.sha256"/);
+  assert.match(workflow, /cosign sign-blob "\$PACKAGE_PATH" --bundle "\$PACKAGE_PATH\.sigstore\.json"/);
+  assert.match(workflow, /name:\s+Sign tarball and attach GitHub release assets/);
+  assert.match(workflow, /success\(\) \|\| \(github\.event_name == 'release' && steps\.publish\.outcome == 'failure'\)/);
   assert.match(workflow, /GH_TOKEN:\s+\$\{\{\s*github\.token\s*\}\}/);
   assert.match(workflow, /gh release upload "\$RELEASE_TAG"/);
+  assert.match(workflow, /gh release create "\$RELEASE_TAG".*--target "\$GITHUB_SHA" --generate-notes/);
 });
 
-test('release-please grants write permissions only to its release job', () => {
-  const workflowPath = path.join(repoRoot, '.github', 'workflows', 'release-please.yml');
+test('release publishes with a job-scoped OIDC grant and no competing release bot', () => {
+  const workflowPath = path.join(repoRoot, '.github', 'workflows', 'release.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
 
-  assert.match(workflow, /^permissions:\s+read-all$/m);
+  assert.equal(fs.existsSync(path.join(repoRoot, '.github', 'workflows', 'release-please.yml')), false);
+  assert.match(workflow, /^permissions:\n  contents: read\n\n/m);
   assert.match(
     workflow,
-    /release-please:[\s\S]*?permissions:\s*\n\s+contents:\s+write\s*\n\s+pull-requests:\s+write/,
-  );
-  assert.doesNotMatch(
-    workflow,
-    /^permissions:\s*\n\s+contents:\s+write\s*\n\s+pull-requests:\s+write/m,
+    /jobs:\n  publish:[\s\S]*?environment: npm\n    permissions:\n      contents: write\n      id-token: write/,
   );
 });
 
@@ -100,12 +89,17 @@ test('workflow dependency installs use lockfile-enforcing npm ci', () => {
   }
 });
 
-test('release workflow only publishes from published releases or manual dispatch', () => {
+test('release workflow validates main before publishing and keeps the tagged maintainer path', () => {
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'release.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /release:\s*\n\s*types:\s*\[published\]/);
-  assert.doesNotMatch(workflow, /\npush:\s*\n/);
+  assert.match(workflow, /push:\n\s+branches: \[main\]/);
+  assert.match(workflow, /run: npm run verify/);
+  assert.match(workflow, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/);
+  assert.match(workflow, /git ls-remote --exit-code origin refs\/heads\/main/);
+  assert.match(workflow, /name:\s+Pack release tarball[\s\S]*?name:\s+Check that main is still current[\s\S]*?name:\s+Publish with provenance/);
+  assert.match(workflow, /name:\s+Reject a conflicting GitHub tag before publishing[\s\S]*?name:\s+Publish with provenance/);
 });
 
 test('README release notes include current package version', () => {
