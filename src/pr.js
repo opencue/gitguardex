@@ -59,6 +59,28 @@ function ghJson(repoRoot, args) {
   }
 }
 
+function githubActionsWorkflowsDisabled(repoRoot, runner = run) {
+  const result = runner(_ctx.GH_BIN, [
+    'api',
+    repoApiPath(repoRoot, 'actions/workflows?per_page=100', runner),
+    '--paginate',
+    '--slurp',
+  ], { cwd: repoRoot, timeout: 60_000, allowFailure: true });
+  if (result.status !== 0) return false;
+
+  try {
+    const pages = JSON.parse(String(result.stdout || ''));
+    if (!Array.isArray(pages) || !pages.length || !pages.every((page) => Array.isArray(page?.workflows))) return false;
+    const workflows = pages.flatMap((page) => page.workflows);
+    return workflows.length > 0
+      && pages.every((page) => page.total_count === workflows.length)
+      && workflows.every((workflow) => Number.isSafeInteger(workflow?.id) && workflow.state === 'disabled_manually')
+      && new Set(workflows.map((workflow) => workflow.id)).size === workflows.length;
+  } catch (_error) {
+    return false;
+  }
+}
+
 function githubActionsJobId(check) {
   if (String(check?.__typename || '') !== 'CheckRun') return '';
   if (!String(check?.name || '').trim()) return '';
@@ -646,6 +668,7 @@ module.exports = {
   openPullRequest,
   getPullRequestStatus,
   getPrHeadOid,
+  githubActionsWorkflowsDisabled,
   githubActionsJobId,
   isBillingBlockedCheckRun,
   checkOutcomes,

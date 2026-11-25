@@ -707,7 +707,7 @@ function finish(rawArgs, defaults = {}) {
           GUARDEX_FINISH_GATE_DONE: options.gateReview ? '1' : '0',
           GUARDEX_FINISH_REVIEWED_HEAD: gateResult?.reviewedHeadSha || '',
           GUARDEX_FINISH_REVIEWED_BASE: gateResult?.reviewedBaseSha || '',
-          GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.billingChecksWaived?.length > 0 ? '1' : '0',
+          GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.requiresLocalPreflight ? '1' : '0',
           ...progress.eventEnv,
         },
       });

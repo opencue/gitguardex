@@ -180,6 +180,57 @@ test('getPullRequestStatus ignores cancelled workflow runs superseded by a newer
   }
 });
 
+test('confirms disabled Actions only from a complete, nonempty workflow listing', () => {
+  const page = (total_count, ...workflows) => ({ total_count, workflows });
+  const disabled = (id) => ({ id, state: 'disabled_manually' });
+  const probe = (pages, status = 0) => prModule.githubActionsWorkflowsDisabled(
+    '/tmp',
+    (_binary, args) => {
+      if (args[0] === 'repo') return { status: 0, stdout: 'owner/repo' };
+      assert.deepEqual(args, ['api', 'repos/owner/repo/actions/workflows?per_page=100', '--paginate', '--slurp']);
+      return { status, stdout: JSON.stringify(pages) };
+    },
+  );
+
+  assert.equal(probe([page(2, disabled(1)), page(2, disabled(2))]), true);
+  assert.equal(probe([page(0)]), false);
+  assert.equal(probe([page(2, disabled(1))]), false);
+  assert.equal(probe([page(2, disabled(1)), page(2, disabled(1))]), false);
+  assert.equal(probe([page(2, disabled(1), { id: 2, state: 'active' })]), false);
+  assert.equal(probe([page(1, { id: 1, state: 'disabled_inactivity' })]), false);
+  assert.equal(probe([page(1, disabled(1))], 1), false);
+  assert.equal(probe({ error: 'API response is not a page array' }), false);
+});
+
+test('disabled Actions fallback requires an explicit local repo opt-in', (t) => {
+  const repoRoot = makeRepo();
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const { waitForGreenCi } = require('../src/finish/review-gate');
+  const probe = t.mock.method(prModule, 'githubActionsWorkflowsDisabled', () => true);
+  const check = () => {
+    let now = 0;
+    return waitForGreenCi(repoRoot, 'agent/test/lane', {
+      expectHeadSha: 'pinned-head',
+      noChecksGraceSeconds: 1,
+      now: () => now,
+      sleep: () => { now += 1_000; },
+      getStatus: () => ({
+        headSha: 'pinned-head',
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'CLEAN',
+        checks: { total: 0 },
+      }),
+    });
+  };
+
+  assert.equal(check().status, 'no-checks');
+  assert.equal(probe.mock.callCount(), 0);
+  assert.equal(runGit(repoRoot, 'config', '--local', 'multiagent.ciFallbackWhenDisabled', 'true').status, 0);
+  assert.equal(check().requiresLocalPreflight, true);
+  assert.equal(probe.mock.callCount(), 1);
+});
+
 test('getPullRequestStatus waives only a GitHub check run with the exact billing-blocked annotation', () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-pr-billing-'));
   const fakeGh = path.join(fixtureRoot, 'gh');

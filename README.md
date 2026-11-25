@@ -353,6 +353,20 @@ Both `gx pr-review` and the finish gate use Codex first. If the Codex CLI cannot
 launch, they try Claude. Timeouts, failed or invalid reviews, and findings do not
 trigger a switch. Use `--provider` or `--review-provider` to pin one provider.
 
+For a repository that intentionally disables its GitHub Actions workflows,
+enable the local CI fallback from that checkout:
+
+```bash
+git config --local multiagent.ciFallbackWhenDisabled true
+```
+
+After the normal CI registration grace period, the gate accepts zero check
+runs only if GitHub confirms a nonempty workflow list with every workflow
+manually disabled and reports the reviewed PR as mergeable. A clean review
+and a successful target-aware preflight from the trusted base are still
+required. Missing or unverified workflow state, pending or failed checks,
+and GitHub branch protection are not bypassed.
+
 <p align="center">
   <a href="https://github.com/projects-kssk/Wireless_KFB_Project/pull/165">
     <img alt="GitGuardex code-assist blocking a PR with review findings" src="https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png" width="920">

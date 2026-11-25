@@ -1037,7 +1037,7 @@ function autoFinishReadyAgentBranches(repoRoot, options = {}) {
         GUARDEX_FINISH_GATE_DONE: autoShip && fallbackMode === '' ? '1' : '0',
         GUARDEX_FINISH_REVIEWED_HEAD: gateOutcome.gateResult?.reviewedHeadSha || '',
         GUARDEX_FINISH_REVIEWED_BASE: gateOutcome.gateResult?.reviewedBaseSha || '',
-        GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateOutcome.gateResult?.billingChecksWaived?.length > 0 ? '1' : '0',
+        GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateOutcome.gateResult?.requiresLocalPreflight ? '1' : '0',
       },
     });
     const combinedOutput = [finishResult.stdout || '', finishResult.stderr || ''].join('\n').trim();

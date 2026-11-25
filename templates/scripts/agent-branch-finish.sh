@@ -193,7 +193,7 @@ resolve_preflight_script() {
 
 # Bind a reusable success receipt to every input that can change the result.
 # The receipt is per source branch and is overwritten when HEAD, the base ref,
-# or the configured preflight script changes. Mandatory billing-waiver
+# or the configured preflight script changes. Mandatory CI fallback
 # preflights deliberately bypass this cache and always execute fail-closed.
 preflight_cache_fingerprint() {
   local worktree="$1"
@@ -264,8 +264,8 @@ run_preflight() {
   local worktree="$1"
   if [[ "$PREFLIGHT_ENABLED" -ne 1 ]]; then
     if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
-      finish_progress failed preflight "required because GitHub billing checks were waived"
-      echo "[agent-branch-finish] Billing-waived GitHub checks require local pre-flight; --no-preflight is not allowed." >&2
+      finish_progress failed preflight "required by the GitHub CI fallback"
+      echo "[agent-branch-finish] GitHub CI fallback requires local pre-flight; --no-preflight is not allowed." >&2
       return 1
     fi
     finish_progress skipped preflight "disabled by flag"
@@ -276,7 +276,7 @@ run_preflight() {
   if [[ -z "$script_path" ]]; then
     if [[ "$PREFLIGHT_REQUIRED" -eq 1 ]]; then
       finish_progress failed preflight "required executable script missing"
-      echo "[agent-branch-finish] Billing-waived GitHub checks require a target-aware pre-flight script at ${PREFLIGHT_SCRIPT_RAW} in trusted base ${start_ref}; refusing push." >&2
+      echo "[agent-branch-finish] GitHub CI fallback requires a target-aware pre-flight script at ${PREFLIGHT_SCRIPT_RAW} in trusted base ${start_ref}; refusing push." >&2
       return 1
     fi
     finish_progress skipped preflight "no executable pre-flight script"

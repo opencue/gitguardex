@@ -171,22 +171,22 @@ test('successful preflight is reused only while source and base commits are unch
   }
 });
 
-test('a billing waiver makes local preflight mandatory and fail-closed', () => {
+test('a CI fallback makes local preflight mandatory and fail-closed', () => {
   assert.ok(
     script.includes('GUARDEX_FINISH_REQUIRE_PREFLIGHT'),
-    'finish script must accept the gate signal that GitHub billing checks were waived',
+    'finish script must accept the gate signal to require local preflight',
   );
   assert.ok(
-    script.includes('Billing-waived GitHub checks require local pre-flight; --no-preflight is not allowed'),
-    'an explicit preflight bypass must fail when billing checks were waived',
+    script.includes('GitHub CI fallback requires local pre-flight; --no-preflight is not allowed'),
+    'an explicit preflight bypass must fail when the CI fallback applies',
   );
   assert.ok(
-    script.includes('Billing-waived GitHub checks require a target-aware pre-flight script'),
-    'a missing repository preflight must fail when billing checks were waived',
+    script.includes('GitHub CI fallback requires a target-aware pre-flight script'),
+    'a missing repository preflight must fail when the CI fallback applies',
   );
   assert.ok(
-    finishIndex.includes("GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.billingChecksWaived?.length > 0 ? '1' : '0'"),
-    'gx finish must propagate the waiver result to the shell preflight gate',
+    finishIndex.includes("GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.requiresLocalPreflight ? '1' : '0'"),
+    'gx finish must propagate the fallback result to the shell preflight gate',
   );
   assert.ok(
     script.includes('git -C "$worktree" archive "$start_ref"'),
