@@ -1,21 +1,19 @@
 #!/usr/bin/env node
 
 const { runFromBin } = require('../src/cli/main');
-const {
-  cleanupFinishedDetachedWorktree,
-  persistFinishedCleanup,
-  prepareBranchFinishCleanup,
-  scheduleFinishedDetachedWorktreeCleanup
-} = require('../src/finish/post-branch-finish-cleanup');
-
-const finishCleanup = prepareBranchFinishCleanup(process.argv.slice(2), process.cwd());
+const args = process.argv.slice(2);
+const cleanup =
+  args[0] === 'branch' && args[1] === 'finish'
+    ? require('../src/finish/post-branch-finish-cleanup')
+    : null;
+const finishCleanup = cleanup?.prepareBranchFinishCleanup(args, process.cwd());
 
 void runFromBin().then(() => {
   if (!process.exitCode && finishCleanup) {
     process.chdir(finishCleanup.repoRoot);
-    const pending = persistFinishedCleanup(finishCleanup);
-    if (pending && !cleanupFinishedDetachedWorktree(pending)) {
-      scheduleFinishedDetachedWorktreeCleanup(pending);
+    const pending = cleanup.persistFinishedCleanup(finishCleanup);
+    if (pending && !cleanup.cleanupFinishedDetachedWorktree(pending)) {
+      cleanup.scheduleFinishedDetachedWorktreeCleanup(pending);
     }
   }
 });

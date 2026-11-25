@@ -99,6 +99,28 @@ function runCli(args) {
   });
 }
 
+test('top-level help does not initialize specialized command modules', () => {
+  const script = `
+    process.argv = [process.execPath, process.argv[1], '--help', '--json'];
+    const assert = require('node:assert/strict');
+    process.on('exit', () => {
+      for (const name of ['toolchain', 'budget', 'ci-init', 'speckit', 'finish/post-branch-finish-cleanup']) {
+        const modulePath = require.resolve('./src/' + name);
+        assert.ok(!require.cache[modulePath], name + ' was loaded for help');
+      }
+    });
+    require(process.argv[1]);
+  `;
+  const result = spawnSync(process.execPath, ['-e', script, BIN], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 60_000
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotThrow(() => JSON.parse(result.stdout));
+});
+
 test('every catalogued command answers --help and exits 0', () => {
   const failures = [];
   for (const command of SPAWNABLE) {
