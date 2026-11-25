@@ -47,7 +47,10 @@ root = Path(sys.argv[2])
 gib = impl["GIB"]
 impl["queue_dir"] = lambda: root / "slots"
 impl["worker_slice"] = lambda: None
-impl["snapshot"] = lambda active: ns["policy"](8 * gib, int((root / "ram").read_text()) * gib, active)
+def snapshot(active):
+    available = int((root / "ram").read_text()) * gib
+    return {"availableBytes": available, **ns["policy"](8 * gib, available, active)}
+impl["snapshot"] = snapshot
 if sys.argv[3] == "policy":
     assert ns["policy"](8*gib, 8*gib, 0)["maxJobs"] == 1
     assert ns["policy"](32*gib, 32*gib, 0)["maxJobs"] == 4
@@ -60,7 +63,8 @@ if sys.argv[3] == "policy":
     (root / "limited" / "memory.current").write_text(str(6*gib))
     assert ns["cgroup_headroom"](32*gib, 12*gib) == (8*gib, 2*gib)
 else:
-    sys.exit(ns["main"](["--", *sys.argv[3:]]))
+    args = sys.argv[3:]
+    sys.exit(ns["main"](args if args[0] == "--run-timeout" else ["--", *args]))
 `;
 
 function sandbox(t) {
@@ -107,6 +111,7 @@ test(
     const exhausted = execute(...command);
     assert.equal(exhausted.status, 75, exhausted.stderr);
     assert.match(exhausted.stderr, /not started/);
+    assert.match(exhausted.stderr, /1\.0 GiB more available RAM/);
     assert.ok(!existsSync(marker));
 
     const child = start(command, '5');
@@ -117,6 +122,34 @@ test(
     writeFileSync(ram, '8');
     assert.deepEqual(await finished, [0, null]);
     assert.equal(readFileSync(marker, 'utf8'), 'ok');
+  }
+);
+
+test(
+  'command timeout starts only after admission and releases the slot on expiry',
+  { skip: !linux, timeout: 12000 },
+  async (t) => {
+    const { ram, start, execute } = sandbox(t);
+    writeFileSync(ram, '2');
+    const child = start(['--run-timeout', '1', '--', 'python3', '-c', 'print("started")'], '8');
+    t.after(() => child.kill('SIGKILL'));
+    const finished = once(child, 'close');
+    assert.match(await firstOutput(child.stderr, finished), /Waiting/);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    writeFileSync(ram, '8');
+    assert.deepEqual(await finished, [0, null]);
+
+    const expired = execute(
+      '--run-timeout',
+      '1',
+      '--',
+      'python3',
+      '-c',
+      'import time; time.sleep(30)'
+    );
+    assert.equal(expired.status, 124, expired.stderr);
+    assert.match(expired.stderr, /timed out after 1s of execution/);
+    assert.equal(execute('python3', '-c', 'pass').status, 0);
   }
 );
 

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -196,9 +197,37 @@ def worker_slice():
         return None
 
 
-def run(command):
+def timed(command, seconds):
+    with subprocess.Popen(command, start_new_session=True) as child:
+        def forward(signum, _frame):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(child.pid, signum)
+
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, forward)
+        try:
+            status = child.wait(timeout=seconds)
+            return status if status >= 0 else 128 - status
+        except subprocess.TimeoutExpired:
+            forward(signal.SIGKILL, None)
+            print(f"[gx] Heavy job timed out after {seconds}s of execution.", file=sys.stderr)
+            return 124
+
+
+def execute(command, seconds, scope=None, high=None):
+    if scope:
+        if seconds is not None:
+            command = [sys.executable, os.path.abspath(__file__), "timed", str(seconds), *command]
+        command = ["systemd-run", "--user", "--scope", "--quiet", f"--slice={scope.name}",
+                   "--description=GitGuardex heavy job", "-p", f"MemoryHigh={high}", "--", *command]
+    elif seconds is not None:
+        return timed(command, seconds)
+    os.execvp(command[0], command)
+
+
+def run(command, seconds=None):
     if os.environ.get("GUARDEX_HEAVY_QUEUE") == "0" or os.environ.get("GUARDEX_HEAVY_ACTIVE") == "1":
-        os.execvp(command[0], command)
+        return execute(command, seconds)
     directory = queue_dir()
     check_directory(directory, create=True)
     timeout = int(os.environ.get("GUARDEX_HEAVY_WAIT_SECONDS", "120"))
@@ -212,14 +241,18 @@ def run(command):
             fd, high = admission
             os.set_inheritable(fd, True)
             os.environ["GUARDEX_HEAVY_ACTIVE"] = "1"
-            scope = worker_slice()
-            if scope:
-                command = ["systemd-run", "--user", "--scope", "--quiet", f"--slice={scope.name}",
-                           "--description=GitGuardex heavy job", "-p", f"MemoryHigh={high}", "--", *command]
-            os.execvp(command[0], command)
+            return execute(command, seconds, worker_slice(), high)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            print("[gx] Heavy job not started: no memory/queue slot before timeout. Run gx mem-doctor.", file=sys.stderr)
+            with inspect_slots(directory) as slots:
+                plan = snapshot(sum(busy for _, busy in slots))
+            active = plan["activeJobs"]
+            needed = max(0, plan["reserveBytes"] + plan["estimatedJobBytes"] * (active + 1)
+                         - plan["availableBytes"])
+            detail = f"{active}/{plan['maxJobs']} slots occupied"
+            if needed:
+                detail += f"; needs {needed / GIB:.1f} GiB more available RAM"
+            print(f"[gx] Heavy job not started before timeout ({detail}). Run gx mem-doctor.", file=sys.stderr)
             return 75
         if not warned:
             print("[gx] Waiting for a heavy-job slot and available RAM…", file=sys.stderr)
@@ -250,6 +283,10 @@ def main(args):
         diagnose()
     elif args == ["profile"]:
         print(json.dumps(snapshot(0)))
+    elif len(args) >= 4 and args[0] == "--run-timeout" and args[2] == "--":
+        return run(args[3:], int(args[1]))
+    elif len(args) >= 3 and args[0] == "timed":
+        return timed(args[2:], int(args[1]))
     elif len(args) >= 2 and args[0] == "--":
         return run(args[1:])
     else:

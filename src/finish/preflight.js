@@ -16,6 +16,7 @@ const { run, runPackageAsset } = require('../core/runtime');
 const { heavyInvocation, needsPythonFallback } = require('../heavy');
 
 const PREFLIGHT_SCRIPTS = ['typecheck', 'lint'];
+const PREFLIGHT_SECONDS = 5 * 60;
 
 function readJson(file) {
   try {
@@ -129,14 +130,18 @@ function runPreflight(repoRoot, worktreePath, branch, baseBranch, options = {}) 
       if (options.verbose) {
         process.stdout.write(`[preflight] running ${label}…\n`);
       }
-      const spawnOptions = {
+      const directOptions = {
         cwd: repoRoot,
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 5 * 60_000,
+        timeout: PREFLIGHT_SECONDS * 1000,
       };
-      const invocation = heavyInvocation(cmd, args);
-      let result = spawnSync(invocation.command, invocation.args, spawnOptions);
-      if (needsPythonFallback(result, invocation)) result = spawnSync(cmd, args, spawnOptions);
+      const invocation = heavyInvocation(cmd, args, PREFLIGHT_SECONDS);
+      // The Linux runner starts its own execution clock only after admission.
+      let result = spawnSync(invocation.command, invocation.args, {
+        ...directOptions,
+        timeout: invocation.queued ? undefined : directOptions.timeout,
+      });
+      if (needsPythonFallback(result, invocation)) result = spawnSync(cmd, args, directOptions);
       const stdout = (result.stdout || '').toString();
       const stderr = (result.stderr || '').toString();
       const ok = !result.error && result.status === 0;

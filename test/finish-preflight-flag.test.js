@@ -576,7 +576,13 @@ test('runPreflight() reports human-readable message when spawnSync times out (ET
           if (cmd === 'git') {
             return { status: 0, stdout: Buffer.from('apps/mypkg/src/index.ts\n'), stderr: Buffer.from('') };
           }
+          if (cmd === 'python3') {
+            assert.deepEqual(args.slice(1, 5), ['--run-timeout', '300', '--', 'npm']);
+            assert.equal(opts.timeout, undefined, 'admission must not use the script timeout');
+            return { error: Object.assign(new Error('python3 unavailable'), { code: 'ENOENT', path: 'python3' }) };
+          }
           // Package-manager script invocations: simulate ETIMEDOUT
+          assert.equal(opts.timeout, 300_000, 'the direct fallback still has an execution deadline');
           return {
             status: null,
             error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),

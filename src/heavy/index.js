@@ -67,9 +67,10 @@ function memDoctor(args) {
   );
 }
 
-function heavyInvocation(command, args) {
+function heavyInvocation(command, args, executionSeconds) {
   if (process.platform === 'linux' && process.env.GUARDEX_HEAVY_QUEUE !== '0') {
-    return { command: 'python3', args: [runner, '--', command, ...args] };
+    const budget = executionSeconds ? ['--run-timeout', String(executionSeconds)] : [];
+    return { command: 'python3', args: [runner, ...budget, '--', command, ...args], queued: true };
   }
   return { command, args };
 }
