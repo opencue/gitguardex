@@ -69,39 +69,22 @@ jobs:
       - name: Audit dependencies
         run: scripts/npm-audit-retry.sh --audit-level=high
 
-      - name: Check that main is still current
-        id: source
-        env:
-          RELEASE_EVENT: ${{ github.event_name }}
-        run: |
-          if [[ "$RELEASE_EVENT" != release ]]; then
-            main="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
-            if [[ "$GITHUB_SHA" != "$main" ]]; then
-              echo "A newer main commit supersedes this run."
-              exit 0
-            fi
-          fi
-          echo "eligible=true" >> "$GITHUB_OUTPUT"
-
       - name: Resolve package metadata
         id: pkg
-        if: steps.source.outputs.eligible == 'true'
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: node scripts/resolve-npm-release.js
 
       - name: Reject a conflicting GitHub tag before publishing
-        if: steps.source.outputs.eligible == 'true'
         env:
           RELEASE_TAG: ${{ steps.pkg.outputs.tag }}
         run: |
           refs="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")"
-          tag_sha="$(awk 'END {print $1}' <<< "$refs")"
+          tag_sha="$(awk '/\^\{\}$/ { peeled=$1 } !/\^\{\}$/ { direct=$1 } END { print peeled ? peeled : direct }' <<< "$refs")"
           [[ -z "$tag_sha" || "$tag_sha" == "$GITHUB_SHA" ]]
 
       - name: Pack release tarball
         id: pack
-        if: steps.source.outputs.eligible == 'true'
         env:
           PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
           PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
@@ -117,16 +100,30 @@ jobs:
           fi
           echo "package_path=dist/$package_file" >> "$GITHUB_OUTPUT"
 
+      - name: Check that main is still current
+        id: source
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+        run: |
+          if [[ "$RELEASE_EVENT" != release ]]; then
+            main="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+            if [[ "$GITHUB_SHA" != "$main" ]]; then
+              echo "A newer main commit supersedes this run."
+              exit 0
+            fi
+          fi
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+
       - name: Publish with provenance
         id: publish
-        if: steps.pack.outcome == 'success' && steps.pkg.outputs.published == 'false'
+        if: steps.source.outputs.eligible == 'true' && steps.pkg.outputs.published == 'false'
         env:
           PACKAGE_PATH: ${{ steps.pack.outputs.package_path }}
         run: npm publish "$PACKAGE_PATH" --provenance --access public
 
       - name: Sign tarball and attach GitHub release assets
         # For manually published GitHub releases, keep the signed assets even if npm fails.
-        if: ${{ !cancelled() && steps.pack.outcome == 'success' && (success() || (github.event_name == 'release' && steps.publish.outcome == 'failure')) }}
+        if: ${{ !cancelled() && steps.source.outputs.eligible == 'true' && (success() || (github.event_name == 'release' && steps.publish.outcome == 'failure')) }}
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_PATH: ${{ steps.pack.outputs.package_path }}
@@ -136,7 +133,7 @@ jobs:
           cosign sign-blob "$PACKAGE_PATH" --bundle "$PACKAGE_PATH.sigstore.json" --yes
           assets=("$PACKAGE_PATH" "$PACKAGE_PATH.sha256" "$PACKAGE_PATH.sigstore.json")
           refs="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")"
-          tag_sha="$(awk 'END {print $1}' <<< "$refs")"
+          tag_sha="$(awk '/\^\{\}$/ { peeled=$1 } !/\^\{\}$/ { direct=$1 } END { print peeled ? peeled : direct }' <<< "$refs")"
           [[ -z "$tag_sha" || "$tag_sha" == "$GITHUB_SHA" ]]
           if gh release view "$RELEASE_TAG" >/dev/null; then
             [[ "$tag_sha" == "$GITHUB_SHA" ]]

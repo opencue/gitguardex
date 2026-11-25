@@ -51,7 +51,7 @@ test('release workflow retries with the exact npm tarball instead of publishing 
   assert.match(workflow, /name:\s+Resolve package metadata/);
   assert.match(workflow, /node scripts\/resolve-npm-release\.js/);
   assert.match(workflow, /npm pack "\$PACKAGE_NAME@\$PACKAGE_VERSION" --pack-destination dist/);
-  assert.match(workflow, /if: steps\.pack\.outcome == 'success' && steps\.pkg\.outputs\.published == 'false'/);
+  assert.match(workflow, /if: steps\.source\.outputs\.eligible == 'true' && steps\.pkg\.outputs\.published == 'false'/);
   assert.match(workflow, /skipping publish\./);
 });
 
@@ -98,6 +98,7 @@ test('release workflow validates main before publishing and keeps the tagged mai
   assert.match(workflow, /run: npm run verify/);
   assert.match(workflow, /git merge-base --is-ancestor "\$GITHUB_SHA" origin\/main/);
   assert.match(workflow, /git ls-remote --exit-code origin refs\/heads\/main/);
+  assert.match(workflow, /name:\s+Pack release tarball[\s\S]*?name:\s+Check that main is still current[\s\S]*?name:\s+Publish with provenance/);
   assert.match(workflow, /name:\s+Reject a conflicting GitHub tag before publishing[\s\S]*?name:\s+Publish with provenance/);
 });
 

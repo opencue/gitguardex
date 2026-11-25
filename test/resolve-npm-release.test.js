@@ -1,6 +1,10 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 const { resolveRelease } = require('../scripts/resolve-npm-release');
 
@@ -37,6 +41,31 @@ test('a rerun on the published commit recovers the exact version', () => {
     version: '8.4.1',
     published: true
   });
+});
+
+test('foreign Git tag reservations do not block releases or hide a same-commit retry', () => {
+  const tags = new Map([
+    ['8.4.1', otherSha],
+    ['8.4.2', sha]
+  ]);
+  assert.deepEqual(resolveRelease({ ...normal, tags }), { version: '8.4.2', published: false });
+});
+
+test('the release CLI combines the npm packument and peeled remote tags in Actions output', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'guardex-release-'));
+  try {
+    const npm = JSON.stringify({ ...normal.latest, versions: normal.versions });
+    writeFileSync(path.join(dir, 'npm'), `#!/bin/sh\nprintf '%s\\n' '${npm}'\n`, { mode: 0o755 });
+    const refs = `${sha}\trefs/tags/v8.4.1\n${otherSha}\trefs/tags/v8.4.1^{}`;
+    writeFileSync(path.join(dir, 'git'), `#!/bin/sh\nprintf '%s\\n' '${refs}'\n`, { mode: 0o755 });
+    const output = path.join(dir, 'output');
+    execFileSync(process.execPath, [require.resolve('../scripts/resolve-npm-release')], {
+      env: { ...process.env, PATH: dir, GITHUB_SHA: sha, RELEASE_TAG: '', GITHUB_OUTPUT: output }
+    });
+    assert.match(readFileSync(output, 'utf8'), /version=8\.4\.2\ntag=v8\.4\.2\npublished=false\n/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('manual releases require a matching tag and cannot replace another commit or regress latest', () => {

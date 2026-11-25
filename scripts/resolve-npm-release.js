@@ -10,7 +10,7 @@ function requireStable(version) {
   }
 }
 
-function resolveRelease({ floor, latest, versions, sha, tag, taggedGitHead }) {
+function resolveRelease({ floor, latest, versions, sha, tag, taggedGitHead, tags = new Map() }) {
   requireStable(floor);
   requireStable(latest.version);
   if (!/^[a-f0-9]{40}$/.test(latest.gitHead)) {
@@ -33,8 +33,23 @@ function resolveRelease({ floor, latest, versions, sha, tag, taggedGitHead }) {
 
   if (latest.gitHead === sha) return { version: latest.version, published: true };
   let version = semver.gt(floor, latest.version) ? floor : semver.inc(latest.version, 'patch');
-  while (occupied.has(version)) version = semver.inc(version, 'patch');
+  while (occupied.has(version) || (tags.has(version) && tags.get(version) !== sha)) {
+    version = semver.inc(version, 'patch');
+  }
   return { version, published: false };
+}
+
+function readTags() {
+  const refs = execFileSync('git', ['ls-remote', '--tags', 'origin', 'refs/tags/v*'], {
+    encoding: 'utf8'
+  });
+  const tags = new Map();
+  for (const line of refs.split('\n')) {
+    const [sha, ref = ''] = line.split('\t');
+    const tag = /^refs\/tags\/v(\d+\.\d+\.\d+)(\^\{\})?$/.exec(ref);
+    if (tag && (tag[2] || !tags.has(tag[1]))) tags.set(tag[1], sha);
+  }
+  return tags;
 }
 
 function npmView(spec, ...fields) {
@@ -59,7 +74,8 @@ if (require.main === module) {
     versions,
     sha,
     tag,
-    taggedGitHead
+    taggedGitHead,
+    tags: tag ? undefined : readTags()
   });
   appendFileSync(
     process.env.GITHUB_OUTPUT,
