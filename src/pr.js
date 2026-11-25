@@ -638,7 +638,7 @@ async function watchPullRequest(options) {
       && snapshot.mergeable === 'MERGEABLE'
       && (snapshot.mergeStateStatus === 'CLEAN' || snapshot.mergeStateStatus === 'HAS_HOOKS')
       && checks.total > 0
-      && checks.success === checks.total
+      && checks.success + (checks.skipped || 0) === checks.total
     ) {
       // CI is green and PR is non-draft + mergeable; the merge itself will be
       // driven by auto-merge or a separate `gh pr merge` invocation.

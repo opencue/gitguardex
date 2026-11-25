@@ -272,10 +272,8 @@ test('a verified unstarted billing check requires local preflight and never make
     id: 789, name: 'build', details_url: response[0].statusCheckRollup[0].detailsUrl,
     status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' },
   }] };
-  fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/789/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`);
-  fs.chmodSync(fakeGh, 0o755);
-
-  try {
+  const watch = () => {
+    fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/789/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`, { mode: 0o755 });
     const script = [
       `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
       "const options = { repoRoot: process.argv[1], branch: 'agent/test/lane', timeoutMs: 1 };",
@@ -289,13 +287,31 @@ test('a verified unstarted billing check requires local preflight and never make
     });
 
     assert.equal(result.status, 0, result.stderr);
-    const { status: outcome, pr: status, phases } = JSON.parse(result.stdout);
+    return JSON.parse(result.stdout);
+  };
+
+  try {
+    const { status: outcome, pr: status, phases } = watch();
     assert.equal(outcome, 'billing-blocked');
     assert.ok(!phases.includes('ready'), 'billing is not a successful check');
     assert.equal(status.checks.failed, 0);
     assert.equal(status.checks.waived, 1);
     assert.deepEqual(status.failedNames, []);
     assert.deepEqual(status.billingWaivedNames, ['build']);
+
+    const [build] = response[0].statusCheckRollup;
+    const optional = { ...build, name: 'optional', detailsUrl: undefined };
+    response[0].statusCheckRollup.push({ ...optional, conclusion: 'CANCELLED' });
+    const cancelled = watch();
+    assert.equal(cancelled.pr.checks.waived, 1);
+    assert.equal(cancelled.status, 'checks-failed');
+
+    response[0].mergeStateStatus = 'CLEAN';
+    response[0].statusCheckRollup = [
+      { ...build, conclusion: 'SUCCESS' },
+      { ...optional, conclusion: 'SKIPPED' },
+    ];
+    assert.ok(watch().phases.includes('ready'), 'intentional skips do not block readiness');
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
