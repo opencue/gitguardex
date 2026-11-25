@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const collect = require('../src/mcp/collect');
+const sharedGitState = require('../src/shared-git-state');
 
 test('bounded context preserves mandatory conflicts/errors and prioritizes relevant peers', () => {
   const context = { repo: 'r', worktree: '/r', branch: 'agent/me', protected: false,
@@ -183,6 +184,45 @@ test('whoOwnsMany resolves a file batch and editContext returns one compact pre-
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('edit context reads worktrees and shared locks once per request, with fresh claims on the next request', (t) => {
+  const { root, wtA } = makeRepoWithLanes();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const originalSpawn = cp.spawnSync;
+  const spawn = t.mock.method(cp, 'spawnSync', (...args) => originalSpawn(...args));
+  const settings = t.mock.method(sharedGitState, 'settings', () => ({
+    enabled: true,
+    remote: 'origin',
+  }));
+  t.mock.method(sharedGitState, 'listRemoteAgentBranches', () => []);
+  let locks = [
+    { file: 'src/x.js', branch: 'agent/remote/change', machine: 'remote-machine' },
+    { file: 'src/shared.js', branch: 'agent/alice/feature-x' },
+  ];
+  const readSharedLocks = t.mock.method(sharedGitState, 'listLocks', () => locks);
+  const options = { cwd: wtA, files: ['src/x.js', 'src/shared.js'] };
+  const first = collect.editContext(options);
+  assert.deepEqual(first.locks, ['src/shared.js', 'src/x.js']);
+  assert.equal(first.ownership[0].conflict, true);
+  assert.equal(first.ownership[0].owners[1].remote, true);
+  assert.equal(first.ownership[1].owner.branch, first.branch);
+  assert.equal(first.otherAgents.some((peer) => peer.branch === first.branch), false);
+  assert.equal(first.otherAgents.some((peer) => peer.remote), true);
+  assert.equal(settings.mock.callCount(), 1);
+  assert.equal(readSharedLocks.mock.callCount(), 1);
+  const commands = spawn.mock.calls.map((call) => call.arguments[1].join(' '));
+  assert.equal(commands.filter((command) => command === 'worktree list --porcelain').length, 1);
+  const ownStatuses = spawn.mock.calls.filter(
+    ({ arguments: [, args, opts] }) => args[0] === 'status' && opts.cwd === wtA,
+  );
+  assert.equal(ownStatuses.length, 1);
+
+  locks = [];
+  const second = collect.editContext(options);
+  assert.equal(readSharedLocks.mock.callCount(), 2);
+  assert.equal(second.ownership[0].owner.branch, first.branch);
+  assert.equal(second.ownership[1].owner, null);
 });
 
 test('myContext resolves the real repo name + this lane from inside a worktree', () => {
