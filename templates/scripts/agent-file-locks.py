@@ -236,7 +236,7 @@ def write_state(repo_root: Path, state: dict[str, Any]) -> None:
         owner = request['owner']
         source = Path(owner['_worktree'])
         source_entry = load_state(source)['locks'].get(file_path)
-        if not source_entry or {**source_entry, '_worktree': str(source)} != owner:
+        if not source_entry or (source == repo_root and source_entry.get('handoff_id') == request_id):
             record_handoff(receipt, request, existing)
     write_json(lock_file_path(repo_root), state)
 
@@ -841,7 +841,11 @@ def cmd_handoffs(repo_root: Path) -> int:
         check = entry.get('check')
         owners = locks.get(entry['file'], [])
         stale = entry['owner'] not in owners
-        if not commit and stale:
+        source_still_locked = any(
+            lock['_worktree'] == entry['owner']['_worktree'] and lock.get('handoff_id') != entry['id']
+            for lock in owners
+        )
+        if not commit and not source_still_locked:
             # A process may have moved the lock without writing the receipt yet.
             transferred = next((lock for lock in owners if lock.get('handoff_id') == entry['id']), {})
             commit = transferred.get('handoff_commit')
