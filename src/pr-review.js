@@ -791,16 +791,12 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
             'Refusing to merge — rerun, raise GUARDEX_REVIEW_TIMEOUT_MS, or use --skip-review-gate.'
         );
       }
-      // A missing/unexecutable CLI (including a shell shim) has not produced a
-      // verdict. Never switch providers after a successful launch or a retry.
+      // Only a spawn error proves the CLI did not start. A wrapper can return
+      // any exit code after launching, so a nonzero status must fail closed.
       const launchError = result.error?.code;
-      if (
-        attempt === 0 &&
-        (['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(launchError) ||
-          ([126, 127].includes(result.status) && !String(result.stdout || '').trim()))
-      ) {
+      if (attempt === 0 && ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(launchError)) {
         throw new ReviewProviderUnavailable(
-          `${provider} review unavailable: cannot launch ${providerCommand} (${launchError || result.status})`
+          `${provider} review unavailable: cannot launch ${providerCommand} (${launchError})`
         );
       }
       if (result.status !== 0) {

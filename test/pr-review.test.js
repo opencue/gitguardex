@@ -136,7 +136,9 @@ test('default PR review uses Codex, falling back to Claude only when Codex canno
   runCase(clean, undefined, ['exec']);
   runCase(absent, undefined, ['exec', '--safe-mode']);
   runCase({ status: null, error: { code: 'EACCES' } }, undefined, ['exec', '--safe-mode']);
-  runCase({ status: 127, stdout: '' }, undefined, ['exec', '--safe-mode']);
+  for (const status of [126, 127]) {
+    runCase({ status, stdout: '' }, undefined, ['exec'], /codex review failed/);
+  }
   runCase(absent, 'codex', ['exec'], /codex review unavailable/);
   runCase(absent, undefined, ['exec', '--safe-mode'], /claude review unavailable/, absent);
   runCase({ status: 1 }, undefined, ['exec'], /codex review failed/);
