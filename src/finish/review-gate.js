@@ -459,6 +459,7 @@ function runReviewGate(
         pr: prNumber,
         provider,
         post: true,
+        requireCompleteDiff: true,
         expectedHeadSha: pushedHeadSha,
         model: options.reviewModel,
         timeoutMs: options.reviewTimeoutMs,
@@ -470,8 +471,7 @@ function runReviewGate(
     } catch (err) {
       reportProgress(progress, 'fail', 'review', err.message);
       throw new Error(
-        `review gate: AI review did not complete (${err.message}). Refusing to merge. ` +
-          'Fix the provider/auth issue or rerun with --skip-review-gate.'
+        `review gate: AI review did not complete (${err.message}). Refusing to merge.`
       );
     }
     // Evidence check, before anything is spent on this review. A review that

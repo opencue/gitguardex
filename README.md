@@ -349,6 +349,9 @@ gx branch finish --via-pr --wait-for-merge --cleanup \
 
 High and critical findings block the merge. The review is posted directly on
 the PR as a readable severity, location, and finding table.
+If the PR diff exceeds the review size limit, the merge gate stops before
+launching the reviewer. Split the PR into smaller changes and rerun the gate.
+A standalone `gx pr-review` can still produce an advisory report marked partial.
 Both `gx pr-review` and the finish gate use Codex first. If the Codex CLI cannot
 launch, they try Claude. Timeouts, failed or invalid reviews, and findings do not
 trigger a switch. Use `--provider` or `--review-provider` to pin one provider.

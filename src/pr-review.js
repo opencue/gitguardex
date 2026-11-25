@@ -933,6 +933,11 @@ function runPrReview(options, deps = {}) {
   const { diff, truncated } = capDiff(rawDiff);
   if (lensContext && truncated)
     throw new Error('PR Lens requires a complete diff; review diff is truncated');
+  if (options.requireCompleteDiff && truncated) {
+    throw new Error(
+      `review diff exceeds the ${MAX_DIFF_CHARS} character limit; split the PR and rerun the gate`
+    );
+  }
   const reviewWithProvider = () =>
     runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
       model,
