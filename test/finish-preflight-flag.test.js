@@ -73,6 +73,75 @@ test('--no-preflight is honored: PREFLIGHT_ENABLED normalized after the parse lo
   );
 });
 
+test('overlapping preflight verifies only the pinned revision and never publishes', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-overlap-preflight-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repoDir = path.join(root, 'work');
+  fs.mkdirSync(repoDir);
+  const env = {
+    ...process.env,
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.hooksPath',
+    GIT_CONFIG_VALUE_0: '/dev/null',
+    PREFLIGHT_COUNTER: path.join(root, 'counter')
+  };
+  const git = (...args) =>
+    cp.execFileSync('git', args, { cwd: repoDir, env, encoding: 'utf8' }).trim();
+  git('init', '-qb', 'main');
+  git('config', 'user.name', 'Guardex Test');
+  git('config', 'user.email', 'guardex@example.test');
+  fs.mkdirSync(path.join(repoDir, 'scripts'));
+  fs.writeFileSync(
+    path.join(repoDir, 'scripts/agent-preflight.sh'),
+    '#!/usr/bin/env bash\necho checked >> "$PREFLIGHT_COUNTER"\nexit "${PREFLIGHT_EXIT:-0}"\n',
+    { mode: 0o755 }
+  );
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  const base = git('rev-parse', 'HEAD');
+  git('remote', 'add', 'origin', '.');
+  git('fetch', '-q', 'origin');
+  git('switch', '-qc', 'agent/overlap');
+  git('commit', '-qm', 'source', '--allow-empty');
+  const head = git('rev-parse', 'HEAD');
+  const run = (extra = {}) =>
+    cp.spawnSync(
+      'bash',
+      [
+        path.resolve(__dirname, '../templates/scripts/agent-branch-finish.sh'),
+        '--branch',
+        'agent/overlap',
+        '--base',
+        'main',
+        '--via-pr',
+        '--cleanup'
+      ],
+      {
+        cwd: repoDir,
+        encoding: 'utf8',
+        env: {
+          ...env,
+          GUARDEX_FINISH_GATE_DONE: '1',
+          GUARDEX_FINISH_PREFLIGHT_ONLY: '1',
+          GUARDEX_FINISH_REVIEWED_HEAD: head,
+          GUARDEX_FINISH_REVIEWED_BASE: base,
+          ...extra
+        }
+      }
+    );
+  assert.notEqual(run({ GUARDEX_FINISH_REVIEWED_HEAD: base }).status, 0);
+  assert.equal(fs.existsSync(env.PREFLIGHT_COUNTER), false);
+  assert.equal(run({ GUARDEX_FINISH_PREFLIGHT_CACHE: '0' }).status, 0);
+  assert.equal(fs.existsSync(env.PREFLIGHT_COUNTER), false);
+  assert.notEqual(run({ PREFLIGHT_EXIT: '1' }).status, 0);
+  const passed = run();
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.match(run().stderr, /reusing cached successful result/i);
+  assert.equal(fs.readFileSync(env.PREFLIGHT_COUNTER, 'utf8'), 'checked\nchecked\n');
+  assert.equal(git('rev-parse', 'main'), base);
+  assert.equal(git('rev-parse', 'agent/overlap'), head);
+});
+
 test('successful preflight is reused only while source and base commits are unchanged', () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-preflight-cache-'));
   const counterPath = path.join(os.tmpdir(), `guardex-preflight-counter-${process.pid}-${Date.now()}`);

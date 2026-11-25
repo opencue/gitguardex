@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { run, runPackageAsset } = require('../core/runtime');
 
 const PREFLIGHT_SCRIPTS = ['typecheck', 'lint'];
 
@@ -172,10 +173,48 @@ function summarizePreflight(result) {
   return `[preflight] ${result.status} — ${tail}`;
 }
 
+function branchPreflightDuringCi(repoRoot, args, { activeCwd, agentQuiet, progress }) {
+  return ({ reviewedHeadSha, reviewedBaseSha }) => {
+    // A repo that opts into disabled-Actions fallback may require a *trusted
+    // base* preflight instead. Leave that decision to the final finish.
+    const fallback = run(
+      'git',
+      ['config', '--local', '--type=bool', '--get', 'multiagent.ciFallbackWhenDisabled'],
+      { cwd: repoRoot }
+    );
+    if (fallback.status !== 1 && String(fallback.stdout || '').trim() !== 'false') return;
+    const result = runPackageAsset('branchFinish', args, {
+      cwd: repoRoot,
+      stdio: agentQuiet ? 'pipe' : 'inherit',
+      env: {
+        GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
+        GUARDEX_FINISH_CHECKLIST: '1',
+        GUARDEX_FINISH_GATE_DONE: '1',
+        GUARDEX_FINISH_PREFLIGHT_ONLY: '1',
+        GUARDEX_FINISH_REQUIRE_PREFLIGHT: '0',
+        GUARDEX_FINISH_REVIEWED_HEAD: reviewedHeadSha,
+        GUARDEX_FINISH_REVIEWED_BASE: reviewedBaseSha,
+        ...progress.eventEnv
+      }
+    });
+    if (result.status !== 0) {
+      const detail = String(result.stderr || '')
+        .trim()
+        .split('\n')
+        .slice(-8)
+        .join('\n');
+      throw new Error(
+        `Preflight failed before the CI wait. Refusing to merge.${detail ? '\n' + detail : ''}`
+      );
+    }
+  };
+}
+
 module.exports = {
   detectAppPackages,
   detectTouchedDirs,
   pickPackageManager,
   runPreflight,
   summarizePreflight,
+  branchPreflightDuringCi,
 };

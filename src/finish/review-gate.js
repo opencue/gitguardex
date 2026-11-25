@@ -12,6 +12,7 @@ const { TOOL_NAME } = require('../context');
 const pr = require('../pr');
 const prReview = require('../pr-review');
 const reviewFix = require('../review-fix');
+const { reviewReceipt } = require('./review-receipt');
 const { mapWorktreePathsByBranch } = require('../git');
 
 const DEFAULT_GATE_TIMEOUT_SECONDS = 1800; // 30 min — CI can be slow.
@@ -338,7 +339,7 @@ function resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings) {
  * `{ prNumber }` on pass; the caller then proceeds to the real merge.
  */
 function runReviewGate(
-  { repoRoot, worktreePath, branch, baseBranch, options = {}, progress },
+  { repoRoot, worktreePath, branch, baseBranch, options = {}, progress, preflight },
   deps = {}
 ) {
   // Quiet mode suppresses successful narration, never warnings or blocking errors.
@@ -404,6 +405,16 @@ function runReviewGate(
   }
   reportProgress(progress, 'complete', 'pr', `PR #${prNumber}`);
   logProgress(`PR #${prNumber}: enforcing review + CI gate before merge`);
+  const getReceipt = (head) => (
+    opened.pr.baseRefName === baseBranch && opened.pr.url
+      ? (deps.reviewReceipt || reviewReceipt)(repoRoot, {
+        prNumber, prUrl: opened.pr.url, baseBranch, head, base: reviewedBaseSha,
+      }, options)
+      : null
+  );
+  const reusable = opened.pr.headRefOid === initialHeadSha
+    ? getReceipt(initialHeadSha)?.read()
+    : null;
 
   // 1b. The default keeps the PR draft while review is pending. The explicit
   //     `--no-gate-serial-ci` fast mode promotes first so CI overlaps the review:
@@ -411,14 +422,14 @@ function runReviewGate(
   //     its verdict, so even green CI cannot be merged manually or by automation.
   //     Undefined stays serial as a fail-safe for direct/internal callers.
   const serialCi = options.gateSerialCi !== false;
-  if (serialCi && opened.pr.isDraft === false) {
+  if (!reusable && serialCi && opened.pr.isDraft === false) {
     requireGhAction(
       markDraft(repoRoot, prNumber),
       `review gate: could not hold PR #${prNumber} as draft before review. Refusing to merge.`
     );
     logProgress(`PR #${prNumber}: held as draft while the review runs`);
   }
-  if (!serialCi) {
+  if (!serialCi && !(reusable && opened.pr.isDraft === false)) {
     requireGhAction(
       markReady(repoRoot, prNumber),
       `review gate: could not promote PR #${prNumber} before review. Refusing to merge.`
@@ -432,8 +443,8 @@ function runReviewGate(
   //    With --gate-autofix, a dirty verdict gets up to `maxFixRounds` repair
   //    rounds: fix in the worktree, push, then RE-REVIEW with a fresh provider
   //    run so the fixer never grades its own homework.
-  let review;
-  let verdict;
+  let review = reusable ? { findings: [] } : undefined;
+  let verdict = reusable ? { clean: true, blocking: [] } : undefined;
   // Files that have ever carried a BLOCKING finding, and files an auto-fix has
   // actually edited. A blocking finding that vanishes from a later round is only
   // treated as repaired when its file was touched — see resolveCarriedFindings.
@@ -446,7 +457,7 @@ function runReviewGate(
   let autofixAttempted = false;
   // Pin CI from the first review, and advance only after a reviewed autofix.
   let pushedHeadSha = initialHeadSha;
-  for (let round = 0; round <= maxFixRounds; round += 1) {
+  for (let round = 0; !reusable && round <= maxFixRounds; round += 1) {
     reportProgress(
       progress,
       'start',
@@ -632,7 +643,9 @@ function runReviewGate(
         `Re-run the review, fix the issue by hand, or bypass with --skip-review-gate.`
     );
   }
-  const threadResolution = resolveThreads(prNumber, repoRoot, review.findings);
+  const threadResolution = reusable
+    ? { ok: true, resolved: 0 }
+    : resolveThreads(prNumber, repoRoot, review.findings);
   if (threadResolution.ok === false) {
     gateLog(
       `PR #${prNumber}: could not inspect outdated GitGuardex review threads` +
@@ -647,18 +660,25 @@ function runReviewGate(
     progress,
     'complete',
     'review',
-    `clean review posted${threadResolution.resolved > 0 ? `; ${threadResolution.resolved} stale thread(s) resolved` : ''}`
+    reusable
+      ? 'reused verified Codex review for unchanged head and base'
+      : `clean review posted${threadResolution.resolved > 0 ? `; ${threadResolution.resolved} stale thread(s) resolved` : ''}`
   );
   if (!autofixAttempted) {
     reportProgress(progress, 'skip', 'autofix', 'not needed');
   }
-  logProgress(
-    `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`
-  );
+  if (reusable) {
+    logProgress(`PR #${prNumber}: reusing its verified Codex review (${reusable.count} non-blocking finding(s))`);
+  } else {
+    logProgress(
+      `PR #${prNumber}: review clean (${review.findings.length} non-blocking finding(s)), posted to the PR`
+    );
+    if (threadResolution.ok !== false) getReceipt(pushedHeadSha)?.write(review);
+  }
 
   // 3. Promote draft -> ready so required CI checks fire. Already done in step
   //    1b unless serial CI held the draft barrier until the review came in clean.
-  if (serialCi) {
+  if (serialCi && !(reusable && opened.pr.isDraft === false)) {
     requireGhAction(
       markReady(repoRoot, prNumber),
       `review gate: could not promote PR #${prNumber} after a clean review. Refusing to merge.`
@@ -684,6 +704,18 @@ function runReviewGate(
   }
 
   reportProgress(progress, 'start', 'ci', 'waiting for required GitHub checks');
+  const revision = { reviewedHeadSha: pushedHeadSha, reviewedBaseSha };
+  // Promotion has already started remote CI. Run the pinned local preflight
+  // now instead of serializing it after the CI wait. Neither pass replaces the
+  // other, and the final publish step rechecks fingerprint and revision.
+  if (preflight) {
+    try {
+      preflight(revision);
+    } catch (error) {
+      reportProgress(progress, 'fail', 'preflight', error.message);
+      throw error;
+    }
+  }
   let ci;
   try {
     ci = waitGreen(repoRoot, branch, {
@@ -755,7 +787,6 @@ function runReviewGate(
       'review gate: source or base changed during review. Rerun the review gate before merging.'
     );
   }
-  const revision = { reviewedHeadSha: pushedHeadSha, reviewedBaseSha };
   const mss = ci.pr && ci.pr.mergeStateStatus;
   const billingChecksWaived = Array.isArray(ci.billingWaivedNames) ? ci.billingWaivedNames : [];
   if (billingChecksWaived.length > 0) {
