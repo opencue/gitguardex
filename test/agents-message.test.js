@@ -531,6 +531,10 @@ test('PR handoff without a summary queues the linked message but does not write 
   const inbox = readAgentInbox(repoRoot, { sessionId: options.sessionId }, deps);
   assert.equal(inbox.messages[0].id, result.messageId);
   assert.equal(inbox.messages[0].body, `${options.message}\n\nPR: ${HANDOFF_PR_URL}`);
+  const agentState = path.join(repoRoot, '.guardex', 'agents');
+  const handoffPath = path.join(agentState, 'pr-handoffs', `${result.messageId}.json`);
+  const handoff = JSON.parse(fs.readFileSync(handoffPath, 'utf8'));
+  fs.writeFileSync(handoffPath, JSON.stringify({ ...handoff, delivery: 'pending' }));
   const source = { sessionId: options.sourceSessionId, receiptId: result.messageId };
   assert.equal(runInboxCommand(repoRoot, source, deps).result.delivery, 'queued');
   assert.equal(
@@ -545,6 +549,11 @@ test('PR handoff without a summary queues the linked message but does not write 
     0
   );
   assert.equal(runInboxCommand(repoRoot, source, deps).result.delivery, 'acknowledged');
+  assert.equal(readAgentInbox(repoRoot, { sessionId: options.sessionId }, deps).messages.length, 0);
+  // Even if cleanup was interrupted, the durable ack hides the queued copy.
+  const queue = path.join(agentState, 'message-queue');
+  const file = path.join(queue, fs.readdirSync(queue)[0], `${result.messageId}.json`);
+  fs.writeFileSync(file, JSON.stringify(inbox.messages[0]));
   assert.equal(readAgentInbox(repoRoot, { sessionId: options.sessionId }, deps).messages.length, 0);
   assert.deepEqual(
     calls.map(({ args }) => args[1]),
@@ -633,11 +642,28 @@ test('a PR handoff receipt is acknowledged by its recipient and retry never send
   assert.match(calls.find((call) => call.envelope).envelope, new RegExp(`--ack ${id}`));
   const receive = (sessionId, flags) => runInboxCommand(root, { sessionId, ...flags }, deps);
   assert.equal(receive(options.sourceSessionId, { receiptId: id }).result.delivery, 'sent');
+  const unrelated = session({ id: 'unrelated-session' });
+  assert.equal(
+    runInboxCommand(
+      root,
+      { sessionId: unrelated.id, receiptId: id },
+      {
+        ...deps,
+        listAgentSessions: () => [...deps.listAgentSessions(), unrelated]
+      }
+    ).result.kind,
+    'handoff-not-found'
+  );
+
+  const handoffPath = path.join(root, '.guardex', 'agents', 'pr-handoffs', `${id}.json`);
+  const handoff = JSON.parse(fs.readFileSync(handoffPath, 'utf8'));
+  fs.writeFileSync(handoffPath, JSON.stringify({ ...handoff, delivery: 'pending' }));
+  const retry = { retryPrSummaryId: id };
+  assert.equal(runSendCommand(root, retry, deps).result.kind, 'delivery-unconfirmed');
   assert.equal(receive(options.sourceSessionId, { ackMessageId: id }).status, 1);
   assert.equal(receive(options.sessionId, { ackMessageId: id }).status, 0);
   assert.equal(receive(options.sourceSessionId, { receiptId: id }).result.delivery, 'acknowledged');
 
-  const retry = { retryPrSummaryId: id };
   assert.equal(
     runSendCommand(root, retry, {
       ...deps,

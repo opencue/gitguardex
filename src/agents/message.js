@@ -560,9 +560,15 @@ function readAgentInbox(repoRoot, options = {}, deps = {}) {
   if (!fs.existsSync(dir)) {
     return { ok: true, kind: 'inbox', targetSessionId: authenticated.target.id, messages: [] };
   }
+  const handoffs = handoffDir(repoRoot);
   const messages = fs
     .readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && SAFE_MESSAGE_ID.test(entry.name.replace(/\.json$/, '')))
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        SAFE_MESSAGE_ID.test(entry.name.replace(/\.json$/, '')) &&
+        !fs.existsSync(path.join(handoffs, `${entry.name}.ack`))
+    )
     .slice(0, MAX_INBOX_MESSAGES)
     .map((entry) => {
       try {
@@ -790,12 +796,21 @@ function handoffGh(repoRoot, deps, args, input) {
   return runGh(args, { cwd: repoRoot, timeout: 30_000, input });
 }
 
+function handoffDelivery(repoRoot, record) {
+  if (fs.existsSync(`${handoffPath(repoRoot, record.id)}.ack`)) return 'acknowledged';
+  if (
+    record.delivery === 'pending' &&
+    fs.existsSync(queueFilePath(repoRoot, record.targetSessionId, record.id))
+  ) {
+    return 'queued';
+  }
+  return record.delivery;
+}
+
 function publicHandoff(repoRoot, record) {
   return {
     messageId: record.id,
-    delivery: fs.existsSync(`${handoffPath(repoRoot, record.id)}.ack`)
-      ? 'acknowledged'
-      : record.delivery,
+    delivery: handoffDelivery(repoRoot, record),
     prUrl: record.prUrl,
     prSummaryStatus: record.prSummaryStatus
   };
@@ -850,12 +865,14 @@ function retryPrHandoffSummary(repoRoot, options, deps) {
     return refusal('handoff-busy', 'another process is working on this PR summary', true);
   try {
     const record = readPrHandoff(repoRoot, id);
-    if (
-      record?.sourceSessionId !== prior.sourceSessionId ||
-      !['sent', 'queued'].includes(record.delivery) ||
-      !record.prSummaryStatus
-    ) {
+    if (record?.sourceSessionId !== prior.sourceSessionId || !record.prSummaryStatus) {
       return refusal('summary-unavailable', 'handoff has no retryable PR summary');
+    }
+    if (!['sent', 'queued', 'acknowledged'].includes(handoffDelivery(repoRoot, record))) {
+      return refusal(
+        'delivery-unconfirmed',
+        `local delivery is uncertain; ask the recipient to acknowledge handoff ${id} if they received it`
+      );
     }
     if (
       record.prSummaryStatus !== 'posted' &&
