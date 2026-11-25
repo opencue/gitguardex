@@ -318,6 +318,7 @@ OPTIONS
   --base <branch>          Base branch used to determine merged branches
   --branch <agent/*>       Limit cleanup to one agent branch
   --dry-run                Preview cleanup actions and estimated sizes in KiB
+  --deps-only              Preview idle worktree node_modules (requires --dry-run)
   --force-dirty            Allow cleanup of dirty worktrees
   --keep-remote            Keep remote agent branches
   --prune-clean-worktrees  Explicitly prune clean, unmerged agent worktrees
@@ -342,6 +343,22 @@ OPTIONS
   }
 
   const activeCwd = process.cwd();
+  if (rawArgs.includes('--deps-only')) {
+    for (let i = 0; i < rawArgs.length; i += 1) {
+      const flag = rawArgs[i];
+      if (flag === '--target' || flag === '--branch') i += 1;
+      else if (flag !== '--deps-only' && flag !== '--dry-run') {
+        throw new Error(`${flag} is not supported with --deps-only`);
+      }
+    }
+    const { target, branch, dryRun } = parseCleanupArgs(
+      rawArgs.filter((arg) => arg !== '--deps-only')
+    );
+    if (!dryRun) throw new Error('--deps-only requires --dry-run');
+    require('./post-branch-finish-cleanup').previewDependencyCleanup(target, branch);
+    process.exitCode = 0;
+    return;
+  }
   const options = parseCleanupArgs(rawArgs);
   const repoRoot = resolveRepoRoot(options.target);
 
