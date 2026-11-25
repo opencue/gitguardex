@@ -359,17 +359,25 @@ function runReviewGate(
   if (!reviewedBaseSha) {
     throw new Error('review gate: cannot resolve the remote base commit. Refusing to merge.');
   }
-  const initialHeadSync = waitHead(repoRoot, branch, initialHeadSha, {
-    timeoutSeconds: options.gateHeadTimeoutSeconds,
-    pollSeconds: options.gateHeadPollSeconds
-  });
-  if (initialHeadSync.status !== 'current') {
-    const seen = initialHeadSync.pr?.headSha || 'unknown';
-    reportProgress(progress, 'fail', 'pr', `PR head is still ${seen}`);
-    throw new Error(
-      `review gate: PR #${prNumber} still reports head ${seen}, not the pushed commit ` +
-        `${initialHeadSha || 'unknown'}. Refusing to review a stale PR diff.`
-    );
+  // The post-push PR lookup can already confirm visibility. The review still
+  // checks the exact PR's live head before spending a provider call.
+  if (
+    !initialHeadSha ||
+    opened.pr.headRefOid !== initialHeadSha ||
+    opened.pr.baseRefName !== baseBranch
+  ) {
+    const initialHeadSync = waitHead(repoRoot, branch, initialHeadSha, {
+      timeoutSeconds: options.gateHeadTimeoutSeconds,
+      pollSeconds: options.gateHeadPollSeconds
+    });
+    if (initialHeadSync.status !== 'current') {
+      const seen = initialHeadSync.pr?.headSha || 'unknown';
+      reportProgress(progress, 'fail', 'pr', `PR head is still ${seen}`);
+      throw new Error(
+        `review gate: PR #${prNumber} still reports head ${seen}, not the pushed commit ` +
+          `${initialHeadSha || 'unknown'}. Refusing to review a stale PR diff.`
+      );
+    }
   }
   reportProgress(progress, 'complete', 'pr', `PR #${prNumber}`);
   logProgress(`PR #${prNumber}: enforcing review + CI gate before merge`);
@@ -428,6 +436,7 @@ function runReviewGate(
         pr: prNumber,
         provider,
         post: true,
+        expectedHeadSha: pushedHeadSha,
         model: options.reviewModel,
         timeoutMs: options.reviewTimeoutMs,
         // abide's AGENTS.md verdicts ride along with the AI review; `act`

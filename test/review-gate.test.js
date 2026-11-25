@@ -388,6 +388,7 @@ test('runReviewGate refuses missing base and source/base drift during review', (
 test('runReviewGate waits for the pushed PR head before its first review', () => {
   const calls = [];
   const deps = gateDeps({
+    openPullRequest: () => ({ pr: { number: 42, baseRefName: 'main', headRefOid: 'previous-sha' } }),
     readHeadSha: () => 'pushed-sha',
     waitForPullRequestHead: (_repoRoot, _branch, expectedHeadSha) => {
       calls.push(`head:${expectedHeadSha}`);
@@ -401,6 +402,18 @@ test('runReviewGate waits for the pushed PR head before its first review', () =>
 
   runReviewGate(gateArgs, deps);
   assert.deepEqual(calls.slice(0, 2), ['head:pushed-sha', 'review']);
+});
+
+test('runReviewGate reuses a matching PR snapshot and pins the review to its head', () => {
+  const deps = gateDeps({
+    openPullRequest: () => ({ pr: { number: 42, baseRefName: 'main', headRefOid: 'initial-sha' } }),
+    waitForPullRequestHead: () => assert.fail('no extra poll for an already confirmed head'),
+    runPrReview: ({ expectedHeadSha }) => {
+      assert.equal(expectedHeadSha, 'initial-sha');
+      return { findings: [], posted: true };
+    },
+  });
+  assert.equal(runReviewGate(gateArgs, deps).reviewedHeadSha, 'initial-sha');
 });
 
 test('runReviewGate blocks before first review when GitHub still exposes the previous head', () => {

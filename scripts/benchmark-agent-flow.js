@@ -41,11 +41,14 @@ function gateFixture(scenario, agentQuiet) {
   const deps = {
     openPullRequest: () => {
       calls.push('open-pr');
-      return { pr: { number: 7, isDraft: true } };
+      return { pr: { number: 7, isDraft: true, baseRefName: 'main', headRefOid: head } };
     },
     readHeadSha: () => head,
     readBaseSha: () => 'base',
-    waitForPullRequestHead: () => ({ status: 'current', pr: { headSha: head } }),
+    waitForPullRequestHead: () => {
+      calls.push('pr-head-poll');
+      return { status: 'current', pr: { headSha: head } };
+    },
     runPrReview: () => {
       calls.push('review');
       const blocked = scenario === 'blocked-review' || (scenario === 'autofix' && !reviewed);
@@ -321,6 +324,7 @@ async function main() {
         {
           outputBytes: results[0].outputBytes,
           fixtureCalls: results[0].calls.length,
+          prHeadPolls: results[0].calls.filter((call) => call === 'pr-head-poll').length,
           elapsedMs: percentiles(results.map((r) => r.elapsedMs))
         }
       ])

@@ -86,6 +86,23 @@ test('compactReviewPrompt confines the provider to the supplied diff', () => {
   assert.match(prompt, /Verification runs separately/);
 });
 
+test('runPrReview rejects a changed or missing expected head before loading the diff or running the provider', () => {
+  for (const liveHead of ['different-sha', '']) {
+    const calls = [];
+    assert.throws(
+      () => prReview.runPrReview(
+        { pr: 42, post: true, expectedHeadSha: 'pushed-sha', prLens: false },
+        { run(_cmd, args) {
+          calls.push(args);
+          return { status: 0, stdout: liveHead };
+        } },
+      ),
+      /PR #42 head changed or unavailable before review/,
+    );
+    assert.deepEqual(calls, [['pr', 'view', '42', '--json', 'headRefOid', '-q', '.headRefOid']]);
+  }
+});
+
 test('commandForProvider runs an explicit binary, so a slow PATH shim can be skipped', () => {
   const command = prReview.commandForProvider('claude', 'P', { bin: '/usr/local/bin/claude' });
   assert.equal(command.cmd, '/usr/local/bin/claude');
