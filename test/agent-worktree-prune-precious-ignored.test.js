@@ -57,6 +57,53 @@ function trackAppsWeb(wt) {
 }
 
 defineSpawnSuite('agent-worktree-prune — precious ignored files (Fix 3)', () => {
+  test('dry run reports storage for candidates, protected worktrees and old snapshots', () => {
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    addGitignore(repoDir, '.env');
+    const candidate = makeWorktree(repoDir, 'agent/test/storage-clean');
+    const protectedTree = makeWorktree(repoDir, 'agent/test/storage-protected');
+    fs.writeFileSync(path.join(protectedTree, '.env'), 'SECRET=fixture\n');
+    const store = path.join(repoDir, '.git', 'gx-dependency-snapshots');
+    const snapshot = path.join(store, `${'a'.repeat(64)}-${'b'.repeat(64)}`);
+    fs.mkdirSync(snapshot, { recursive: true });
+    const old = new Date(Date.now() - 30 * 86400_000);
+    fs.utimesSync(snapshot, old, old);
+    const { fakeBin } = fakeGhNoProjects();
+    const res = runWorktreePrune(['--base', 'main', '--delete-branches', '--dry-run'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh'),
+      GUARDEX_DEPENDENCY_SNAPSHOT_KEEP: '0',
+      GUARDEX_DEPENDENCY_SNAPSHOT_MAX_AGE_DAYS: '14'
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.match(res.stdout, /storage \| candidate \| [1-9]\d* KiB \| merged-agent-branch \|/);
+    assert.match(res.stdout, /storage \| kept \| [1-9]\d* KiB \| protected ignored files \|/);
+    assert.match(
+      res.stdout,
+      /storage \| candidate \| [1-9]\d* KiB \| unused dependency snapshot \|/
+    );
+    assert.match(res.stdout, /ignored: \.env/);
+    for (const dir of [candidate, protectedTree, snapshot]) assert.ok(fs.existsSync(dir), dir);
+  });
+
+  test('dry run does not abort an in-progress merge in a temporary worktree', () => {
+    const repoDir = initRepo({ branch: 'main' });
+    seedCommit(repoDir);
+    const wt = makeWorktree(repoDir, '__agent_integrate-storage-preview');
+    addGitignore(repoDir, '.env');
+    assert.equal(runHumanCmd('git', ['merge', '--no-ff', '--no-commit', 'main'], wt).status, 0);
+    const { fakeBin } = fakeGhNoProjects();
+
+    const res = runWorktreePrune(['--base', 'main', '--dry-run'], repoDir, {
+      GUARDEX_GH_BIN: path.join(fakeBin, 'gh')
+    });
+
+    assert.equal(res.status, 0, res.stderr || res.stdout);
+    assert.match(res.stdout, /storage \| kept \| [1-9]\d* KiB \| uncommitted changes \|/);
+    assert.equal(runHumanCmd('git', ['rev-parse', '--verify', 'MERGE_HEAD'], wt).status, 0);
+  });
+
   test('worktree with .env (precious ignored file) is NOT removed', () => {
     // A merged-ancestor agent branch whose worktree contains a .gitignore-
     // excluded .env file must be preserved to avoid losing secrets.

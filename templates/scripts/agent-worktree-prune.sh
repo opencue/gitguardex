@@ -1104,6 +1104,15 @@ finish_interrupted_removals() {
   return 0
 }
 
+report_dry_run_storage() {
+  [[ "$DRY_RUN" -eq 1 ]] || return 0
+  local size kib estimate="unknown"
+  if size="$(du -skx "$3" 2>/dev/null)" && read -r kib _ <<< "$size" && [[ "$kib" =~ ^[0-9]+$ ]]; then
+    estimate="${kib} KiB"
+  fi
+  printf '[agent-worktree-prune] [dry-run] storage | %s | %s | %s | %s\n' "$1" "$estimate" "$2" "$3"
+}
+
 remove_worktree_with_lock_guard() {
   local worktree="$1"
   local remove_reason="$2"
@@ -1647,7 +1656,7 @@ process_entry() {
     return
   fi
 
-  if [[ "$remove_reason" == "temporary-worktree" ]]; then
+  if [[ "$DRY_RUN" -ne 1 && "$remove_reason" == "temporary-worktree" ]]; then
     git -C "$wt" rebase --abort >/dev/null 2>&1 || true
     git -C "$wt" merge --abort >/dev/null 2>&1 || true
   fi
@@ -1659,6 +1668,7 @@ process_entry() {
       skipped_dirty=$((skipped_dirty + 1))
       echo "[agent-worktree-prune] Skipping dirty worktree (${remove_reason}): ${wt}"
       summarize_worktree_dirt "$wt"
+      report_dry_run_storage kept 'uncommitted changes' "$wt"
       return
     fi
   fi
@@ -1709,6 +1719,7 @@ process_entry() {
     if [[ -n "$_precious_ignored" ]]; then
       skipped_dirty=$((skipped_dirty + 1))
       echo "[agent-worktree-prune] Skipping worktree with precious ignored files (${remove_reason}): ${wt}"
+      report_dry_run_storage kept 'protected ignored files' "$wt"
       while IFS= read -r _pi_path; do
         [[ -n "$_pi_path" ]] && echo "[agent-worktree-prune]   ignored: ${_pi_path}"
       done <<< "$_precious_ignored"
@@ -1729,6 +1740,7 @@ process_entry() {
 
   mark_pending_removal "$wt"
   if remove_worktree_with_lock_guard "$wt" "$remove_reason" "$branch"; then
+    report_dry_run_storage candidate "$remove_reason" "$wt"
     clear_pending_removal "$wt"
     # The worktree list just changed; branch_has_worktree must re-read it.
     invalidate_worktree_branches
@@ -1744,6 +1756,7 @@ process_entry() {
     if [[ "$remove_status" -eq 11 ]]; then
       skipped_active=$((skipped_active + 1))
       echo "[agent-worktree-prune] Skipping worktree with registered descendants: ${wt}"
+      report_dry_run_storage kept 'registered descendants' "$wt"
       return
     fi
     if [[ "$remove_status" -ne 10 ]]; then
@@ -1751,6 +1764,7 @@ process_entry() {
     fi
     skipped_active=$((skipped_active + 1))
     echo "[agent-worktree-prune] Skipping actively locked worktree: ${wt}"
+    report_dry_run_storage kept 'active claims or lock guard' "$wt"
     return
   fi
 
@@ -1942,6 +1956,7 @@ prune_dependency_snapshots() {
     [[ "$(stat -c %Y -- "$dir" 2>/dev/null || echo "$now")" -lt "$cutoff" ]] || continue
     if [[ "$DRY_RUN" -eq 1 ]]; then
       echo "[agent-worktree-prune] [dry-run] Would remove unused dependency snapshot: ${dir}"
+      report_dry_run_storage candidate 'unused dependency snapshot' "$dir"
       continue
     fi
     # Sealed read-only on creation.

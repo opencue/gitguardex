@@ -317,7 +317,7 @@ OPTIONS
   --target <path>          Target repository (default: current directory)
   --base <branch>          Base branch used to determine merged branches
   --branch <agent/*>       Limit cleanup to one agent branch
-  --dry-run                Print actions without changing branches or worktrees
+  --dry-run                Preview cleanup actions and estimated sizes in KiB
   --force-dirty            Allow cleanup of dirty worktrees
   --keep-remote            Keep remote agent branches
   --prune-clean-worktrees  Explicitly prune clean, unmerged agent worktrees
