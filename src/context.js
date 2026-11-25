@@ -693,7 +693,7 @@ const CLI_COMMAND_HELP = {
       + 'write an artifact, or apply the fixes.',
     flags: [
       ['--pr <number>', 'Review this PR instead of the current branch\'s'],
-      ['--provider <name>', 'Choose the review backend'],
+      ['--provider <name>', 'Pin codex or claude (default: Codex, with Claude if Codex cannot launch)'],
       ['--pr-lens', 'Validate/render local PR Lens diagrams alongside findings (optional CLI)'],
       ['--no-pr-lens', 'Disable diagrams even when GUARDEX_REVIEW_PR_LENS=1'],
       ['--pr-lens-publish <url>', 'With --post, publish/update an existing GitHub Actions artifact link only; no review run'],

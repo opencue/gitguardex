@@ -349,6 +349,9 @@ gx branch finish --via-pr --wait-for-merge --cleanup \
 
 High and critical findings block the merge. The review is posted directly on
 the PR as a readable severity, location, and finding table.
+Both `gx pr-review` and the finish gate use Codex first. If the Codex CLI cannot
+launch, they try Claude. Timeouts, failed or invalid reviews, and findings do not
+trigger a switch. Use `--provider` or `--review-provider` to pin one provider.
 
 <p align="center">
   <a href="https://github.com/projects-kssk/Wireless_KFB_Project/pull/165">

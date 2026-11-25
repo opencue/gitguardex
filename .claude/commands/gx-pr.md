@@ -15,7 +15,7 @@ Subcommands:
 | `gx pr watch` | Poll PR until merged / failed / timeout (`--timeout 600`). |
 | `gx pr ready` | Promote draft → ready for review. |
 | `gx pr list` | List open PRs in the current repo. |
-| `gx pr review --provider claude` | Run AI PR review. |
+| `gx pr review` | Run AI PR review (Codex first, Claude if Codex cannot launch). |
 
 Flags:
 

@@ -143,7 +143,7 @@ fi
 # is the outcome this tool exists to prevent.
 finish_cmd=(
   branch finish --branch "$branch" --base "$base_branch" --via-pr
-  --gate-review --review-provider claude
+  --gate-review
   --wait-for-merge --cleanup
 )
 

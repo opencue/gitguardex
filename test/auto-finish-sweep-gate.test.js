@@ -31,7 +31,7 @@ test('auto-ship on + PR path: gate runs and branch proceeds when it passes', () 
   assert.equal(seen.branch, 'agent/claude/x');
   assert.equal(seen.baseBranch, 'main');
   // The gate is invoked with the options runReviewGate actually reads.
-  assert.equal(seen.options.reviewProvider, 'codex');
+  assert.equal(seen.options.reviewProvider, undefined, 'allow the automatic reviewer default');
   assert.equal(seen.options.allowNoChecks, false);
 });
 

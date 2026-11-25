@@ -30,7 +30,8 @@ function prReview(rawArgs) {
   if (options.fix && result.findings.length > 0) {
     const fix = reviewFixModule.runReviewFix({
       repoRoot: resolveRepoRoot(options.target),
-      provider: options.provider,
+      provider: result.provider,
+      model: !options.provider && result.provider === 'claude' ? null : undefined,
       findings: result.findings,
     });
     if (fix.status === 'fixed') {

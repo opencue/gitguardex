@@ -388,6 +388,7 @@ test('runReviewGate refuses missing base and source/base drift during review', (
 test('runReviewGate waits for the pushed PR head before its first review', () => {
   const calls = [];
   const deps = gateDeps({
+    openPullRequest: () => ({ pr: { number: 42, baseRefName: 'main', headRefOid: 'previous-sha' } }),
     readHeadSha: () => 'pushed-sha',
     waitForPullRequestHead: (_repoRoot, _branch, expectedHeadSha) => {
       calls.push(`head:${expectedHeadSha}`);
@@ -401,6 +402,18 @@ test('runReviewGate waits for the pushed PR head before its first review', () =>
 
   runReviewGate(gateArgs, deps);
   assert.deepEqual(calls.slice(0, 2), ['head:pushed-sha', 'review']);
+});
+
+test('runReviewGate reuses a matching PR snapshot and pins the review to its head', () => {
+  const deps = gateDeps({
+    openPullRequest: () => ({ pr: { number: 42, baseRefName: 'main', headRefOid: 'initial-sha' } }),
+    waitForPullRequestHead: () => assert.fail('no extra poll for an already confirmed head'),
+    runPrReview: ({ expectedHeadSha }) => {
+      assert.equal(expectedHeadSha, 'initial-sha');
+      return { findings: [], posted: true };
+    },
+  });
+  assert.equal(runReviewGate(gateArgs, deps).reviewedHeadSha, 'initial-sha');
 });
 
 test('runReviewGate blocks before first review when GitHub still exposes the previous head', () => {
@@ -511,7 +524,7 @@ test('runReviewGate blocks a check-less PR unless --allow-no-checks', () => {
 test('parseFinishArgs: gate is OFF by default (backward compatible)', () => {
   const o = parseFinishArgs(['--via-pr', '--wait-for-merge', '--cleanup']);
   assert.equal(o.gateReview, false);
-  assert.equal(o.reviewProvider, 'codex');
+  assert.equal(o.reviewProvider, undefined, 'the reviewer can use its automatic default');
   assert.equal(o.allowNoChecks, false);
 });
 
@@ -717,6 +730,33 @@ test('runReviewGate pins the CI wait to the commit an auto-fix pushed', () => {
   });
   runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps);
   assert.equal(seenExpect, 'sha-after-fix');
+});
+
+test('runReviewGate uses the fallback provider for the fix and reviews the new revision', () => {
+  const calls = [];
+  let sha = 'initial-sha';
+  const deps = gateDeps({
+    runPrReview: (options) => {
+      calls.push(['review', options.provider, options.expectedHeadSha]);
+      const findings = options.expectedHeadSha === 'initial-sha'
+        ? [{ severity: 'high', path: 'a.js', line: 1, message: 'bug' }] : [];
+      return { provider: 'claude', posted: true, findings };
+    },
+    runReviewFix: (options) => {
+      calls.push(['fix', options.provider, options.model]);
+      sha = 'repaired-sha';
+      return { status: 'fixed', changedFiles: ['a.js'] };
+    },
+    pushBranch: () => ({ ok: true }),
+    readHeadSha: () => sha,
+    waitForPullRequestHead: (_r, _b, headSha) => ({ status: 'current', pr: { headSha } }),
+  });
+  runReviewGate({ ...gateArgs, options: { gateAutofix: true } }, deps);
+  assert.deepEqual(calls, [
+    ['review', undefined, 'initial-sha'],
+    ['fix', 'claude', null],
+    ['review', undefined, 'repaired-sha'],
+  ]);
 });
 
 test('runReviewGate blocks before re-review when GitHub still exposes the pre-fix head', () => {

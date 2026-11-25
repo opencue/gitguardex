@@ -870,10 +870,9 @@ function runAutoShipGateForBranch({ autoShip, fallbackMode, repoRoot, branch, ba
     return { skip: false };
   }
   const gate = deps.runReviewGate || runReviewGate;
-  // Override the reviewer for unattended runs: if the default provider is
-  // unavailable in the sweep environment, GUARDEX_AUTO_SHIP_REVIEW_PROVIDER
-  // avoids a permanent gate-block on every branch.
-  const reviewProvider = process.env.GUARDEX_AUTO_SHIP_REVIEW_PROVIDER || 'codex';
+  // An explicit unattended override pins the provider; otherwise the gate
+  // uses automatic selection (Codex with Claude as its launch fallback).
+  const reviewProvider = process.env.GUARDEX_AUTO_SHIP_REVIEW_PROVIDER || undefined;
   try {
     const gateResult = gate({
       repoRoot,

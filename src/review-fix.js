@@ -21,6 +21,7 @@ const TOOL_PREFIX = '[gitguardex]';
 const CODEX_AUTOMATION_ARGS = ['--ephemeral', '--ignore-user-config', '--ignore-rules'];
 
 function resolveFixModel(model, env = process.env) {
+  if (model === null) return ''; // Don't pass the primary model to a fallback provider.
   const explicit = String(model || '').trim();
   if (explicit) return explicit;
   return String(env.GUARDEX_REVIEW_MODEL || '').trim();
