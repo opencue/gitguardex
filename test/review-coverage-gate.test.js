@@ -52,10 +52,24 @@ test('a standalone review still labels a truncated diff as partial', (t) => {
       run(_cmd, [group], options) {
         if (group === 'pr') return { status: 0, stdout: 'x'.repeat(220_001) };
         assert.match(options.input, /\[diff truncated at 220000 characters\]/);
-        return { status: 0, stdout: '{"findings":[]}' };
+        assert.doesNotMatch(options.input, /Estimate the net repository impact/);
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            findings: [],
+            value: {
+              score: 100,
+              drivers: [{ area: 'product', impact: 'benefit', reason: 'A claimed benefit' }],
+              improvements: ['Test subscription cancellation']
+            }
+          })
+        };
       }
     }
   );
   assert.equal(result.truncated, true);
-  assert.match(fs.readFileSync(result.artifactPath, 'utf8'), /review is partial/);
+  const artifact = fs.readFileSync(result.artifactPath, 'utf8');
+  assert.match(artifact, /review is partial/);
+  assert.match(artifact, /PR value: unavailable.*diff is incomplete/);
+  assert.doesNotMatch(artifact, /100\/100|A claimed benefit|What would make this PR better|Test subscription cancellation/);
 });
