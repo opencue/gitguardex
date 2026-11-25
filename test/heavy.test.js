@@ -154,6 +154,36 @@ test(
 );
 
 test(
+  'a timed job holds its slot after its supervisor is killed',
+  { skip: !linux, timeout: 8000 },
+  async (t) => {
+    const { start, execute } = sandbox(t);
+    const supervisor = start([
+      '--run-timeout',
+      '30',
+      '--',
+      'python3',
+      '-uc',
+      'import os, time; print(os.getpid()); time.sleep(30)'
+    ]);
+    t.after(() => supervisor.kill('SIGKILL'));
+    const exited = once(supervisor, 'exit');
+    const finished = once(supervisor, 'close');
+    const worker = Number(await firstOutput(supervisor.stdout, finished));
+    assert.ok(Number.isInteger(worker) && worker > 0);
+    supervisor.kill('SIGKILL');
+    try {
+      assert.deepEqual(await exited, [null, 'SIGKILL']);
+      assert.equal(execute('python3', '-c', 'pass').status, 75);
+    } finally {
+      process.kill(worker, 'SIGKILL');
+      await finished;
+    }
+    assert.equal(execute('python3', '-c', 'pass').status, 0);
+  }
+);
+
+test(
   'two processes share a kernel slot; a killed job releases it and the next exits unchanged',
   { skip: !linux, timeout: 8000 },
   async (t) => {

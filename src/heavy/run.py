@@ -197,8 +197,10 @@ def worker_slice():
         return None
 
 
-def timed(command, seconds):
-    with subprocess.Popen(command, start_new_session=True) as child:
+def timed(command, seconds, slot_fd=None):
+    # Keep the slot locked if the supervisor dies while the child is running.
+    pass_fds = () if slot_fd is None else (slot_fd,)
+    with subprocess.Popen(command, start_new_session=True, pass_fds=pass_fds) as child:
         def forward(signum, _frame):
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(child.pid, signum)
@@ -214,14 +216,14 @@ def timed(command, seconds):
             return 124
 
 
-def execute(command, seconds, scope=None, high=None):
+def execute(command, seconds, scope=None, high=None, slot_fd=None):
     if scope:
         if seconds is not None:
-            command = [sys.executable, os.path.abspath(__file__), "timed", str(seconds), *command]
+            command = [sys.executable, os.path.abspath(__file__), "timed", str(seconds), str(slot_fd), *command]
         command = ["systemd-run", "--user", "--scope", "--quiet", f"--slice={scope.name}",
                    "--description=GitGuardex heavy job", "-p", f"MemoryHigh={high}", "--", *command]
     elif seconds is not None:
-        return timed(command, seconds)
+        return timed(command, seconds, slot_fd)
     os.execvp(command[0], command)
 
 
@@ -241,7 +243,7 @@ def run(command, seconds=None):
             fd, high = admission
             os.set_inheritable(fd, True)
             os.environ["GUARDEX_HEAVY_ACTIVE"] = "1"
-            return execute(command, seconds, worker_slice(), high)
+            return execute(command, seconds, worker_slice(), high, fd)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             with inspect_slots(directory) as slots:
@@ -285,8 +287,8 @@ def main(args):
         print(json.dumps(snapshot(0)))
     elif len(args) >= 4 and args[0] == "--run-timeout" and args[2] == "--":
         return run(args[3:], int(args[1]))
-    elif len(args) >= 3 and args[0] == "timed":
-        return timed(args[2:], int(args[1]))
+    elif len(args) >= 4 and args[0] == "timed":
+        return timed(args[3:], int(args[1]), int(args[2]))
     elif len(args) >= 2 and args[0] == "--":
         return run(args[1:])
     else:
