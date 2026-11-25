@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 try:
     import fcntl
@@ -77,6 +78,13 @@ class LockEntry:
 
 class LockError(Exception):
     pass
+
+
+@dataclass
+class ClaimConflict(Exception):
+    conflicts: list[tuple[str, dict[str, Any]]]
+    agent: str
+    stale: bool
 
 
 def run_git(args: list[str], cwd: Path) -> str:
@@ -206,13 +214,34 @@ def load_state(repo_root: Path) -> dict[str, Any]:
             'allow_delete': allow_delete,
             'agent': agent,
             'pane': pane,
+            **{key: entry[key] for key in ('handoff_id', 'handoff_commit', 'handoff_check') if key in entry},
         }
 
     return {'locks': normalized_locks}
 
 
 def write_state(repo_root: Path, state: dict[str, Any]) -> None:
-    path = lock_file_path(repo_root)
+    # Preserve an interrupted transfer's receipt before the recipient can
+    # release, reap, or replace its only durable completion marker.
+    for file_path, existing in load_state(repo_root)['locks'].items():
+        request_id = existing.get('handoff_id')
+        replacement = state['locks'].get(file_path, {})
+        if (not isinstance(request_id, str) or not re.fullmatch(r'[a-f0-9]{32}', request_id)
+                or replacement.get('handoff_id') == request_id):
+            continue
+        receipt = handoff_dir(repo_root) / f'{request_id}.json'
+        request = read_handoff(receipt)
+        if request.get('commit'):
+            continue
+        owner = request['owner']
+        source = Path(owner['_worktree'])
+        source_entry = load_state(source)['locks'].get(file_path)
+        if not source_entry or (source == repo_root and source_entry.get('handoff_id') == request_id):
+            record_handoff(receipt, request, existing)
+    write_json(lock_file_path(repo_root), state)
+
+
+def write_json(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + '.tmp')
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
@@ -301,6 +330,30 @@ def get_worktree_branch(worktree: Path) -> str | None:
         return branch if branch and branch != 'HEAD' else None
     except LockError:
         return None
+
+
+def open_pr_links(repo_root: Path, branches: set[str]) -> dict[str, str]:
+    """Best-effort hints only; a forge outage never grants ownership."""
+    gh = os.environ.get(LOCK_GH_BIN_ENV) or shutil.which('gh')
+    if not gh:
+        return {}
+    try:
+        run_git(['remote', 'get-url', 'origin'], cwd=repo_root)
+        result = subprocess.run(
+            [gh, 'pr', 'list', '--state', 'open', '--limit', '100', '--json', 'headRefName,url,isCrossRepository'],
+            capture_output=True, text=True, cwd=repo_root, timeout=2, check=False,
+        )
+        if result.returncode != 0:
+            return {}
+        rows = json.loads(result.stdout)
+        return {
+            row['headRefName']: row['url'] for row in rows
+            if isinstance(row, dict) and isinstance(row.get('headRefName'), str) and row['headRefName'] in branches
+            and row.get('isCrossRepository') is False
+            and isinstance(row.get('url'), str) and re.fullmatch(r'https://[^\s]+', row['url'])
+        } if isinstance(rows, list) else {}
+    except (LockError, OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
 
 
 def is_branch_merged_via_gh(branch: str, gh_bin: str) -> bool | None:
@@ -683,32 +736,7 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) ->
                 any_stale = True
 
     if conflicts:
-        print('[agent-file-locks] Cannot claim files already locked by another owner:', file=sys.stderr)
-        for file_path, owner in conflicts:
-            print(f'  - {file_path} (locked by {owner_description(owner)})', file=sys.stderr)
-        # Taking a lock over is an owner decision, so spell out the command
-        # rather than leave the next agent to discover where the claim lives.
-        owners: dict[str, list[str]] = {}
-        for file_path, owner in conflicts:
-            owner_agent = str(owner.get('agent', '')).strip()
-            owner_args = f"--branch {shlex.quote(str(owner.get('branch', '')))}"
-            if owner_agent:
-                owner_args += f' --agent {shlex.quote(owner_agent)}'
-            owners.setdefault(owner_args, []).append(file_path)
-        print(
-            '[agent-file-locks] If the owner agreed to hand them over, release them '
-            '(works from any worktree), then claim again:',
-            file=sys.stderr,
-        )
-        for owner_args, owned in owners.items():
-            print(f'  gx locks release {owner_args} {" ".join(shlex.quote(p) for p in owned)}', file=sys.stderr)
-        if any_stale:
-            print(
-                '[agent-file-locks] Some blocking locks are past the staleness TTL; if their '
-                'lane is abandoned, run `gx locks reap` to clear them.',
-                file=sys.stderr,
-            )
-        return 1
+        raise ClaimConflict(conflicts, claim_agent, any_stale)
 
     for file_path in files:
         existing = locks.get(file_path, {})
@@ -729,6 +757,181 @@ def cmd_claim(args: argparse.Namespace, repo_root: Path, adaptive_owner: str) ->
     delete_note = ' (delete-approved)' if args.allow_delete else ''
     agent_note = f' as {claim_agent}' if claim_agent else ''
     print(f"[agent-file-locks] Claimed {len(files)} file(s) for {args.branch}{agent_note}{delete_note}.")
+    return 0
+
+
+def report_claim_conflict(repo_root: Path, conflict: ClaimConflict) -> int:
+    # The conflict snapshot is advisory; do not hold any worktree locks while calling GitHub.
+    prs = open_pr_links(repo_root, {owner['branch'] for _, owner in conflict.conflicts})
+    print('[agent-file-locks] Cannot claim files already locked by another owner:', file=sys.stderr)
+    identity = f'{AGENT_ID_ENV}={shlex.quote(conflict.agent)} ' if conflict.agent else ''
+    for file_path, owner in conflict.conflicts:
+        pr = f"; PR {prs[owner['branch']]}" if owner['branch'] in prs else ''
+        print(f'  - {file_path} (locked by {owner_description(owner)}{pr})', file=sys.stderr)
+        print(f'    Request owner approval: {identity}gx locks handoff-request -- {shlex.quote(file_path)}', file=sys.stderr)
+    print('[agent-file-locks] Or wait for the owner PR and retry the claim after the lock is released.', file=sys.stderr)
+    if conflict.stale:
+        print(
+            '[agent-file-locks] Some blocking locks are past the staleness TTL; if their '
+            'lane is abandoned, run `gx locks reap` to clear them.',
+            file=sys.stderr,
+        )
+    return 1
+
+
+def handoff_dir(repo_root: Path) -> Path:
+    return common_git_dir(repo_root) / 'agent-file-lock-handoffs'
+
+
+def read_handoff(path: Path) -> dict[str, Any]:
+    try:
+        request = json.loads(path.read_text())
+        if (not isinstance(request, dict) or request.get('id') != path.stem
+                or not isinstance(request.get('owner'), dict) or not isinstance(request.get('recipient'), dict)):
+            raise ValueError('invalid request')
+        return request
+    except (OSError, ValueError) as exc:
+        raise LockError(f'Cannot read handoff {path.stem}') from exc
+
+
+def handoff_lane(repo_root: Path) -> dict[str, str]:
+    branch = get_worktree_branch(repo_root)
+    if not branch:
+        raise LockError('Handoffs require a checked-out branch')
+    return {'branch': branch, 'agent': os.environ.get(AGENT_ID_ENV, '').strip(), '_worktree': str(repo_root)}
+
+
+def matches_handoff_lane(entry: dict[str, Any], lane: dict[str, Any]) -> bool:
+    # Unlike legacy branch-wide maintenance commands, handoffs require an exact lane.
+    return all(entry.get(key, '') == lane.get(key, '') for key in ('branch', 'agent', '_worktree'))
+
+
+def cmd_handoff_request(args: argparse.Namespace, repo_root: Path) -> int:
+    file_path = normalize_repo_path(repo_root, args.file)
+    recipient = handoff_lane(repo_root)
+    owners = load_all_locks(repo_root).get(file_path, [])
+    if len(owners) != 1 or owner_matches(owners[0], recipient['branch'], recipient['agent']):
+        raise LockError('Handoff requires one lock held by another lane')
+    owner = owners[0]
+    if get_worktree_branch(Path(owner['_worktree'])) != owner['branch']:
+        raise LockError('The lock owner is not currently checked out in its worktree')
+    directory = handoff_dir(repo_root)
+    for path in directory.glob('*.json'):
+        request = read_handoff(path)
+        if (not request.get('commit') and request.get('file') == file_path
+                and request['owner'] == owner and request['recipient'] == recipient):
+            print(f"Handoff {request['id']} is already pending. The current lock is unchanged.")
+            return 0
+    request_id = uuid4().hex
+    write_json(directory / f'{request_id}.json', {
+        'id': request_id, 'file': file_path, 'owner': owner, 'recipient': recipient,
+        'pane': resolve_pane(),
+    })
+    print(f'Handoff {request_id} pending for {file_path}. The current lock is unchanged.')
+    identity = f'{AGENT_ID_ENV}={shlex.quote(owner["agent"])} ' if owner['agent'] else ''
+    print(f'Owner ({owner_description(owner)}): {identity}gx locks handoff-approve {request_id}')
+    return 0
+
+
+def cmd_handoffs(repo_root: Path) -> int:
+    locks = load_all_locks(repo_root)
+    for path in sorted(handoff_dir(repo_root).glob('*.json')):
+        entry = read_handoff(path)
+        commit = entry.get('commit')
+        check = entry.get('check')
+        owners = locks.get(entry['file'], [])
+        stale = entry['owner'] not in owners
+        source_still_locked = any(
+            lock['_worktree'] == entry['owner']['_worktree'] and lock.get('handoff_id') != entry['id']
+            for lock in owners
+        )
+        if not commit and not source_still_locked:
+            # A process may have moved the lock without writing the receipt yet.
+            transferred = next((lock for lock in owners if lock.get('handoff_id') == entry['id']), {})
+            commit = transferred.get('handoff_commit')
+            check = transferred.get('handoff_check')
+        status = f'approved at {commit}' if commit else ('stale (owner lock changed)' if stale else 'pending')
+        print(f"{entry['id']} {status}: {entry['file']} — {owner_label(entry['owner'])} → {owner_label(entry['recipient'])}")
+        if check:
+            print(f"  Verify: {check}")
+    return 0
+
+
+def record_handoff(path: Path, request: dict[str, Any], entry: dict[str, Any]) -> None:
+    write_json(path, {**request, 'commit': entry['handoff_commit'], 'check': entry.get('handoff_check')})
+
+
+def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
+    if not re.fullmatch(r'[a-f0-9]{32}', args.id):
+        raise LockError('Invalid handoff id')
+    path = handoff_dir(repo_root) / f'{args.id}.json'
+    request = read_handoff(path)
+    owner = request['owner']
+    if not matches_handoff_lane(owner, handoff_lane(repo_root)):
+        raise LockError('Only the current owner branch and agent can approve from its worktree')
+    if request.get('commit'):
+        print(f"Handoff {args.id} was already approved at {request['commit']}.")
+        return 0
+
+    file_path = normalize_repo_path(repo_root, request['file'])
+    recipient = request['recipient']
+    target = Path(recipient['_worktree'])
+    if target not in list_worktree_roots(repo_root) or get_worktree_branch(target) != recipient['branch']:
+        raise LockError('Recipient must still have its branch checked out in the requesting worktree')
+    source_state = load_state(repo_root)
+    source_entry = source_state['locks'].get(file_path)
+    target_state = source_state if target == repo_root else load_state(target)
+    target_entry = target_state['locks'].get(file_path)
+    if any(
+        entry != owner and not (matches_handoff_lane(entry, recipient) and entry.get('handoff_id') == args.id)
+        for entry in load_all_locks(repo_root).get(file_path, [])
+    ):
+        raise LockError('An unrelated lock exists for this file; cannot safely transfer ownership')
+    # A retry can complete the receipt if the locks were moved before the process exited.
+    if target_entry and target_entry.get('handoff_id') == args.id and (
+            not source_entry or target == repo_root):
+        record_handoff(path, request, target_entry)
+        print(f"Handoff {args.id} already transferred at {target_entry['handoff_commit']}.")
+        return 0
+    if not source_entry or {**source_entry, '_worktree': str(repo_root)} != owner:
+        raise LockError('The owner lock changed; request a new handoff')
+    if target != repo_root and target_entry and target_entry.get('handoff_id') != args.id:
+        raise LockError('The recipient already has a different lock')
+    for cwd in {repo_root, target}:
+        tracked = run_git(['--literal-pathspecs', 'ls-files', '-v', '--', file_path], cwd=cwd)
+        if any(line[0] == 'S' or line[0].islower() for line in tracked.splitlines() if line):
+            raise LockError(f'Cannot hand off {file_path}: skip-worktree or assume-unchanged set in {cwd}')
+        if run_git(['--literal-pathspecs', 'status', '--porcelain', '--untracked-files=all',
+                    '--ignored=matching', '--ignore-submodules=none', '--', file_path], cwd=cwd):
+            raise LockError(f'Cannot hand off {file_path}: uncommitted changes in {cwd}')
+    resumed = target_entry and target_entry.get('handoff_id') == args.id
+    commit = target_entry['handoff_commit'] if resumed else run_git(['rev-parse', 'HEAD'], cwd=repo_root)
+    if resumed:
+        try:
+            run_git(['--literal-pathspecs', 'diff', '--quiet', '--ignore-submodules=none', commit, 'HEAD',
+                     '--', file_path], cwd=repo_root)
+        except LockError as exc:
+            raise LockError(f'Cannot resume: {file_path} changed after recorded handoff commit {commit}') from exc
+    try:
+        run_git(['merge-base', '--is-ancestor', commit, 'HEAD'], cwd=target)
+    except LockError as exc:
+        raise LockError(f"Recipient {recipient['branch']} does not contain {commit}; update it and retry") from exc
+
+    # Write destination first. If interrupted across worktrees, both claims
+    # block one another; rerun the same approval to finish. No unlocked gap.
+    check = args.check
+    if check is None and resumed:
+        check = target_entry.get('handoff_check')
+    target_state['locks'][file_path] = {
+        **LockEntry(recipient['branch'], now_iso(), agent=recipient['agent'], pane=request.get('pane', '')).__dict__,
+        'handoff_id': args.id, 'handoff_commit': commit, 'handoff_check': check,
+    }
+    write_state(target, target_state)
+    if target != repo_root:
+        del source_state['locks'][file_path]
+        write_state(repo_root, source_state)
+    record_handoff(path, request, target_state['locks'][file_path])
+    print(f"Handoff {args.id} approved for {owner_label(recipient)} at {commit}.")
     return 0
 
 
@@ -1084,6 +1287,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_agent_arg(release)
     release.add_argument('files', nargs='*', help='Optional files; omit to release all branch locks')
 
+    request = sub.add_parser('handoff-request', help='Ask the current file owner to transfer a local worktree lock')
+    request.add_argument('file', help='File to request (repo-relative or absolute)')
+    sub.add_parser('handoffs', help='List pending and approved local handoffs')
+    approve = sub.add_parser('handoff-approve', help='Approve a request from the current owner worktree')
+    approve.add_argument('id', help='Handoff request id')
+    approve.add_argument('--check', help='Verification command to pass to the recipient (not executed)')
+
     status = sub.add_parser('status', help='Show lock status')
     status.add_argument('--branch', help='Filter by branch')
     add_agent_arg(status)
@@ -1130,6 +1340,10 @@ def dispatch_command(args: argparse.Namespace, repo_root: Path) -> int:
         return cmd_allow_delete(args, repo_root)
     if args.command == 'release':
         return cmd_release(args, repo_root)
+    if args.command == 'handoff-request':
+        return cmd_handoff_request(args, repo_root)
+    if args.command == 'handoffs':
+        return cmd_handoffs(repo_root)
     if args.command == 'reap':
         return cmd_reap(args, repo_root)
     if args.command == 'status':
@@ -1147,16 +1361,22 @@ def main() -> int:
 
     try:
         repo_root = resolve_repo_root()
-        # Serialize state-changing commands (and validate's snapshot read) across
-        # ALL worktrees with one shared lock, so concurrent runs can't clobber
-        # each other or both win the same file. status is a pure read -> unlocked.
-        if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate'}:
+        # Serialize mutations and consistent snapshot reads across all worktrees.
+        # The informational status command remains an unlocked read.
+        if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate', 'handoff-request', 'handoff-approve', 'handoffs'}:
             with cross_worktree_lock(repo_root):
                 if args.command == 'claim':
                     with adaptive_direct_owner_lock(repo_root) as adaptive_owner:
                         return cmd_claim(args, repo_root, adaptive_owner)
+                if args.command == 'handoff-approve':
+                    with adaptive_direct_owner_lock(repo_root) as adaptive_owner:
+                        if adaptive_owner:
+                            raise LockError('Handoff blocked while an adaptive direct session owns the primary checkout')
+                        return cmd_handoff_approve(args, repo_root)
                 return dispatch_command(args, repo_root)
         return dispatch_command(args, repo_root)
+    except ClaimConflict as exc:
+        return report_claim_conflict(repo_root, exc)
     except LockError as exc:
         print(f'[agent-file-locks] {exc}', file=sys.stderr)
         return 2

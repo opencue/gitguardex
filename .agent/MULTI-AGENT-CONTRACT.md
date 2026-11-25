@@ -14,6 +14,9 @@ Apply these repo-specific supplements in addition to that canonical contract:
 
 2. Ownership and lock discipline
 - Claim owned files before edits: `gx locks claim --branch "<agent-branch>" <file...>`.
+- For a local worktree conflict, the waiting agent runs `gx locks handoff-request -- <file>`. The lock stays with its owner. Use `gx locks handoffs` to see requests and completed transfers.
+- Commit the handoff file, and update the recipient branch to include the owner's commit first. Only the current owner runs `gx locks handoff-approve <id> --check '<verification command>'` from its worktree. Named lanes must set their own `GUARDEX_AGENT_ID` for both operations.
+- Handoffs neither run the check nor grant delete approval. Do not use the existing maintenance release command to take an active lock. Local branch/agent IDs coordinate trusted peers; they are not authentication between users. Remote shared Git locks do not support handoffs.
 - If `main.rs` is in scope, claim lock first: `python3 scripts/main_rs_lock.py claim --owner "<agent-name>" --branch "<agent-branch>"`.
 - Non-integrator branches must not edit `main.rs` unless explicit emergency override is approved.
 - Pre-commit blocks `agent/*` commits with unclaimed files or missing valid `main.rs` lock.

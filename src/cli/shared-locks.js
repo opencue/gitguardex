@@ -261,6 +261,10 @@ function locks(rawArgs) {
   const { target, passthrough } = extractTargetedArgs(rawArgs);
   const repoRoot = resolveRepoRoot(target);
   const [command, ...rest] = passthrough;
+  if (['handoff-request', 'handoff-approve'].includes(command)
+      && repoRoot !== resolveRepoRoot(process.cwd())) {
+    throw new Error('Run handoff requests and approvals from your own checked-out worktree.');
+  }
   if (command === 'shared-enable') {
     const state = sharedGitState.enable(repoRoot, parseSharedRemote(rest));
     process.stdout.write(`[${TOOL_NAME}] Shared Git state enabled via ${state.remote}.\n`);
@@ -292,6 +296,9 @@ function locks(rawArgs) {
   }
 
   const state = sharedGitState.settings(repoRoot);
+  if (state.enabled && ['handoff-request', 'handoff-approve', 'handoffs'].includes(command)) {
+    throw new Error('Lock handoffs are only supported for local worktrees, not shared Git locks.');
+  }
   if (
     !state.enabled ||
     !['claim', 'allow-delete', 'release', 'validate', 'status'].includes(command)

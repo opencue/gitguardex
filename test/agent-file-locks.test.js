@@ -407,9 +407,13 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.equal(runHumanCmd('git', ['worktree', 'add', '-q', '-b', 'agent/two/lane', wt2], repoDir).status, 0);
     assert.equal(locksAt(wt2, ['claim', '--branch', 'agent/two/lane', 'handover.txt']).status, 0);
 
-    const blocked = locksAt(repoDir, ['claim', '--branch', 'agent/one/lane', 'handover.txt']);
+    const gh = path.join(repoDir, 'mock-gh');
+    fs.writeFileSync(gh, '#!/bin/sh\n' + `echo '[{"headRefName":"agent/two/lane","url":"https://github.com/test/repo/pull/1577","isCrossRepository":false}]'\n`, { mode: 0o755 });
+    assert.equal(runHumanCmd('git', ['remote', 'add', 'origin', 'https://github.com/test/repo.git'], repoDir).status, 0);
+    const blocked = locksAt(repoDir, ['claim', '--branch', 'agent/one/lane', 'handover.txt'], { GUARDEX_GH_BIN: gh });
     assert.equal(blocked.status, 1);
-    assert.match(blocked.stderr, /gx locks release --branch agent\/two\/lane handover\.txt/);
+    assert.match(blocked.stderr, /gx locks handoff-request -- handover\.txt/);
+    assert.match(blocked.stderr, /PR https:\/\/github\.com\/test\/repo\/pull\/1577/);
 
     const released = locksAt(repoDir, ['release', '--branch', 'agent/two/lane', 'handover.txt']);
     assert.equal(released.status, 0, released.stderr);
@@ -425,6 +429,90 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     const none = locksAt(repoDir, ['release', '--branch', 'agent/none/lane', 'handover.txt']);
     assert.equal(none.status, 0);
     assert.match(none.stdout, /Released 0 file\(s\)/);
+  });
+
+  test('only the owner can approve a handoff to an updated sibling lane', () => {
+    const repo = makeRepo();
+    const owner = path.join(repo, 'owner-worktree');
+    const next = path.join(repo, 'next-worktree');
+    const file = 'handover.txt';
+    const a = { GUARDEX_AGENT_ID: 'alice' };
+    const b = { GUARDEX_AGENT_ID: 'bob' };
+    const git = (cwd, ...args) => {
+      const result = runHumanCmd('git', args, cwd);
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim();
+    };
+    git(repo, 'worktree', 'add', '-q', '-b', 'agent/a', owner);
+    git(repo, 'worktree', 'add', '-q', '-b', 'agent/b', next);
+    assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', file], a).status, 0);
+    assert.equal(locksAt(owner, ['allow-delete', '--branch', 'agent/a', file], a).status, 0);
+    const pending = runLockTool(['handoff-request', '--', file], next, b);
+    assert.equal(pending.status, 0, pending.stderr);
+    const id = pending.stdout.match(/\b[0-9a-f]{32}\b/)[0];
+    assert.match(pending.stdout, /GUARDEX_AGENT_ID=alice gx locks handoff-approve/);
+    const receipt = path.join(repo, '.git', 'agent-file-lock-handoffs', `${id}.json`);
+    const pendingReceipt = fs.readFileSync(receipt, 'utf8');
+    assert.match(locksAt(next, ['handoff-request', file], b).stdout, new RegExp(`${id} is already pending`));
+    assert.match(locksAt(owner, ['handoffs'], a).stdout, /agent\/b.*bob/);
+    assert.equal(locksAt(next, ['handoff-approve', id], b).status, 2);
+    assert.equal(locksAt(owner, ['handoff-approve', id], b).status, 2);
+    assert.notEqual(runLockTool(['handoff-approve', id, '--target', owner], next, a).status, 0);
+    assert.match(runLockTool(['handoffs'], next, { GUARDEX_SHARED_STATE: 'git' }).stderr, /only supported for local worktrees/);
+    assert.equal(locksAt(next, ['claim', '--branch', 'agent/b', file], b).status, 1);
+
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), `\n${file}\n`);
+    writeFile(owner, file, 'the owner\'s changes\n');
+    assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /uncommitted/);
+    git(owner, 'add', '-f', file);
+    git(owner, 'commit', '--no-verify', '-m', 'Owner edits');
+    const commit = git(owner, 'rev-parse', 'HEAD');
+    assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /does not contain/);
+    git(next, 'merge', '--ff-only', 'agent/a');
+    git(owner, 'update-index', '--assume-unchanged', file);
+    fs.appendFileSync(path.join(owner, file), 'hidden owner changes\n');
+    assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /assume-unchanged/);
+    git(owner, 'update-index', '--no-assume-unchanged', file);
+    writeFile(owner, file, "the owner's changes\n");
+    const sourceRegistry = path.join(owner, '.omx', 'state', 'agent-file-locks.json');
+    const originalClaim = fs.readFileSync(sourceRegistry, 'utf8');
+    const approved = locksAt(owner, ['handoff-approve', id, '--check', 'npm test'], a);
+    assert.equal(approved.status, 0, approved.stderr);
+    // Interrupt after writing the recipient lock, but before releasing the source.
+    fs.writeFileSync(sourceRegistry, originalClaim);
+    fs.writeFileSync(receipt, pendingReceipt);
+    const recipientRegistry = path.join(next, '.omx', 'state', 'agent-file-locks.json');
+    const preparedClaim = fs.readFileSync(recipientRegistry, 'utf8');
+    const amendedClaim = JSON.parse(originalClaim);
+    amendedClaim.locks[file].allow_delete = false;
+    fs.writeFileSync(sourceRegistry, JSON.stringify(amendedClaim));
+    assert.match(locksAt(next, ['handoffs'], b).stdout, /stale \(owner lock changed\)/);
+    assert.equal(locksAt(next, ['release', '--branch', 'agent/b', file], b).status, 0);
+    assert.equal(fs.readFileSync(receipt, 'utf8'), pendingReceipt);
+    fs.writeFileSync(sourceRegistry, originalClaim);
+    fs.writeFileSync(recipientRegistry, preparedClaim);
+    git(owner, 'commit', '--no-verify', '--allow-empty', '-m', 'Unrelated commit after interruption');
+    const resumed = locksAt(owner, ['handoff-approve', id], a);
+    assert.equal(resumed.status, 0, resumed.stderr);
+    assert.match(locksAt(next, ['handoffs'], b).stdout, new RegExp(commit));
+    assert.match(locksAt(next, ['handoffs'], b).stdout, /npm test/);
+    assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', file], a).status, 1);
+    assert.equal(locksAt(next, ['validate', '--branch', 'agent/b', file], b).status, 0);
+    assert.match(locksAt(owner, ['handoff-approve', id], a).stdout, /was already approved/);
+    fs.unlinkSync(path.join(next, file));
+    git(next, 'add', '-u', '--', file);
+    assert.match(locksAt(next, ['validate', '--branch', 'agent/b', '--staged'], b).stderr, /allow-delete/);
+    // Simulate interruption after the lock moved but before recording the receipt.
+    fs.writeFileSync(receipt, pendingReceipt);
+    assert.equal(locksAt(next, ['release', '--branch', 'agent/b', file], b).status, 0);
+    assert.match(locksAt(next, ['handoffs'], b).stdout, new RegExp(`approved at ${commit}`));
+    assert.match(locksAt(next, ['handoffs'], b).stdout, /npm test/);
+
+    const obsolete = 'obsolete.txt';
+    assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', obsolete], a).status, 0);
+    assert.equal(locksAt(next, ['handoff-request', obsolete], b).status, 0);
+    assert.equal(locksAt(owner, ['release', '--branch', 'agent/a', obsolete], a).status, 0);
+    assert.match(locksAt(next, ['handoffs'], b).stdout, /stale \(owner lock changed\): obsolete\.txt/);
   });
 
   test('a lane can still claim + commit a file no other worktree owns', () => {
