@@ -183,13 +183,25 @@ function locksByBranch(repoRoot) {
 // Resolve the MAIN repository root from any path inside it (a linked agent
 // worktree resolves up to the primary checkout). Worktrees share one ref store
 // via --git-common-dir, so all git ref ops below run against the main root.
-function mainRepoRoot(somePath) {
-  const top = git(somePath, ['rev-parse', '--show-toplevel']);
+function mainRepoRoot(somePath, top = git(somePath, ['rev-parse', '--show-toplevel'])) {
   if (!top) return null;
   const common = git(somePath, ['rev-parse', '--git-common-dir']);
   if (!common) return top;
   const commonAbs = path.isAbsolute(common) ? common : path.resolve(top, common);
   return path.basename(commonAbs) === '.git' ? path.dirname(commonAbs) : top;
+}
+
+// Share expensive Git observations within one context call, never across calls.
+function repoSnapshot(mainRoot) {
+  let worktrees;
+  let shared;
+  let remoteLocks;
+  return {
+    mainRoot,
+    worktrees: () => (worktrees ??= listWorktrees(mainRoot)),
+    shared: () => (shared ??= sharedGitState.settings(mainRoot)),
+    remoteLocks: () => (remoteLocks ??= sharedGitState.listLocks(mainRoot)),
+  };
 }
 
 function branchHasUpstream(repoRoot, branch) {
@@ -300,9 +312,14 @@ function isAgentLane(wt) {
 
 function collectRepoAgents(repoPath, { includePrs = true } = {}) {
   const mainRoot = mainRepoRoot(repoPath) || repoPath;
-  const lanes = listWorktrees(mainRoot).filter(isAgentLane);
-  const shared = sharedGitState.settings(mainRoot);
-  const sharedLocks = shared.enabled ? sharedGitState.listLocks(mainRoot) : [];
+  return collectSnapshotAgents(repoSnapshot(mainRoot), includePrs);
+}
+
+function collectSnapshotAgents(snapshot, includePrs, excludeBranch) {
+  const { mainRoot } = snapshot;
+  const lanes = snapshot.worktrees().filter(isAgentLane);
+  const shared = snapshot.shared();
+  const sharedLocks = shared.enabled ? snapshot.remoteLocks() : [];
   const remoteBranches = shared.enabled ? sharedGitState.listRemoteAgentBranches(mainRoot) : [];
   const sharedLocksByBranch = {};
   for (const entry of sharedLocks) {
@@ -318,7 +335,7 @@ function collectRepoAgents(repoPath, { includePrs = true } = {}) {
   const prInfo = includePrs ? prMapForRepo(mainRoot) : null;
   const nowMs = Date.now();
   const localBranches = new Set(lanes.map((wt) => wt.branch));
-  const records = lanes.map((wt) => {
+  const records = lanes.filter((wt) => wt.branch !== excludeBranch).map((wt) => {
     // Each worktree owns its OWN lock file; a lane's locks are the entries in
     // its own worktree keyed to its branch.
     const localLocks = locksByBranch(wt.path)[wt.branch] || [];
@@ -327,7 +344,7 @@ function collectRepoAgents(repoPath, { includePrs = true } = {}) {
     return buildAgentRecord(mainRoot, wt, locks, prInfo, nowMs);
   });
   for (const branch of remoteLaneBranches) {
-    if (localBranches.has(branch)) continue;
+    if (branch === excludeBranch || localBranches.has(branch)) continue;
     const remoteBranch = remoteByBranch.get(branch);
     const locks = sharedLocksByBranch[branch] || [];
     const commit = remoteBranch ? lastCommit(mainRoot, remoteBranch.oid) : null;
@@ -395,17 +412,18 @@ function repoState(repoOrCwd, { includePrs = true } = {}) {
 // Aggregate locks across ALL worktrees of the repo. Lock files are per-worktree
 // on disk, so a single worktree's file only shows its own claims — the
 // collision view requires the union.
-function whoOwnsMany(files, { cwd = process.cwd(), repoPath } = {}) {
+function whoOwnsMany(files, { cwd = process.cwd(), repoPath } = {}, existingSnapshot) {
   const requested = [...new Set(
     (Array.isArray(files) ? files : [])
       .filter((file) => typeof file === 'string' && file.trim())
       .map((file) => file.trim()),
   )].slice(0, 200);
   if (requested.length === 0) return [];
-  const mainRoot = mainRepoRoot(repoPath || cwd);
+  const mainRoot = existingSnapshot?.mainRoot ?? mainRepoRoot(repoPath || cwd);
   if (!mainRoot) {
     return requested.map((file) => ({ file, owner: null, error: 'not a git repo' }));
   }
+  const snapshot = existingSnapshot ?? repoSnapshot(mainRoot);
   const targets = requested.map((file) => ({
     file,
     rel: path.isAbsolute(file) ? path.relative(mainRoot, file) : file,
@@ -422,7 +440,7 @@ function whoOwnsMany(files, { cwd = process.cwd(), repoPath } = {}) {
   // Read each worktree lock map once for the whole requested batch. A lock is
   // ignored only when its branch/ref disappeared and its recorded pane is
   // confirmed to be on another checkout; ambiguous ownership remains blocking.
-  const worktrees = listWorktrees(mainRoot);
+  const worktrees = snapshot.worktrees();
   const knownBranches = knownBranchNames(mainRoot, worktrees);
   for (const wt of worktrees) {
     const map = readLockMap(wt.path);
@@ -437,9 +455,9 @@ function whoOwnsMany(files, { cwd = process.cwd(), repoPath } = {}) {
       });
     }
   }
-  if (sharedGitState.settings(mainRoot).enabled) {
+  if (snapshot.shared().enabled) {
     const sharedByFile = new Map(
-      sharedGitState.listLocks(mainRoot).map((entry) => [entry.file, entry]),
+      snapshot.remoteLocks().map((entry) => [entry.file, entry]),
     );
     for (const target of targets) {
       const entry = sharedByFile.get(target.rel) || sharedByFile.get(target.file);
@@ -495,22 +513,26 @@ function radarRecord(a) {
 }
 
 function myContext({ cwd = process.cwd(), includePr = true } = {}) {
+  return readCurrentContext(cwd, includePr).context;
+}
+
+function readCurrentContext(cwd, includePr) {
   const here = git(cwd, ['rev-parse', '--show-toplevel']);
-  if (!here) return { error: 'not a git repo', cwd };
-  const mainRoot = mainRepoRoot(cwd) || here;
+  if (!here) return { context: { error: 'not a git repo', cwd } };
+  const mainRoot = mainRepoRoot(cwd, here) || here;
+  const snapshot = repoSnapshot(mainRoot);
   const branch = git(here, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const self = listWorktrees(mainRoot).find((w) => path.resolve(w.path) === path.resolve(here));
+  const self = snapshot.worktrees().find((w) => path.resolve(w.path) === path.resolve(here));
   const lc = branch ? lastCommit(mainRoot, branch) : null;
   const localLocks = branch ? locksByBranch(here)[branch] || [] : [];
-  const shared = sharedGitState.settings(mainRoot);
+  const shared = snapshot.shared();
   const remoteLocks =
     shared.enabled && branch
-      ? sharedGitState
-          .listLocks(mainRoot)
+      ? snapshot.remoteLocks()
           .filter((entry) => entry.branch === branch)
           .map((entry) => entry.file)
       : [];
-  return {
+  const context = {
     repo: repoName(mainRoot),
     repoPath: mainRoot,
     worktree: here,
@@ -527,6 +549,7 @@ function myContext({ cwd = process.cwd(), includePr = true } = {}) {
     // The repo's own AGENTS.md rules: are they enforced here, and what fired lately.
     abide: compactAbide(abide.abideSummary(here))
   };
+  return { context, snapshot };
 }
 
 function compactAbide(summary) {
@@ -565,12 +588,10 @@ function editContext({ cwd = process.cwd(), files = [], includePrs = false, maxB
   if (maxBytes !== undefined && (!Array.isArray(files) || files.length > 200 || files.some((file) => typeof file !== 'string' || !file.trim()))) {
     throw new Error('Bounded context requires at most 200 file paths; split the file batch');
   }
-  const context = myContext({ cwd, includePr: includePrs });
+  const { context, snapshot } = readCurrentContext(cwd, includePrs);
   if (context.error) return maxBytes === undefined ? context : boundContext(context, maxBytes);
-  const otherAgents = collectRepoAgents(context.repoPath, { includePrs })
-    .filter((agent) => agent.branch !== context.branch)
-    .map(radarRecord);
-  const ownership = whoOwnsMany(files, { repoPath: context.repoPath })
+  const otherAgents = collectSnapshotAgents(snapshot, includePrs, context.branch).map(radarRecord);
+  const ownership = whoOwnsMany(files, {}, snapshot)
     .map((result) => ({ ...compactOwnership(result), ...(maxBytes !== undefined && result.error ? { error: result.error } : {}) }));
   const result = { ...context, otherAgents, ownership };
   return maxBytes === undefined ? result : boundContext(result, maxBytes);
