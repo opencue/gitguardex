@@ -18,10 +18,6 @@ const {
   DEPRECATED_COMMAND_ALIASES,
   CLI_COMMAND_HELP
 } = require('../context');
-const toolchainModule = require('../toolchain');
-const budgetModule = require('../budget');
-const ciInitModule = require('../ci-init');
-const speckitModule = require('../speckit');
 const { usage, startTransientSpinner, commandHelpLines, commandCatalogJson } = require('../output');
 const {
   maybeSuggestCommand,
@@ -256,6 +252,7 @@ async function main() {
       process.exitCode = 0;
       return;
     }
+    const toolchainModule = require('../toolchain');
     toolchainModule.maybeSelfUpdateBeforeStatus();
     toolchainModule.maybeOpenSpecUpdateBeforeStatus();
     const statusPayload = require('./commands/status').status([]);
@@ -284,7 +281,7 @@ async function main() {
   }
 
   if (command === '--version' || command === '-v' || command === 'version') {
-    toolchainModule.maybeSelfUpdateBeforeStatus();
+    require('../toolchain').maybeSelfUpdateBeforeStatus();
     console.log(packageJson.version);
     return;
   }
@@ -351,9 +348,9 @@ async function main() {
   if (command === 'cleanup') return require('./commands/finish').cleanup(rest);
   if (command === 'release') return require('./commands/release').release(rest);
   if (command === 'watch') return require('./commands/watch').watch(rest);
-  if (command === 'budget') return budgetModule.runBudgetCommand(rest);
-  if (command === 'ci-init') return ciInitModule.runCiInitCommand(rest);
-  if (command === 'speckit') return speckitModule.runSpeckitCommand(rest);
+  if (command === 'budget') return require('../budget').runBudgetCommand(rest);
+  if (command === 'ci-init') return require('../ci-init').runCiInitCommand(rest);
+  if (command === 'speckit') return require('../speckit').runSpeckitCommand(rest);
 
   const suggestion = maybeSuggestCommand(command);
   if (suggestion) {
