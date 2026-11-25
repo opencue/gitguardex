@@ -148,8 +148,9 @@ function compactReviewPrompt(
           'Also add a top-level "value" alongside "findings", even for clean diffs.',
           'Estimate the net repository impact of merging this diff as written vs. not merging: weigh evidenced benefits against costs and risks, not finding count or diff size.',
           'Use integer anchors: 0 severe net harm, 25 material harm, 50 neutral or trivial, 75 material benefit, 100 exceptional repository-level benefit.',
-          `"value":{"score":75,"drivers":[{"area":"${Object.keys(VALUE_AREAS).join('|')}","impact":"${Object.keys(VALUE_IMPACTS).join('|')}","reason":"changed behavior or file and its consequence"}],"improvements":[]}`,
+          `"value":{"score":75,"drivers":[{"area":"${Object.keys(VALUE_AREAS).join('|')}","impact":"${Object.keys(VALUE_IMPACTS).join('|')}","reason":"changed behavior and its consequence","evidence":{"path":"file","line":123}}],"improvements":[]}`,
           'Give 1–3 distinct, diff-grounded drivers, up to 200 characters each. Use plain text. Do not invent benchmark results, test passes, or adoption. Return "value":null if there is not enough evidence.',
+          'When a specific line supports a driver, include its exact repository-relative path and integer new-side diff line, preferably an added line. Otherwise omit "evidence". Never return evidence URLs.',
           'In "improvements", list at most two distinct, actionable changes or checks tied to the diff, highest impact first, up to 200 plain-text characters each. Omit generic advice, repeated findings, and predicted point gains. Use [] if nothing material is worth suggesting. Score only the PR as written.'
         ]
       : []),
@@ -250,18 +251,23 @@ function normalizeValueText(text) {
   return clean.length <= 200 ? clean : '';
 }
 
-function normalizeReviewValue(value) {
+function normalizeReviewValue(value, lineMap) {
   const { score, drivers, improvements } = value ?? {};
   if (!Number.isInteger(score) || score < 0 || score > 100) return null;
   if (!Array.isArray(drivers) || drivers.length < 1 || drivers.length > 3) return null;
   const normalized = [];
   for (const driver of drivers) {
-    const { area, impact, reason } = driver ?? {};
+    const { area, impact, reason, evidence } = driver ?? {};
     if (typeof area !== 'string' || !Object.hasOwn(VALUE_AREAS, area)) return null;
     if (typeof impact !== 'string' || !Object.hasOwn(VALUE_IMPACTS, impact)) return null;
     const clean = normalizeValueText(reason);
     if (!clean) return null;
-    normalized.push({ area, impact, reason: clean });
+    const entry = { area, impact, reason: clean };
+    const { path, line } = evidence ?? {};
+    if (typeof path === 'string' && Number.isInteger(line) && line > 0 && lineMap.get(path)?.has(line)) {
+      entry.evidence = { path, line };
+    }
+    normalized.push(entry);
   }
   const actions = new Set();
   if (Array.isArray(improvements)) {
@@ -279,15 +285,20 @@ function escapeValueText(text) {
   return text.replace(/[&<>@\\[\]_*\x60~!|:.#$()+-]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
-function reviewValueLines(value, truncated) {
+function reviewValueLines(value, truncated, reviewDiffPath) {
   if (truncated) return ['**PR value: unavailable** — diff is incomplete.'];
   if (!value) return ['**PR value: unavailable** — no supported estimate for this diff.'];
   return [
     `**PR value: ${value.score}/100** — AI estimate from the diff; 50 = neutral. Not a merge verdict.`,
     '',
-    ...value.drivers.map(({ area, impact, reason }) =>
-      `- **${VALUE_IMPACTS[impact]} — ${VALUE_AREAS[area]}:** ${escapeValueText(reason)}`
-    ),
+    ...value.drivers.map(({ area, impact, reason, evidence }) => {
+      const driver = `- **${VALUE_IMPACTS[impact]} — ${VALUE_AREAS[area]}:** ${escapeValueText(reason)}`;
+      if (!evidence) return driver;
+      const label = escapeValueText(`${evidence.path}:${evidence.line}`);
+      if (!reviewDiffPath) return `${driver} — ${label}`;
+      const hash = crypto.createHash('sha256').update(evidence.path).digest('hex');
+      return `${driver} — [${label}](${reviewDiffPath}#diff-${hash}R${evidence.line})`;
+    }),
     ...(value.improvements?.length
       ? [
           '',
@@ -399,7 +410,8 @@ function renderReviewSummary({
   gate,
   degraded = false,
   abide: abideResult,
-  value
+  value,
+  reviewDiffPath
 }) {
   const lines = [MARKER, '### 🛡️ GitGuardex code-assist', ''];
 
@@ -431,7 +443,7 @@ function renderReviewSummary({
     );
   }
 
-  lines.push('', ...reviewValueLines(value, truncated));
+  lines.push('', ...reviewValueLines(value, truncated, reviewDiffPath));
 
   const footer = [`Provider \`${provider}\``];
   if (commit) footer.push(`commit \`${commit.slice(0, 7)}\``);
@@ -776,6 +788,9 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
     throw new Error('PR changed before posting the PR Lens review; rerun against the current diff');
   }
 
+  const slug = context.value?.drivers.some((driver) => driver.evidence) && /^\d+$/.test(pr)
+    ? repoNameWithOwner(repoRoot, runner)
+    : '';
   const summaryArgs = {
     provider,
     findings,
@@ -785,7 +800,9 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
     truncated,
     gate,
     abide: context.abide,
-    value: context.value
+    value: context.value,
+    // A root-relative link keeps the PR on the same GitHub host.
+    reviewDiffPath: slug ? `/${slug}/pull/${pr}/files` : ''
   };
   const payload = {
     event: 'COMMENT',
@@ -925,7 +942,7 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
         return {
           findings,
           graph: settings.prLens ? payload.graph : undefined,
-          value: settings.truncated ? null : normalizeReviewValue(payload.value)
+          value: settings.truncated ? null : payload.value
         };
       } catch (error) {
         parseError = error;
@@ -1062,13 +1079,14 @@ function runPrReview(options, deps = {}) {
     model = null;
     review = reviewWithProvider();
   }
-  const { findings: providerFindings, graph, value } = review;
+  const { findings: providerFindings, graph } = review;
   const abideResult = collectAbideFindings(repoRoot, rawDiff, options, deps);
   if (abideResult.status === 'failed')
     console.log(`${TOOL_PREFIX} ${abideSummaryLine(abideResult)}`);
   const findings = [...providerFindings, ...abideResult.findings];
   let prLens;
-  const { anchored, unanchored } = partitionByAnchor(findings, rawDiff);
+  const { anchored, unanchored, lineMap } = partitionByAnchor(findings, rawDiff);
+  const value = normalizeReviewValue(review.value, lineMap);
   const gate = {
     ...evaluateReviewGate(findings, { blockSeverities: options.blockSeverities }),
     blockSeverities: options.blockSeverities || ['high', 'critical']
