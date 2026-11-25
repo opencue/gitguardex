@@ -885,7 +885,8 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
     if target != repo_root and target_entry and target_entry.get('handoff_id') != args.id:
         raise LockError('The recipient already has a different lock')
     for cwd in {repo_root, target}:
-        if run_git(['--literal-pathspecs', 'status', '--porcelain', '--untracked-files=all', '--', file_path], cwd=cwd):
+        if run_git(['--literal-pathspecs', 'status', '--porcelain', '--untracked-files=all',
+                    '--ignore-submodules=none', '--', file_path], cwd=cwd):
             raise LockError(f'Cannot hand off {file_path}: uncommitted changes in {cwd}')
     commit = run_git(['rev-parse', 'HEAD'], cwd=repo_root)
     try:
@@ -895,9 +896,12 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
 
     # Write destination first. If interrupted across worktrees, both claims
     # block one another; rerun the same approval to finish. No unlocked gap.
+    check = args.check
+    if check is None and target_entry and target_entry.get('handoff_id') == args.id:
+        check = target_entry.get('handoff_check')
     target_state['locks'][file_path] = {
         **LockEntry(recipient['branch'], now_iso(), agent=recipient['agent'], pane=request.get('pane', '')).__dict__,
-        'handoff_id': args.id, 'handoff_commit': commit, 'handoff_check': args.check,
+        'handoff_id': args.id, 'handoff_commit': commit, 'handoff_check': check,
     }
     write_state(target, target_state)
     if target != repo_root:

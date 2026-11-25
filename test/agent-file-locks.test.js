@@ -468,8 +468,15 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     const commit = git(owner, 'rev-parse', 'HEAD');
     assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /does not contain/);
     git(next, 'merge', '--ff-only', 'agent/a');
+    const sourceRegistry = path.join(owner, '.omx', 'state', 'agent-file-locks.json');
+    const originalClaim = fs.readFileSync(sourceRegistry, 'utf8');
     const approved = locksAt(owner, ['handoff-approve', id, '--check', 'npm test'], a);
     assert.equal(approved.status, 0, approved.stderr);
+    // Interrupt after writing the recipient lock, but before releasing the source.
+    fs.writeFileSync(sourceRegistry, originalClaim);
+    fs.writeFileSync(receipt, pendingReceipt);
+    const resumed = locksAt(owner, ['handoff-approve', id], a);
+    assert.equal(resumed.status, 0, resumed.stderr);
     assert.match(locksAt(next, ['handoffs'], b).stdout, new RegExp(commit));
     assert.match(locksAt(next, ['handoffs'], b).stdout, /npm test/);
     assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', file], a).status, 1);
