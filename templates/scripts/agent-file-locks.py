@@ -894,6 +894,9 @@ def cmd_handoff_approve(args: argparse.Namespace, repo_root: Path) -> int:
     if target != repo_root and target_entry and target_entry.get('handoff_id') != args.id:
         raise LockError('The recipient already has a different lock')
     for cwd in {repo_root, target}:
+        tracked = run_git(['--literal-pathspecs', 'ls-files', '-v', '--', file_path], cwd=cwd)
+        if any(line[0] == 'S' or line[0].islower() for line in tracked.splitlines() if line):
+            raise LockError(f'Cannot hand off {file_path}: skip-worktree or assume-unchanged set in {cwd}')
         if run_git(['--literal-pathspecs', 'status', '--porcelain', '--untracked-files=all',
                     '--ignored=matching', '--ignore-submodules=none', '--', file_path], cwd=cwd):
             raise LockError(f'Cannot hand off {file_path}: uncommitted changes in {cwd}')

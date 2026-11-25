@@ -469,6 +469,11 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     const commit = git(owner, 'rev-parse', 'HEAD');
     assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /does not contain/);
     git(next, 'merge', '--ff-only', 'agent/a');
+    git(owner, 'update-index', '--assume-unchanged', file);
+    fs.appendFileSync(path.join(owner, file), 'hidden owner changes\n');
+    assert.match(locksAt(owner, ['handoff-approve', id], a).stderr, /assume-unchanged/);
+    git(owner, 'update-index', '--no-assume-unchanged', file);
+    writeFile(owner, file, "the owner's changes\n");
     const sourceRegistry = path.join(owner, '.omx', 'state', 'agent-file-locks.json');
     const originalClaim = fs.readFileSync(sourceRegistry, 'utf8');
     const approved = locksAt(owner, ['handoff-approve', id, '--check', 'npm test'], a);
