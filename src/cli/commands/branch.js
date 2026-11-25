@@ -50,7 +50,7 @@ VERIFICATION
   --gate-autofix-rounds <n>   Limit repair rounds to 1-5 (default: 1)
   --gate-baseline             Ignore failures already present on the base branch
   --no-gate-abide             Skip abide's AGENTS.md rule verdicts in the review gate
-  --review-provider <name>    Review provider: codex|claude
+  --review-provider <name>    Pin codex|claude (default: Codex, Claude if Codex cannot launch)
   --review-model <name>       Model used by the review provider
   --review-timeout-ms <n>     Positive review timeout in milliseconds
   --no-preflight              Skip the repository preflight script

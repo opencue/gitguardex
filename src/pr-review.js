@@ -65,6 +65,7 @@ function normalizeProvider(raw) {
 
 /** Explicit option wins; then GUARDEX_REVIEW_MODEL; then the provider default. */
 function resolveReviewModel(model, env = process.env) {
+  if (model === null) return ''; // A fallback uses its own default, not the primary model.
   const explicit = String(model || '').trim();
   if (explicit) return explicit;
   return String(env.GUARDEX_REVIEW_MODEL || '').trim();
@@ -736,6 +737,8 @@ function runProviderReview(provider, diff, repoRoot, timeoutMs, runner = run, se
   return runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, settings).findings;
 }
 
+class ReviewProviderUnavailable extends Error {}
+
 function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, settings) {
   const prompt = settings.graphRepair
     ? [
@@ -786,6 +789,18 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
         throw new Error(
           `${provider} review timed out after ${Math.round(limitMs / 1000)}s (no verdict). ` +
             'Refusing to merge — rerun, raise GUARDEX_REVIEW_TIMEOUT_MS, or use --skip-review-gate.'
+        );
+      }
+      // A missing/unexecutable CLI (including a shell shim) has not produced a
+      // verdict. Never switch providers after a successful launch or a retry.
+      const launchError = result.error?.code;
+      if (
+        attempt === 0 &&
+        (['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(launchError) ||
+          ([126, 127].includes(result.status) && !String(result.stdout || '').trim()))
+      ) {
+        throw new ReviewProviderUnavailable(
+          `${provider} review unavailable: cannot launch ${providerCommand} (${launchError || result.status})`
         );
       }
       if (result.status !== 0) {
@@ -894,7 +909,8 @@ function runPrReview(options, deps = {}) {
       prLensComment: publishPrLensArtifact(options.pr, options.prLensPublish, repoRoot, runner)
     };
   }
-  const provider = normalizeProvider(options.provider);
+  let provider = normalizeProvider(options.provider);
+  let model = options.model;
   const pr = String(options.pr);
   const lensContext = prLensEnabled(options.prLens)
     ? preparePrLens(pr, repoRoot, resolveReviewTimeoutMs(options.timeoutMs), runner)
@@ -920,17 +936,22 @@ function runPrReview(options, deps = {}) {
   const { diff, truncated } = capDiff(rawDiff);
   if (lensContext && truncated)
     throw new Error('PR Lens requires a complete diff; review diff is truncated');
-  const { findings: providerFindings, graph } = runProviderReviewPayload(
-    provider,
-    diff,
-    repoRoot,
-    options.timeoutMs,
-    runner,
-    {
-      model: options.model,
+  const reviewWithProvider = () =>
+    runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
+      model,
       prLens: Boolean(lensContext)
-    }
-  );
+    });
+  let review;
+  try {
+    review = reviewWithProvider();
+  } catch (error) {
+    if (options.provider || !(error instanceof ReviewProviderUnavailable)) throw error;
+    console.log(`${TOOL_PREFIX} ${error.message}; falling back to Claude`);
+    provider = 'claude';
+    model = null;
+    review = reviewWithProvider();
+  }
+  const { findings: providerFindings, graph } = review;
   const abideResult = collectAbideFindings(repoRoot, rawDiff, options, deps);
   if (abideResult.status === 'failed')
     console.log(`${TOOL_PREFIX} ${abideSummaryLine(abideResult)}`);
@@ -970,7 +991,7 @@ function runPrReview(options, deps = {}) {
           if (serialized.length > 64_000)
             throw new Error('PR Lens graph exceeds repair input limit');
           return runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
-            model: options.model,
+            model,
             graphRepair: { graph: invalidGraph, errors }
           }).graph;
         }
@@ -991,6 +1012,7 @@ function runPrReview(options, deps = {}) {
     const artifactPath = savedArtifact || writeArtifact(repoRoot, options.artifact, payload);
     return {
       posted: false,
+      provider,
       artifactPath,
       findings,
       unanchored,
@@ -1003,6 +1025,7 @@ function runPrReview(options, deps = {}) {
     const artifactPath = savedArtifact || writeArtifact(repoRoot, options.artifact, payload);
     return {
       posted: false,
+      provider,
       artifactPath,
       findings,
       unanchored,
@@ -1015,6 +1038,7 @@ function runPrReview(options, deps = {}) {
   const outcome = postGithubReview(pr, payload, repoRoot, runner);
   return {
     posted: true,
+    provider,
     prLens,
     artifactPath: '',
     findings,

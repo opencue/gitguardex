@@ -290,7 +290,6 @@ function parsePrReviewArgs(rawArgs) {
   const parsed = parseTargetFlag(rawArgs, process.cwd());
   const options = {
     target: parsed.target,
-    provider: 'codex',
     pr: '',
     post: false,
     artifact: '',
@@ -1300,7 +1299,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     // (not undefined) also wins over the env toggle, since `??` only falls
     // through on null/undefined.
     gateReview: fastMode ? false : (defaults.gateReview ?? autoShip),
-    reviewProvider: defaults.reviewProvider || 'codex',
+    reviewProvider: defaults.reviewProvider,
     // Empty = the provider's own default model.
     reviewModel: defaults.reviewModel || '',
     reviewTimeoutMs: defaults.reviewTimeoutMs,

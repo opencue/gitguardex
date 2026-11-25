@@ -334,7 +334,7 @@ function runReviewGate(
   const baseSha = deps.readBaseSha || readBaseSha;
   const waitHead = deps.waitForPullRequestHead || waitForPullRequestHead;
 
-  const provider = options.reviewProvider || 'codex';
+  const provider = options.reviewProvider;
   const requireChecks = !options.allowNoChecks;
   // Fix rounds are opt-in and bounded: an unfixable finding must fall through to
   // the block rather than spin the provider forever.
@@ -428,7 +428,7 @@ function runReviewGate(
       progress,
       'start',
       'review',
-      `round ${round + 1}/${maxFixRounds + 1} via ${provider}`
+      `round ${round + 1}/${maxFixRounds + 1} via ${provider || 'codex (auto)'}`
     );
     try {
       review = runPrReview({
@@ -493,7 +493,8 @@ function runReviewGate(
     try {
       fix = runFix({
         repoRoot: fixCwd,
-        provider,
+        provider: review.provider || provider,
+        model: !provider && review.provider === 'claude' ? null : undefined,
         findings: verdict.blocking,
         expectBranch: branch
       });
