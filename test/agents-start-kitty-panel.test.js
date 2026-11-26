@@ -14,7 +14,7 @@ function loadStartWithMocks({
 }) {
   const startPath = require.resolve('../src/agents/start');
   const runtimePath = require.resolve('../src/core/runtime');
-  const worktreeStartPath = require.resolve('../src/worktree-start');
+  const worktreeStartPath = require.resolve('../package/gitguardex/src/worktree/start');
   const sessionsPath = require.resolve('../src/agents/sessions');
   const terminalPath = require.resolve('../src/agents/terminal');
   const gitPath = require.resolve('../src/git');

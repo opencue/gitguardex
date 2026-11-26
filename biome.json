@@ -7,12 +7,12 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "include": ["bin/**/*.js", "src/**/*.js", "scripts/**/*.js", "test/**/*.js"],
+    "include": ["package/gitguardex/bin/**/*.js", "package/gitguardex/src/**/*.js", "package/gitguardex/scripts/**/*.js", "scripts/**/*.js", "test/**/*.js"],
     "ignore": [
       "**/node_modules/**",
       "**/.next/**",
-      "frontend/**",
-      "templates/**",
+      "package/frontend/**",
+      "package/gitguardex/templates/**",
       "examples/**",
       "**/*.min.js"
     ]

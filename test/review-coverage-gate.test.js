@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { runReviewGate } = require('../src/finish/review-gate');
-const { runPrReview } = require('../src/pr-review');
+const { runPrReview } = require('../package/gitguardex/src/review/pull-request');
 
 test('the merge gate rejects an oversized diff before launching the provider or waiting for CI', () => {
   const calls = [];

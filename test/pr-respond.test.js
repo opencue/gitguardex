@@ -8,8 +8,8 @@ const {
   seedCommit
 } = require('./helpers/install-test-helpers');
 const cp = require('node:child_process');
-const prRespond = require('../src/pr-respond');
-const { MARKER } = require('../src/pr-review');
+const prRespond = require('../package/gitguardex/src/pull-request/respond');
+const { MARKER } = require('../package/gitguardex/src/review/pull-request');
 
 // ---------------------------------------------------------------------------
 // Body parsing helpers — no gh calls

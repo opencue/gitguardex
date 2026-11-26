@@ -1,5 +1,5 @@
 const { test, assert } = require('./helpers/install-test-helpers');
-const { compactGeneratedReviewDiff } = require('../src/review-diff-context');
+const { compactGeneratedReviewDiff } = require('../package/gitguardex/src/review/diff-context');
 
 function lockDiff(count = 20, path = 'frontend/package-lock.json') {
   const lines = [

@@ -15,13 +15,14 @@ on:
       - main
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
-      - 'bin/**'
-      - 'src/finish/**'
-      - 'src/cli/**'
-      - 'src/git/**'
+      - 'package/gitguardex/bin/**'
+      - 'package/gitguardex/src/finish/**'
+      - 'package/gitguardex/src/cli/**'
+      - 'package/gitguardex/src/git/**'
+      - 'package/gitguardex/src/worktree/**'
       - 'scripts/openspec/**'
-      - 'templates/scripts/agent-branch-finish.sh'
-      - 'templates/scripts/agent-branch-start.sh'
+      - 'package/gitguardex/templates/scripts/agent-branch-finish.sh'
+      - 'package/gitguardex/templates/scripts/agent-branch-start.sh'
       - 'test/e2e/**'
       - '.github/workflows/e2e-finish.yml'
   workflow_dispatch:

@@ -44,7 +44,7 @@ function loadFinishWithMocks({ runPackageAsset, gitOutputLines }) {
 
   // Pre-seed worktree-hooks so the inline require() call inside
   // autoCommitWorktreeForFinish finds the stub without loading the real module.
-  stub('src/worktree-hooks.js', {
+  stub('src/worktree/hooks.js', {
     runLifecycleHookSync: () => {}
   });
 

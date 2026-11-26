@@ -1,6 +1,6 @@
 const { test, assert } = require('./helpers/install-test-helpers');
 const { waitForGreenCi, runReviewGate } = require('../src/finish/review-gate');
-const { checkOutcomes, baselineFailures } = require('../src/pr');
+const { checkOutcomes, baselineFailures } = require('../package/gitguardex/src/pull-request/index');
 
 // A PR snapshot with `red` failing checks out of `total`.
 function snapshot({

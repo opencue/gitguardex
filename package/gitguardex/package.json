@@ -1,0 +1,68 @@
+{
+  "name": "@imdeadpool/guardex",
+  "version": "8.4.0",
+  "description": "Guardian T-Rex for your multi-agent repo. Isolated worktrees, file locks, and PR-only merges stop parallel Codex & Claude agents from overwriting each other's work. Auto-wires Oh My Codex, Oh My Claude, OpenSpec, and Caveman.",
+  "license": "MIT",
+  "preferGlobal": true,
+  "bin": {
+    "gitguardex": "bin/multiagent-safety.js",
+    "guardex": "bin/multiagent-safety.js",
+    "gx": "bin/multiagent-safety.js",
+    "multiagent-safety": "bin/multiagent-safety.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "src",
+    "scripts/prepublish-bump-version.js",
+    "skills",
+    "templates",
+    "README.md",
+    "THIRD-PARTY-NOTICES.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md"
+  ],
+  "keywords": [
+    "gitguardex",
+    "guardex",
+    "multi-agent",
+    "git-hooks",
+    "branch-guard",
+    "agent-safety",
+    "codex",
+    "claude",
+    "claude-code",
+    "ai-agents",
+    "git-worktree",
+    "file-locks",
+    "worktree",
+    "openspec",
+    "agent-orchestration",
+    "pull-request",
+    "cli"
+  ],
+  "author": "recodeecom",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opencue/gitguardex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/opencue/gitguardex/issues"
+  },
+  "homepage": "https://gitguardex.com/",
+  "funding": "https://github.com/sponsors/recodeecom",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1",
+    "semver": "7.7.4"
+  },
+  "scripts": {
+    "prepublishOnly": "node scripts/prepublish-bump-version.js",
+    "postinstall": "node -e \"require('./src/heavy').installReport()\""
+  }
+}

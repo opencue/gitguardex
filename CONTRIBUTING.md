@@ -8,8 +8,22 @@ Thanks for contributing to `GitGuardex`.
 npm ci
 npm test
 node --check bin/multiagent-safety.js
-npm pack --dry-run
+npm run package:check
 ```
+
+## Repository layout
+
+- `package/gitguardex/` is the published CLI workspace. Its manifest owns the
+  npm name, version, executable and shipped assets. The root npm workspace is
+  private and runs repository-wide checks. In its `src/`, `worktree/` owns
+  checkout lifecycle, `pull-request/` owns GitHub PR operations and reporting,
+  and `review/` owns review providers and diff handling.
+- `package/frontend/` is the standalone frontend with its own lockfile. Run
+  `npm ci --prefix package/frontend` to install it.
+- `scripts/`, `test/` and `.github/` are repository-level tooling, integration
+  tests and CI. Existing repository paths `bin/`, `src/`, `skills/` and
+  `templates/` are compatibility links to the CLI workspace; edit the canonical
+  files there.
 
 ## Pull request checklist
 
@@ -24,7 +38,8 @@ npm pack --dry-run
   the dependency audit before releasing the current commit; superseded runs
   skip publishing.
 - By default the workflow releases the next free patch after npm `latest`. For
-  a deliberate minor or major release, raise `package.json` and its lockfile and
+  a deliberate minor or major release, raise `package/gitguardex/package.json`
+  and update the root workspace lockfile, then
   add the version to the `README.md` release notes in the same PR.
 - The npm Trusted Publisher is `opencue/gitguardex`, workflow `release.yml`,
   environment `npm`, with `npm publish` allowed. No npm token is needed.

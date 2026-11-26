@@ -142,7 +142,7 @@ test('unknown usage of an inaccessible registered worktree fails closed', (t) =>
     return stat(file, ...args);
   });
   assert.throws(
-    () => require('../src/worktree-quota').inspectWorktreeQuota(repoDir, 0),
+    () => require('../package/gitguardex/src/worktree/quota').inspectWorktreeQuota(repoDir, 0),
     /usage denied/
   );
 });

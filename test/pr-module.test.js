@@ -1,4 +1,4 @@
-// Unit tests for src/pr.js helpers. The network-facing functions (gh CLI) are
+// Unit tests for src/pull-request/index.js helpers. The network-facing functions (gh CLI) are
 // covered indirectly by testing the pure / IO-light helpers and by injecting
 // known data through child-process boundaries where possible. Tests that
 // require live `gh auth` are skipped automatically.
@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const prModule = require('../src/pr');
+const prModule = require('../package/gitguardex/src/pull-request/index');
 
 function runGit(cwd, ...args) {
   return cp.spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
@@ -155,7 +155,7 @@ test('getPullRequestStatus ignores cancelled workflow runs superseded by a newer
 
   try {
     const script = [
-      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../package/gitguardex/src/pull-request/index'))});`,
       "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
     ].join('\n');
     const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
@@ -275,7 +275,7 @@ test('a verified unstarted billing check requires local preflight and never make
   const watch = () => {
     fs.writeFileSync(fakeGh, `#!/bin/sh\nif [ "$1" = "api" ]; then\n  case "$2" in\n    */commits/abc1234/check-runs?per_page=100) printf '%s\\n' ${JSON.stringify(JSON.stringify(checkRuns))} ;;\n    */actions/jobs/456) printf '%s\\n' ${JSON.stringify(JSON.stringify(job))} ;;\n    */check-runs/789/annotations) printf '%s\\n' ${JSON.stringify(JSON.stringify(annotations))} ;;\n    *) exit 1 ;;\n  esac\n  exit 0\nfi\ncase "$1 $2" in\n  "pr list") printf '%s\\n' '${JSON.stringify(response)}' ;;\n  "repo view") printf '%s\\n' 'example/repo' ;;\n  *) exit 1 ;;\nesac\n`, { mode: 0o755 });
     const script = [
-      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../package/gitguardex/src/pull-request/index'))});`,
       "const options = { repoRoot: process.argv[1], branch: 'agent/test/lane', timeoutMs: 1 };",
       'const phases = [];',
       'pr.watchPullRequest({ ...options, onEvent: ({ phase }) => phases.push(phase) })',
@@ -371,7 +371,7 @@ test('getPullRequestStatus fails closed when workflow output spoofs the exact bi
 
   try {
     const script = [
-      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+      `const pr = require(${JSON.stringify(path.resolve(__dirname, '../package/gitguardex/src/pull-request/index'))});`,
       "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
     ].join('\n');
     const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {
@@ -432,7 +432,7 @@ test('getPullRequestStatus fails closed when billing job evidence is incomplete 
       fs.chmodSync(fakeGh, 0o755);
 
       const script = [
-        `const pr = require(${JSON.stringify(path.resolve(__dirname, '../src/pr'))});`,
+        `const pr = require(${JSON.stringify(path.resolve(__dirname, '../package/gitguardex/src/pull-request/index'))});`,
         "process.stdout.write(JSON.stringify(pr.getPullRequestStatus(process.argv[1], 'agent/test/lane')));",
       ].join('\n');
       const result = cp.spawnSync(process.execPath, ['-e', script, fixtureRoot], {

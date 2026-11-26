@@ -1,7 +1,7 @@
 // Unit tests for the `gx pr` command layer (src/cli/commands/pr.js). These
 // cover the pure, network-free helpers — argument parsing (incl. validation)
 // and the CI-checks formatter — plus the help path. The gh-facing subcommands
-// live in src/pr.js and are covered by pr-module.test.js.
+// live in src/pull-request/index.js and are covered by pr-module.test.js.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 

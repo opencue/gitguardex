@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { latestStatusChecks, summarizeStatusCheckRollup } = require('../src/pr-checks');
+const { latestStatusChecks, summarizeStatusCheckRollup } = require('../package/gitguardex/src/pull-request/checks');
 
 function check({
   name = 'test (node 20)',

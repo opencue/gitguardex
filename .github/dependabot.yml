@@ -6,7 +6,7 @@ updates:
       interval: weekly
     versioning-strategy: lockfile-only
   - package-ecosystem: npm
-    directory: /frontend
+    directory: /package/frontend
     schedule:
       interval: weekly
     versioning-strategy: lockfile-only

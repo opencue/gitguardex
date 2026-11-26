@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pickWorktree, worktreePreview, terminalText } = require('../src/worktree-picker');
+const { pickWorktree, worktreePreview, terminalText } = require('../package/gitguardex/src/worktree/picker');
 
 test('picker refuses non-TTY instead of silently choosing a worktree', async () => {
   await assert.rejects(

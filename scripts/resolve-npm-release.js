@@ -61,7 +61,7 @@ function npmView(spec, ...fields) {
 }
 
 if (require.main === module) {
-  const { name, version: floor } = require('../package.json');
+  const { name, version: floor } = require('../package/gitguardex/package.json');
   const sha = process.env.GITHUB_SHA;
   const tag = process.env.RELEASE_TAG;
   const latest = npmView(`${name}@latest`, 'version', 'gitHead', 'versions');

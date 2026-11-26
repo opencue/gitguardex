@@ -12,7 +12,7 @@ function supervisedLaunch() {
   const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
   const wt = '/repo/.omx/agent-worktrees/repo__codex__fix-auth';
   return `cd '${wt}' && ${CARGO} ` + [process.execPath,
-    path.resolve(__dirname, '../src/agents/supervise.js'), wt,
+    require.resolve('../package/gitguardex/src/agents/supervise'), wt,
     'agent__codex__fix-auth', '--', 'codex', 'fix auth'].map(quote).join(' ');
 }
 
@@ -28,7 +28,7 @@ function loadStartWithMocks({
   const sessionsPath = require.resolve('../src/agents/sessions');
   const terminalPath = require.resolve('../src/agents/terminal');
   const gitPath = require.resolve('../src/git');
-  const worktreeStartPath = require.resolve('../src/worktree-start');
+  const worktreeStartPath = require.resolve('../package/gitguardex/src/worktree/start');
   const originalLoad = Module._load;
 
   delete require.cache[startPath];

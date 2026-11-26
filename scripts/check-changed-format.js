@@ -4,7 +4,7 @@ const cp = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const FORMAT_PATHS = ['bin', 'src', 'scripts', 'test'];
+const FORMAT_PATHS = ['package/gitguardex/bin', 'package/gitguardex/src', 'package/gitguardex/scripts', 'scripts', 'test'];
 const FORMAT_EXTENSION = /\.(?:[cm]?js|jsx|ts|tsx|jsonc?)$/;
 
 function gitNames(repoRoot, args) {
@@ -27,10 +27,13 @@ function newFormatFiles(repoRoot, baseRef) {
   const tracked = gitNames(repoRoot, [
     'diff',
     '--name-only',
+    '--find-renames',
     '--diff-filter=A',
     '-z',
     baseRef,
     '--',
+    'bin',
+    'src',
     ...FORMAT_PATHS
   ]);
   const untracked = gitNames(repoRoot, [

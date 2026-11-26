@@ -67,16 +67,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package/frontend/package-lock.json
 
       - name: Install frontend
-        run: npm ci --prefix frontend --ignore-scripts
+        run: npm ci --prefix package/frontend --ignore-scripts
 
       - name: Verify frontend
-        run: npm --prefix frontend run verify
+        run: npm --prefix package/frontend run verify
 
       - name: Audit dependencies
         # Retries registry outages only; a real finding fails on the first try.
         run: |
           scripts/npm-audit-retry.sh --audit-level=high
-          scripts/npm-audit-retry.sh --prefix frontend --audit-level=high
+          scripts/npm-audit-retry.sh --prefix package/frontend --audit-level=high

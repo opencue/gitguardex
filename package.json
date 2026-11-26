@@ -1,26 +1,21 @@
 {
-  "name": "@imdeadpool/guardex",
-  "version": "8.4.0",
-  "description": "Guardian T-Rex for your multi-agent repo. Isolated worktrees, file locks, and PR-only merges stop parallel Codex & Claude agents from overwriting each other's work. Auto-wires Oh My Codex, Oh My Claude, OpenSpec, and Caveman.",
-  "license": "MIT",
-  "preferGlobal": true,
-  "bin": {
-    "gitguardex": "bin/multiagent-safety.js",
-    "guardex": "bin/multiagent-safety.js",
-    "gx": "bin/multiagent-safety.js",
-    "multiagent-safety": "bin/multiagent-safety.js"
+  "name": "gitguardex-repository",
+  "private": true,
+  "workspaces": [
+    "package/gitguardex"
+  ],
+  "engines": {
+    "node": ">=18"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
     "test:coverage": "node scripts/run-coverage-gate.js",
-    "lint": "biome lint bin src scripts test",
-    "format": "biome format --write bin src scripts test",
-    "format:check": "biome format bin src scripts test",
+    "lint": "biome lint package/gitguardex/bin package/gitguardex/src package/gitguardex/scripts scripts test",
+    "format": "biome format --write package/gitguardex/bin package/gitguardex/src package/gitguardex/scripts scripts test",
+    "format:check": "biome format package/gitguardex/bin package/gitguardex/src package/gitguardex/scripts scripts test",
     "format:check:changed": "node scripts/check-changed-format.js",
-    "package:check": "node --check bin/multiagent-safety.js && bash scripts/check-script-symlinks.sh && npm pack --dry-run",
+    "package:check": "node --check package/gitguardex/bin/multiagent-safety.js && bash scripts/check-script-symlinks.sh && npm pack --dry-run --workspace @imdeadpool/guardex",
     "verify": "npm run format:check:changed && npm run lint && npm test && npm run package:check",
-    "prepublishOnly": "node scripts/prepublish-bump-version.js",
-    "postinstall": "node -e \"require('./src/heavy').installReport()\"",
     "agent:codex": "bash ./scripts/codex-agent.sh",
     "agent:branch:start": "bash ./scripts/agent-branch-start.sh",
     "agent:branch:finish": "bash ./scripts/agent-branch-finish.sh",
@@ -43,59 +38,8 @@
     "agent:review:watch": "bash ./scripts/review-bot-watch.sh",
     "agent:finish": "gx finish --all"
   },
-  "engines": {
-    "node": ">=18"
-  },
-  "files": [
-    "bin",
-    "src",
-    "scripts/prepublish-bump-version.js",
-    "skills",
-    "templates",
-    "README.md",
-    "THIRD-PARTY-NOTICES.md",
-    "LICENSE",
-    "SECURITY.md",
-    "CONTRIBUTING.md"
-  ],
-  "keywords": [
-    "gitguardex",
-    "guardex",
-    "multi-agent",
-    "git-hooks",
-    "branch-guard",
-    "agent-safety",
-    "codex",
-    "claude",
-    "claude-code",
-    "ai-agents",
-    "git-worktree",
-    "file-locks",
-    "worktree",
-    "openspec",
-    "agent-orchestration",
-    "pull-request",
-    "cli"
-  ],
-  "author": "recodeecom",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/opencue/gitguardex.git"
-  },
-  "bugs": {
-    "url": "https://github.com/opencue/gitguardex/issues"
-  },
-  "homepage": "https://gitguardex.com/",
-  "funding": "https://github.com/sponsors/recodeecom",
-  "publishConfig": {
-    "access": "public"
-  },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
     "fast-check": "3.23.2"
-  },
-  "dependencies": {
-    "jsonc-parser": "3.3.1",
-    "semver": "7.7.4"
   }
 }
