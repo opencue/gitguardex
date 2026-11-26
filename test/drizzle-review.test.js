@@ -253,7 +253,7 @@ test('review uses compact input only before the cap and never offers synthetic-l
                 {
                   area: 'reliability',
                   impact: 'benefit',
-                  weight: 'limited',
+                  magnitude: 27,
                   reason: 'This row is not a real evidence anchor.',
                   evidence: { path: snapshotPath, line: 100 }
                 }

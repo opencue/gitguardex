@@ -78,10 +78,10 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
       if (!value) return;
       const items = [
         ...value.drivers
-          .filter(({ points }) => points < 0)
+          .filter(({ impact }) => impact === 'trade-off')
           .map((driver, i) => ({
             id: `trade-off-${i + 1}`,
-            label: `${driver.points} · ${driver.label}`,
+            label: `${driver.magnitude}/100 · ${driver.label}`,
             context: driver.reason,
             check: driver.doneWhen
           })),

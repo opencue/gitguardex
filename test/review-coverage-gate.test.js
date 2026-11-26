@@ -50,16 +50,26 @@ test('a standalone review still labels a truncated diff as partial', (t) => {
     { pr: 42, target, artifact: 'review.md', prLens: false, abide: false, provider: 'claude' },
     {
       run(_cmd, [group], options) {
-        if (group === 'pr') return { status: 0, stdout: 'x'.repeat(220_001) };
+        if (group === 'pr') {
+          const hunk = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+';
+          return { status: 0, stdout: hunk + 'x'.repeat(220_001) + '\n' };
+        }
         assert.match(options.input, /\[diff truncated at 220000 characters\]/);
-        assert.doesNotMatch(options.input, /Estimate the net repository impact/);
+        assert.doesNotMatch(options.input, /Evaluate benefits and regression risks independently/);
         return {
           status: 0,
           stdout: JSON.stringify({
             findings: [],
             value: {
-              score: 100,
-              drivers: [{ area: 'product', impact: 'benefit', reason: 'A claimed benefit' }],
+              drivers: [
+                {
+                  area: 'product',
+                  impact: 'benefit',
+                  magnitude: 100,
+                  reason: 'A claimed benefit',
+                  evidence: { path: 'a.js', line: 1 }
+                }
+              ],
               improvements: ['Test subscription cancellation']
             }
           })
@@ -70,6 +80,9 @@ test('a standalone review still labels a truncated diff as partial', (t) => {
   assert.equal(result.truncated, true);
   const artifact = fs.readFileSync(result.artifactPath, 'utf8');
   assert.match(artifact, /review is partial/);
-  assert.match(artifact, /PR value: unavailable.*diff is incomplete/);
-  assert.doesNotMatch(artifact, /100\/100|A claimed benefit|What would make this PR better|Test subscription cancellation/);
+  assert.match(artifact, /PR impact: unavailable.*diff is incomplete/);
+  assert.doesNotMatch(
+    artifact,
+    /100\/100|A claimed benefit|What would make this PR better|Test subscription cancellation/
+  );
 });
