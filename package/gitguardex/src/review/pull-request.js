@@ -1006,6 +1006,7 @@ function runPrReview(options, deps = {}) {
   if (options.post && !prHeadSha && githubAuthAvailable(process.env, runner)) {
     throw new Error('Cannot capture PR head SHA before review; refusing to post an unverified review.');
   }
+  const impactStartedAt = Date.now();
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
   const { diff, truncated } = capDiff(rawDiff);
   if (lensContext && truncated)
@@ -1018,7 +1019,7 @@ function runPrReview(options, deps = {}) {
   const env = deps.env || process.env;
   const history =
     !truncated && (!deps.run || deps.impactHistory)
-      ? openImpactHistory(repoRoot, pr, rawDiff, env)
+      ? openImpactHistory(repoRoot, pr, rawDiff, env, impactStartedAt)
       : null;
   const previousImpact = history?.previous ?? [];
   const providerDiff = !truncated && !lensContext

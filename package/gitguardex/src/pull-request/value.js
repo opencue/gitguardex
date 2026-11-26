@@ -97,7 +97,7 @@ function normalizeReviewValue(value, lineMap) {
       evidence: anchor,
       points,
       suggestedFix: fix,
-      doneWhen: fix ? plainText(doneWhen) : ''
+      doneWhen: points < 0 ? plainText(doneWhen) : ''
     });
   }
   const actions = new Set();
@@ -110,7 +110,15 @@ function normalizeReviewValue(value, lineMap) {
   if (Array.isArray(improvements)) {
     for (const improvement of improvements) {
       const clean = plainText(improvement);
-      if (clean && !priorAdvice.has(clean.toLowerCase())) actions.add(clean);
+      const key = clean.toLowerCase();
+      const repeatsTradeOff = normalized.some(
+        ({ suggestedFix, doneWhen }) =>
+          suggestedFix &&
+          doneWhen &&
+          key.includes(suggestedFix.toLowerCase()) &&
+          key.includes(doneWhen.toLowerCase())
+      );
+      if (clean && !priorAdvice.has(key) && !repeatsTradeOff) actions.add(clean);
       if (actions.size === 2) break;
     }
   }
@@ -200,10 +208,12 @@ function reviewValueLines(value, truncated, reviewDiffPath) {
       const { area, impact, reason, evidence, points, suggestedFix, doneWhen } = driver;
       let advice = '';
       if (driver === priority) advice = '<br>_See priority fix above._';
-      else if (suggestedFix) {
-        advice = `<br>**Suggested fix:** ${escapeValueText(suggestedFix)}`;
+      else if (points < 0) {
+        advice = suggestedFix
+          ? `<br>**Suggested fix:** ${escapeValueText(suggestedFix)}`
+          : '<br>_No specific fix suggested._';
         if (doneWhen) advice += `<br>**Done when:** ${escapeValueText(doneWhen)}`;
-      } else if (points < 0) advice = '<br>_No specific fix suggested._';
+      }
       return `| **${IMPACTS[impact]}** · ${AREAS[area]} | **${signedPoints(points)}** | ${escapeValueText(reason)} — ${sourceFor(evidence)}${advice} |`;
     }),
     ...(value.improvements.length
