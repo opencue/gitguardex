@@ -1,8 +1,10 @@
 const { test, assert } = require('./helpers/install-test-helpers');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runReviewGate } = require('../src/finish/review-gate');
+const { readEventPage } = require('../src/finish/events');
 const { createFinishProgress, summarizeFinishRun } = require('../src/finish/progress');
 
 function cleanGateDeps() {
@@ -67,6 +69,50 @@ test('finish progress persists private structured JSONL events for agent polling
   assert.equal(events.at(-1).stage, 'review');
   assert.equal(events.at(-1).state, 'complete');
   assert.equal(events.at(-1).detail, 'clean');
+});
+
+function linkedCheckout(t) {
+  const repoRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-hud-')));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd: repoRoot,
+    stdio: 'pipe',
+  });
+  git('init', '-q');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial', '--allow-empty');
+  const worktree = path.join(repoRoot, 'linked checkout');
+  git('worktree', 'add', '--detach', worktree);
+  return { repoRoot, worktree };
+}
+
+test('linked finishes appear in the primary checkout HUD without breaking worktree polling', (t) => {
+  const { repoRoot, worktree } = linkedCheckout(t);
+  const progress = createFinishProgress({ repoRoot: worktree, write: () => {} });
+  const runId = progress.eventEnv.GUARDEX_FINISH_RUN_ID;
+  const eventFile = progress.eventEnv.GUARDEX_FINISH_EVENT_FILE;
+  assert.equal(eventFile, path.join(repoRoot, '.omx', 'state', 'finish-runs', `${runId}.jsonl`));
+  assert.equal(fs.statSync(eventFile).nlink, 1);
+  const elsewhere = path.join(worktree, 'not-omx');
+  fs.mkdirSync(elsewhere);
+  fs.symlinkSync(elsewhere, path.join(worktree, '.omx'));
+  const first = readEventPage(worktree, runId);
+  progress.start('review', 'round 1/2');
+  const next = readEventPage(repoRoot, runId, first.cursor);
+  assert.equal(next.events.at(-1).stage, 'review');
+  assert.equal(next.events.at(-1).state, 'running');
+});
+
+test('an unsafe primary state directory does not stop worktree finish tracking', (t) => {
+  const { repoRoot, worktree } = linkedCheckout(t);
+  const target = path.join(repoRoot, 'not-omx');
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, path.join(repoRoot, '.omx'));
+  const progress = createFinishProgress({ repoRoot: worktree, write: () => {} });
+  const runId = progress.eventEnv.GUARDEX_FINISH_RUN_ID;
+  assert.equal(progress.eventEnv.GUARDEX_FINISH_EVENT_FILE,
+    path.join(worktree, '.omx', 'state', 'finish-runs', `${runId}.jsonl`));
+  assert.equal(readEventPage(worktree, runId).events[0].state, 'started');
+  assert.deepEqual(fs.readdirSync(target), []);
 });
 
 test('agent-quiet finish suppresses narrative transitions but keeps structured events', (t) => {
