@@ -65,19 +65,27 @@ function estimateCheckout(repoRoot, ref, exclusions) {
   };
 }
 
+function commonGitDirectory(repoRoot) {
+  const common = run('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir']);
+  if (common.status !== 0) throw new Error('Cannot resolve task lock directory');
+  return fs.realpathSync(path.resolve(repoRoot, common.stdout.trim()));
+}
+
+function taskLock(repoRoot, id, scope = 'task') {
+  const key = crypto.createHash('sha256').update(id).digest('hex');
+  return path.join(commonGitDirectory(repoRoot), `gitguardex-${scope}-${key}.lock`);
+}
+
 function runTaskStart(repoRoot, args) {
   const taskFlags = args.filter((arg) => arg === '--task-id').length;
   if (taskFlags > 1)
     throw new Error('--task-id must appear once');
   const id = taskFlags ? validateTaskId(args[args.indexOf('--task-id') + 1]) : '';
-  const common = run('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir']);
-  if (common.status !== 0) throw new Error('Cannot resolve task lock directory');
-  const commonDir = fs.realpathSync(path.resolve(repoRoot, common.stdout.trim()));
   const locks = [];
   if (Object.keys(require('./worktree-quota').readWorktreeQuota(repoRoot)).length) {
-    locks.push(path.join(commonDir, 'gitguardex-worktree-quota.lock'));
+    locks.push(path.join(commonGitDirectory(repoRoot), 'gitguardex-worktree-quota.lock'));
   }
-  if (id) locks.push(path.join(commonDir, `gitguardex-task-${crypto.createHash('sha256').update(id).digest('hex')}.lock`));
+  if (id) locks.push(taskLock(repoRoot, id));
   let command = ['bash', packageAssetPath('branchStart'), ...args];
   for (const lock of locks.reverse()) {
     command = ['python3', path.join(__dirname, 'finish/with-claims-lock.py'), lock, ...command];
@@ -89,12 +97,17 @@ function runTaskStart(repoRoot, args) {
   );
 }
 
-function invokeTaskStart(repoRoot, args) {
+function invokeTaskStart(repoRoot, args, json = false) {
   const result = runTaskStart(repoRoot, args);
-  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stdout) (json ? process.stderr : process.stdout).write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0)
     throw new Error(`Task start failed or is busy (status ${result.status})`);
+  if (json) {
+    const { findTask } = require('./worktree-tasks');
+    const task = findTask(repoRoot, args[args.indexOf('--task-id') + 1]);
+    process.stdout.write(JSON.stringify({ version: 1, ...task }) + '\n');
+  }
 }
 
-module.exports = { estimateCheckout, runTaskStart, invokeTaskStart, validateTaskId };
+module.exports = { commonGitDirectory, estimateCheckout, runTaskStart, invokeTaskStart, taskLock, validateTaskId };

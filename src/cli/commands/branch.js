@@ -178,6 +178,21 @@ function isReadOnlyBranchStart(args) {
   return args.some((arg) => ['--help', '-h', 'help', '--print-name-only', '--preview'].includes(arg));
 }
 
+// Identify options, not values that happen to look like one. Keep the shell
+// asset as the authority for all branch-start arguments other than --json.
+function branchStartOptionIndices(args, name) {
+  const takesValue = new Set([
+    '--task', '--task-id', '--agent', '--base', '--tier', '--provision-mode',
+    '--worktree-root', '--sparse-exclude', '--transfer-exclude'
+  ]);
+  const indices = [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === name) indices.push(index);
+    if (takesValue.has(args[index])) index++;
+  }
+  return indices;
+}
+
 function recoverStaleManagedWorktrees(repoRoot) {
   const idleMinutes = process.env.GUARDEX_BRANCH_START_CLEANUP_IDLE_MINUTES || '15';
   const result = runPackageAsset(
@@ -216,10 +231,32 @@ function recoverStaleManagedWorktrees(repoRoot) {
 function branch(rawArgs) {
   const activeCwd = process.cwd();
   const [subcommand, ...rest] = rawArgs;
+  if (subcommand === 'tasks') {
+    if (rest[0] === '--help' || rest[0] === '-h') {
+      process.stdout.write(
+        'Usage: gx branch tasks --json\n' +
+        'List ready linked worktrees in this repository and their occupancy (versioned JSON).\n' +
+        'Related: gx branch start --task-id <id> --json; gx branch run-task <id> <branch> <worktree> -- <command>\n'
+      );
+      return;
+    }
+    if (rest.length !== 1 || rest[0] !== '--json') throw new Error('Usage: gx branch tasks --json');
+    require('../../worktree-tasks').listTasks(resolveRepoRoot(activeCwd));
+    return;
+  }
+  if (subcommand === 'run-task') {
+    require('../../worktree-tasks').runTask(resolveRepoRoot(activeCwd), rest);
+    return;
+  }
   if (subcommand === 'start') {
     const { target, passthrough } = extractTargetedArgs(rest);
     const repoRoot = resolveRepoRoot(target);
     const readOnly = isReadOnlyBranchStart(passthrough);
+    const jsonIndices = branchStartOptionIndices(passthrough, '--json');
+    const json = jsonIndices.length > 0;
+    if (json && (readOnly || jsonIndices.length !== 1 ||
+        branchStartOptionIndices(passthrough, '--task-id').length !== 1))
+      throw new Error('--json requires a normal branch start with --task-id');
     const quota = readOnly ? {} : require('../../worktree-quota').readWorktreeQuota(repoRoot);
     if (!readOnly) {
       const modeIndex = passthrough.indexOf('--provision-mode');
@@ -235,6 +272,11 @@ function branch(rawArgs) {
         passthrough[passthrough.indexOf('--task-id') + 1]
       );
     }
+    if (json) {
+      require('../../worktree-start').invokeTaskStart(repoRoot,
+        passthrough.filter((_, index) => index !== jsonIndices[0]), true);
+      return;
+    }
     if (!isReadOnlyBranchStart(passthrough)) {
       require('../../finish/post-branch-finish-cleanup').retryPendingFinishedCleanup(repoRoot, {
         schedule: true
@@ -246,6 +288,9 @@ function branch(rawArgs) {
       return;
     }
     invokePackageAsset('branchStart', passthrough, { cwd: repoRoot });
+    if (passthrough[0] === '--help' || passthrough[0] === '-h') {
+      process.stdout.write('  --json               With --task-id, emit a versioned task result on stdout\n');
+    }
     return;
   }
   if (subcommand === 'finish') {
