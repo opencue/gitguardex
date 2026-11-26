@@ -29,7 +29,7 @@ function readSingleLineFromStdin(options = {}) {
     }
 
     if (bytesRead === 0) {
-      if (input.isTTY) {
+      if (input.isTTY && !options.allowTtyEof) {
         sleepSync(retryDelayMs);
         continue;
       }

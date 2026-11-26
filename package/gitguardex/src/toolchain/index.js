@@ -83,12 +83,12 @@ function checkForGuardexUpdate() {
   };
 }
 
-function printUpdateAvailableBanner(current, latest) {
+function printUpdateAvailableBanner(current, latest, target = 'latest') {
   const title = colorize('UPDATE AVAILABLE', '1;33');
   console.log(`[${TOOL_NAME}] ${title}`);
   console.log(`[${TOOL_NAME}]   Current: ${current}`);
   console.log(`[${TOOL_NAME}]   Latest : ${latest}`);
-  console.log(`[${TOOL_NAME}]   Command: ${NPM_BIN} i -g ${packageJson.name}@latest`);
+  console.log(`[${TOOL_NAME}]   Command: ${NPM_BIN} i -g ${packageJson.name}@${target}`);
 }
 
 function readInstalledGuardexVersion() {
@@ -440,7 +440,12 @@ function maybeSelfUpdateBeforeStatus() {
     return;
   }
 
-  const installResult = run(NPM_BIN, ['i', '-g', `${packageJson.name}@latest`], { stdio: 'inherit' });
+  installGuardexUpdate(check, true);
+}
+
+function installGuardexUpdate(check, restart = false) {
+  const target = restart ? 'latest' : check.latest;
+  const installResult = run(NPM_BIN, ['i', '-g', `${packageJson.name}@${target}`], { stdio: 'inherit' });
   if (installResult.status !== 0) {
     console.log(`[${TOOL_NAME}] Update failed. You can retry manually.`);
     return;
@@ -448,6 +453,10 @@ function maybeSelfUpdateBeforeStatus() {
 
   const postInstallVersion = readInstalledGuardexVersion();
   if (postInstallVersion != null && postInstallVersion !== check.latest) {
+    if (!restart) {
+      console.log(`[${TOOL_NAME}] Installed version is ${postInstallVersion} (expected ${check.latest}).`);
+      return;
+    }
     console.log(
       `[${TOOL_NAME}] Installed version is still ${postInstallVersion} (expected ${check.latest}). ` +
         `Retrying with pinned version ${check.latest}...`,
@@ -474,7 +483,79 @@ function maybeSelfUpdateBeforeStatus() {
   }
 
   console.log(`[${TOOL_NAME}] Updated to latest published version.`);
-  restartIntoUpdatedGuardex(check.latest);
+  if (restart) restartIntoUpdatedGuardex(check.latest);
+}
+
+const AGENT_NON_SESSION_COMMANDS = {
+  codex: new Set([
+    'exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'app-server', 'remote-control',
+    'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'queue', 'archive',
+    'delete', 'migrate-rollouts', 'migrate-nfs-db', 'unarchive', 'cloud', 'exec-server', 'features', 'help',
+  ]),
+  claude: new Set([
+    'agents', 'auth', 'doctor', 'gateway', 'help', 'import', 'install', 'mcp', 'plugin',
+    'purge', 'respawn', 'setup-token', 'ultrareview', 'update', 'upgrade',
+  ]),
+};
+
+const AGENT_OPTIONS_WITH_VALUE = {
+  codex: new Set([
+    '-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env', '-i', '--image',
+    '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd',
+    '--add-dir', '-a', '--ask-for-approval',
+  ]),
+  claude: new Set([
+    '--model', '--fallback-model', '--agent', '--effort', '--name', '-n', '--session-id',
+    '--resume', '-r', '--from-pr', '--worktree', '-w', '--permission-mode', '--settings',
+    '--system-prompt', '--append-system-prompt', '--mcp-config', '--add-dir', '--output-format',
+  ]),
+};
+
+function isInteractiveAgentLaunch(agent, args) {
+  let subcommand;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--') break;
+    if (
+      ['-h', '--help', '-V', '-v', '--version'].includes(arg) ||
+      (agent === 'claude' && (arg === '-p' || arg === '--print'))
+    ) return false;
+    if (AGENT_OPTIONS_WITH_VALUE[agent].has(arg) && args[index + 1] && !args[index + 1].startsWith('-')) {
+      index += 1;
+    } else if (!arg.startsWith('-')) {
+      subcommand ??= arg;
+    }
+  }
+  return !AGENT_NON_SESSION_COMMANDS[agent].has(subcommand);
+}
+
+function update(args) {
+  const beforeAgent = args[0] === '--before-agent';
+  const usage = 'Usage: gx update\nCheck for a GitGuardex update and install it only after confirmation in a terminal.';
+  if (!beforeAgent && args.length === 1 && ['--help', '-h'].includes(args[0])) {
+    console.log(usage);
+    return;
+  }
+  if (beforeAgent) {
+    const [, agent, ...agentArgs] = args;
+    if (!Object.hasOwn(AGENT_NON_SESSION_COMMANDS, agent)) throw new Error('Expected codex or claude');
+    if (!isInteractiveAgentLaunch(agent, agentArgs)) return;
+  } else if (args.length) {
+    throw new Error(usage);
+  }
+  if (!isInteractiveTerminal()) return;
+
+  const check = checkForGuardexUpdate();
+  if (!check.checked || !parseVersionString(check.latest) || !check.updateAvailable) {
+    if (!beforeAgent)
+      console.log(`[${TOOL_NAME}] ${check.checked && !check.updateAvailable ? 'Already up to date.' : 'Could not check for updates.'}`);
+    return;
+  }
+  printUpdateAvailableBanner(check.current, check.latest, check.latest);
+  process.stdout.write('Update now? [y/N] ');
+  const answer = readSingleLineFromStdin({ allowTtyEof: true }).trim().toLowerCase();
+  if (answer === 'y' || answer === 'yes') installGuardexUpdate(check);
+  else console.log(`\n[${TOOL_NAME}] Skipped update.`);
 }
 
 function maybeOpenSpecUpdateBeforeStatus() {
@@ -942,6 +1023,7 @@ module.exports = {
   detectOptionalLocalCompanionTools,
   askGlobalInstallForMissing,
   maybeSelfUpdateBeforeStatus,
+  update,
   maybeOpenSpecUpdateBeforeStatus,
   installGlobalToolchain,
   performCompanionInstall,
