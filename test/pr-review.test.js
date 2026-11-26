@@ -246,6 +246,7 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   let head = 'a'.repeat(40);
   let base = 'b'.repeat(40);
   let compareFiles = [];
+  let comparisonStatus = 'ahead';
   let payload = { findings: [], value: firstValue };
   let prompt;
   let postedBody;
@@ -256,7 +257,13 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   const deps = {
     impactHistory: true,
     env: {},
-    run(_cmd, args, runOptions) {
+    run(cmd, args, runOptions) {
+      if (cmd === 'git' && comparisonStatus === 'diverged') {
+        if (args[0] === 'cat-file') return { status: 0 };
+        assert.deepEqual(args.slice(-4), ['a'.repeat(40), head, '--', evidence.path]);
+        assert.ok(args.includes('--literal-pathspecs'));
+        return { status: 0, stdout: compareFiles[0]?.patch || '' };
+      }
       if (args[0] === 'exec') {
         prompt = runOptions.input;
         return { status: 0, stdout: JSON.stringify(payload) };
@@ -272,7 +279,12 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
       assert.equal(args[0], 'api');
       if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
       if (args[1].includes('/compare/')) {
-        return { status: 0, stdout: JSON.stringify({ status: 'ahead', files: compareFiles }) };
+        return { status: 0, stdout: JSON.stringify({
+          status: comparisonStatus,
+          files: comparisonStatus === 'diverged'
+            ? [{ filename: evidence.path, patch: '@@ -0,0 +1 @@\n+dismiss()' }]
+            : compareFiles,
+        }) };
       }
       if (args.includes('--paginate')) {
         return { status: failRead ? 1 : 0, stdout: published.map((entry) => JSON.stringify(entry)).join('\n') };
@@ -351,9 +363,12 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, first.pendingImprovements);
 
   head = 'd'.repeat(40);
+  comparisonStatus = 'diverged';
+  diff += '\n';
+  payload.followUp.push(proof);
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
   diff = diff.replace('keepWarning()', 'replayBothHeadings()');
   compareFiles = [{ filename: 'a.js', patch: '@@ -1 +1 @@\n-dismiss()\n+replayBothHeadings()' }];
-  payload.followUp.push(proof);
   const next = 'Check that failed retries preserve the warning';
   payload.value = { ...secondValue, improvements: [next] };
   const count = published.length;
@@ -362,6 +377,7 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.equal(published.length, count);
   failPost = false;
   const pending = prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements;
+  comparisonStatus = 'ahead';
   assert.deepEqual(pending.map(({ label }) => label), [next]);
   assert.match(postedBody, /Addressed in diff\*\*.*Add the replay fixture.*The replay asserts both numeric headings/);
   const completeDiff = diff;

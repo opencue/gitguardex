@@ -580,6 +580,24 @@ function addedInPatch(patch, line) {
 
 function requirementEvidenceChecker(repoRoot, head, runner) {
   const comparisons = new Map();
+  const available = new Map();
+  const gitOptions = { cwd: repoRoot, timeout: 60_000 };
+  const directPatch = (issuedHead, file) => {
+    if (!available.has(issuedHead)) {
+      const missing = [issuedHead, head].filter((sha) =>
+        runner('git', ['cat-file', '-e', `${sha}^{commit}`], gitOptions).status !== 0
+      );
+      available.set(issuedHead, !missing.length || runner('git', [
+        'fetch', '--no-tags', '--no-write-fetch-head', '--no-recurse-submodules', 'origin', ...missing
+      ], gitOptions).status === 0);
+    }
+    if (!available.get(issuedHead)) return '';
+    const diff = runner('git', [
+      '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color',
+      '--unified=0', issuedHead, head, '--', file
+    ], gitOptions);
+    return diff.status === 0 ? diff.stdout : '';
+  };
   return (item) => {
     if (!/^[a-f0-9]{40}$/.test(item.head || '') || !/^[a-f0-9]{40}$/.test(head || '') || item.head === head) {
       return false;
@@ -590,12 +608,14 @@ function requirementEvidenceChecker(repoRoot, head, runner) {
         '-q', '{status, files: [.files[]? | {filename, patch}]}'
       ], { cwd: repoRoot, timeout: 60_000 });
       const comparison = result.status === 0 ? JSON.parse(result.stdout) : null;
-      // A divergent comparison starts at the common ancestor, which may
-      // report pre-existing lines as additions relative to the issuing head.
-      comparisons.set(item.head, comparison?.status === 'ahead' ? comparison.files : []);
+      comparisons.set(item.head, comparison?.status === 'ahead' ? comparison.files : null);
     }
-    const patch = comparisons.get(item.head)?.find(({ filename }) => filename === item.evidence.path)?.patch;
-    return addedInPatch(patch, item.evidence.line);
+    const { path: file, line } = item.evidence;
+    const files = comparisons.get(item.head);
+    // After a rebase GitHub compares against the merge base, not the actual
+    // issuance tree. A direct tree diff cannot count old lines as new proof.
+    const patch = files ? files.find(({ filename }) => filename === file)?.patch : directPatch(item.head, file);
+    return addedInPatch(patch, line);
   };
 }
 
