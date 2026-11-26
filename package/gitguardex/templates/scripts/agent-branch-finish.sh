@@ -2144,6 +2144,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
     else
       echo "[agent-branch-finish] Warning: kept local branch '${SOURCE_BRANCH}' — could not safely delete it after merge." >&2
       printf '[agent-branch-finish] Inspect: git log %q\n' "${BASE_BRANCH}..${SOURCE_BRANCH}" >&2
+      printf '[agent-branch-finish] After resolving the cause, retry: gx cleanup --base %q --branch %q\n' "$BASE_BRANCH" "$SOURCE_BRANCH" >&2
     fi
   fi
 

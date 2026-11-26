@@ -1268,6 +1268,14 @@ test('agent-branch-finish reports why a merged branch still checked out in anoth
   assert.equal(added.status, 0, added.stderr);
   commitFile(worktree, 'active-worktree.txt', 'merged work\n', 'merged work');
 
+  const squash = runCmd('git', ['merge', '--squash', branch], repoDir);
+  assert.equal(squash.status, 0, squash.stderr);
+  commitAll(repoDir, 'squash merge active worktree changes', { allowProtectedBaseWrite: true });
+  const pushed = runHumanCmd('git', ['push', 'origin', 'dev'], repoDir);
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.equal(runCmd('git', ['diff', '--quiet', 'dev', branch], repoDir).status, 0);
+  assert.equal(runCmd('git', ['merge-base', '--is-ancestor', branch, 'dev'], repoDir).status, 1);
+
   const procRoot = path.join(repoDir, '.git', 'fake-proc');
   fs.mkdirSync(path.join(procRoot, '123'), { recursive: true });
   fs.symlinkSync(worktree, path.join(procRoot, '123', 'cwd'));
