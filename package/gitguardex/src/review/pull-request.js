@@ -12,6 +12,7 @@ const {
   reviewFollowUpLines
 } = require('../pull-request/value-history');
 const { compactGeneratedReviewDiff } = require('./diff-context');
+const { fetchPrRevision, projectDrizzleSnapshot } = require('./drizzle-snapshot');
 const abide = require('../abide');
 const {
   createRun,
@@ -131,7 +132,7 @@ function capDiff(diff, maxChars = MAX_DIFF_CHARS) {
 
 function compactReviewPrompt(
   diff,
-  { prLens = false, compactedLockContext = false, truncated = false, previousImpact = [] } = {}
+  { prLens = false, compactedLockContext = false, snapshotPath, truncated = false, previousImpact = [] } = {}
 ) {
   return [
     'As gitguardex-code-assist, review this PR diff for bugs, regressions, security issues and missing tests.',
@@ -146,6 +147,9 @@ function compactReviewPrompt(
     ...(truncated ? [] : reviewValueInstructions),
     ...(compactedLockContext ? [
       'In [unchanged lockfile context: ...] markers, old and new are original line numbers. Count the entire omitted range.'
+    ] : []),
+    ...(snapshotPath ? [
+      'A validated Drizzle snapshot delta replaces repeated schema content. Each JSON record lists the path and old/new values; omitted before/after means added/removed. Use original SQL or application lines when possible. For snapshot findings and evidence use real line 1 only, and never suggest a snapshot edit.'
     ] : []),
     ...(prLens ? [GRAPH_PROMPT] : []),
     ...(!truncated && previousImpact.length
@@ -339,7 +343,9 @@ function renderReviewSummary({
   unanchored = [],
   duplicates = 0,
   commit = '',
+  reviewedBaseSha,
   truncated = false,
+  snapshotPath,
   gate,
   degraded = false,
   abide: abideResult,
@@ -388,8 +394,10 @@ function renderReviewSummary({
 
   const footer = [`Provider \`${provider}\``];
   if (commit) footer.push(`commit \`${commit.slice(0, 7)}\``);
+  if (reviewedBaseSha) footer.push(`base \`${reviewedBaseSha.slice(0, 7)}\``);
   if (duplicates > 0) footer.push(`${duplicates} already reported`);
   if (truncated) footer.push('⚠️ diff truncated — review is partial');
+  if (snapshotPath) footer.push(`Validated Drizzle snapshot delta: \`${snapshotPath}\``);
   if (degraded)
     footer.push('⚠️ inline anchoring rejected by GitHub — reported in this summary instead');
   const abideLine = abideSummaryLine(abideResult);
@@ -405,10 +413,12 @@ function renderMarkdownReview({
   findings,
   unanchored = [],
   truncated = false,
+  snapshotPath,
   prLens,
   abide: abideResult,
   bugHunter,
   reviewedHeadSha,
+  reviewedBaseSha,
   value,
   followUp
 }) {
@@ -421,7 +431,9 @@ function renderMarkdownReview({
     `- Severity: ${severityLine(findings)}`
   ];
   if (reviewedHeadSha) lines.push(`- Reviewed commit: ${reviewedHeadSha}`);
+  if (reviewedBaseSha) lines.push(`- Reviewed base: ${reviewedBaseSha}`);
   if (truncated) lines.push('- ⚠️ Diff truncated — review is partial');
+  if (snapshotPath) lines.push(`- Validated Drizzle snapshot delta: \`${snapshotPath}\``);
   const abideLine = abideSummaryLine(abideResult);
   if (abideLine) lines.push(`- ${abideLine}`);
   if (prLens?.status)
@@ -727,9 +739,11 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
     fresh = anchored.filter((finding) => !alreadyPosted.has(findingFingerprint(finding)));
   }
   const duplicates = anchored.length - fresh.length;
-  const commit = fetchHeadSha(pr, repoRoot, runner);
-  if (context.reviewedHeadSha && commit !== context.reviewedHeadSha) {
-    throw new Error('PR changed before posting the PR Lens review; rerun against the current diff');
+  const revision = context.reviewedBaseSha ? fetchPrRevision(pr, repoRoot, runner) : null;
+  const commit = context.reviewedBaseSha ? revision?.head : fetchHeadSha(pr, repoRoot, runner);
+  if ((context.reviewedHeadSha && commit !== context.reviewedHeadSha)
+    || (context.reviewedBaseSha && revision?.base !== context.reviewedBaseSha)) {
+    throw new Error('PR changed before posting the review; rerun against the current diff');
   }
 
   const hasEvidence = context.value?.drivers.length || context.followUp?.some((item) => item.evidence);
@@ -740,7 +754,9 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
     unanchored,
     duplicates,
     commit,
+    reviewedBaseSha: context.reviewedBaseSha,
     truncated,
+    snapshotPath: context.snapshotPath,
     gate,
     abide: context.abide,
     bugHunter: context.bugHunter,
@@ -1008,7 +1024,14 @@ function runPrReview(options, deps = {}) {
   }
   const impactStartedAt = Date.now();
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
-  const { diff, truncated } = capDiff(rawDiff);
+  const projection = !lensContext && rawDiff.length > MAX_DIFF_CHARS
+    ? projectDrizzleSnapshot(rawDiff, {
+        pr, repoRoot, expectedBase: options.expectedBaseSha,
+        expectedHead: options.expectedHeadSha || prHeadSha, runner
+      })
+    : { diff: rawDiff };
+  const { diff, truncated } = capDiff(projection.diff);
+  const { snapshotPath } = projection;
   if (lensContext && truncated)
     throw new Error('PR Lens requires a complete diff; review diff is truncated');
   if (options.requireCompleteDiff && truncated) {
@@ -1031,6 +1054,7 @@ function runPrReview(options, deps = {}) {
       model,
       agentQuiet: options.agentQuiet,
       compactedLockContext: providerDiff !== diff,
+      snapshotPath,
       previousImpact,
       prLens: Boolean(lensContext),
       truncated
@@ -1045,7 +1069,12 @@ function runPrReview(options, deps = {}) {
     model = null;
     review = reviewWithProvider();
   }
-  const { findings: providerFindings, graph } = review;
+  const { graph } = review;
+  const providerFindings = review.findings.map((finding) => {
+    if (finding.path !== snapshotPath) return finding;
+    // Synthetic delta rows do not have real line numbers or safe replacements.
+    return { ...finding, line: 1, startLine: 0, suggestion: '' };
+  });
   let bugHunter;
   // An injected runner must opt in explicitly, independent of the caller's shell.
   if (bugHunterEnabled(deps.run ? deps.env || {} : env)) {
@@ -1069,6 +1098,9 @@ function runPrReview(options, deps = {}) {
   const findings = [...providerFindings, ...abideResult.findings];
   let prLens;
   const { anchored, unanchored, lineMap } = partitionByAnchor(findings, rawDiff);
+  // Only the real sentinel line was presented for this path. Other real
+  // lines must not validate evidence that refers to synthetic delta rows.
+  if (snapshotPath) lineMap.set(snapshotPath, new Set([1]));
   const value = normalizeReviewValue(review.value, lineMap);
   const gate = {
     ...evaluateReviewGate(findings, { blockSeverities: options.blockSeverities }),
@@ -1081,13 +1113,15 @@ function runPrReview(options, deps = {}) {
     anchored,
     unanchored,
     truncated,
+    snapshotPath,
     value,
     followUp: normalizeImpactFollowUp(previousImpact, review.followUp, lineMap),
     gate,
     prLens,
     abide: abideResult,
     ...advisory,
-    reviewedHeadSha: lensContext?.metadata.provenance.head.sha ?? prHeadSha
+    reviewedBaseSha: projection.base,
+    reviewedHeadSha: lensContext?.metadata.provenance.head.sha ?? projection.head ?? prHeadSha
   };
   let savedArtifact;
   if (lensContext) {

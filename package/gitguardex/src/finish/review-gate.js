@@ -478,6 +478,7 @@ function runReviewGate(
         provider,
         post: true,
         requireCompleteDiff: true,
+        expectedBaseSha: reviewedBaseSha,
         expectedHeadSha: pushedHeadSha,
         model: options.reviewModel,
         timeoutMs: options.reviewTimeoutMs,
