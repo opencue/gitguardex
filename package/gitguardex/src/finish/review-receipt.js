@@ -7,6 +7,7 @@ const { repoApiPath } = require('../github/api');
 const { bugHunterEnabled } = require('../review/bug-hunter');
 
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const REVIEW_GATE_POLICY = 2;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
 // Only reuse the primary Codex verdict, never a Claude fallback. User Codex
@@ -44,6 +45,7 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
       require.resolve('../review/provider-binary'),
       require.resolve('../review/diff'),
       require.resolve('../review/diff-context'),
+      require.resolve('../pull-request/value-history'),
       ...(bugHunter ? [require.resolve('../review/bug-hunter')] : [])
     ].map((source) => hash(fs.readFileSync(source)));
   } catch {
@@ -70,6 +72,7 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
         const receipt = JSON.parse(fs.readFileSync(file, 'utf8'));
         const age = Date.now() - receipt.at;
         if (
+          receipt.policy !== REVIEW_GATE_POLICY ||
           receipt.fingerprint !== fingerprint ||
           !Number.isFinite(age) ||
           age < 0 ||
@@ -120,6 +123,7 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
         review.truncated ||
         (bugHunter && review.bugHunter?.status !== 'clean') ||
         review.bugHunter?.findings?.length ||
+        review.pendingImprovements?.length ||
         !Number.isSafeInteger(review.reviewId) ||
         review.reviewId <= 0 ||
         !/^[0-9a-f]{64}$/.test(review.reviewBodyHash || '') ||
@@ -135,6 +139,7 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
         fs.writeFileSync(
           receipt,
           JSON.stringify({
+            policy: REVIEW_GATE_POLICY,
             fingerprint,
             at: Date.now(),
             id: review.reviewId,

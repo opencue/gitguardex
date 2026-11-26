@@ -449,12 +449,14 @@ function runReviewGate(
   // actually edited. A blocking finding that vanishes from a later round is only
   // treated as repaired when its file was touched — see resolveCarriedFindings.
   const blockedPaths = new Set();
-  let hadBugHunterFindings = false;
+  const bugHunterLocations = new Set();
+  const findingLocation = ({ path, line }) => JSON.stringify([path, line]);
   const repairedPaths = new Set();
   // A finding with no .path cannot be keyed into blockedPaths, so it needs its
   // own flag: if one ever blocked a round and then disappears, the gate must
   // fail closed rather than silently treating its absence as a fix.
   let hasPathlessBlocker = false;
+  let pendingImprovements = [];
   let autofixAttempted = false;
   // Pin CI from the first review, and advance only after a reviewed autofix.
   let pushedHeadSha = initialHeadSha;
@@ -481,6 +483,7 @@ function runReviewGate(
         requireCompleteDiff: true,
         expectedBaseSha: reviewedBaseSha,
         expectedHeadSha: pushedHeadSha,
+        ...(pendingImprovements.length ? { pendingImprovements } : {}),
         model: options.reviewModel,
         timeoutMs: options.reviewTimeoutMs,
         agentQuiet: options.agentQuiet,
@@ -513,19 +516,26 @@ function runReviewGate(
       throw error;
     }
 
-    verdict = evaluate(review.findings, { bugHunter: review.bugHunter });
+    if (pendingImprovements.length && !Array.isArray(review.pendingImprovements)) {
+      const message = 'Required PR improvements were not re-verified. Refusing to merge.';
+      reportProgress(progress, 'fail', 'review', message);
+      throw new Error(`review gate: ${message}`);
+    }
+    pendingImprovements = review.pendingImprovements ?? [];
+    verdict = evaluate(review.findings, { bugHunter: review.bugHunter, pendingImprovements });
     const bugHunterFindings = review.bugHunter?.findings ?? [];
-    hadBugHunterFindings ||= bugHunterFindings.length > 0;
+    for (const finding of bugHunterFindings) bugHunterLocations.add(findingLocation(finding));
     if (
       verdict.blocking.length === 0 &&
-      (verdict.bugHunterIncomplete || (hadBugHunterFindings && review.bugHunter?.status !== 'clean'))
+      (verdict.bugHunterIncomplete ||
+        (bugHunterLocations.size && review.bugHunter?.status !== 'clean'))
     ) {
       const message = `BugHunter did not complete (${review.bugHunter?.status ?? 'missing'}). Rerun with a complete BugHunter verdict.`;
       reportProgress(progress, 'fail', 'review', message);
       throw new Error(`review gate: ${message} Refusing to merge.`);
     }
     for (const finding of verdict.blocking) {
-      if (bugHunterFindings.includes(finding)) continue;
+      if (finding.improvement || bugHunterFindings.includes(finding)) continue;
       if (finding && finding.path) {
         blockedPaths.add(finding.path);
       } else if (finding) {
@@ -613,7 +623,11 @@ function runReviewGate(
       );
     }
     const detail = verdict.blocking
-      .map((f) => `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`)
+      .map((f) =>
+        f.improvement
+          ? `  - REQUIRED PR IMPROVEMENT: ${f.message}`
+          : `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`
+      )
       .join('\n');
     throw new Error(
       `review gate: ${verdict.blocking.length} blocking finding(s). Refusing to merge.\n${detail}\n` +
@@ -625,6 +639,15 @@ function runReviewGate(
 
   // Primary-review blockers still need a matching edit or current finding.
   // BugHunter rechecks the full PR diff, so its clean verdict covers cross-file fixes.
+  const survivingBugHunterFinding = bugHunterLocations.size && review.findings.find(
+    (finding) => bugHunterLocations.has(findingLocation(finding))
+  );
+  if (survivingBugHunterFinding) {
+    const { path, line } = survivingBugHunterFinding;
+    const message = `The primary review still flags a previous BugHunter location: ${path}:${line}.`;
+    reportProgress(progress, 'fail', 'review', message);
+    throw new Error(`review gate: ${message} Refusing to merge.`);
+  }
   const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, review.findings);
   if (unexplained.length > 0) {
     reportProgress(

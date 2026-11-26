@@ -559,6 +559,31 @@ test('runReviewGate blocks on a high/critical finding', () => {
   assert.throws(() => runReviewGate(gateArgs, deps), /blocking finding/);
 });
 
+test('required PR improvements reach autofix and need a fresh verification before CI', () => {
+  const item = { id: 'improvement-example', label: 'Add a replay fixture that verifies both numeric headings' };
+  for (const confirmed of [false, true]) {
+    let head = 'initial-sha';
+    const opts = { ...gateArgs, options: { gateAutofix: true } };
+    const deps = gateDeps({
+      readHeadSha: () => head,
+      runPrReview: ({ pendingImprovements = [], expectedHeadSha }) => {
+        assert.equal(expectedHeadSha, head);
+        if (head === 'initial-sha') return { posted: true, findings: [], pendingImprovements: [item] };
+        assert.deepEqual(pendingImprovements, [item]);
+        return { posted: true, findings: [], pendingImprovements: confirmed ? [] : [item] };
+      },
+      runReviewFix: ({ findings }) => {
+        assert.equal(findings[0]?.message, item.label);
+        return { status: 'fixed', changedFiles: ['test/pr-review.test.js'] };
+      },
+      pushBranch: () => { head = 'fixed-sha'; return { ok: true }; },
+      ...(confirmed ? {} : { waitForGreenCi: () => assert.fail('unverified suggestions still block CI') }),
+    });
+    if (confirmed) assert.equal(runReviewGate(opts, deps).reviewedHeadSha, 'fixed-sha');
+    else assert.throws(() => runReviewGate(opts, deps), /blocking finding[\s\S]*Add a replay fixture/);
+  }
+});
+
 const hunterFinding = { severity: 'medium', path: 'value.js', line: 110, message: 'drops a distinct risk' };
 
 test('BugHunter medium and low findings block before CI', () => {
@@ -588,7 +613,12 @@ test('an enabled BugHunter pass without a complete verdict cannot clear the gate
 });
 
 test('BugHunter autofix can repair another file but requires a clean re-review', () => {
-  for (const bugHunter of [{ status: 'clean', findings: [] }, undefined]) {
+  const clean = { status: 'clean', findings: [] };
+  for (const [bugHunter, findings, failure] of [
+    [clean, [], null],
+    [clean, [{ ...hunterFinding, severity: 'low' }], /still flags a previous BugHunter location/],
+    [undefined, [], /BugHunter.*did not complete/]
+  ]) {
     const opts = { ...gateArgs, options: { gateAutofix: true } };
     let round = 0;
     let head = 'initial-sha';
@@ -598,7 +628,7 @@ test('BugHunter autofix can repair another file but requires a clean re-review',
         assert.equal(expectedHeadSha, head);
         return round++ === 0
           ? { posted: true, findings: [], bugHunter: { status: 'findings', findings: [hunterFinding] } }
-          : { posted: true, findings: [{ ...hunterFinding, severity: 'low' }], bugHunter };
+          : { posted: true, findings, bugHunter };
       },
       runReviewFix: ({ findings }) => {
         assert.deepEqual(findings, [hunterFinding]);
@@ -606,10 +636,10 @@ test('BugHunter autofix can repair another file but requires a clean re-review',
       },
       pushBranch: () => { head = 'fixed-sha'; return { ok: true }; },
     });
-    if (bugHunter) {
+    if (!failure) {
       assert.equal(runReviewGate(opts, deps).reviewedHeadSha, 'fixed-sha');
     } else {
-      assert.throws(() => runReviewGate(opts, deps), /BugHunter.*did not complete/);
+      assert.throws(() => runReviewGate(opts, deps), failure);
     }
     assert.equal(round, 2);
   }

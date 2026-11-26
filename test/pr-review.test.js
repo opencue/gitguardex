@@ -183,8 +183,9 @@ test('posting a review skips inline comment pagination only when there are no in
     assert.equal(result.findings.length, findings.length);
     assert.equal(postedPayload.commit_id, 'pushed-sha');
     assert.equal(postedPayload.comments.length, inlineCount);
-    assert.match(postedPayload.body, findings.length ? /Merge gate: blocked/ : /No findings/);
+    assert.match(postedPayload.body, findings.length || actions ? /Merge gate: blocked/ : /No findings/);
     if (actions) {
+      assert.deepEqual(result.pendingImprovements.map(({ label }) => label), [first, second]);
       assert.ok(postedPayload.body.includes(`**How to improve this PR**\n\n1. ${first}\n2. ${second}\n`));
       assert.match(postedPayload.body, /High-impact opportunities/);
       assert.match(postedPayload.body, /Share live metadata across worktrees.*\*\*First try:\*\* Replay two worktrees.*\*\*Verify:\*\* Measure startup latency/);
@@ -224,6 +225,7 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
     drivers: [{ area: 'product', impact: 'trade-off', magnitude: 19, likelihood: 'demonstrated', label: 'Vanishing warning',
       reason: 'A refusal dismisses the warning', suggestedFix: 'Keep warnings on refusal',
       doneWhen: 'A refused retry leaves the warning visible', evidence }],
+    improvements: ['Add the replay fixture; verify both numeric headings render'],
     opportunities: [{ idea: 'Resume jobs on restart', pilot: 'Try two waiting fixtures',
       verify: 'Each job resumes once without data loss', evidence }]
   };
@@ -254,6 +256,15 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   prReview.runPrReview(options, deps);
   assert.doesNotMatch(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
   assert.doesNotMatch(prompt, /Previous review data:/);
+  const first = prReview.runPrReview({ ...options, post: true }, deps);
+  const proof = {
+    id: first.pendingImprovements[0].id,
+    status: 'addressed',
+    evidence,
+    observation: 'The replay asserts both numeric headings'
+  };
+  payload = { findings: [], value: firstValue, followUp: [proof] };
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, first.pendingImprovements);
 
   diff = diff.replace('dismiss()', 'keepWarning()');
   payload = { findings: [], value: secondValue, followUp: [
@@ -264,7 +275,7 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   ] };
   prReview.runPrReview(options, deps);
   assert.match(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
-  prReview.runPrReview({ ...options, post: true }, deps);
+  const unverified = prReview.runPrReview({ ...options, post: true }, deps);
   assert.match(prompt, /Previous review data:.*Vanishing warning/s);
   assert.match(postedBody, /Since the previous review/);
   assert.match(postedBody, /Addressed in diff\*\*.*19\/100.*Vanishing warning: Warning stays visible after a refused re&#45;CHECK.*#diff-[a-f0-9]{64}R1/);
@@ -273,6 +284,20 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.match(postedBody, /Impact: not established.*Risk: not established/);
 
   assert.match(prompt, /Previous review data:.*Resume jobs on restart/s);
+  assert.deepEqual(unverified.pendingImprovements, first.pendingImprovements);
+  assert.match(postedBody, /Merge gate: blocked/);
+  assert.match(postedBody, /Not verified\*\*.*Add the replay fixture/);
+
+  payload.followUp.push(
+    { id: first.pendingImprovements[0].id, status: 'addressed', evidence: { ...evidence, line: 99 }, observation: 'Invalid evidence' }
+  );
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, first.pendingImprovements);
+
+  diff = diff.replace('keepWarning()', 'replayBothHeadings()');
+  payload.followUp.push(proof);
+  assert.deepEqual(prReview.runPrReview(options, deps).pendingImprovements, []);
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, []);
+  assert.match(postedBody, /Addressed in diff\*\*.*Add the replay fixture.*The replay asserts both numeric headings/);
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {

@@ -55,6 +55,8 @@ Review an existing PR using your local Codex CLI. GitGuardex falls back to Claud
 
 With `--gate-review`, high and critical findings block the finish. Add `--gate-autofix` to attempt fixes and review the new head before merging. A green CI run is not a substitute for a clean review, or vice versa.
 
+**How to improve this PR** lists required changes. Gated finish passes them to autofix and requires a fresh review to verify each on the updated diff. Impact estimates and **High-impact opportunities** remain advisory.
+
 Set `GUARDEX_REVIEW_BUG_HUNTER=1` to add one read-only BugHunter pass to the
 PR review or finish review gate. It uses the same Codex or Claude provider and
 reads only the PR diff. With `--gate-review`, every BugHunter finding blocks
