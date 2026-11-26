@@ -260,7 +260,9 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
     run(cmd, args, runOptions) {
       if (cmd === 'git' && comparisonStatus === 'diverged') {
         if (args[0] === 'cat-file') return { status: 0 };
-        assert.deepEqual(args.slice(-4), ['a'.repeat(40), head, '--', evidence.path]);
+        assert.deepEqual(args.slice(args.indexOf('--unified=0') + 1), [
+          'a'.repeat(40), head, '--', ...(args.at(-1) === '--' ? [] : [evidence.path])
+        ]);
         assert.ok(args.includes('--literal-pathspecs'));
         return { status: 0, stdout: compareFiles[0]?.patch || '' };
       }
@@ -1101,6 +1103,54 @@ printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact
   }
 });
 
+});
+
+test('required improvement accepts a verified deletion after a file is reverted to base', (t) => {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-review-'));
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  const issuedHead = 'a'.repeat(40);
+  const head = 'b'.repeat(40);
+  const base = 'c'.repeat(40);
+  const [requirement] = improvementItems(['Remove dismiss()'], 'd'.repeat(64));
+  const published = [{
+    state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: issuedHead,
+    body: `${prReview.MARKER}\n${improvementMarker([requirement], [], base)}`
+  }];
+  const file = 'a.js';
+  let line = 2;
+  let prompt;
+  const review = () => prReview.runPrReview({ target, pr: 42, post: true, provider: 'codex', prLens: false, abide: false }, {
+    env: {},
+    run(_cmd, args, options) {
+      if (args[0] === 'exec') {
+        prompt = options.input;
+        const evidence = { path: file, line, side: 'LEFT' };
+        const followUp = [{ id: requirement.id, status: 'addressed', observation: 'Removed dismiss()', evidence }];
+        return { status: 0, stdout: JSON.stringify({ findings: [], followUp }) };
+      }
+      if (args[0] === 'repo') return { status: 0, stdout: 'owner/repo' };
+      if (args[0] === 'auth') return { status: 0 };
+      if (args[1] === 'view') {
+        return { status: 0, stdout: args.includes('baseRefOid,headRefOid')
+          ? JSON.stringify({ baseRefOid: base, headRefOid: head }) : head };
+      }
+      if (args[1] === 'diff') return { status: 0, stdout: '' };
+      if (args.includes('--paginate')) return { status: 0, stdout: published.map((entry) => JSON.stringify(entry)).join('\n') };
+      if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
+      if (args[1].endsWith(`/compare/${issuedHead}...${head}`)) {
+        const files = [{ filename: file, patch: '@@ -1 +0,0 @@\n-dismiss()' }];
+        return { status: 0, stdout: JSON.stringify({ status: 'ahead', files }) };
+      }
+      const { body } = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
+      published.push({ ...published[0], commit_id: head, body });
+      return { status: 0, stdout: '' };
+    }
+  });
+  assert.equal(review().pendingImprovements.length, 1);
+  line = 1;
+  assert.deepEqual(review().pendingImprovements, []);
+  assert.match(prompt, /Requirement comparisons:.*dismiss\(\)/s);
+  assert.match(published.at(-1).body, /a&#46;js&#58;1 \(removed since issuance\)/);
 });
 
 // --- abide verdicts in the review gate ---------------------------------------

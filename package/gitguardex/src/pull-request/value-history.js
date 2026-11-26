@@ -193,10 +193,14 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
 function normalizeImpactFollowUp(previous, proposed, lineMap) {
   const verified = new Map();
   if (Array.isArray(proposed)) {
-    const ids = new Set(previous.map(({ id }) => id));
+    const items = new Map(previous.map((item) => [item.id, item]));
     for (const row of proposed) {
-      if (!ids.has(row?.id) || !['addressed', 'still-applies'].includes(row.status)) continue;
-      const evidence = normalizeEvidence(row.evidence, lineMap);
+      const item = items.get(row?.id);
+      if (!item || !['addressed', 'still-applies'].includes(row.status)) continue;
+      const { path, line, side } = row.evidence ?? {};
+      if (side === 'LEFT' && (!item.revision || row.status !== 'addressed' ||
+        typeof path !== 'string' || !path || !Number.isInteger(line) || line < 1)) continue;
+      const evidence = side === 'LEFT' ? { path, line, side } : normalizeEvidence(row.evidence, lineMap);
       const observation = plainText(row.observation);
       if (evidence && observation && !verified.has(row.id)) {
         verified.set(row.id, { status: row.status, observation, evidence });
@@ -216,9 +220,10 @@ function reviewFollowUpLines(items, diffPath) {
     '',
     ...items.map(({ label, status, observation, evidence, check }) => {
       const detail = observation ? `: ${escapeValueText(observation)}` : '';
-      const source = evidence
-        ? ` — ${evidenceLink(escapeValueText(`${evidence.path}:${evidence.line}`), evidence, diffPath)}`
-        : '';
+      const location = evidence && escapeValueText(`${evidence.path}:${evidence.line}`);
+      const source = evidence ? ` — ${evidence.side === 'LEFT'
+        ? `${location} (removed since issuance)`
+        : evidenceLink(location, evidence, diffPath)}` : '';
       const next = status !== 'addressed' && check ? ` · **Check:** ${escapeValueText(check)}` : '';
       return `- **${STATUSES[status]}** · ${escapeValueText(label)}${detail}${source}${next}`;
     })
