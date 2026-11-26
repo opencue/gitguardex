@@ -10,11 +10,11 @@
 [![CI](https://github.com/opencue/gitguardex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/opencue/gitguardex/actions/workflows/ci.yml)
 [License](./LICENSE)
 
-[Quick start](#quick-start) · [AI code review](#ai-code-review) · [Impact Assist](#impact-assist) · [How it compares](#how-it-compares)
+[Quick start](#quick-start) · [AI code review](#code-assist-review-gate) · [Impact Assist](#impact-assist) · [How it compares](#how-it-compares)
 
 ## Quick start
 
-Requires Node.js 18+, Git, and an authenticated GitHub CLI (`gh`) for the PR flow. For the review gate below, also install and authenticate the Codex or Claude Code CLI. Use Linux or macOS; on Windows, use WSL.
+Requires Node.js 18+, Git, and an authenticated GitHub CLI (`gh`) for the PR flow. Use Linux or macOS; on Windows, use WSL.
 
 ```sh
 npm install -g @imdeadpool/guardex
@@ -32,12 +32,14 @@ gx locks claim --branch "$(git branch --show-current)" src/checkout.ts
 Make the change and run your project's tests. Then ship the PR:
 
 ```sh
-gx branch finish --via-pr --wait-for-merge --cleanup --gate-review --gate-autofix
+gx branch finish --via-pr --wait-for-merge --cleanup
 ```
 
 Finish can commit and open the PR, run the selected gates, then squash-merge and clean up the finished lane. It does not override GitHub branch protection.
 
-## AI code review
+## Code-assist review gate
+
+For AI code review, install and authenticate the Codex or Claude Code CLI.
 
 ```sh
 gx pr-review --pr 123 --post
@@ -47,12 +49,20 @@ Review an existing PR using your local Codex CLI. GitGuardex falls back to Claud
 
 With `--gate-review`, high and critical findings block the finish. Add `--gate-autofix` to attempt fixes and review the new head before merging. A green CI run is not a substitute for a clean review, or vice versa.
 
+```sh
+gx branch finish --via-pr --wait-for-merge --cleanup --gate-review --gate-autofix
+```
+
 <details>
 <summary>See a real review on GitHub</summary>
 
-[![A GitGuardex review showing severity, file locations, and findings](./docs/images/code-assist-review-gate.png)](https://github.com/projects-kssk/Wireless_KFB_Project/pull/165)
+![A GitGuardex review showing severity, file locations, and findings](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png)
+
+[Open the example PR](https://github.com/projects-kssk/Wireless_KFB_Project/pull/165) · [Full-size screenshot](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png)
 
 </details>
+
+---
 
 ## Impact Assist
 
@@ -72,6 +82,21 @@ For example, a material benefit (**+25**) and a notable trade-off (**−10**) yi
 
 GitGuardex works with Git, GitHub, and your existing agent CLI. It does not replace them.
 
+<details>
+<summary>See the problem and capability diagrams</summary>
+
+## The problem
+
+![Parallel agents colliding in the same files](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/problem-agent-collision.svg)
+
+### What GitGuardex can do
+
+<p align="center">
+  <img alt="GitGuardex capability map: isolated lanes, evidence-driven shipping, and safe cleanup" src="https://raw.githubusercontent.com/opencue/gitguardex/main/docs/images/capabilities-dark.svg" width="900">
+</p>
+
+</details>
+
 ## More workflows
 
 - **See what other agents own:** `gx status`, `gx context path/to/file`, or the [agent cockpit](./docs/agents-cockpit.md).
@@ -79,6 +104,20 @@ GitGuardex works with Git, GitHub, and your existing agent CLI. It does not repl
 - **Configure verification:** [local preflight](./docs/preflight.md), [OpenSpec (opt-in)](./docs/openspec-getting-started.md), or `gx --help`.
 - **Advanced worktrees:** [provisioning, navigation, and lifecycle hooks](https://github.com/opencue/gitguardex/blob/f748d7e02c853b29826bb1e1005127468de407e8/README.md#worktree-provisioning) and [VS Code setup](https://github.com/opencue/gitguardex/blob/f748d7e02c853b29826bb1e1005127468de407e8/README.md#see-every-lane-in-vs-code).
 - **Launch with a Cue profile:** [preview, start, and resume GitGuardex tasks](https://github.com/opencue/cuecards/blob/main/docs/gitguardex-workflows.md).
+
+<details>
+<summary>Agent skills and maintainer releases</summary>
+
+```sh
+npx skills add recodee/gitguardex
+gx release  # create/update the current GitHub release from README notes
+```
+
+`gx setup` does not auto-run `npx skills add ...`. If the picker does not show a separate `guardex` skill, that is expected; use the `gitguardex` skill.
+
+`gx release` is the maintainer path for package releases. It reads `README.md`, finds the last published GitHub release, and writes one grouped GitHub release body.
+
+</details>
 
 [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md) · [Issues](https://github.com/opencue/gitguardex/issues) · [Third-party notices](./THIRD-PARTY-NOTICES.md)
 
