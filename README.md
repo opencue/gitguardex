@@ -10,9 +10,9 @@
 [![CI](https://github.com/opencue/gitguardex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/opencue/gitguardex/actions/workflows/ci.yml)
 [License](./LICENSE)
 
-[Quick start](#quick-start) · [AI code review](#code-assist-review-gate) · [Impact Assist](#impact-assist) · [How it compares](#how-it-compares)
+[Quick start](#install) · [AI code review](#code-assist-review-gate) · [Impact Assist](#impact-assist) · [How it compares](#how-it-compares)
 
-## Quick start
+## Install
 
 Requires Node.js 18+, Git, and an authenticated GitHub CLI (`gh`) for the PR flow. Use Linux or macOS; on Windows, use WSL.
 
@@ -45,13 +45,15 @@ For AI code review, install and authenticate the Codex or Claude Code CLI.
 gx pr-review --pr 123 --post
 ```
 
-Review an existing PR using your local Codex CLI. GitGuardex falls back to Claude Code if Codex cannot launch; pin either with `--provider`. The review posts severity, file and line, and the reason a finding matters. **Posting a review does not merge the PR.**
+Review an existing PR using your local Codex CLI. GitGuardex falls back to Claude Code if Codex cannot launch; pin either with `--provider` (or `--review-provider` when finishing). The review posts severity, file and line, and the reason a finding matters. **Posting a review does not merge the PR.**
 
 With `--gate-review`, high and critical findings block the finish. Add `--gate-autofix` to attempt fixes and review the new head before merging. A green CI run is not a substitute for a clean review, or vice versa.
 
 ```sh
 gx branch finish --via-pr --wait-for-merge --cleanup --gate-review --gate-autofix
 ```
+
+If a diff exceeds the review size limit, split the PR to continue. A standalone review may report partial findings, but cannot pass the gate. See [preflight setup](./docs/preflight.md) for local checks.
 
 <details>
 <summary>See a real review on GitHub</summary>
@@ -100,6 +102,7 @@ GitGuardex works with Git, GitHub, and your existing agent CLI. It does not repl
 ## More workflows
 
 - **See what other agents own:** `gx status`, `gx context path/to/file`, or the [agent cockpit](./docs/agents-cockpit.md).
+- **Inspect local agent usage:** `gx usage` reads local logs through [ccusage](https://github.com/ccusage/ccusage); it does not install the backend.
 - **Preview cleanup and storage:** `gx cleanup --dry-run` and the [worktree storage guide](./docs/worktree-storage.md).
 - **Configure verification:** [local preflight](./docs/preflight.md), [OpenSpec (opt-in)](./docs/openspec-getting-started.md), or `gx --help`.
 - **Advanced worktrees:** [provisioning, navigation, and lifecycle hooks](https://github.com/opencue/gitguardex/blob/f748d7e02c853b29826bb1e1005127468de407e8/README.md#worktree-provisioning) and [VS Code setup](https://github.com/opencue/gitguardex/blob/f748d7e02c853b29826bb1e1005127468de407e8/README.md#see-every-lane-in-vs-code).
