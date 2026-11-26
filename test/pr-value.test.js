@@ -94,7 +94,11 @@ test('each trade-off shows its own safe fix without changing the score', () => {
           suggestedFix: 'Not a trade-off fix.'
         }
       ],
-      improvements: [' persist the inputs until retry admission. ', 'Check the boundary.']
+      improvements: [
+        ' persist the inputs until retry admission. ',
+        'Persist the inputs until retry admission. An early retry preserves <input> until admission.',
+        'Check the boundary.'
+      ]
     },
     lines
   );
@@ -120,12 +124,18 @@ test('each trade-off shows its own safe fix without changing the score', () => {
 test('missing or invalid fixes do not discard grounded trade-offs', () => {
   for (const suggestedFix of [undefined, {}, ' ', 'x'.repeat(201)]) {
     const value = normalizeReviewValue(
-      { drivers: [{ ...driver('trade-off', 'limited'), suggestedFix }] },
+      {
+        drivers: [{
+          ...driver('trade-off', 'limited'),
+          suggestedFix,
+          doneWhen: 'An unsupported command does not run'
+        }]
+      },
       lines
     );
     assert.equal(value.score, 45);
     const markdown = reviewValueLines(value, false).join('\n');
-    assert.match(markdown, /\*\*-5\*\*.*No specific fix suggested/);
+    assert.match(markdown, /\*\*-5\*\*.*No specific fix suggested.*An unsupported command does not run/);
   }
   const value = normalizeReviewValue(
     { drivers: [{ ...driver('trade-off', 'limited'), suggestedFix: 'Keep inputs on refusal.' }] },

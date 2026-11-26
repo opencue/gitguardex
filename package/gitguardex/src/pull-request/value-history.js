@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { artifactRoot } = require('../storage/run-artifacts');
 const { evidenceLink, escapeValueText, normalizeEvidence, plainText } = require('./value');
@@ -11,29 +12,55 @@ const STATUSES = {
   unverified: 'Not verified'
 };
 
+function snapshotItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.slice(0, 5).flatMap((item) => {
+    const label = plainText(item?.label);
+    if (!label || !/^(trade-off|opportunity)-[1-3]$/.test(item?.id)) return [];
+    return [{ id: item.id, label, context: plainText(item.context), check: plainText(item.check) }];
+  });
+}
+
 function readSnapshot(file) {
   try {
     const stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.size > 16_384) return null;
-    const { version, revision, items } = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const { version, revision, startedAt, items, previous } = JSON.parse(
+      fs.readFileSync(file, 'utf8')
+    );
     if (version !== 1 || !/^[0-9a-f]{64}$/.test(revision) || !Array.isArray(items)) return null;
     return {
       revision,
-      items: items.slice(0, 5).flatMap((item) => {
-        const label = plainText(item?.label);
-        if (!label || !/^(trade-off|opportunity)-[1-3]$/.test(item?.id)) return [];
-        return [
-          { id: item.id, label, context: plainText(item.context), check: plainText(item.check) }
-        ];
-      })
+      startedAt: Number.isSafeInteger(startedAt) ? startedAt : 0,
+      items: snapshotItems(items),
+      previous: snapshotItems(previous)
     };
   } catch {
     return null;
   }
 }
 
+// Invoked under the existing GitGuardex advisory lock: the freshness check and
+// rename must share a critical section, but the review itself never holds it.
+function writeSnapshot(file, snapshot) {
+  const current = readSnapshot(file);
+  if (current && current.startedAt >= snapshot.startedAt) return;
+  const nextSnapshot =
+    current?.revision === snapshot.revision
+      ? { ...current, startedAt: snapshot.startedAt }
+      : snapshot;
+  const temporary = fs.mkdtempSync(`${file}.`);
+  try {
+    const next = path.join(temporary, 'snapshot.json');
+    fs.writeFileSync(next, JSON.stringify({ version: 1, ...nextSnapshot }), { mode: 0o600 });
+    fs.renameSync(next, file);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
 // One advisory snapshot per PR in the shared private Git directory, never in the PR files.
-function openImpactHistory(repoRoot, pr, diff, env) {
+function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
   if (!/^[1-9][0-9]*$/.test(pr)) return null;
   let file;
   try {
@@ -44,10 +71,11 @@ function openImpactHistory(repoRoot, pr, diff, env) {
   }
   const revision = hash(diff);
   const last = readSnapshot(file);
+  const previous = (last?.revision === revision ? last.previous : last?.items) ?? [];
   return {
-    previous: last?.revision === revision ? [] : (last?.items ?? []),
+    previous,
     save(value) {
-      if (!value || readSnapshot(file)?.revision === revision) return;
+      if (!value) return;
       const items = [
         ...value.drivers
           .filter(({ points }) => points < 0)
@@ -64,22 +92,15 @@ function openImpactHistory(repoRoot, pr, diff, env) {
           check: verify
         }))
       ];
-      let temporary;
       try {
-        temporary = fs.mkdtempSync(`${file}.`);
-        const next = path.join(temporary, 'snapshot.json');
-        fs.writeFileSync(next, JSON.stringify({ version: 1, revision, items }), { mode: 0o600 });
-        fs.renameSync(next, file);
+        const lock = path.join(__dirname, '../finish/with-claims-lock.py');
+        execFileSync('python3', [lock, `${file}.lock`, process.execPath, __filename, file], {
+          input: JSON.stringify({ revision, startedAt, items, previous }),
+          stdio: ['pipe', 'ignore', 'ignore'],
+          timeout: 5_000
+        });
       } catch {
         // Review history is best effort and never changes the primary verdict.
-      } finally {
-        if (temporary) {
-          try {
-            fs.rmSync(temporary, { recursive: true, force: true });
-          } catch {
-            /* Preserve the review result even if temporary cleanup fails. */
-          }
-        }
       }
     }
   };
@@ -119,5 +140,7 @@ function reviewFollowUpLines(items, diffPath) {
     })
   ];
 }
+
+if (require.main === module) writeSnapshot(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8')));
 
 module.exports = { openImpactHistory, normalizeImpactFollowUp, reviewFollowUpLines };

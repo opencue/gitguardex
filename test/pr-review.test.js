@@ -11,6 +11,7 @@ const {
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
 const prReview = require('../src/pr-review');
+const { openImpactHistory } = require('../src/pull-request/value-history');
 const { parsePrReviewArgs } = require('../src/cli/args');
 const { codexReviewEffort } = require('../src/provider-binary');
 const CODEX_REVIEW_GUARD_ARGS = [
@@ -262,6 +263,8 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
     { id: 'opportunity-1', status: 'addressed', evidence },
     { id: 'unknown', status: 'addressed', evidence, observation: 'No such item' },
   ] };
+  prReview.runPrReview(options, deps);
+  assert.match(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
   prReview.runPrReview({ ...options, post: true }, deps);
   assert.match(prompt, /Previous review data:.*Vanishing warning/s);
   assert.match(postedBody, /Since the previous review/);
@@ -270,9 +273,28 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.match(postedBody, /not evidence that tests were run/);
   assert.match(postedBody, /PR value: 50\/100/);
 
-  prReview.runPrReview(options, deps);
-  assert.doesNotMatch(prompt, /Previous review data:/);
-  assert.doesNotMatch(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
+  assert.match(prompt, /Previous review data:.*Resume jobs on restart/s);
+});
+
+test('an older overlapping review cannot replace newer impact history', (t) => {
+  const target = initRepo();
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  const value = (label) => ({
+    drivers: [{ points: -5, label, reason: 'reason', doneWhen: 'check' }],
+    opportunities: []
+  });
+  const first = openImpactHistory(target, '42', 'first diff', {}, 1);
+  first.save(value('First trade-off'));
+  const older = openImpactHistory(target, '42', 'older diff', {}, 2);
+  const newer = openImpactHistory(target, '42', 'newer diff', {}, 3);
+  newer.save(value('Newer trade-off'));
+  older.save(value('Stale trade-off'));
+  const next = openImpactHistory(target, '42', 'next diff', {}, 4);
+  assert.deepEqual(next.previous.map(({ label }) => label), ['-5 · Newer trade-off']);
+  assert.deepEqual(
+    openImpactHistory(target, '42', 'newer diff', {}, 5).previous.map(({ label }) => label),
+    ['-5 · First trade-off']
+  );
 });
 
 test('quiet reviewer keeps the verdict and bounded failure diagnostics past the spawn buffer limit', () => {
