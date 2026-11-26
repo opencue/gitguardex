@@ -23,3 +23,16 @@ tooling, integration tests, and CI at the root.
 
 Separate npm packages and separate release pipelines for individual CLI
 capabilities are out of scope.
+
+## Frontend mirror rollout prerequisite
+
+GitHub reruns old workflows at their original revision; the new workflow alone
+cannot stop a pre-migration run's force push. Before merging the layout change,
+the mirror's `main` must have an active block on non-fast-forward pushes with no
+bypass actors. This leaves the new mirror's ordinary fast-forward pushes allowed.
+
+The configured mirror, `Webu-PRO/gitguardex-frontend`, has
+[ruleset 28155280](https://github.com/Webu-PRO/gitguardex-frontend/rules/28155280).
+Verified via the GitHub API that it is active on `refs/heads/main`, has no
+bypass actors, and exposes `non_fast_forward` as an effective rule for `main`.
+Keep this protection on any replacement mirror target.
