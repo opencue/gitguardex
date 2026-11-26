@@ -30,7 +30,10 @@ function taskWorktrees(repoRoot, onlyId) {
     branchesById.set(value, branches);
   }
   if (!branchesById.size) return [];
-  const worktrees = new Map(listWorktrees(repoRoot).map((entry) => [entry.branch, entry]));
+  const worktrees = new Map();
+  for (const entry of listWorktrees(repoRoot)) {
+    worktrees.set(entry.branch, worktrees.has(entry.branch) ? null : entry);
+  }
   const tasks = [];
   for (const [taskId, branches] of branchesById) {
     if (branches.length !== 1) continue;
@@ -122,10 +125,10 @@ if (require.main === module) {
     const task = findTask(process.cwd(), id);
     if (task.branch !== branch || task.worktree !== worktree)
       throw new Error('Selected task worktree changed; select it again');
-    const head = run('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: worktree });
+    const head = run('git', ['symbolic-ref', 'HEAD'], { cwd: worktree });
     if (
       head.status !== 0 ||
-      head.stdout.trim() !== branch ||
+      head.stdout.trim() !== `refs/heads/${branch}` ||
       commonGitDirectory(worktree) !== commonGitDirectory(process.cwd())
     )
       throw new Error('Selected path is not the expected linked worktree');

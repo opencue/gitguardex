@@ -135,3 +135,39 @@ test('guarded task run preserves the child result, rejects competing or stale la
   assert.doesNotMatch(missing.stdout, /must not run/);
   assert.equal(git('worktree', 'list', '--porcelain').match(/^worktree /gm).length, 1);
 });
+
+test('task launch uses the current task identity and requires a unique branch checkout', (t) => {
+  const { root, git, gx, start } = fixture(t);
+  const created = start('Run unambiguous task', '--json');
+  assert.equal(created.status, 0, created.stderr);
+  const task = JSON.parse(created.stdout);
+  const listed = () => JSON.parse(gx('tasks', '--json').stdout).tasks;
+  const launch = (id) =>
+    gx(
+      'run-task',
+      id,
+      task.branch,
+      task.worktree,
+      '--',
+      process.execPath,
+      '-e',
+      'console.log(process.cwd())'
+    );
+
+  git('config', '--add', `branch.${task.branch}.guardexTaskId`, 'current-task');
+  assert.deepEqual(
+    listed().map(({ taskId }) => taskId),
+    ['current-task']
+  );
+  assert.notEqual(launch(task.taskId).status, 0);
+
+  git('tag', task.branch, `refs/heads/${task.branch}`);
+  const tagged = launch('current-task');
+  assert.equal(tagged.status, 0, tagged.stderr);
+  assert.equal(tagged.stdout.trim(), task.worktree);
+  git('tag', '-d', task.branch);
+
+  git('worktree', 'add', '--force', path.join(root, 'duplicate'), task.branch);
+  assert.deepEqual(listed(), []);
+  assert.notEqual(launch('current-task').status, 0);
+});
