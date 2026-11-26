@@ -16,6 +16,8 @@ function taskWorktrees(repoRoot, onlyId) {
     const key = record.slice(0, end);
     const value = record.slice(end + 1);
     settings.set(key, value);
+  }
+  for (const [key, value] of settings) {
     const match = key.match(/^branch\.(.+)\.guardextaskid$/);
     if (!match || (onlyId && value !== onlyId)) continue;
     try {
