@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 const { fs, path, GH_BIN } = require('../context');
 const { run } = require('../core/runtime');
 const { repoApiPath } = require('../github/api');
+const { bugHunterEnabled } = require('../review/bug-hunter');
 
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -13,6 +14,7 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 // Don't cache those cases (or a PR Lens run with its own local artifacts).
 function reviewReceipt(repoRoot, revision, options, execute = run, env = process.env) {
   const isOn = (value) => /^(1|true|yes|on)$/i.test(String(value || '').trim());
+  const bugHunter = bugHunterEnabled(env);
   const abide =
     options.gateAbide !== false &&
     !/^(0|false|off|no)$/i.test(String(env.GUARDEX_REVIEW_ABIDE || '').trim());
@@ -41,7 +43,8 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
       require.resolve('../review/pull-request'),
       require.resolve('../review/provider-binary'),
       require.resolve('../review/diff'),
-      require.resolve('../review/diff-context')
+      require.resolve('../review/diff-context'),
+      ...(bugHunter ? [require.resolve('../review/bug-hunter')] : [])
     ].map((source) => hash(fs.readFileSync(source)));
   } catch {
     return null;
@@ -115,6 +118,7 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
         review.provider !== 'codex' ||
         review.degraded ||
         review.truncated ||
+        (bugHunter && !['clean', 'findings'].includes(review.bugHunter?.status)) ||
         !Number.isSafeInteger(review.reviewId) ||
         review.reviewId <= 0 ||
         !/^[0-9a-f]{64}$/.test(review.reviewBodyHash || '') ||
