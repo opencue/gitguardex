@@ -413,10 +413,10 @@ function runReviewGate(
       }, options)
       : null
   );
-  const readPending = deps.readPendingImprovements || (() =>
-    deps.runPrReview ? [] : readPublishedImprovements(repoRoot, prNumber)
+  const readPending = deps.readPendingImprovements || ((head) =>
+    deps.runPrReview ? [] : readPublishedImprovements(repoRoot, prNumber, run, { head, base: reviewedBaseSha })
   );
-  const reusable = opened.pr.headRefOid === initialHeadSha && readPending()?.length === 0
+  const reusable = opened.pr.headRefOid === initialHeadSha && readPending(initialHeadSha)?.length === 0
     ? getReceipt(initialHeadSha)?.read()
     : null;
 
@@ -829,7 +829,7 @@ function runReviewGate(
   }
 
   assertReviewedRevision();
-  if (readPending()?.length !== 0) {
+  if (readPending(pushedHeadSha)?.length !== 0) {
     throw new Error('review gate: required PR improvement history changed or is unavailable. Rerun before merging.');
   }
   if (reusable && getReceipt(pushedHeadSha)?.read()?.id !== reusable.id) {

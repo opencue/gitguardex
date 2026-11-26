@@ -24,9 +24,9 @@ function improvementItems(improvements, revision) {
   }));
 }
 
-function improvementMarker(issued, addressed) {
+function improvementMarker(issued, addressed, base) {
   if (!issued.length && !addressed.length) return '';
-  const record = Buffer.from(JSON.stringify({ issued, addressed })).toString('base64url');
+  const record = Buffer.from(JSON.stringify({ issued, addressed, base })).toString('base64url');
   return `${MARKER_PREFIX}${record} -->`;
 }
 
@@ -48,29 +48,46 @@ function improvementRecords(items) {
 
 // The review is the durable event. Unrelated or concurrent reviews cannot replace
 // the outstanding set, and a resolution can only clear the issuance it saw.
-function readPublishedImprovements(repoRoot, pr, runner = run) {
+function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
   try {
     const result = runner(GH_BIN, [
       'api', '--paginate', repoApiPath(repoRoot, `pulls/${pr}/reviews?per_page=100`, runner),
       '-q', ` .[] | select((.body // "") | contains(${JSON.stringify(MARKER_PREFIX)}))
-        | {state, author_association, body} | @json`
+        | {state, author_association, login: .user.login, commit_id, body} | @json`
     ], { cwd: repoRoot, timeout: 60_000 });
     if (result.status !== 0) throw new Error('GitHub review listing failed');
     const pending = new Map();
+    const permissions = new Map();
     for (const line of String(result.stdout || '').split('\n').filter(Boolean)) {
       const review = JSON.parse(line);
       if (review.state !== 'COMMENTED' || !TRUSTED_REVIEWERS.has(review.author_association)) continue;
       const marker = review.body?.split('\n', 3)[1];
       if (!marker?.startsWith(MARKER_PREFIX)) continue;
+      if (!review.login) continue;
+      if (!permissions.has(review.login)) {
+        const lookup = runner(GH_BIN, [
+          'api', repoApiPath(repoRoot, `collaborators/${encodeURIComponent(review.login)}/permission`, runner),
+          '-q', '.permission'
+        ], { cwd: repoRoot, timeout: 60_000 });
+        const permission = String(lookup.stdout || '').trim();
+        if (lookup.status !== 0 || !['admin', 'write', 'read', 'none'].includes(permission)) {
+          throw new Error('GitHub reviewer permission lookup failed');
+        }
+        permissions.set(review.login, permission);
+      }
+      if (!['admin', 'write'].includes(permissions.get(review.login))) continue;
       const packed = marker.slice(MARKER_PREFIX.length);
       const match = /^([a-zA-Z0-9_-]{1,32768}) -->$/.exec(packed);
       if (!match) throw new Error('Invalid required improvement marker');
-      const { issued, addressed } = JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8'));
-      for (const { id, revision } of improvementRecords(addressed)) {
-        if (pending.get(id)?.revision === revision) pending.delete(id);
+      const event = JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8'));
+      const resolutions = improvementRecords(event.addressed);
+      if (resolutions.length && scope.head && scope.head === review.commit_id && event.base && event.base === scope.base) {
+        for (const { id, revision } of resolutions) {
+          if (pending.get(id)?.revision === revision) pending.delete(id);
+        }
       }
-      for (const record of improvementRecords(issued)) {
-        if (!pending.has(record.id)) pending.set(record.id, record);
+      for (const record of improvementRecords(event.issued)) {
+        if (!pending.has(record.id)) pending.set(record.id, { ...record, head: review.commit_id });
       }
     }
     return [...pending.values()];

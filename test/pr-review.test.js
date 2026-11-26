@@ -171,13 +171,14 @@ test('posting a review skips inline comment pagination only when there are no in
         if (args.includes('--paginate')) {
           if (args.some((item) => item.includes('/reviews?'))) {
             return { status: 0, stdout: postedPayload ? JSON.stringify({
-              state: 'COMMENTED', author_association: 'MEMBER', body: postedPayload.body,
+              state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', body: postedPayload.body,
             }) : '' };
           }
           commentReads += 1;
           return { status: 0, stdout: '' };
         }
         assert.equal(args[0], 'api');
+        if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
         postedPayload = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
         return { status: 0 };
       } },
@@ -242,6 +243,9 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
     drivers: [{ area: 'product', impact: 'neutral', magnitude: 0, reason: 'Warns on refusal', evidence }]
   };
   let diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+dismiss()\n';
+  let head = 'a'.repeat(40);
+  let base = 'b'.repeat(40);
+  let compareFiles = [];
   let payload = { findings: [], value: firstValue };
   let prompt;
   let postedBody;
@@ -259,17 +263,27 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
       }
       if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
       if (args[0] === 'auth') return { status: 0 };
-      if (args[1] === 'view') return { status: 0, stdout: 'new-head' };
+      if (args[1] === 'view') {
+        return { status: 0, stdout: args.includes('baseRefOid,headRefOid')
+          ? JSON.stringify({ baseRefOid: base, headRefOid: head })
+          : head };
+      }
       if (args[1] === 'diff') return { status: 0, stdout: diff };
       assert.equal(args[0], 'api');
+      if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
+      if (args[1].includes('/compare/')) {
+        return { status: 0, stdout: JSON.stringify({ status: 'ahead', files: compareFiles }) };
+      }
       if (args.includes('--paginate')) {
         return { status: failRead ? 1 : 0, stdout: published.map((entry) => JSON.stringify(entry)).join('\n') };
       }
       const posting = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
-      assert.equal(posting.commit_id, 'new-head');
+      assert.equal(posting.commit_id, head);
       if (rejectInline && posting.comments.length) return { status: 1 };
       postedBody = posting.body;
-      if (!failPost) published.push({ state: 'COMMENTED', author_association: 'MEMBER', body: postedBody });
+      if (!failPost) published.push({
+        state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head, body: postedBody
+      });
       return { status: failPost ? 1 : 0 };
     },
   };
@@ -301,6 +315,14 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   payload = { findings: [], value: firstValue, followUp: [proof] };
   assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, first.pendingImprovements);
 
+  const initialDiff = diff;
+  head = 'c'.repeat(40);
+  diff += 'diff --git a/b.js b/b.js\n--- a/b.js\n+++ b/b.js\n@@ -1 +1 @@\n-old\n+new\n';
+  compareFiles = [{ filename: 'b.js', patch: '@@ -1 +1 @@\n-old\n+new' }];
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
+  compareFiles = [{ filename: 'a.js', patch: '@@ -1 +1,2 @@\n dismiss()\n+new' }];
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
+
   diff = diff.replace('dismiss()', 'keepWarning()');
   payload = { findings: [], value: secondValue, followUp: [
     { id: 'trade-off-1', status: 'addressed', evidence, observation: 'Warning stays visible after a refused re-CHECK' },
@@ -328,7 +350,9 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   );
   assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, first.pendingImprovements);
 
+  head = 'd'.repeat(40);
   diff = diff.replace('keepWarning()', 'replayBothHeadings()');
+  compareFiles = [{ filename: 'a.js', patch: '@@ -1 +1 @@\n-dismiss()\n+replayBothHeadings()' }];
   payload.followUp.push(proof);
   const next = 'Check that failed retries preserve the warning';
   payload.value = { ...secondValue, improvements: [next] };
@@ -345,32 +369,51 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   payload = { findings: [], value: secondValue, followUp: [] };
   assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, pending);
   assert.match(postedBody, /Merge gate: blocked/);
-  diff = completeDiff + '+keepWarningOnRetry()\n';
-  payload.followUp = [{ ...proof, id: pending[0].id }];
+  head = 'e'.repeat(40);
+  diff = completeDiff.replace('replayBothHeadings()', 'replayBothHeadingsAndKeepWarning()');
+  compareFiles = [{ filename: 'a.js', patch: '@@ -1 +1 @@\n-replayBothHeadings()\n+replayBothHeadingsAndKeepWarning()' }];
+  payload.followUp = [proof, { ...proof, id: pending[0].id }];
   assert.deepEqual(fromOtherClone().pendingImprovements, []);
+  payload.followUp = [];
+  assert.deepEqual(fromOtherClone().pendingImprovements, []);
+  base = 'f'.repeat(40);
+  assert.equal(fromOtherClone().pendingImprovements.length, 2);
+  base = 'b'.repeat(40);
+  head = '1'.repeat(40);
+  diff = initialDiff;
+  assert.equal(fromOtherClone().pendingImprovements.length, 2);
 });
 
 test('published improvements survive overlapping reviews and ignore untrusted resolutions', () => {
   const [a, b] = improvementItems(['Keep the warning', 'Add a replay test'], 'a'.repeat(64));
   const renewed = { ...a, revision: 'b'.repeat(64) };
-  const entry = (marker, author_association = 'MEMBER', state = 'COMMENTED') => ({
-    state, author_association, body: `${prReview.MARKER}\n${marker}\n### GitGuardex review`
+  const head = 'c'.repeat(40);
+  const base = 'd'.repeat(40);
+  const entry = (marker, login = 'writer', state = 'COMMENTED') => ({
+    state, author_association: 'MEMBER', login, commit_id: head,
+    body: `${prReview.MARKER}\n${marker}\n### GitGuardex review`
   });
   const reviews = [
     entry(improvementMarker([a], [])),
-    entry(improvementMarker([b], [])),
-    entry(improvementMarker([], [a, b]), 'CONTRIBUTOR'),
-    entry(improvementMarker([], [a, b]), 'MEMBER', 'PENDING'),
-    entry(improvementMarker([], [a])),
-    entry(improvementMarker([renewed], [])),
+    entry(improvementMarker([b], []), 'reader'),
+    entry(improvementMarker([], [a], base), 'reader'),
+    entry(improvementMarker([], [a], base), 'writer', 'PENDING'),
     entry(improvementMarker([], [a])),
   ];
-  const read = () => readPublishedImprovements('/repo', 42, (_cmd, args) => (
-    args[0] === 'repo'
-      ? { status: 0, stdout: 'opencue/gitguardex' }
-      : { status: 0, stdout: reviews.map((review) => JSON.stringify(review)).join('\n') }
-  ));
-  assert.deepEqual(read(), [b, renewed]);
+  const read = () => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+    if (args[1].endsWith('/permission')) {
+      return { status: 0, stdout: args[1].includes('/writer/') ? 'write' : 'read' };
+    }
+    return { status: 0, stdout: reviews.map((review) => JSON.stringify(review)).join('\n') };
+  }, { head, base });
+  assert.deepEqual(read().map(({ id, revision }) => ({ id, revision })), [{ id: a.id, revision: a.revision }]);
+  reviews.push(
+    entry(improvementMarker([], [a], base)),
+    entry(improvementMarker([renewed], [])),
+    entry(improvementMarker([], [a], base)),
+  );
+  assert.deepEqual(read().map(({ revision }) => revision), [renewed.revision]);
   reviews.push(entry('<!-- gitguardex:required-improvements-v1 invalid -->'));
   assert.throws(read, /Cannot verify published required PR improvement history/);
 });

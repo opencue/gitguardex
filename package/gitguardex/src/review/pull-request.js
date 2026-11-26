@@ -565,6 +565,40 @@ function fetchHeadSha(pr, repoRoot, runner = run) {
   return String(result.stdout || '').trim();
 }
 
+function addedInPatch(patch, line) {
+  let rightLine = 0;
+  for (const row of (patch || '').split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+    if (hunk) rightLine = Number(hunk[1]);
+    else if (rightLine && (row.startsWith('+') || row.startsWith(' '))) {
+      if (rightLine === line) return row.startsWith('+');
+      rightLine += 1;
+    }
+  }
+  return false;
+}
+
+function requirementEvidenceChecker(repoRoot, head, runner) {
+  const comparisons = new Map();
+  return (item) => {
+    if (!/^[a-f0-9]{40}$/.test(item.head || '') || !/^[a-f0-9]{40}$/.test(head || '') || item.head === head) {
+      return false;
+    }
+    if (!comparisons.has(item.head)) {
+      const result = runner(GH_BIN, [
+        'api', repoApiPath(repoRoot, `compare/${item.head}...${head}`, runner),
+        '-q', '{status, files: [.files[]? | {filename, patch}]}'
+      ], { cwd: repoRoot, timeout: 60_000 });
+      const comparison = result.status === 0 ? JSON.parse(result.stdout) : null;
+      // A divergent comparison starts at the common ancestor, which may
+      // report pre-existing lines as additions relative to the issuing head.
+      comparisons.set(item.head, comparison?.status === 'ahead' ? comparison.files : []);
+    }
+    const patch = comparisons.get(item.head)?.find(({ filename }) => filename === item.evidence.path)?.patch;
+    return addedInPatch(patch, item.evidence.line);
+  };
+}
+
 /**
  * Fingerprints this tool already posted on the PR. Best effort: a failure here
  * degrades to "post everything" rather than blocking the review.
@@ -1075,9 +1109,7 @@ function runPrReview(options, deps = {}) {
   const lensContext = prLensEnabled(options.prLens)
     ? preparePrLens(pr, repoRoot, resolveReviewTimeoutMs(options.timeoutMs), runner)
     : null;
-  // Capture the head SHA BEFORE fetching the diff so any push that arrives
-  // between these calls shows up as a mismatch in the posting guard (the guard
-  // checks reviewedHeadSha against the live head at post time).
+  // Capture the head before fetching the diff and recheck it before posting.
   const prHeadSha = options.post ? fetchHeadSha(pr, repoRoot, runner) : null;
   if (
     options.expectedHeadSha &&
@@ -1091,6 +1123,22 @@ function runPrReview(options, deps = {}) {
   // handled below by the githubAuthAvailable fallback — don't throw here.
   if (options.post && !prHeadSha && githubAuthAvailable(process.env, runner)) {
     throw new Error('Cannot capture PR head SHA before review; refusing to post an unverified review.');
+  }
+  // Requirement history needs the base only when replaying or checking a resolution.
+  let refs;
+  const scope = {
+    head: prHeadSha,
+    get base() {
+      refs ??= fetchPrRevision(pr, repoRoot, runner) || {};
+      return refs.head === prHeadSha ? refs.base : undefined;
+    }
+  };
+  const priorImprovements = options.post && prHeadSha
+    ? readPublishedImprovements(repoRoot, pr, runner, scope)
+    : options.pendingImprovements ?? [];
+  const prBaseSha = prHeadSha && (priorImprovements.length || refs) ? scope.base : undefined;
+  if (prBaseSha && options.expectedBaseSha && prBaseSha !== options.expectedBaseSha) {
+    throw new Error(`PR #${pr} base changed before review; rerun against the current diff.`);
   }
   const impactStartedAt = Date.now();
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
@@ -1115,9 +1163,6 @@ function runPrReview(options, deps = {}) {
       ? openImpactHistory(repoRoot, pr, rawDiff, env, impactStartedAt)
       : null;
   const revision = crypto.createHash('sha256').update(rawDiff).digest('hex');
-  const priorImprovements = options.post && prHeadSha
-    ? readPublishedImprovements(repoRoot, pr, runner)
-    : options.pendingImprovements ?? [];
   const previousImpact = [
     ...(history?.previous ?? []), ...priorImprovements.slice(0, MAX_IMPROVEMENTS_PER_REVIEW)
   ];
@@ -1177,8 +1222,11 @@ function runPrReview(options, deps = {}) {
   // lines must not validate evidence that refers to synthetic delta rows.
   if (snapshotPath) lineMap.set(snapshotPath, new Set([1]));
   const value = normalizeReviewValue(review.value, lineMap);
+  const changedSinceIssuance = requirementEvidenceChecker(repoRoot, prHeadSha, runner);
   const followUp = normalizeImpactFollowUp(previousImpact, review.followUp, lineMap).map((item) =>
-    item.revision && (truncated || item.revision === revision) && item.status === 'addressed'
+    item.revision && item.status === 'addressed' &&
+      (truncated || item.revision === revision || !prBaseSha || item.evidence.path === snapshotPath ||
+        !changedSinceIssuance(item))
       ? { ...item, status: 'unverified', observation: '', evidence: undefined }
       : item
   );
@@ -1206,13 +1254,13 @@ function runPrReview(options, deps = {}) {
     value,
     followUp,
     requirements: improvementMarker(
-      issuedImprovements, priorImprovements.filter(({ id }) => addressed.has(id))
+      issuedImprovements, priorImprovements.filter(({ id }) => addressed.has(id)), prBaseSha
     ),
     gate,
     prLens,
     abide: abideResult,
     ...hunterResult,
-    reviewedBaseSha: projection.base,
+    reviewedBaseSha: projection.base ?? prBaseSha,
     reviewedHeadSha: lensContext?.metadata.provenance.head.sha ?? projection.head ?? prHeadSha
   };
   let savedArtifact;
@@ -1289,7 +1337,7 @@ function runPrReview(options, deps = {}) {
   const outcome = postGithubReview(
     pr, { ...payload, expectedBaseSha: options.expectedBaseSha }, repoRoot, runner
   );
-  const publishedImprovements = readPublishedImprovements(repoRoot, pr, runner);
+  const publishedImprovements = readPublishedImprovements(repoRoot, pr, runner, { head: prHeadSha, base: prBaseSha });
   if (issuedImprovements.some(({ id }) => !publishedImprovements.some((item) => item.id === id))) {
     throw new Error('Could not verify the newly published required PR improvements.');
   }
