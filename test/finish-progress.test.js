@@ -122,12 +122,31 @@ test('an exception after review completion records why finish stopped, then reth
   assert.throws(() => progress.trackFailure(() => {
     progress.start('review', 'round 1/2');
     progress.complete('review', 'clean review posted');
+    progress.skip('autofix', 'not needed');
     throw error;
   }), error);
-  const { alerts } = readStatePage(repoRoot, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  const { stages, alerts } = readStatePage(repoRoot, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  assert.equal(stages.find(({ stage }) => stage === 'review').state, 'complete');
   assert.equal(alerts.at(-1).stage, 'review');
   assert.equal(alerts.at(-1).recovery?.reason, error.message);
   assert.match(alerts.at(-1).recovery?.nextAction, /current PR head and base/);
+});
+
+test('overlapping preflight does not take ownership of an unreported CI failure', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-overlapping-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const progress = createFinishProgress({ repoRoot, write: () => {} });
+  const error = new Error('The saved review changed during CI');
+  assert.throws(() => progress.trackFailure(() => {
+    progress.start('ci', 'waiting for required GitHub checks');
+    progress.start('preflight', 'final verification');
+    progress.complete('preflight', 'passed');
+    throw error;
+  }), error);
+  const { stages, alerts } = readStatePage(repoRoot, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  assert.equal(stages.find(({ stage }) => stage === 'preflight').state, 'complete');
+  assert.equal(alerts.at(-1).stage, 'ci');
+  assert.equal(alerts.at(-1).recovery?.reason, error.message);
 });
 
 function linkedCheckout(t) {

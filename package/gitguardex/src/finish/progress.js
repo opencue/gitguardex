@@ -170,7 +170,7 @@ function createFinishProgress({
   const stageStartedAt = new Map();
   let activeTimedStage = '';
   let stopActiveHeartbeat = null;
-  let lastStage = 'prepare';
+  let lastPrimaryStage = 'prepare';
   let failures = 0;
 
   output(`[gx:finish] ╭─ 🚀 GX FINISH · ${branch || 'current branch'} → ${baseBranch || 'configured base'}`);
@@ -213,7 +213,9 @@ function createFinishProgress({
     if (stage.state === state && stage.detail === normalizedDetail) return false;
     stage.state = state;
     stage.detail = normalizedDetail;
-    lastStage = id;
+    // Skips do not advance the gate. Preflight can overlap CI and reports
+    // its own failures; it must not inherit a subsequent gate exception.
+    if (state !== 'skipped' && id !== 'preflight') lastPrimaryStage = id;
     if (state === 'failed') failures += 1;
     const connector = id === 'cleanup' && state !== 'running' ? '╰─' : '├─';
     output(
@@ -285,7 +287,19 @@ function createFinishProgress({
     } catch (error) {
       if (failures === previousFailures) {
         const reason = String(error?.message || 'Finish stopped').split('\n', 1)[0].slice(0, 500);
-        settle(lastStage, 'failed', reason);
+        const stage = stageMap.get(lastPrimaryStage);
+        if (stage.state === 'complete') {
+          // A later guard can stop finish without undoing a completed check.
+          eventStream?.write({
+            ...stage,
+            stage: lastPrimaryStage,
+            total: STAGES.length,
+            kind: 'guard-failure',
+            ...recoveryFields(lastPrimaryStage, 'failed', reason),
+          });
+        } else {
+          settle(lastPrimaryStage, 'failed', reason);
+        }
       }
       throw error;
     }
