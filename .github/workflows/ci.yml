@@ -144,7 +144,7 @@ jobs:
               echo 'Contract checks unavailable.'
           )
           shopt -s nullglob
-          report_files=("$reports"/*.rdjson)
+          report_files=("$reports"/*.rdjson "$reports"/*.sarif)
           GX_DIFF_BASE="$base" node -e '
             const { spawnSync } = require("node:child_process");
             const { readCheckReports, checkReportLines } = require("./package/gitguardex/src/review/check-reports");
@@ -164,5 +164,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gitguardex-checks-${{ github.event.pull_request.base.sha }}-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/gx-checks/*.rdjson
+          path: |
+            ${{ runner.temp }}/gx-checks/*.rdjson
+            ${{ runner.temp }}/gx-checks/*.sarif
           if-no-files-found: ignore

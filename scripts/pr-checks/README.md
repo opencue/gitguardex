@@ -12,19 +12,12 @@ GitGuardex merge gate or the AI impact and risk scores.
 | [reviewdog](https://github.com/reviewdog/reviewdog) | [![reviewdog stars](https://img.shields.io/github/stars/reviewdog/reviewdog?style=flat)](https://github.com/reviewdog/reviewdog/stargazers) | GitGuardex reads its diagnostic JSON format (RDJSON) and also accepts SARIF 2.1.0. No reviewdog bot is installed. |
 | [Promptfoo](https://github.com/promptfoo/promptfoo) | [![Promptfoo stars](https://img.shields.io/github/stars/promptfoo/promptfoo?style=flat)](https://github.com/promptfoo/promptfoo/stargazers) | [Offline scoring fixtures](../../evals/pr-impact/README.md) verify normalization and rendering, not model accuracy. It does not run in PR review. |
 
-Open the CI job summary to see available results. CI uploads them as
-`gitguardex-checks-<base-sha>-<head-sha>`. Use reports from the current PR
-base and head; GitGuardex does not infer provenance for local report files.
+In the PR's **Checks** tab, open the CI job summary to see available results.
+CI uploads them as `gitguardex-checks-<base-sha>-<head-sha>`. Other CI tools
+can place RDJSON or SARIF reports for the same revision in
+`$RUNNER_TEMP/gx-checks` before the advisory step. Report locations link into
+the GitHub diff only when the line is in that diff.
+
 An absent report is not a pass. Coverage is omitted if tests did not complete
-or the tested merge tree differs from the PR head.
-
-To include downloaded reports in a single Codex or Claude review:
-
-```bash
-gx pr-review --pr 123 --provider codex --post \
-  --checks-report ./actionlint.rdjson --checks-report ./knip.rdjson
-```
-
-A report location links into the GitHub diff only if its line is in that diff.
-Reports are rendered as advisory text; their source tools are not run locally
-by the reviewer, and their findings do not become inline review comments.
+or the tested merge tree differs from the PR head. These reports are advisory
+and do not become inline review comments.

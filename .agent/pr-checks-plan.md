@@ -2,8 +2,8 @@
 
 Integrate four deterministic tools without another reviewer or merge policy.
 Pass reviewdog diagnostic JSON/SARIF as data, never execute a downloaded
-report. Keep the GitHub and local review layouts identical for these checks.
-The Promptfoo evaluation is outside the PR review hot path.
+report. Show available reports in the PR's Checks tab. The Promptfoo
+evaluation is outside the PR review hot path.
 
 ## Work and acceptance
 
@@ -16,5 +16,6 @@ The Promptfoo evaluation is outside the PR review hot path.
   linked upstream credits, focused integration tests, and gated PR delivery.
 
 Do not replace existing gates. Validate that stale/untrusted artifacts cannot
-become inline findings or alter the gate verdict. When no report exists, do
-not claim a check passed. Keep BugHunter gate work on its existing PR #916.
+alter the gate verdict. When no report exists, do not claim a check passed.
+The shared review renderer is locked by PR #916. Integrate direct Codex/Claude
+review display only after the checkout owner releases or hands off that file.
