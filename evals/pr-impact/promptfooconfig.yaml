@@ -1,0 +1,39 @@
+description: Replay GitGuardex PR impact scoring without a model
+sharing: false
+prompts:
+  - '{{fixture}}'
+providers:
+  - file://provider.js
+defaultTest:
+  assert:
+    - type: not-contains
+      value: '**Neutral**'
+    - type: not-regex
+      value: '\b0/100\b'
+tests:
+  - vars:
+      fixture: high-benefit
+    assert:
+      - type: contains
+        value: '**Impact: 88/100**'
+      - type: contains
+        value: '**Risk: not established**'
+  - vars:
+      fixture: high-risk
+    assert:
+      - type: contains
+        value: '**Impact: not established**'
+      - type: contains
+        value: '**Risk: 93/100**'
+      - type: contains
+        value: '| Plausible |'
+  - vars:
+      fixture: missing-evidence
+    assert:
+      - type: equals
+        value: '**PR impact: unavailable** — no supported estimate for this diff.'
+  - vars:
+      fixture: invalid-evidence
+    assert:
+      - type: equals
+        value: '**PR impact: unavailable** — no supported estimate for this diff.'
