@@ -2,15 +2,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
+const { EVENT_DIRECTORY, primaryCheckout } = require('./event-location');
 
 const MAX_READ_BYTES = 256 * 1024;
 const RUN_ID = /^finish-[a-z0-9]+-[0-9]+-[a-f0-9]{8}$/;
 
-// Observation only: event files never authorize a merge or replace gate checks.
-function readEventPage(repoRoot, runId, cursor = '', stateOptions) {
-  if (!RUN_ID.test(runId)) throw new Error('Invalid finish run ID');
+function eventFileInCheckout(repoRoot, runId) {
   let directory = fs.realpathSync(repoRoot);
-  for (const part of ['.omx', 'state', 'finish-runs']) {
+  for (const part of EVENT_DIRECTORY) {
     directory = path.join(directory, part);
     const stat = fs.lstatSync(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -18,7 +17,25 @@ function readEventPage(repoRoot, runId, cursor = '', stateOptions) {
     }
   }
   const file = path.join(directory, `${runId}.jsonl`);
-  const entry = fs.lstatSync(file);
+  return { file, entry: fs.lstatSync(file) };
+}
+
+function locateEventFile(repoRoot, runId) {
+  try {
+    // Keep old worktree-local runs and the writer's fail-open fallback readable.
+    return eventFileInCheckout(repoRoot, runId);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    const primary = primaryCheckout(repoRoot);
+    if (primary === repoRoot) throw error;
+    return eventFileInCheckout(primary, runId);
+  }
+}
+
+// Observation only: event files never authorize a merge or replace gate checks.
+function readEventPage(repoRoot, runId, cursor = '', stateOptions) {
+  if (!RUN_ID.test(runId)) throw new Error('Invalid finish run ID');
+  const { file, entry } = locateEventFile(repoRoot, runId);
   if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('Unsafe finish event file');
   const fd = fs.openSync(
     file,

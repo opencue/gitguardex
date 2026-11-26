@@ -44,8 +44,14 @@ function createPrivateDirectory(repoRoot, components) {
 
 function createEventStream(repoRoot, branch, baseBranch) {
   if (!repoRoot) return null;
+  const primary = primaryCheckout(repoRoot);
+  return openEventStream(repoRoot, primary, branch, baseBranch)
+    || (primary !== repoRoot ? openEventStream(repoRoot, repoRoot, branch, baseBranch) : null);
+}
+
+function openEventStream(repoRoot, stateRoot, branch, baseBranch) {
   try {
-    const directory = createPrivateDirectory(repoRoot, ['.omx', 'state', 'finish-runs']);
+    const directory = createPrivateDirectory(stateRoot, EVENT_DIRECTORY);
     const directoryDescriptor = fs.openSync(
       directory,
       fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
@@ -276,7 +282,7 @@ function persistFinishOutput(eventFile, stdout, stderr) {
     throw new Error('unsafe finish log name');
   }
   const root = path.resolve(path.dirname(eventFile), '../../..');
-  const directory = createPrivateDirectory(root, ['.omx', 'state', 'finish-runs']);
+  const directory = createPrivateDirectory(root, EVENT_DIRECTORY);
   if (path.resolve(eventFile) !== path.join(directory, name)) throw new Error('unsafe finish log path');
   const file = path.join(directory, `${name}.output.log`);
   const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT
@@ -349,4 +355,5 @@ module.exports = {
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { EVENT_DIRECTORY, primaryCheckout } = require('./event-location');
 const { formatElapsed, startHeartbeat: startStageHeartbeat } = require('./heartbeat');
