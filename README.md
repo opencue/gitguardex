@@ -57,8 +57,10 @@ With `--gate-review`, high and critical findings block the finish. Add `--gate-a
 
 Set `GUARDEX_REVIEW_BUG_HUNTER=1` to add one read-only BugHunter pass to the
 PR review or finish review gate. It uses the same Codex or Claude provider and
-reads only the PR diff. The **BugHunter (advisory)** section appears in the
-GitHub review or local report without affecting the merge decision or auto-fixes.
+reads only the PR diff. With `--gate-review`, every BugHunter finding blocks
+the merge, including low and medium findings. An incomplete pass also blocks.
+With `--gate-autofix`, GitGuardex includes those findings in the repair round
+and reviews the new commit before merging.
 
 ```sh
 GUARDEX_REVIEW_BUG_HUNTER=1 gx pr-review --pr 123 --provider codex --post
@@ -80,9 +82,9 @@ If a diff exceeds the review size limit, split the PR to continue. A standalone 
 
 ### BugHunter demo
 
-BugHunter flags possible bugs, such as a second click queuing the same board twice. Its findings do not block a merge.
+BugHunter flags behavioral bugs, such as a second click queuing the same board twice. In this example, both findings must be fixed before the gated finish can merge.
 
-[![Animated BugHunter demo with two findings: the first is open with its evidence and location; the second is collapsed.](./docs/images/bughunter-review-demo.svg)](./docs/images/bughunter-review-demo.svg)
+[![BugHunter demo: the merge is blocked by two findings, one medium and one low. The first finding shows its evidence and location.](./docs/images/bughunter-review-demo.svg)](./docs/images/bughunter-review-demo.svg)
 
 ---
 

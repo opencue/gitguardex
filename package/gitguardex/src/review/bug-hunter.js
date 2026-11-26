@@ -36,16 +36,16 @@ function bugHunterResult(payload, diff, truncated) {
   const findings = [];
   for (const item of payload.findings.slice(0, MAX_FINDINGS)) {
     const { path, line, severity, message } = item ?? {};
+    const clean = typeof message === 'string' ? message.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim() : '';
     if (
       typeof path !== 'string' ||
       !Number.isSafeInteger(line) ||
       !lineMap.get(path)?.has(line) ||
       !SEVERITIES.has(severity) ||
-      typeof message !== 'string' ||
-      !message.trim()
+      !clean
     )
       continue;
-    findings.push({ path, line, severity, message: message.trim().slice(0, 600) });
+    findings.push({ path, line, severity, message: clean.slice(0, 600) });
   }
   const partial = truncated || findings.length !== payload.findings.length;
   return { status: partial ? 'partial' : findings.length ? 'findings' : 'clean', findings };
@@ -59,7 +59,7 @@ function escapedText(value) {
 
 function bugHunterLines(result) {
   if (!result) return [];
-  const lines = ['### BugHunter (advisory)', ''];
+  const lines = ['### BugHunter', ''];
   if (result.status === 'unavailable') {
     lines.push('BugHunter did not complete; no BugHunter verdict.');
   } else if (result.status === 'partial') {
@@ -88,7 +88,7 @@ function bugHunterLines(result) {
       '</details>'
     );
   }
-  lines.push('', `[Bug Hunter methodology](${SOURCE}) · Does not affect the merge gate.`);
+  lines.push('', `[Bug Hunter methodology](${SOURCE}) · With \`--gate-review\`, all findings must be fixed before merging.`);
   return lines;
 }
 

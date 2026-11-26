@@ -118,7 +118,8 @@ function reviewReceipt(repoRoot, revision, options, execute = run, env = process
         review.provider !== 'codex' ||
         review.degraded ||
         review.truncated ||
-        (bugHunter && !['clean', 'findings'].includes(review.bugHunter?.status)) ||
+        (bugHunter && review.bugHunter?.status !== 'clean') ||
+        review.bugHunter?.findings?.length ||
         !Number.isSafeInteger(review.reviewId) ||
         review.reviewId <= 0 ||
         !/^[0-9a-f]{64}$/.test(review.reviewBodyHash || '') ||

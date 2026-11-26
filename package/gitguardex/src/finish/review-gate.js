@@ -449,6 +449,7 @@ function runReviewGate(
   // actually edited. A blocking finding that vanishes from a later round is only
   // treated as repaired when its file was touched — see resolveCarriedFindings.
   const blockedPaths = new Set();
+  const bugHunterBlockedPaths = new Set();
   const repairedPaths = new Set();
   // A finding with no .path cannot be keyed into blockedPaths, so it needs its
   // own flag: if one ever blocked a round and then disappears, the gate must
@@ -512,7 +513,13 @@ function runReviewGate(
       throw error;
     }
 
-    verdict = evaluate(review.findings);
+    verdict = evaluate(review.findings, { bugHunter: review.bugHunter });
+    if (verdict.bugHunterIncomplete && verdict.blocking.length === 0) {
+      const message = `BugHunter did not complete (${review.bugHunter.status}). Rerun with a complete BugHunter verdict.`;
+      reportProgress(progress, 'fail', 'review', message);
+      throw new Error(`review gate: ${message} Refusing to merge.`);
+    }
+    for (const finding of review.bugHunter?.findings ?? []) bugHunterBlockedPaths.add(finding.path);
     for (const finding of verdict.blocking) {
       if (finding && finding.path) {
         blockedPaths.add(finding.path);
@@ -616,7 +623,10 @@ function runReviewGate(
   // round, and reading that silence as "repaired" merges the bug. Every file
   // that ever blocked must either still be under review or have actually been
   // edited by a fix.
-  const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, review.findings);
+  // A non-blocking primary finding in the same file cannot account for a
+  // BugHunter defect that disappeared without an edit.
+  const currentFindings = review.findings.filter((finding) => !bugHunterBlockedPaths.has(finding?.path));
+  const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings);
   if (unexplained.length > 0) {
     reportProgress(
       progress,

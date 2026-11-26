@@ -559,6 +559,62 @@ test('runReviewGate blocks on a high/critical finding', () => {
   assert.throws(() => runReviewGate(gateArgs, deps), /blocking finding/);
 });
 
+const hunterFinding = { severity: 'medium', path: 'value.js', line: 110, message: 'drops a distinct risk' };
+
+test('BugHunter medium and low findings block before CI', () => {
+  for (const severity of ['medium', 'low']) {
+    const deps = gateDeps({
+      runPrReview: () => ({
+        posted: true, findings: [],
+        bugHunter: { status: 'findings', findings: [{ ...hunterFinding, severity }] },
+      }),
+      markPullRequestReady: () => assert.fail('must not promote a blocked PR'),
+      waitForGreenCi: () => assert.fail('must not start CI on a blocked PR'),
+    });
+    assert.throws(() => runReviewGate(gateArgs, deps), /blocking finding[\s\S]*value\.js:110/);
+  }
+});
+
+test('an enabled BugHunter pass without a complete verdict cannot clear the gate', () => {
+  for (const status of ['unavailable', 'partial']) {
+    const deps = gateDeps({
+      runPrReview: () => ({ posted: true, findings: [], bugHunter: { status, findings: [] } }),
+      runReviewFix: () => assert.fail('no validated findings to fix'),
+      waitForGreenCi: () => assert.fail('must not start CI without a verdict'),
+    });
+    const opts = { ...gateArgs, options: { gateAutofix: true } };
+    assert.throws(() => runReviewGate(opts, deps), /BugHunter.*did not complete/);
+  }
+});
+
+test('autofix receives BugHunter findings and requires a clean re-review of an edited file', () => {
+  for (const changedFile of [hunterFinding.path, 'unrelated.js']) {
+    const opts = { ...gateArgs, options: { gateAutofix: true } };
+    let round = 0;
+    let head = 'initial-sha';
+    const deps = gateDeps({
+      readHeadSha: () => head,
+      runPrReview: ({ expectedHeadSha }) => {
+        assert.equal(expectedHeadSha, head);
+        return round++ === 0
+          ? { posted: true, findings: [], bugHunter: { status: 'findings', findings: [hunterFinding] } }
+          : { posted: true, findings: [{ ...hunterFinding, severity: 'low' }], bugHunter: { status: 'clean', findings: [] } };
+      },
+      runReviewFix: ({ findings }) => {
+        assert.deepEqual(findings, [hunterFinding]);
+        return { status: 'fixed', changedFiles: [changedFile] };
+      },
+      pushBranch: () => { head = 'fixed-sha'; return { ok: true }; },
+    });
+    if (changedFile === hunterFinding.path) {
+      assert.equal(runReviewGate(opts, deps).reviewedHeadSha, 'fixed-sha');
+    } else {
+      assert.throws(() => runReviewGate(opts, deps), /disappeared without their file being changed/);
+    }
+    assert.equal(round, 2);
+  }
+});
+
 test('runReviewGate blocks when CI checks fail', () => {
   const deps = gateDeps({ waitForGreenCi: () => ({ status: 'checks-failed', pr: {} }) });
   assert.throws(() => runReviewGate(gateArgs, deps), /CI checks failed/);

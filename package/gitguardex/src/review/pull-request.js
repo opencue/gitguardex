@@ -357,19 +357,26 @@ function renderReviewSummary({
   const lines = [MARKER, '### 🛡️ GitGuardex code-assist', ''];
 
   if (findings.length === 0) {
-    lines.push('✅ **No findings.** Nothing worth an inline comment in this diff.');
+    lines.push(
+      bugHunter ? 'No primary code-assist findings.' : '✅ **No findings.** Nothing worth an inline comment in this diff.'
+    );
   } else {
     lines.push(`**${findings.length} finding(s)** — ${severityLine(findings)}`, '');
-    if (gate) {
-      lines.push(
-        gate.clean
-          ? `✅ **Merge gate: pass** — no blocking findings (blocks on ${gate.blockSeverities.join('/')}).`
-          : `⛔ **Merge gate: blocked** — ${gate.blocking.length} blocking finding(s) (blocks on ${gate.blockSeverities.join('/')}).`
-      );
-      lines.push('');
-    }
-    lines.push(findingsTable(findings));
   }
+  if (gate && (findings.length > 0 || bugHunter)) {
+    const policy = `blocks on ${gate.blockSeverities.join('/')}${bugHunter ? ' or any BugHunter finding' : ''}`;
+    const count = `${gate.blocking.length} blocking finding(s)`;
+    const detail = gate.bugHunterIncomplete
+      ? gate.blocking.length ? `${count} · BugHunter did not complete` : 'BugHunter did not complete'
+      : count;
+    lines.push(
+      gate.clean
+        ? `✅ **Merge gate: pass** — no blocking findings (${policy}).`
+        : `⛔ **Merge gate: blocked** — ${detail} (${policy}).`,
+      ''
+    );
+  }
+  if (findings.length > 0) lines.push(findingsTable(findings));
 
   if (unanchored.length > 0) {
     lines.push(
@@ -442,7 +449,7 @@ function renderMarkdownReview({
   if (prLens?.manifestPath) lines.push(`- PR Lens manifest (local only): ${prLens.manifestPath}`);
   lines.push('', ...reviewValueLines(value, truncated), ...reviewFollowUpLines(followUp), '');
   if (findings.length === 0) {
-    lines.push('No findings.');
+    lines.push(bugHunter ? 'No primary code-assist findings.' : 'No findings.');
   } else {
     for (const finding of sortBySeverity(findings)) {
       const meta = severityMeta(finding.severity);
@@ -1085,13 +1092,12 @@ function runPrReview(options, deps = {}) {
         bugHunter: true
       });
     } catch {
-      // The advisory pass cannot replace or block the primary verdict. Never
-      // publish raw secondary-provider errors, which could echo prompt data.
+      // Never publish raw secondary-provider errors, which could echo prompt data.
       bugHunter = { status: 'unavailable', findings: [] };
     }
     console.log(`${TOOL_PREFIX} BugHunter: ${bugHunter.status} (${bugHunter.findings.length} finding(s))`);
   }
-  const advisory = bugHunter ? { bugHunter } : {};
+  const hunterResult = bugHunter ? { bugHunter } : {};
   const abideResult = collectAbideFindings(repoRoot, rawDiff, options, deps);
   if (abideResult.status === 'failed')
     console.log(`${TOOL_PREFIX} ${abideSummaryLine(abideResult)}`);
@@ -1103,7 +1109,7 @@ function runPrReview(options, deps = {}) {
   if (snapshotPath) lineMap.set(snapshotPath, new Set([1]));
   const value = normalizeReviewValue(review.value, lineMap);
   const gate = {
-    ...evaluateReviewGate(findings, { blockSeverities: options.blockSeverities }),
+    ...evaluateReviewGate(findings, { blockSeverities: options.blockSeverities, bugHunter }),
     blockSeverities: options.blockSeverities || ['high', 'critical']
   };
   const payload = {
@@ -1119,7 +1125,7 @@ function runPrReview(options, deps = {}) {
     gate,
     prLens,
     abide: abideResult,
-    ...advisory,
+    ...hunterResult,
     reviewedBaseSha: projection.base,
     reviewedHeadSha: lensContext?.metadata.provenance.head.sha ?? projection.head ?? prHeadSha
   };
@@ -1168,7 +1174,7 @@ function runPrReview(options, deps = {}) {
       findings,
       unanchored,
       truncated,
-      ...advisory,
+      ...hunterResult,
       prLens
     };
   }
@@ -1183,7 +1189,7 @@ function runPrReview(options, deps = {}) {
       findings,
       unanchored,
       truncated,
-      ...advisory,
+      ...hunterResult,
       prLens,
       reason: 'github-auth-unavailable'
     };
@@ -1199,7 +1205,7 @@ function runPrReview(options, deps = {}) {
     findings,
     unanchored,
     truncated,
-    ...advisory,
+    ...hunterResult,
     inlineCount: outcome.posted,
     duplicates: outcome.duplicates,
     degraded: outcome.degraded,
@@ -1214,17 +1220,24 @@ function runPrReview(options, deps = {}) {
 /**
  * Decide whether a set of review findings clears the merge gate. Blocks on any
  * finding whose severity is in `blockSeverities` (high + critical by default;
- * low/medium are advisory). Pure + synchronous so it is trivially testable.
+ * low/medium are advisory) and any validated BugHunter finding. An enabled
+ * BugHunter pass must also complete before the review can clear the gate.
  *
  * Fail-closed semantics live in the CALLER: an absent/empty `findings` here is
  * treated as clean, so the caller must independently treat a review that did
  * NOT run (provider threw / timed out) as a block, never as clean.
  */
-function evaluateReviewGate(findings, { blockSeverities = ['high', 'critical'] } = {}) {
+function evaluateReviewGate(findings, { blockSeverities = ['high', 'critical'], bugHunter } = {}) {
   const block = new Set(blockSeverities.map((s) => String(s).toLowerCase()));
   const list = Array.isArray(findings) ? findings : [];
   const blocking = list.filter((f) => f && block.has(String(f.severity).toLowerCase()));
-  return { clean: blocking.length === 0, blocking };
+  blocking.push(...(bugHunter?.findings ?? []));
+  const bugHunterIncomplete = bugHunter && bugHunter.status !== 'clean' && bugHunter.status !== 'findings';
+  return {
+    clean: blocking.length === 0 && !bugHunterIncomplete,
+    blocking,
+    ...(bugHunterIncomplete ? { bugHunterIncomplete: true } : {})
+  };
 }
 
 function printPrReviewResult(result) {
