@@ -83,12 +83,12 @@ function checkForGuardexUpdate() {
   };
 }
 
-function printUpdateAvailableBanner(current, latest) {
+function printUpdateAvailableBanner(current, latest, target = 'latest') {
   const title = colorize('UPDATE AVAILABLE', '1;33');
   console.log(`[${TOOL_NAME}] ${title}`);
   console.log(`[${TOOL_NAME}]   Current: ${current}`);
   console.log(`[${TOOL_NAME}]   Latest : ${latest}`);
-  console.log(`[${TOOL_NAME}]   Command: ${NPM_BIN} i -g ${packageJson.name}@latest`);
+  console.log(`[${TOOL_NAME}]   Command: ${NPM_BIN} i -g ${packageJson.name}@${target}`);
 }
 
 function readInstalledGuardexVersion() {
@@ -444,7 +444,8 @@ function maybeSelfUpdateBeforeStatus() {
 }
 
 function installGuardexUpdate(check, restart = false) {
-  const installResult = run(NPM_BIN, ['i', '-g', `${packageJson.name}@latest`], { stdio: 'inherit' });
+  const target = restart ? 'latest' : check.latest;
+  const installResult = run(NPM_BIN, ['i', '-g', `${packageJson.name}@${target}`], { stdio: 'inherit' });
   if (installResult.status !== 0) {
     console.log(`[${TOOL_NAME}] Update failed. You can retry manually.`);
     return;
@@ -452,6 +453,10 @@ function installGuardexUpdate(check, restart = false) {
 
   const postInstallVersion = readInstalledGuardexVersion();
   if (postInstallVersion != null && postInstallVersion !== check.latest) {
+    if (!restart) {
+      console.log(`[${TOOL_NAME}] Installed version is ${postInstallVersion} (expected ${check.latest}).`);
+      return;
+    }
     console.log(
       `[${TOOL_NAME}] Installed version is still ${postInstallVersion} (expected ${check.latest}). ` +
         `Retrying with pinned version ${check.latest}...`,
@@ -493,19 +498,35 @@ const AGENT_NON_SESSION_COMMANDS = {
   ]),
 };
 
+const AGENT_OPTIONS_WITH_VALUE = {
+  codex: new Set([
+    '-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env', '-i', '--image',
+    '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd',
+    '--add-dir', '-a', '--ask-for-approval',
+  ]),
+  claude: new Set([
+    '--model', '--fallback-model', '--agent', '--effort', '--name', '-n', '--session-id',
+    '--resume', '-r', '--from-pr', '--worktree', '-w', '--permission-mode', '--settings',
+    '--system-prompt', '--append-system-prompt', '--mcp-config', '--add-dir', '--output-format',
+  ]),
+};
+
 function isInteractiveAgentLaunch(agent, args) {
-  const separator = args.indexOf('--');
-  const options = separator < 0 ? args : args.slice(0, separator);
-  // Including subcommand tokens after global options avoids prompting for
-  // e.g. "codex -c key=value exec" even when it inherits a terminal.
-  const nonSessionCommands = AGENT_NON_SESSION_COMMANDS[agent];
-  const subcommand = options.find((arg) =>
-    nonSessionCommands.has(arg) || (agent === 'codex' && ['agents', 'resume', 'fork'].includes(arg)),
-  );
-  return !nonSessionCommands.has(subcommand) && !options.some((arg) =>
-    ['-h', '--help', '-V', '-v', '--version'].includes(arg) ||
-    (agent === 'claude' && (arg === '-p' || arg === '--print')),
-  );
+  let subcommand;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--') break;
+    if (
+      ['-h', '--help', '-V', '-v', '--version'].includes(arg) ||
+      (agent === 'claude' && (arg === '-p' || arg === '--print'))
+    ) return false;
+    if (AGENT_OPTIONS_WITH_VALUE[agent].has(arg) && args[index + 1] && !args[index + 1].startsWith('-')) {
+      index += 1;
+    } else if (!arg.startsWith('-')) {
+      subcommand ??= arg;
+    }
+  }
+  return !AGENT_NON_SESSION_COMMANDS[agent].has(subcommand);
 }
 
 function update(args) {
@@ -525,12 +546,12 @@ function update(args) {
   if (!isInteractiveTerminal()) return;
 
   const check = checkForGuardexUpdate();
-  if (!check.checked || !check.updateAvailable) {
+  if (!check.checked || !parseVersionString(check.latest) || !check.updateAvailable) {
     if (!beforeAgent)
-      console.log(`[${TOOL_NAME}] ${check.checked ? 'Already up to date.' : 'Could not check for updates.'}`);
+      console.log(`[${TOOL_NAME}] ${check.checked && !check.updateAvailable ? 'Already up to date.' : 'Could not check for updates.'}`);
     return;
   }
-  printUpdateAvailableBanner(check.current, check.latest);
+  printUpdateAvailableBanner(check.current, check.latest, check.latest);
   process.stdout.write('Update now? [y/N] ');
   const answer = readSingleLineFromStdin({ allowTtyEof: true }).trim().toLowerCase();
   if (answer === 'y' || answer === 'yes') installGuardexUpdate(check);

@@ -58,7 +58,7 @@ esac
     GUARDEX_SKIP_UPDATE_CHECK: '0'
   };
   return {
-    launch(command, { answer = '', tty = true, overrides = {} } = {}) {
+    launch(command, { answer = '', tty = true, overrides = {}, setup = '', shell = 'bash' } = {}) {
       fs.writeFileSync(log, '');
       const result = spawnSync(
         'bash',
@@ -66,7 +66,7 @@ esac
           '--noprofile',
           '--norc',
           '-ic',
-          `eval "$(gx shell-init bash --agent-updates)"\n${command}`
+          `${setup}\nintegration=$(gx shell-init '${shell}' --agent-updates) && eval "$integration" || exit 1\n${command}`
         ],
         {
           cwd: dir,
@@ -96,7 +96,7 @@ test('y installs GitGuardex before Codex, preserving arguments and exit status',
   assert.match(output, /Updated to latest published version/);
   assert.deepEqual(calls, [
     'npm view @imdeadpool/guardex version --json',
-    'npm i -g @imdeadpool/guardex@latest',
+    'npm i -g @imdeadpool/guardex@99.0.0',
     'npm root -g',
     'codex',
     'resume',
@@ -127,7 +127,7 @@ test('decline, EOF, offline lookup, and install failure still launch Claude', (t
   assert.match(output, /Update failed/);
   assert.deepEqual(calls, [
     'npm view @imdeadpool/guardex version --json',
-    'npm i -g @imdeadpool/guardex@latest',
+    'npm i -g @imdeadpool/guardex@99.0.0',
     'claude'
   ]);
 });
@@ -152,8 +152,25 @@ test('no update lookup for Codex exec, Claude print or non-TTY even with forced 
   assert.deepEqual(launch('claude', { tty: false, answer: 'y\n' }).calls, ['claude']);
 });
 
-test('shell integration does not replace an existing Codex function', (t) => {
-  const command =
-    'codex() { command codex custom "$@"; }; eval "$(gx shell-init bash --agent-updates)"; codex resume';
-  assert.deepEqual(fixture(t).launch(command).calls, ['codex', 'custom', 'resume']);
+test('shell integration does not replace an existing Codex function or alias', (t) => {
+  const { launch } = fixture(t);
+  for (const setup of [
+    'codex() { command codex custom "$@"; }',
+    "alias codex='command codex custom'"
+  ]) {
+    assert.deepEqual(launch('codex resume', { setup }).calls, ['codex', 'custom', 'resume']);
+  }
+});
+
+test('subcommand names used as option values or a resume target still prompt', (t) => {
+  const { launch } = fixture(t);
+  for (const command of ['codex -m exec', 'codex resume review', 'claude --model install']) {
+    const { output } = launch(command, { answer: 'n\n' });
+    assert.match(output, /UPDATE AVAILABLE/);
+  }
+});
+
+test('an empty shell name still means Bash', (t) => {
+  const { output } = fixture(t).launch('codex', { shell: '', answer: 'n\n' });
+  assert.match(output, /UPDATE AVAILABLE/);
 });

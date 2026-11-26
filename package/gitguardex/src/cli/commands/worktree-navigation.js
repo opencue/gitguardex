@@ -66,7 +66,7 @@ function shellInit(args = []) {
   }
   const shells = args.filter((arg) => arg !== '--agent-updates');
   if (shells.length > 1) throw new Error('Usage: gx shell-init [bash|zsh|fish] [--agent-updates]');
-  process.stdout.write(shellIntegration(shells[0], { agentUpdates: args.includes('--agent-updates') }));
+  process.stdout.write(shellIntegration(shells[0] || 'bash', { agentUpdates: args.includes('--agent-updates') }));
 }
 
 module.exports = { switchWorktree, shellInit };

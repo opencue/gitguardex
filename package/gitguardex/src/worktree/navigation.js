@@ -211,6 +211,7 @@ function resolveWorktree(repoRoot, selector, options = {}, deps = {}) {
 }
 
 function agentUpdateIntegration(shell) {
+  // In Bash/Zsh, parse the function definition only after checking for aliases.
   return ['codex', 'claude']
     .map((agent) =>
       shell === 'fish'
@@ -224,10 +225,10 @@ function agentUpdateIntegration(shell) {
 end
 `
         : `if ! alias ${agent} >/dev/null 2>&1 && ! typeset -f ${agent} >/dev/null 2>&1; then
-  ${agent}() {
+  eval '${agent}() {
     case $- in *i*) command gx update --before-agent ${agent} "$@" || : ;; esac
     command ${agent} "$@"
-  }
+  }'
 fi
 `,
     )
