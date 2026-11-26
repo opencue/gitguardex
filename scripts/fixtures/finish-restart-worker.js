@@ -24,7 +24,9 @@ function record(event) {
 }
 
 const deps = {
-  openPullRequest: () => ({ pr: { ...pr, headRefOid: state.head, isDraft: state.draft } }),
+  openPullRequest: () => ({
+    pr: { ...pr, headRefOid: state.visibleHead ?? state.head, isDraft: state.draft }
+  }),
   readHeadSha: () => state.head,
   readBaseSha: () => state.base,
   reviewReceipt: (repo, revision, options) =>
@@ -72,9 +74,12 @@ const deps = {
     record(`push:${state.head}`);
     return { ok: true };
   },
-  waitForPullRequestHead: () => {
+  waitForPullRequestHead: (_repo, _branch, expectedHead) => {
     if (interrupt === 'after-push') process.kill(process.pid, 'SIGKILL');
-    return { status: 'current', pr: { headSha: state.head } };
+    assert.equal(expectedHead, state.head);
+    state.visibleHead = expectedHead;
+    record(`seen:${expectedHead}`);
+    return { status: 'current', pr: { headSha: state.visibleHead } };
   },
   resolveOutdatedReviewThreads: () => ({ ok: true, resolved: 0 }),
   markPullRequestReady: () => {
@@ -98,7 +103,7 @@ const deps = {
       getStatus: () => {
         record(`ci:${state.ci}`);
         return {
-          headSha: state.head,
+          headSha: state.visibleHead ?? state.head,
           isDraft: state.draft,
           mergeable: 'MERGEABLE',
           mergeStateStatus: state.ci === 'green' ? 'CLEAN' : 'BLOCKED',

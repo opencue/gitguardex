@@ -8,7 +8,7 @@ const test = require('node:test');
 test('two PRs can retry finish after a worker is killed at different gates', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-restart-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const worker = path.join(__dirname, 'helpers', 'finish-restart-worker.js');
+  const worker = path.join(__dirname, '../scripts/fixtures/finish-restart-worker.js');
   const file = (number) => path.join(root, `pr-${number}.json`);
   const read = (number) => JSON.parse(fs.readFileSync(file(number), 'utf8'));
   const write = (number, state) => fs.writeFileSync(file(number), JSON.stringify(state));
@@ -32,13 +32,14 @@ test('two PRs can retry finish after a worker is killed at different gates', (t)
     assert.ok(read(number).events.every((event) => !event.startsWith('merge:')));
   };
   const initial = { head: 'head-1', base: 'base-1', draft: true, events: [] };
-  write(41, { ...initial, needsFix: true, ci: 'green' });
+  write(41, { ...initial, visibleHead: initial.head, needsFix: true, ci: 'green' });
   write(42, { ...initial, ci: 'pending' });
 
   // PR 41 has a pushed repair but has not yet been independently re-reviewed.
   const first = run(41, 'after-push');
   assert.equal(first.signal, 'SIGKILL', first.stderr);
   assert.deepEqual(read(41).events, ['review:head-1:base-1', 'fix', 'push:repair-1']);
+  assert.equal(read(41).visibleHead, 'head-1', 'GitHub has not seen the push yet');
 
   // PR 42 already has a receipt on disk while the checks are still pending.
   const second = run(42, 'during-ci');
@@ -50,6 +51,7 @@ test('two PRs can retry finish after a worker is killed at different gates', (t)
     'review:head-1:base-1',
     'fix',
     'push:repair-1',
+    'seen:repair-1',
     'review:repair-1:base-1',
     'ready',
     'test:repair-1',
@@ -75,11 +77,15 @@ test('two PRs can retry finish after a worker is killed at different gates', (t)
   blocks(42, /Independent reviewer unavailable/);
   assert.equal(read(42).events.at(-1), 'review-unavailable:base-2');
 
-  update(42, { reviewUnavailable: false });
+  update(42, { reviewUnavailable: false, ci: 'pending' });
+  assert.equal(run(42, 'during-ci').signal, 'SIGKILL');
+  update(42, { ci: 'green' });
   succeeds(42);
-  assert.deepEqual(read(42).events.slice(-5), [
+  assert.deepEqual(read(42).events.slice(-7), [
     'review:head-1:base-2',
     'ready',
+    'test:head-1',
+    'ci:pending',
     'test:head-1',
     'ci:green',
     'merge:head-1:base-2'
