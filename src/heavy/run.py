@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import signal
@@ -124,11 +125,21 @@ def snapshot(active):
 
 
 def queue_dir():
-    runtime = Path(f"/run/user/{os.getuid()}")
+    uid = os.getuid()
+    runtime = Path(f"/run/user/{uid}")
     if check_directory(runtime):
         return runtime / "gitguardex-heavy"
-    # Do not split the queue when callers change HOME or TMPDIR.
-    return Path(f"/tmp/gitguardex-heavy-{os.getuid()}")
+    # Use the account's home, not the caller's HOME. Prefer it over shared /tmp.
+    try:
+        home = Path(pwd.getpwuid(uid).pw_dir)
+        if home.is_absolute():
+            info = home.stat()
+            if stat.S_ISDIR(info.st_mode) and info.st_uid == uid and not info.st_mode & 0o022:
+                return home / ".cache" / "gitguardex-heavy"
+    except (KeyError, OSError):
+        pass
+    # Unmapped UIDs still share a queue; creation rejects foreign-owned paths.
+    return Path(f"/tmp/gitguardex-heavy-{uid}")
 
 
 def check_directory(directory, create=False):

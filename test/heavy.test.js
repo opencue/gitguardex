@@ -39,8 +39,9 @@ test('install probes RAM; mem-doctor and command help are available without a re
 });
 
 const fixture = `
-import os, runpy, signal, subprocess, sys
+import os, pwd, runpy, signal, subprocess, sys
 from pathlib import Path
+from types import SimpleNamespace
 ns = runpy.run_path(sys.argv[1])
 impl = ns["run"].__globals__
 root = Path(sys.argv[2])
@@ -57,7 +58,7 @@ if sys.argv[3] == "policy":
     assert ns["policy"](32*gib, 3*gib, 0)["admissibleJobs"] == 0
     assert ns["policy"](32*gib, 8*gib, 1)["admissibleJobs"] == 1
     impl["CGROUP"] = root
-    impl["current_group"] = lambda: root / "limited" / "child"
+    impl["read"] = lambda path: "0::/limited/child\\n" if path == "/proc/self/cgroup" else ns["read"](path)
     (root / "limited" / "child").mkdir(parents=True)
     (root / "limited" / "memory.max").write_text(str(8*gib))
     (root / "limited" / "memory.current").write_text(str(6*gib))
@@ -79,11 +80,19 @@ elif sys.argv[3] == "cgroup-v1":
     assert ns["cgroup_headroom"](32*gib, 12*gib) == (8*gib, 4*gib)
 elif sys.argv[3] == "queue-path":
     impl["check_directory"] = lambda path: False
+    login_home = root / "login-home"
+    login_home.mkdir(mode=0o700)
+    pwd.getpwuid = lambda uid: SimpleNamespace(pw_dir=str(login_home))
     os.environ["HOME"] = str(root / "first")
     first = ns["queue_dir"]()
+    assert first == login_home / ".cache" / "gitguardex-heavy"
     os.environ["HOME"] = str(root / "second")
     os.environ["TMPDIR"] = str(root / "other-temp")
     assert ns["queue_dir"]() == first
+    def missing_account(uid):
+        raise KeyError(uid)
+    pwd.getpwuid = missing_account
+    assert ns["queue_dir"]() == Path(f"/tmp/gitguardex-heavy-{os.getuid()}")
 elif sys.argv[3] == "sigpipe":
     read, write = os.pipe()
     os.close(read)
