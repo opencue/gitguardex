@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const { cp, fs, path, TOOL_NAME } = require('../context');
+const { cp, fs, path, TOOL_NAME, LOCK_FILE_RELATIVE } = require('../context');
 const { currentBranchName, listAgentWorktrees, resolveRepoRoot } = require('../git');
 const { extractTargetedArgs, run } = require('../core/runtime');
 
@@ -210,6 +210,70 @@ function commonGitDirectory(repoRoot) {
   const result = run('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir']);
   if (result.status !== 0) throw new Error('Cannot resolve cleanup queue directory');
   return fs.realpathSync(path.resolve(repoRoot, result.stdout.trim()));
+}
+
+function hasWorktreeClaims(worktreePath) {
+  try {
+    const claims = JSON.parse(fs.readFileSync(path.join(worktreePath, LOCK_FILE_RELATIVE), 'utf8'));
+    const locks = claims?.locks;
+    return (
+      !locks || typeof locks !== 'object' || Array.isArray(locks) || Object.keys(locks).length > 0
+    );
+  } catch (error) {
+    return error.code !== 'ENOENT';
+  }
+}
+
+function previewDependencyCleanup(target, branchFilter) {
+  const repo = fs.realpathSync(resolveSharedRepoRoot(target));
+  const gitWorktrees = path.join(commonGitDirectory(repo), 'worktrees');
+  let candidates = 0;
+  let total = 0;
+  for (const { worktreePath, branch } of listAgentWorktrees(repo)) {
+    if (branchFilter && branch !== branchFilter) continue;
+    if (!isManagedAgentWorktree(repo, worktreePath)) continue;
+    const deps = path.join(worktreePath, 'node_modules');
+    try {
+      if (!fs.lstatSync(deps).isDirectory() || fs.realpathSync(worktreePath) !== worktreePath)
+        continue;
+      const git = (...args) =>
+        run('git', ['-C', worktreePath, ...args], { env: { GIT_OPTIONAL_LOCKS: '0' } });
+      const registration = git('rev-parse', '--absolute-git-dir');
+      if (registration.status !== 0) continue;
+      const gitDir = fs.realpathSync(registration.stdout.trim());
+      if (
+        gitDir === gitWorktrees ||
+        !pathContains(gitWorktrees, gitDir) ||
+        fs.lstatSync(path.join(gitDir, 'locked'), { throwIfNoEntry: false })
+      )
+        continue;
+      if (hasWorktreeClaims(worktreePath) || probeWorktreeOwnership(worktreePath).active) continue;
+
+      const manifests = ['package.json', 'package-lock.json'];
+      const tracked = git('ls-files', '-z', '--', ...manifests, 'node_modules');
+      const files = tracked.stdout.split('\0').filter(Boolean);
+      if (
+        tracked.status !== 0 ||
+        files.length !== manifests.length ||
+        !manifests.every(
+          (file) => files.includes(file) && fs.lstatSync(path.join(worktreePath, file)).isFile()
+        ) ||
+        git('check-ignore', '-q', '--', 'node_modules/').status !== 0
+      )
+        continue;
+      const disk = run('du', ['-skx', deps], { cwd: repo });
+      const size = Number(disk.stdout.match(/^\d+(?=\s)/)?.[0]);
+      if (disk.status !== 0 || !Number.isSafeInteger(size)) continue;
+      console.log(`[gx:cleanup] [dry-run] candidate | ${branch} | ${size} KiB | ${deps}`);
+      total += size;
+      candidates += 1;
+    } catch {
+      // Missing or unreadable state is not evidence that dependencies are reclaimable.
+    }
+  }
+  console.log(
+    `[gx:cleanup] [dry-run] dependencies: candidates=${candidates}, estimated=${total} KiB`
+  );
 }
 
 function cleanupQueueDirectory(repoRoot, create = false) {
@@ -431,19 +495,7 @@ function removeFinishedWorktreeLocked(plan) {
       } else if (pathContains(plan.worktreePath, candidate)) return false;
     }
     if (!found) return false;
-    const claimsFile = path.join(plan.worktreePath, '.omx/state/agent-file-locks.json');
-    try {
-      const claims = JSON.parse(fs.readFileSync(claimsFile, 'utf8'));
-      if (
-        !claims?.locks ||
-        typeof claims.locks !== 'object' ||
-        Array.isArray(claims.locks) ||
-        Object.keys(claims.locks).length
-      )
-        return false;
-    } catch (error) {
-      if (error.code !== 'ENOENT') return false;
-    }
+    if (hasWorktreeClaims(plan.worktreePath)) return false;
     const commit = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
     if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
     if (probeWorktreeOwnership(plan.worktreePath).active) return false;
@@ -590,6 +642,7 @@ module.exports = {
   probeLiveProcessInWorktree,
   probeWorktreeOwnership,
   prepareBranchFinishCleanup,
+  previewDependencyCleanup,
   persistFinishedCleanup,
   retryPendingFinishedCleanup,
   runDeferredCleanupWorker,
