@@ -12,6 +12,16 @@ See the [project README](https://github.com/opencue/gitguardex#readme) for setup
 and workflows, and the [repository](https://github.com/opencue/gitguardex)
 for source and contributing information.
 
+## PR impact and risk
+
+`gx pr-review` asks the selected review model for the magnitude of each benefit
+or risk, with a reason and a changed-diff line. The strongest supported
+benefit and risk set independent 1–100 scores, for example **Impact: 63/100 ·
+Risk: 21/100**. A benefit cannot lower a risk score. The risk score describes
+severity if it happens; the row reports the estimated likelihood separately.
+Missing evidence is **not established**, not zero or a default 50. These
+estimates are advisory, not measurements or merge verdicts.
+
 ## Agent handoffs
 
 - Request a contested file with `gx locks handoff-request -- <path>`. The owner
