@@ -14,7 +14,7 @@
 
 ## Quick start
 
-Requires Node.js 18+, Git, and an authenticated GitHub CLI (`gh`) for the PR flow. Use Linux or macOS; on Windows, use WSL.
+Requires Node.js 18+, Git, and an authenticated GitHub CLI (`gh`) for the PR flow. For the review gate below, also install and authenticate the Codex or Claude Code CLI. Use Linux or macOS; on Windows, use WSL.
 
 ```sh
 npm install -g @imdeadpool/guardex
@@ -23,10 +23,15 @@ gx setup
 gx branch start "Add checkout validation" "codex" --no-transfer
 ```
 
-Enter the worktree printed by `gx branch start`. Claim the files you intend to edit, then make the change and run your project's tests.
+Enter the worktree printed by `gx branch start`. Claim the files you intend to edit:
 
 ```sh
 gx locks claim --branch "$(git branch --show-current)" src/checkout.ts
+```
+
+Make the change and run your project's tests. Then ship the PR:
+
+```sh
 gx branch finish --via-pr --wait-for-merge --cleanup --gate-review --gate-autofix
 ```
 
