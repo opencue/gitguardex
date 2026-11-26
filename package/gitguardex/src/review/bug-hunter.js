@@ -3,7 +3,12 @@ const { parseDiffLineMap } = require('./diff');
 const SOURCE =
   'https://github.com/codexstar69/bug-hunter/blob/b412f9885e3ec074625a88c862c3f5b6724ec3b4/skills/hunter/SKILL.md';
 const MAX_FINDINGS = 8;
-const SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
+const SEVERITIES = new Map([
+  ['low', '🔵 Low'],
+  ['medium', '🟡 Medium'],
+  ['high', '🟠 High'],
+  ['critical', '🔴 Critical']
+]);
 
 function bugHunterEnabled(env = process.env) {
   return /^(1|true|yes|on)$/i.test(String(env.GUARDEX_REVIEW_BUG_HUNTER || '').trim());
@@ -62,10 +67,25 @@ function bugHunterLines(result) {
   } else if (result.status === 'clean') {
     lines.push('No behavioral findings in the supplied diff.');
   }
-  for (const finding of result.findings) {
-    const path = finding.path.length > 240 ? `…${finding.path.slice(-240)}` : finding.path;
+  const count = result.findings.length;
+  if (count > 0) {
+    if (result.status === 'partial') lines.push('');
     lines.push(
-      `- **${finding.severity}** · ${escapedText(path)}:${finding.line} — ${escapedText(finding.message)}`
+      `**${count} behavioral finding${count === 1 ? '' : 's'}** · Expand a finding for its evidence.`
+    );
+  }
+  for (const [index, finding] of result.findings.entries()) {
+    const path = finding.path.length > 240 ? `…${finding.path.slice(-240)}` : finding.path;
+    const name = path.split('/').at(-1);
+    const shortName = name.length > 60 ? `…${name.slice(-60)}` : name;
+    lines.push(
+      '',
+      index === 0 ? '<details open>' : '<details>',
+      `<summary><strong>${SEVERITIES.get(finding.severity)}</strong> · <code>${escapedText(shortName)}:${finding.line}</code></summary>`,
+      '',
+      `<p>${escapedText(finding.message)}</p>`,
+      `<p><strong>Location:</strong> <code>${escapedText(path)}:${finding.line}</code></p>`,
+      '</details>'
     );
   }
   lines.push('', `[Bug Hunter methodology](${SOURCE}) · Does not affect the merge gate.`);
