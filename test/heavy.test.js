@@ -39,7 +39,7 @@ test('install probes RAM; mem-doctor and command help are available without a re
 });
 
 const fixture = `
-import os, runpy, sys
+import os, runpy, signal, subprocess, sys
 from pathlib import Path
 ns = runpy.run_path(sys.argv[1])
 impl = ns["run"].__globals__
@@ -62,8 +62,41 @@ if sys.argv[3] == "policy":
     (root / "limited" / "memory.max").write_text(str(8*gib))
     (root / "limited" / "memory.current").write_text(str(6*gib))
     assert ns["cgroup_headroom"](32*gib, 12*gib) == (8*gib, 2*gib)
+elif sys.argv[3] == "cgroup-v1":
+    mount = root / "memory controller"
+    (mount / "project" / "child").mkdir(parents=True)
+    files = {
+        "/proc/self/cgroup": "0::/\\n5:memory:/container/project/child\\n",
+        "/proc/self/mountinfo": f"21 20 0:19 /container {str(mount).replace(' ', chr(92) + '040')} rw - cgroup cgroup rw,memory\\n",
+    }
+    impl["read"] = lambda path: files.get(str(path), ns["read"](path))
+    for directory, limit, usage in [(mount / "project" / "child", 8, 4), (mount / "project", 10, 9)]:
+        (directory / "memory.limit_in_bytes").write_text(str(limit * gib))
+        (directory / "memory.usage_in_bytes").write_text(str(usage * gib))
+        (directory / "memory.use_hierarchy").write_text("1")
+    assert ns["cgroup_headroom"](32*gib, 12*gib) == (8*gib, gib)
+    (mount / "project" / "memory.use_hierarchy").write_text("0")
+    assert ns["cgroup_headroom"](32*gib, 12*gib) == (8*gib, 4*gib)
+elif sys.argv[3] == "queue-path":
+    impl["check_directory"] = lambda path: False
+    os.environ["HOME"] = str(root / "first")
+    first = ns["queue_dir"]()
+    os.environ["HOME"] = str(root / "second")
+    os.environ["TMPDIR"] = str(root / "other-temp")
+    assert ns["queue_dir"]() == first
+elif sys.argv[3] == "sigpipe":
+    read, write = os.pipe()
+    os.close(read)
+    with os.fdopen(write, "wb") as out:
+        status = subprocess.run([sys.executable, sys.argv[1], "--", "yes"],
+                                stdout=out, env={**os.environ, "GUARDEX_HEAVY_QUEUE": "0"}).returncode
+    assert status == -signal.SIGPIPE, status
 else:
     args = sys.argv[3:]
+    if args[0] == "scope":
+        impl["worker_slice"] = lambda: Path("app-gxheavy.slice")
+        os.environ["PATH"] = f"{root}:{os.environ['PATH']}"
+        args = args[1:]
     sys.exit(ns["main"](args if args[0] == "--run-timeout" else ["--", *args]))
 `;
 
@@ -89,6 +122,43 @@ function sandbox(t) {
     });
   return { cwd, ram, start, execute };
 }
+
+for (const [name, kind] of [
+  ['cgroup v1 memory limits include the hierarchical parent', 'cgroup-v1'],
+  ['queue fallback is independent of HOME and TMPDIR', 'queue-path'],
+  ['untimed commands start with the default SIGPIPE disposition', 'sigpipe']
+]) {
+  test(name, { skip: !linux }, (t) => {
+    const result = sandbox(t).execute(kind);
+    assert.equal(result.status, 0, result.stderr);
+  });
+}
+
+test(
+  'unavailable scopes fall back once, but a failing scoped command is not retried',
+  { skip: !linux },
+  (t) => {
+    const { cwd, execute } = sandbox(t);
+    writeFileSync(
+      path.join(cwd, 'systemd-run'),
+      '#!/bin/sh\n[ ! -f deny ] || exit 42\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n',
+      { mode: 0o700 }
+    );
+    const calls = path.join(cwd, 'calls');
+    const command = ['python3', '-c', 'open("calls", "a").write("x"); raise SystemExit(42)'];
+    const run = (...args) => {
+      const result = execute('scope', ...args, ...command);
+      assert.equal(result.status, 42, result.stderr);
+    };
+    run();
+    run('--run-timeout', '2', '--');
+    assert.equal(readFileSync(calls, 'utf8'), 'xx', 'scoped command must not be retried');
+    writeFileSync(path.join(cwd, 'deny'), '');
+    run();
+    run('--run-timeout', '2', '--');
+    assert.equal(readFileSync(calls, 'utf8'), 'xxxx', 'scope setup failure must fall back');
+  }
+);
 
 function firstOutput(stream, finished) {
   return Promise.race([

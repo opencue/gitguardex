@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import stat
@@ -44,17 +45,45 @@ def current_group():
     return None
 
 
+def v1_memory_group():
+    for line in read("/proc/self/cgroup").splitlines():
+        _, controllers, group = line.split(":", 2)
+        if "memory" in controllers.split(","):
+            break
+    else:
+        return None
+    for line in read("/proc/self/mountinfo").splitlines():
+        left, separator, right = line.partition(" - ")
+        if not separator:
+            continue
+        fs, _, options = right.split()
+        if fs != "cgroup" or "memory" not in options.split(","):
+            continue
+        root, mount = (Path(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), field))
+                       for field in left.split()[3:5])
+        try:
+            directory = (mount / Path(group).relative_to(root)).resolve()
+        except ValueError:
+            continue
+        if (directory == mount or mount in directory.parents) and (directory / "memory.limit_in_bytes").is_file():
+            return mount, directory
+    return None
+
+
 def cgroup_headroom(total, available):
-    group = current_group()
+    v1 = v1_memory_group()
+    root, group = v1 or (CGROUP, current_group())
     if group is None:
         return total, available
+    limit_file, usage_file = ("memory.limit_in_bytes", "memory.usage_in_bytes") if v1 else ("memory.max", "memory.current")
     for parent in (group, *group.parents):
-        limit = number(parent / "memory.max")
-        used = number(parent / "memory.current")
-        if limit is not None and used is not None:
-            total = min(total, limit)
-            available = min(available, max(0, limit - used))
-        if parent == CGROUP:
+        if not v1 or parent == group or read(parent / "memory.use_hierarchy").strip() != "0":
+            limit = number(parent / limit_file)
+            used = number(parent / usage_file)
+            if limit is not None:
+                total = min(total, limit)
+                available = min(available, max(0, limit - (used or 0)))
+        if parent == root:
             break
     return total, available
 
@@ -98,7 +127,8 @@ def queue_dir():
     runtime = Path(f"/run/user/{os.getuid()}")
     if check_directory(runtime):
         return runtime / "gitguardex-heavy"
-    return Path.home() / ".cache" / "gitguardex-heavy"
+    # Do not split the queue when callers change HOME or TMPDIR.
+    return Path(f"/tmp/gitguardex-heavy-{os.getuid()}")
 
 
 def check_directory(directory, create=False):
@@ -197,33 +227,71 @@ def worker_slice():
         return None
 
 
-def timed(command, seconds, slot_fd=None):
-    # Keep the slot locked if the supervisor dies while the child is running.
-    pass_fds = () if slot_fd is None else (slot_fd,)
-    with subprocess.Popen(command, start_new_session=True, pass_fds=pass_fds) as child:
-        def forward(signum, _frame):
+def supervise(command, seconds, pass_fds, *, new_session):
+    interrupted = False
+    with subprocess.Popen(command, start_new_session=new_session, pass_fds=pass_fds) as child:
+        def send(signum):
             with contextlib.suppress(ProcessLookupError):
-                os.killpg(child.pid, signum)
+                (os.killpg if new_session else os.kill)(child.pid, signum)
 
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(signum, forward)
+        def forward(signum, _frame):
+            nonlocal interrupted
+            interrupted = True
+            send(signum)
+
+        previous = {signum: signal.signal(signum, forward)
+                    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
         try:
             status = child.wait(timeout=seconds)
-            return status if status >= 0 else 128 - status
+            return status, interrupted
         except subprocess.TimeoutExpired:
-            forward(signal.SIGKILL, None)
+            send(signal.SIGKILL)
             print(f"[gx] Heavy job timed out after {seconds}s of execution.", file=sys.stderr)
-            return 124
+            return 124, interrupted
+        finally:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
+
+
+def exit_status(status):
+    return status if status >= 0 else 128 - status
+
+
+def run_scope(command, seconds, scope, high, slot_fd):
+    # Scope setup and the command can fail with the same exit code. Only the
+    # in-scope wrapper can attest that it has taken responsibility for the job.
+    reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        scoped = ["systemd-run", "--user", "--scope", "--quiet", f"--slice={scope.name}",
+                  "--description=GitGuardex heavy job", "-p", f"MemoryHigh={high}", "--",
+                  sys.executable, os.path.abspath(__file__), "scoped", str(writer),
+                  "" if seconds is None else str(seconds), str(slot_fd), *command]
+        try:
+            status, interrupted = supervise(scoped, None, (slot_fd, writer), new_session=False)
+        except (FileNotFoundError, PermissionError):
+            return None
+        if interrupted or status < 0:
+            return exit_status(status)
+        with contextlib.suppress(BlockingIOError):
+            if os.read(reader, 1):
+                return exit_status(status)
+        return None
+    finally:
+        os.close(reader)
+        os.close(writer)
 
 
 def execute(command, seconds, scope=None, high=None, slot_fd=None):
     if scope:
-        if seconds is not None:
-            command = [sys.executable, os.path.abspath(__file__), "timed", str(seconds), str(slot_fd), *command]
-        command = ["systemd-run", "--user", "--scope", "--quiet", f"--slice={scope.name}",
-                   "--description=GitGuardex heavy job", "-p", f"MemoryHigh={high}", "--", *command]
-    elif seconds is not None:
-        return timed(command, seconds, slot_fd)
+        status = run_scope(command, seconds, scope, high, slot_fd)
+        if status is not None:
+            return status
+    if seconds is not None:
+        # Keep the slot locked if the supervisor dies while the child is running.
+        pass_fds = () if slot_fd is None else (slot_fd,)
+        status, _ = supervise(command, seconds, pass_fds, new_session=True)
+        return exit_status(status)
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     os.execvp(command[0], command)
 
 
@@ -287,8 +355,11 @@ def main(args):
         print(json.dumps(snapshot(0)))
     elif len(args) >= 4 and args[0] == "--run-timeout" and args[2] == "--":
         return run(args[3:], int(args[1]))
-    elif len(args) >= 4 and args[0] == "timed":
-        return timed(args[3:], int(args[1]), int(args[2]))
+    elif len(args) >= 5 and args[0] == "scoped":
+        ready, seconds, slot_fd = args[1:4]
+        os.write(int(ready), b"1")
+        os.close(int(ready))
+        return execute(args[4:], int(seconds) if seconds else None, slot_fd=int(slot_fd))
     elif len(args) >= 2 and args[0] == "--":
         return run(args[1:])
     else:
