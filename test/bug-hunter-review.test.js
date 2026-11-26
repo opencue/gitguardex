@@ -102,6 +102,7 @@ function mockedReview({ provider, enabled = true, failCodexLaunch = false, hunte
         if (args[0] === 'auth') return { status: 0 };
         if (args[1] === 'view') return { status: 0, stdout: 'current-sha' };
         if (args[1] === 'diff') return { status: 0, stdout: DIFF };
+        if (args.includes('--paginate')) return { status: 0, stdout: '' };
         assert.equal(args[0], 'api');
         posted = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
         return { status: 0, stdout: '{"id":1,"commit_id":"current-sha"}' };

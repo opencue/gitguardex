@@ -11,8 +11,9 @@ const {
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
 const prReview = require('../src/pr-review');
-const { openImpactHistory } = require('../src/pull-request/value-history');
-const { artifactRoot } = require('../src/storage/run-artifacts');
+const {
+  openImpactHistory, improvementItems, improvementMarker, readPublishedImprovements,
+} = require('../src/pull-request/value-history');
 const { parsePrReviewArgs } = require('../src/cli/args');
 const { codexReviewEffort } = require('../src/provider-binary');
 const CODEX_REVIEW_GUARD_ARGS = [
@@ -168,6 +169,11 @@ test('posting a review skips inline comment pagination only when there are no in
         }
         if (args[1] === 'diff') return { status: 0, stdout: diff };
         if (args.includes('--paginate')) {
+          if (args.some((item) => item.includes('/reviews?'))) {
+            return { status: 0, stdout: postedPayload ? JSON.stringify({
+              state: 'COMMENTED', author_association: 'MEMBER', body: postedPayload.body,
+            }) : '' };
+          }
           commentReads += 1;
           return { status: 0, stdout: '' };
         }
@@ -219,7 +225,9 @@ test('posting a review skips inline comment pagination only when there are no in
 
 test('re-review shows proven changes and leaves unseen opportunities unverified', (t) => {
   const target = initRepo();
+  const otherClone = initRepo();
   t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(otherClone, { recursive: true, force: true }));
   const artifact = path.join(target, 'review.md');
   const evidence = { path: 'a.js', line: 1 };
   const firstValue = {
@@ -238,14 +246,15 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   let prompt;
   let postedBody;
   let failPost = false;
-  let duringReview;
+  let failRead = false;
+  let rejectInline = false;
+  const published = [];
   const deps = {
     impactHistory: true,
     env: {},
     run(_cmd, args, runOptions) {
       if (args[0] === 'exec') {
         prompt = runOptions.input;
-        duringReview?.();
         return { status: 0, stdout: JSON.stringify(payload) };
       }
       if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
@@ -253,7 +262,14 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
       if (args[1] === 'view') return { status: 0, stdout: 'new-head' };
       if (args[1] === 'diff') return { status: 0, stdout: diff };
       assert.equal(args[0], 'api');
-      postedBody = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')).body;
+      if (args.includes('--paginate')) {
+        return { status: failRead ? 1 : 0, stdout: published.map((entry) => JSON.stringify(entry)).join('\n') };
+      }
+      const posting = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
+      assert.equal(posting.commit_id, 'new-head');
+      if (rejectInline && posting.comments.length) return { status: 1 };
+      postedBody = posting.body;
+      if (!failPost) published.push({ state: 'COMMENTED', author_association: 'MEMBER', body: postedBody });
       return { status: failPost ? 1 : 0 };
     },
   };
@@ -263,37 +279,19 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.doesNotMatch(prompt, /Previous review data:/);
   failPost = true;
   assert.throws(() => prReview.runPrReview({ ...options, post: true }, deps), /review post failed/);
-  assert.deepEqual(
-    openImpactHistory(target, '42', diff, {}).pendingImprovements.map(({ label }) => label),
-    firstValue.improvements
-  );
+  assert.equal(published.length, 0);
   failPost = false;
-
-  const concurrent = { id: 'improvement-0111111111111111', label: 'Keep the parallel requirement', revision: 'a'.repeat(64) };
-  payload = { findings: [], value: secondValue };
-  duringReview = () => {
-    openImpactHistory(target, '43', diff, {}).save(null, [concurrent]);
-  };
-  assert.throws(
-    () => prReview.runPrReview({ ...options, pr: 43, post: true }, deps), /[Ii]mprovement history/
-  );
-  assert.deepEqual(openImpactHistory(target, '43', diff, {}).pendingImprovements, [concurrent]);
-  postedBody = undefined;
-  duringReview = () => {
-    openImpactHistory(target, '44', diff, {}, Date.now() + 1_000).save(null, []);
-  };
-  assert.throws(
-    () => prReview.runPrReview({ ...options, pr: 44, post: true }, deps),
-    /Could not save required PR improvements/
-  );
-  assert.equal(postedBody, undefined);
-  duringReview = undefined;
-  assert.deepEqual(
-    prReview.runPrReview({ ...options, pr: 43, post: true, pendingImprovements: [] }, deps).pendingImprovements,
-    [concurrent]
-  );
-  payload = { findings: [], value: firstValue };
+  rejectInline = true;
+  payload = { findings: [{ ...evidence, severity: 'medium', message: 'An inline finding' }], value: firstValue };
   const first = prReview.runPrReview({ ...options, post: true }, deps);
+  assert.equal(first.degraded, true);
+  rejectInline = false;
+  payload = { findings: [], value: secondValue };
+  const fromOtherClone = () => prReview.runPrReview({ ...options, target: otherClone, post: true }, deps);
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
+  failRead = true;
+  assert.throws(fromOtherClone, /published required PR improvement history/);
+  failRead = false;
   const proof = {
     id: first.pendingImprovements[0].id,
     status: 'addressed',
@@ -334,10 +332,14 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   payload.followUp.push(proof);
   const next = 'Check that failed retries preserve the warning';
   payload.value = { ...secondValue, improvements: [next] };
-  assert.deepEqual(prReview.runPrReview(options, deps).pendingImprovements.map(({ label }) => label), [next]);
-  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements.map(({ label }) => label), [next]);
+  const count = published.length;
+  failPost = true;
+  assert.throws(fromOtherClone, /review post failed/);
+  assert.equal(published.length, count);
+  failPost = false;
+  const pending = prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements;
+  assert.deepEqual(pending.map(({ label }) => label), [next]);
   assert.match(postedBody, /Addressed in diff\*\*.*Add the replay fixture.*The replay asserts both numeric headings/);
-  const pending = openImpactHistory(target, '42', diff, {}).pendingImprovements;
   const completeDiff = diff;
   diff += '+generated\n'.repeat(25000);
   payload = { findings: [], value: secondValue, followUp: [] };
@@ -345,27 +347,32 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.match(postedBody, /Merge gate: blocked/);
   diff = completeDiff + '+keepWarningOnRetry()\n';
   payload.followUp = [{ ...proof, id: pending[0].id }];
-  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, []);
+  assert.deepEqual(fromOtherClone().pendingImprovements, []);
 });
 
-test('invalid impact history blocks reads and cannot be overwritten by a stale review', (t) => {
-  const target = initRepo();
-  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
-  const root = artifactRoot(target);
-  const history = openImpactHistory(target, '42', 'diff', {});
-  history.save(null, []);
-  const file = path.join(root, fs.readdirSync(root).find((name) => name.endsWith('.json')));
-  const valid = JSON.parse(fs.readFileSync(file, 'utf8'));
-  for (const invalid of ['{', ' '.repeat(16_385), JSON.stringify({ ...valid, pendingImprovements: [{}] })]) {
-    fs.writeFileSync(file, invalid);
-    assert.throws(() => openImpactHistory(target, '42', 'diff', {}), /history is unreadable/);
-    assert.throws(() => history.assertCurrent(), /history is unreadable/);
-    assert.throws(() => history.save(null, []), /Could not save required PR improvements/);
-    assert.equal(fs.readFileSync(file, 'utf8'), invalid);
-  }
-  delete valid.pendingImprovements;
-  fs.writeFileSync(file, JSON.stringify(valid));
-  assert.deepEqual(openImpactHistory(target, '42', 'diff', {}).pendingImprovements, []);
+test('published improvements survive overlapping reviews and ignore untrusted resolutions', () => {
+  const [a, b] = improvementItems(['Keep the warning', 'Add a replay test'], 'a'.repeat(64));
+  const renewed = { ...a, revision: 'b'.repeat(64) };
+  const entry = (marker, author_association = 'MEMBER', state = 'COMMENTED') => ({
+    state, author_association, body: `${prReview.MARKER}\n${marker}\n### GitGuardex review`
+  });
+  const reviews = [
+    entry(improvementMarker([a], [])),
+    entry(improvementMarker([b], [])),
+    entry(improvementMarker([], [a, b]), 'CONTRIBUTOR'),
+    entry(improvementMarker([], [a, b]), 'MEMBER', 'PENDING'),
+    entry(improvementMarker([], [a])),
+    entry(improvementMarker([renewed], [])),
+    entry(improvementMarker([], [a])),
+  ];
+  const read = () => readPublishedImprovements('/repo', 42, (_cmd, args) => (
+    args[0] === 'repo'
+      ? { status: 0, stdout: 'opencue/gitguardex' }
+      : { status: 0, stdout: reviews.map((review) => JSON.stringify(review)).join('\n') }
+  ));
+  assert.deepEqual(read(), [b, renewed]);
+  reviews.push(entry('<!-- gitguardex:required-improvements-v1 invalid -->'));
+  assert.throws(read, /Cannot verify published required PR improvement history/);
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {
@@ -901,7 +908,7 @@ fi
 if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then printf '%s\\n' 'deadbeefcafe0000'; exit 0; fi
 if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
-  printf '%s\\n' '<!-- gitguardex:f:${fingerprint} -->'
+  if [[ "$3" == */comments\?* ]]; then printf '%s\\n' '<!-- gitguardex:f:${fingerprint} -->'; fi
   exit 0
 fi
 if [[ "$1" == "api" ]]; then

@@ -11,7 +11,7 @@ const { run } = require('../core/runtime');
 const { TOOL_NAME } = require('../context');
 const pr = require('../pull-request/index');
 const prReview = require('../review/pull-request');
-const { openImpactHistory } = require('../pull-request/value-history');
+const { readPublishedImprovements } = require('../pull-request/value-history');
 const reviewFix = require('../review/fix');
 const { reviewReceipt } = require('./review-receipt');
 const { mapWorktreePathsByBranch } = require('../git');
@@ -414,7 +414,7 @@ function runReviewGate(
       : null
   );
   const readPending = deps.readPendingImprovements || (() =>
-    deps.runPrReview ? [] : openImpactHistory(repoRoot, String(prNumber), '', process.env)?.pendingImprovements
+    deps.runPrReview ? [] : readPublishedImprovements(repoRoot, prNumber)
   );
   const reusable = opened.pr.headRefOid === initialHeadSha && readPending()?.length === 0
     ? getReceipt(initialHeadSha)?.read()

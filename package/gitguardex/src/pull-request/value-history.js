@@ -2,17 +2,82 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { GH_BIN } = require('../context');
+const { run } = require('../core/runtime');
+const { repoApiPath } = require('../github/api');
 const { artifactRoot } = require('../storage/run-artifacts');
 const { evidenceLink, escapeValueText, normalizeEvidence, plainText } = require('./value');
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
-const MAX_PENDING_IMPROVEMENTS = 16;
-const MAX_SNAPSHOT_BYTES = 16_384;
+const MARKER_PREFIX = '<!-- gitguardex:required-improvements-v1 ';
+const TRUSTED_REVIEWERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+const MAX_IMPROVEMENTS_PER_REVIEW = 16;
 const STATUSES = {
   addressed: 'Addressed in diff',
   'still-applies': 'Still applies',
   unverified: 'Not verified'
 };
+
+function improvementItems(improvements, revision) {
+  return (improvements ?? []).map((label) => ({
+    id: `improvement-${hash(label.toLowerCase()).slice(0, 16)}`, label, revision
+  }));
+}
+
+function improvementMarker(issued, addressed) {
+  if (!issued.length && !addressed.length) return '';
+  const record = Buffer.from(JSON.stringify({ issued, addressed })).toString('base64url');
+  return `${MARKER_PREFIX}${record} -->`;
+}
+
+function improvementRecords(items) {
+  if (!Array.isArray(items) || items.length > MAX_IMPROVEMENTS_PER_REVIEW) {
+    throw new Error('Invalid required improvement list');
+  }
+  return items.map((item) => {
+    const label = plainText(item?.label);
+    const revision = item?.revision;
+    if (!label || typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) {
+      throw new Error('Invalid required improvement');
+    }
+    const [record] = improvementItems([label], revision);
+    if (record.id !== item.id) throw new Error('Invalid required improvement id');
+    return record;
+  });
+}
+
+// The review is the durable event. Unrelated or concurrent reviews cannot replace
+// the outstanding set, and a resolution can only clear the issuance it saw.
+function readPublishedImprovements(repoRoot, pr, runner = run) {
+  try {
+    const result = runner(GH_BIN, [
+      'api', '--paginate', repoApiPath(repoRoot, `pulls/${pr}/reviews?per_page=100`, runner),
+      '-q', ` .[] | select((.body // "") | contains(${JSON.stringify(MARKER_PREFIX)}))
+        | {state, author_association, body} | @json`
+    ], { cwd: repoRoot, timeout: 60_000 });
+    if (result.status !== 0) throw new Error('GitHub review listing failed');
+    const pending = new Map();
+    for (const line of String(result.stdout || '').split('\n').filter(Boolean)) {
+      const review = JSON.parse(line);
+      if (review.state !== 'COMMENTED' || !TRUSTED_REVIEWERS.has(review.author_association)) continue;
+      const marker = review.body?.split('\n', 3)[1];
+      if (!marker?.startsWith(MARKER_PREFIX)) continue;
+      const packed = marker.slice(MARKER_PREFIX.length);
+      const match = /^([a-zA-Z0-9_-]{1,32768}) -->$/.exec(packed);
+      if (!match) throw new Error('Invalid required improvement marker');
+      const { issued, addressed } = JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8'));
+      for (const { id, revision } of improvementRecords(addressed)) {
+        if (pending.get(id)?.revision === revision) pending.delete(id);
+      }
+      for (const record of improvementRecords(issued)) {
+        if (!pending.has(record.id)) pending.set(record.id, record);
+      }
+    }
+    return [...pending.values()];
+  } catch (cause) {
+    throw new Error('Cannot verify published required PR improvement history. Rerun the review.', { cause });
+  }
+}
 
 function snapshotItems(items) {
   if (!Array.isArray(items)) return [];
@@ -23,85 +88,45 @@ function snapshotItems(items) {
   });
 }
 
-function improvementItems(improvements, revision) {
-  return (improvements ?? []).map((label) => ({
-    id: `improvement-${hash(label.toLowerCase()).slice(0, 16)}`,
-    label,
-    revision
-  }));
-}
-
-function snapshotImprovements(items) {
-  if (items === undefined) return [];
-  if (!Array.isArray(items) || items.length > MAX_PENDING_IMPROVEMENTS) {
-    throw new Error('Invalid required improvements list');
-  }
-  return items.map((item) => {
-    const label = plainText(item?.label);
-    if (!label || typeof item.id !== 'string' || !/^improvement-[a-f0-9]{16}$/.test(item.id) ||
-      typeof item.revision !== 'string' || !/^[a-f0-9]{64}$/.test(item.revision)) {
-      throw new Error('Invalid required improvement');
-    }
-    return { id: item.id, label, revision: item.revision };
-  });
-}
-
 function readSnapshot(file) {
   try {
-    const stat = fs.lstatSync(file, { throwIfNoEntry: false });
-    if (!stat) return null;
-    if (!stat.isFile() || stat.size > MAX_SNAPSHOT_BYTES) throw new Error('Invalid snapshot file');
-    const { version, revision, startedAt, items, previous, pendingImprovements } = JSON.parse(
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.size > 16_384) return null;
+    const { version, revision, startedAt, items, previous } = JSON.parse(
       fs.readFileSync(file, 'utf8')
     );
-    if (version !== 1 || typeof revision !== 'string' || !/^[0-9a-f]{64}$/.test(revision) || !Array.isArray(items)) {
-      throw new Error('Invalid snapshot record');
-    }
+    if (version !== 1 || !/^[0-9a-f]{64}$/.test(revision) || !Array.isArray(items)) return null;
     return {
       revision,
       startedAt: Number.isSafeInteger(startedAt) ? startedAt : 0,
       items: snapshotItems(items),
-      previous: snapshotItems(previous),
-      pendingImprovements: snapshotImprovements(pendingImprovements)
+      previous: snapshotItems(previous)
     };
-  } catch (cause) {
-    throw new Error('Required PR improvement history is unreadable. Rerun after restoring it.', { cause });
+  } catch {
+    return null;
   }
 }
 
 // Invoked under the existing GitGuardex advisory lock: the freshness check and
 // rename must share a critical section, but the review itself never holds it.
-function writeSnapshot(file, { expectedImprovements, ...snapshot }) {
+function writeSnapshot(file, snapshot) {
   const current = readSnapshot(file);
-  const pending = current?.pendingImprovements ?? [];
-  if (expectedImprovements &&
-    (JSON.stringify(pending) !== JSON.stringify(expectedImprovements) ||
-      (current && current.startedAt > snapshot.startedAt))) {
-    throw new Error('Another review updated PR improvement history');
-  }
-  if (!expectedImprovements && current && current.startedAt >= snapshot.startedAt) return;
-  snapshot.pendingImprovements ??= pending;
+  if (current && current.startedAt >= snapshot.startedAt) return;
   const nextSnapshot =
     current?.revision === snapshot.revision
-      ? {
-          ...current,
-          startedAt: snapshot.startedAt,
-          pendingImprovements: snapshot.pendingImprovements
-        }
+      ? { ...current, startedAt: snapshot.startedAt }
       : snapshot;
-  const serialized = JSON.stringify({ version: 1, ...nextSnapshot });
-  if (Buffer.byteLength(serialized) > MAX_SNAPSHOT_BYTES) throw new Error('Snapshot exceeds size limit');
   const temporary = fs.mkdtempSync(`${file}.`);
   try {
     const next = path.join(temporary, 'snapshot.json');
-    fs.writeFileSync(next, serialized, { mode: 0o600 });
+    fs.writeFileSync(next, JSON.stringify({ version: 1, ...nextSnapshot }), { mode: 0o600 });
     fs.renameSync(next, file);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 }
 
-// One snapshot per PR in the shared private Git directory, never in the PR files.
+// One advisory snapshot per PR in the shared private Git directory, never in the PR files.
 function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
   if (!/^[1-9][0-9]*$/.test(pr)) return null;
   let file;
@@ -114,22 +139,11 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
   const revision = hash(diff);
   const last = readSnapshot(file);
   const previous = (last?.revision === revision ? last.previous : last?.items) ?? [];
-  let expectedImprovements = last?.pendingImprovements ?? [];
   return {
     previous,
-    pendingImprovements: expectedImprovements,
-    assertCurrent(pendingImprovements) {
-      if (pendingImprovements?.length > MAX_PENDING_IMPROVEMENTS) {
-        throw new Error('Too many required PR improvements. Address the pending items and rerun.');
-      }
-      const current = readSnapshot(file)?.pendingImprovements ?? [];
-      if (JSON.stringify(current) !== JSON.stringify(expectedImprovements)) {
-        throw new Error('Required PR improvement history changed. Rerun the review.');
-      }
-    },
-    save(value, pendingImprovements) {
-      if (!value && !pendingImprovements) return;
-      const items = value ? [
+    save(value) {
+      if (!value) return;
+      const items = [
         ...value.drivers
           .filter(({ impact }) => impact === 'trade-off')
           .map((driver, i) => ({
@@ -144,21 +158,16 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
           context: pilot,
           check: verify
         }))
-      ] : last?.items ?? [];
+      ];
       try {
         const lock = path.join(__dirname, '../finish/with-claims-lock.py');
         execFileSync('python3', [lock, `${file}.lock`, process.execPath, __filename, file], {
-          input: JSON.stringify({
-            revision, startedAt, items, previous, pendingImprovements,
-            expectedImprovements: pendingImprovements ? expectedImprovements : undefined
-          }),
+          input: JSON.stringify({ revision, startedAt, items, previous }),
           stdio: ['pipe', 'ignore', 'ignore'],
           timeout: 5_000
         });
-        if (pendingImprovements) expectedImprovements = pendingImprovements;
       } catch {
-        if (pendingImprovements) throw new Error('Could not save required PR improvements. Rerun the review.');
-        // Advisory history is best effort.
+        // Review history is best effort and never changes the primary verdict.
       }
     }
   };
@@ -201,4 +210,7 @@ function reviewFollowUpLines(items, diffPath) {
 
 if (require.main === module) writeSnapshot(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8')));
 
-module.exports = { openImpactHistory, improvementItems, normalizeImpactFollowUp, reviewFollowUpLines };
+module.exports = {
+  openImpactHistory, improvementItems, improvementMarker, readPublishedImprovements, MAX_IMPROVEMENTS_PER_REVIEW,
+  normalizeImpactFollowUp, reviewFollowUpLines
+};

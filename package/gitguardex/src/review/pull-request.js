@@ -16,6 +16,9 @@ const { escapeValueText, normalizeReviewValue, reviewValueInstructions, reviewVa
 const {
   openImpactHistory,
   improvementItems,
+  improvementMarker,
+  readPublishedImprovements,
+  MAX_IMPROVEMENTS_PER_REVIEW,
   normalizeImpactFollowUp,
   reviewFollowUpLines
 } = require('../pull-request/value-history');
@@ -369,9 +372,11 @@ function renderReviewSummary({
   bugHunter,
   value,
   followUp,
+  requirements,
   reviewDiffPath
 }) {
   const lines = [MARKER, '### 🛡️ GitGuardex review', ''];
+  if (requirements) lines.splice(1, 0, requirements);
   const combined = [
     ...findings.map((finding) => ({
       ...finding,
@@ -789,7 +794,7 @@ function syncReviewTitle(pr, { commit, base, value, truncated }, repoRoot, runne
  * review carrying the findings in the body: a review must never hard-fail on a
  * line-number technicality, because in gate mode that failure blocks the merge.
  */
-function postGithubReview(pr, context, repoRoot, runner, beforePost) {
+function postGithubReview(pr, context, repoRoot, runner) {
   const { provider, findings, anchored, unanchored, truncated, gate } = context;
   let fresh = anchored;
   if (anchored.length > 0) {
@@ -820,6 +825,7 @@ function postGithubReview(pr, context, repoRoot, runner, beforePost) {
     bugHunter: context.bugHunter,
     value: context.value,
     followUp: context.followUp,
+    requirements: context.requirements,
     // A root-relative link keeps the PR on the same GitHub host.
     reviewDiffPath: slug ? `/${slug}/pull/${pr}/files` : ''
   };
@@ -830,7 +836,6 @@ function postGithubReview(pr, context, repoRoot, runner, beforePost) {
   };
   if (commit) payload.commit_id = commit;
 
-  beforePost();
   let result = postReviewPayload(pr, payload, repoRoot, runner);
   let degraded = false;
   if (result.status !== 0 && payload.comments.length > 0) {
@@ -838,7 +843,7 @@ function postGithubReview(pr, context, repoRoot, runner, beforePost) {
     result = postReviewPayload(
       pr,
       {
-        event: 'COMMENT',
+        ...payload,
         body: renderReviewSummary({ ...summaryArgs, unanchored: findings, degraded: true }),
         comments: []
       },
@@ -1110,8 +1115,12 @@ function runPrReview(options, deps = {}) {
       ? openImpactHistory(repoRoot, pr, rawDiff, env, impactStartedAt)
       : null;
   const revision = crypto.createHash('sha256').update(rawDiff).digest('hex');
-  const priorImprovements = history?.pendingImprovements ?? options.pendingImprovements ?? [];
-  const previousImpact = [...(history?.previous ?? []), ...priorImprovements];
+  const priorImprovements = options.post && prHeadSha
+    ? readPublishedImprovements(repoRoot, pr, runner)
+    : options.pendingImprovements ?? [];
+  const previousImpact = [
+    ...(history?.previous ?? []), ...priorImprovements.slice(0, MAX_IMPROVEMENTS_PER_REVIEW)
+  ];
   const providerDiff = !truncated && !lensContext
     && /^(1|true|yes|on)$/i.test(String(env.GUARDEX_REVIEW_COMPACT_DIFF || '').trim())
     ? compactGeneratedReviewDiff(diff)
@@ -1196,6 +1205,9 @@ function runPrReview(options, deps = {}) {
     snapshotPath,
     value,
     followUp,
+    requirements: improvementMarker(
+      issuedImprovements, priorImprovements.filter(({ id }) => addressed.has(id))
+    ),
     gate,
     prLens,
     abide: abideResult,
@@ -1271,24 +1283,24 @@ function runPrReview(options, deps = {}) {
     };
   }
 
-  if (!history && !deps.run) {
-    throw new Error('Required PR improvement history is unavailable. Rerun the review.');
+  if (!prHeadSha) {
+    throw new Error('Cannot publish required improvement history without a verified PR head.');
   }
   const outcome = postGithubReview(
-    pr, { ...payload, expectedBaseSha: options.expectedBaseSha }, repoRoot, runner, () => {
-      // Record obligations after validating the PR revision and before publishing them.
-      history?.assertCurrent(pendingImprovements);
-      if (!truncated) history?.save(value, pendingImprovements);
-    }
+    pr, { ...payload, expectedBaseSha: options.expectedBaseSha }, repoRoot, runner
   );
-  history?.assertCurrent();
+  const publishedImprovements = readPublishedImprovements(repoRoot, pr, runner);
+  if (issuedImprovements.some(({ id }) => !publishedImprovements.some((item) => item.id === id))) {
+    throw new Error('Could not verify the newly published required PR improvements.');
+  }
+  if (!truncated) history?.save(value);
   return {
     posted: true,
     provider,
     prLens,
     artifactPath: '',
     findings,
-    pendingImprovements,
+    pendingImprovements: publishedImprovements,
     unanchored,
     truncated,
     ...hunterResult,
