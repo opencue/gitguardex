@@ -787,6 +787,8 @@ def read_handoff(path: Path) -> dict[str, Any]:
     try:
         request = json.loads(path.read_text())
         if (not isinstance(request, dict) or request.get('id') != path.stem
+                or not re.fullmatch(r'[a-f0-9]{32}', path.stem)
+                or not isinstance(request.get('file'), str)
                 or not isinstance(request.get('owner'), dict) or not isinstance(request.get('recipient'), dict)):
             raise ValueError('invalid request')
         return request
@@ -833,14 +835,37 @@ def cmd_handoff_request(args: argparse.Namespace, repo_root: Path) -> int:
     return 0
 
 
-def cmd_handoffs(repo_root: Path) -> int:
+def cmd_handoffs(args: argparse.Namespace, repo_root: Path) -> int:
+    paths = sorted(handoff_dir(repo_root).glob('*.json'))
+    if not paths:
+        if args.json:
+            print('[]')
+        return 0
+    lane = handoff_lane(repo_root) if args.mine else None
     locks = load_all_locks(repo_root)
-    for path in sorted(handoff_dir(repo_root).glob('*.json')):
-        entry = read_handoff(path)
+    rows = []
+    for path in paths:
+        try:
+            entry = read_handoff(path)
+        except LockError as exc:
+            if not args.mine:
+                raise
+            print(f'[agent-file-locks] {exc}; skipping unreadable handoff', file=sys.stderr)
+            continue
         commit = entry.get('commit')
         check = entry.get('check')
         owners = locks.get(entry['file'], [])
         stale = entry['owner'] not in owners
+        if lane and (commit or stale or not matches_handoff_lane(entry['owner'], lane)):
+            continue
+        if args.json:
+            rows.append({
+                'id': entry['id'],
+                'file': entry['file'],
+                'requester': owner_label(entry['recipient']),
+                'acknowledged': bool(entry.get('acknowledged')),
+            })
+            continue
         source_still_locked = any(
             lock['_worktree'] == entry['owner']['_worktree'] and lock.get('handoff_id') != entry['id']
             for lock in owners
@@ -851,9 +876,28 @@ def cmd_handoffs(repo_root: Path) -> int:
             commit = transferred.get('handoff_commit')
             check = transferred.get('handoff_check')
         status = f'approved at {commit}' if commit else ('stale (owner lock changed)' if stale else 'pending')
+        if not commit and not stale and entry.get('acknowledged'):
+            status += ' (acknowledged)'
         print(f"{entry['id']} {status}: {entry['file']} — {owner_label(entry['owner'])} → {owner_label(entry['recipient'])}")
         if check:
             print(f"  Verify: {check}")
+    if args.json:
+        print(json.dumps(rows))
+    return 0
+
+
+def cmd_handoff_ack(args: argparse.Namespace, repo_root: Path) -> int:
+    if not re.fullmatch(r'[a-f0-9]{32}', args.id):
+        raise LockError('Invalid handoff id')
+    path = handoff_dir(repo_root) / f'{args.id}.json'
+    entry = read_handoff(path)
+    if not matches_handoff_lane(entry['owner'], handoff_lane(repo_root)):
+        raise LockError('Only the lock owner may acknowledge this handoff')
+    if entry.get('commit') or entry['owner'] not in load_all_locks(repo_root).get(entry['file'], []):
+        raise LockError('This handoff is no longer pending')
+    if not entry.get('acknowledged'):
+        write_json(path, {**entry, 'acknowledged': True})
+    print(f'Handoff {args.id} acknowledged. The current lock is unchanged.')
     return 0
 
 
@@ -1289,7 +1333,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     request = sub.add_parser('handoff-request', help='Ask the current file owner to transfer a local worktree lock')
     request.add_argument('file', help='File to request (repo-relative or absolute)')
-    sub.add_parser('handoffs', help='List pending and approved local handoffs')
+    handoffs = sub.add_parser('handoffs', allow_abbrev=False, help='List pending and approved local handoffs')
+    handoffs.add_argument('--mine', action='store_true', help='Show pending requests for this owner worktree')
+    handoffs.add_argument('--json', action='store_true', help='Emit owner requests as JSON (requires --mine)')
+    ack = sub.add_parser('handoff-ack', help='Acknowledge a request without transferring the lock')
+    ack.add_argument('id', help='Handoff request id')
     approve = sub.add_parser('handoff-approve', help='Approve a request from the current owner worktree')
     approve.add_argument('id', help='Handoff request id')
     approve.add_argument('--check', help='Verification command to pass to the recipient (not executed)')
@@ -1342,8 +1390,10 @@ def dispatch_command(args: argparse.Namespace, repo_root: Path) -> int:
         return cmd_release(args, repo_root)
     if args.command == 'handoff-request':
         return cmd_handoff_request(args, repo_root)
+    if args.command == 'handoff-ack':
+        return cmd_handoff_ack(args, repo_root)
     if args.command == 'handoffs':
-        return cmd_handoffs(repo_root)
+        return cmd_handoffs(args, repo_root)
     if args.command == 'reap':
         return cmd_reap(args, repo_root)
     if args.command == 'status':
@@ -1358,12 +1408,14 @@ def dispatch_command(args: argparse.Namespace, repo_root: Path) -> int:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == 'handoffs' and args.json and not args.mine:
+        parser.error('handoffs --json requires --mine')
 
     try:
         repo_root = resolve_repo_root()
         # Serialize mutations and consistent snapshot reads across all worktrees.
         # The informational status command remains an unlocked read.
-        if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate', 'handoff-request', 'handoff-approve', 'handoffs'}:
+        if args.command in {'claim', 'allow-delete', 'release', 'reap', 'validate', 'handoff-request', 'handoff-ack', 'handoff-approve', 'handoffs'}:
             with cross_worktree_lock(repo_root):
                 if args.command == 'claim':
                     with adaptive_direct_owner_lock(repo_root) as adaptive_owner:

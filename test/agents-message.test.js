@@ -570,6 +570,54 @@ test('PR handoff without a summary queues the linked message but does not write 
   );
 });
 
+test('merge-ready is advisory, tied to the observed PR head, and does not write to GitHub', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-merge-ready-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const headSha = 'a'.repeat(40);
+  const pr = { url: HANDOFF_PR_URL, headRefOid: headSha, state: 'OPEN', isDraft: false };
+  const { options, deps, calls } = prHandoffFixture('working');
+  const sent = (data) => {
+    deps.runGh = (args) => {
+      calls.push(args);
+      return { status: 0, stdout: JSON.stringify(data) };
+    };
+    return runSendCommand(repoRoot, { ...options, mergeReady: true }, deps).result;
+  };
+  for (const invalid of [{ state: 'CLOSED' }, { isDraft: true }, { headRefOid: null }]) {
+    assert.equal(sent({ ...pr, ...invalid }).kind, 'pr-not-ready');
+  }
+  const inbox = (args = {}) =>
+    runInboxCommand(repoRoot, { sessionId: options.sessionId, ...args }, deps);
+  assert.equal(inbox().result.messages.length, 0);
+  const { messageId, event } = sent(pr);
+  assert.equal(event, 'merge-ready');
+  assert.equal(inbox().result.messages[0].headSha, headSha);
+  assert.match(inbox().stdout, /Merge-ready at .* \(advisory\)/);
+  assert.equal(inbox({ receiptId: messageId }).result.headSha, headSha);
+  assert.ok(calls.every((args) => args[1] === 'view'));
+
+  const live = prHandoffFixture();
+  live.deps.runGh = deps.runGh;
+  const delivered = runSendCommand(repoRoot, { ...live.options, mergeReady: true }, live.deps);
+  assert.equal(delivered.result.kind, 'sent');
+  assert.ok(live.calls[0].envelope.includes(`event: merge-ready at ${headSha} (advisory)\n`));
+});
+
+test('a restarted worktree inbox shows a pending lock handoff without a queued message', () => {
+  const repoRoot = '/repo/owner';
+  const handoff = { id: 'a'.repeat(32), file: 'src/file.js', requester: 'agent/b', acknowledged: false };
+  const read = (id, status = 'active', worktreePath = repoRoot) =>
+    runInboxCommand(repoRoot, { sessionId: id }, {
+      listAgentSessions: () => [session({ id, worktreePath, status })],
+      verifySourceCaller: () => ({ ok: true }),
+      readLockHandoffs: () => [handoff]
+    });
+  assert.deepEqual(read('before-restart').result.lockHandoffs, [handoff]);
+  assert.match(read('after-restart').stdout, /gx locks handoff-ack/);
+  assert.equal(read('another-worktree', 'active', '/repo/other').result.lockHandoffs, undefined);
+  assert.equal(read('stopped', 'finished').result.ok, false);
+});
+
 test('PR handoff never posts a summary if resolution or authenticated delivery fails', () => {
   const { options, deps, calls } = prHandoffFixture();
   const request = { ...options, prSummary: 'public handoff' };

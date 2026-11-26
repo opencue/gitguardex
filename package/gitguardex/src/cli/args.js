@@ -487,6 +487,10 @@ function parseAgentsArgs(rawArgs) {
       index += 1;
       continue;
     }
+    if (arg === '--merge-ready') {
+      options.mergeReady = true;
+      continue;
+    }
     if (arg === '--pr' || arg === '--pr-summary') {
       const value = requireValue(rest, index, arg);
       if (arg === '--pr') {
@@ -816,6 +820,9 @@ function parseAgentsArgs(rawArgs) {
   }
   if (options.prSummary && !options.pr) {
     throw new Error('--pr-summary requires --pr <number>');
+  }
+  if (options.mergeReady && (options.subcommand !== 'send' || !options.pr)) {
+    throw new Error('--merge-ready requires gx agents send --pr <number>');
   }
   if (options.ackMessageId && options.subcommand !== 'inbox') {
     throw new Error('--ack is only supported with `gx agents inbox`');

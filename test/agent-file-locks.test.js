@@ -454,6 +454,39 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     const receipt = path.join(repo, '.git', 'agent-file-lock-handoffs', `${id}.json`);
     const pendingReceipt = fs.readFileSync(receipt, 'utf8');
     assert.match(locksAt(next, ['handoff-request', file], b).stdout, new RegExp(`${id} is already pending`));
+    const mine = (cwd, env) => JSON.parse(locksAt(cwd, ['handoffs', '--mine', '--json'], env).stdout);
+    const expected = { id, file, requester: 'agent/b as bob', acknowledged: false };
+    const inbox = (sessionId) => {
+      const result = cp.spawnSync(process.execPath, ['-e', `
+        const { runInboxCommand } = require(${JSON.stringify(require.resolve('../src/agents/message'))});
+        const id = process.argv[1];
+        const worktree = process.cwd();
+        process.stdout.write(runInboxCommand(worktree, { sessionId: id, json: true }, {
+          listAgentSessions: () => [{ id, worktreePath: worktree, status: 'active' }],
+          verifySourceCaller: () => ({ ok: true })
+        }).stdout);
+      `, sessionId], { cwd: owner, encoding: 'utf8', env: { ...process.env, ...a } });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout).lockHandoffs;
+    };
+    assert.deepEqual(mine(owner, a), [expected]);
+    assert.deepEqual(inbox('before-restart'), [expected]);
+    assert.deepEqual(mine(next, b), []);
+    assert.deepEqual(mine(owner, b), []);
+    assert.notEqual(
+      runLockTool(['handoffs', '--min', '--json', '--target', owner], next, a).status,
+      0,
+    );
+    const unreadable = path.join(path.dirname(receipt), `${'0'.repeat(32)}.json`);
+    fs.writeFileSync(unreadable, '{');
+    assert.deepEqual(inbox('one-unreadable-record'), [expected]);
+    fs.unlinkSync(unreadable);
+    assert.equal(locksAt(next, ['handoff-ack', id], b).status, 2);
+    assert.notEqual(runLockTool(['handoff-ack', id, '--target', owner], next, a).status, 0);
+    assert.equal(locksAt(owner, ['handoff-ack', id], a).status, 0);
+    assert.equal(locksAt(owner, ['handoff-ack', id], a).status, 0);
+    assert.deepEqual(mine(owner, a), [{ ...expected, acknowledged: true }]);
+    assert.deepEqual(inbox('after-restart'), [{ ...expected, acknowledged: true }]);
     assert.match(locksAt(owner, ['handoffs'], a).stdout, /agent\/b.*bob/);
     assert.equal(locksAt(next, ['handoff-approve', id], b).status, 2);
     assert.equal(locksAt(owner, ['handoff-approve', id], b).status, 2);
@@ -495,6 +528,7 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     const resumed = locksAt(owner, ['handoff-approve', id], a);
     assert.equal(resumed.status, 0, resumed.stderr);
     assert.match(locksAt(next, ['handoffs'], b).stdout, new RegExp(commit));
+    assert.deepEqual(mine(owner, a), []);
     assert.match(locksAt(next, ['handoffs'], b).stdout, /npm test/);
     assert.equal(locksAt(owner, ['claim', '--branch', 'agent/a', file], a).status, 1);
     assert.equal(locksAt(next, ['validate', '--branch', 'agent/b', file], b).status, 0);
