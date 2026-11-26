@@ -4,6 +4,7 @@ const { run } = require('../core/runtime');
 const { repoApiPath, repoNameWithOwner } = require('../github/api');
 const { codexReviewEffort, resolveProviderBin, withProviderStderr } = require('./provider-binary');
 const { partitionByAnchor } = require('./diff');
+const { bugHunterEnabled, bugHunterPrompt, bugHunterResult, bugHunterLines } = require('./bug-hunter');
 const { normalizeReviewValue, reviewValueInstructions, reviewValueLines } = require('../pull-request/value');
 const { compactGeneratedReviewDiff } = require('./diff-context');
 const abide = require('../abide');
@@ -329,6 +330,7 @@ function renderReviewSummary({
   gate,
   degraded = false,
   abide: abideResult,
+  bugHunter,
   value,
   reviewDiffPath
 }) {
@@ -362,7 +364,7 @@ function renderReviewSummary({
     );
   }
 
-  lines.push('', ...reviewValueLines(value, truncated, reviewDiffPath));
+  lines.push('', ...reviewValueLines(value, truncated, reviewDiffPath), '', ...bugHunterLines(bugHunter));
 
   const footer = [`Provider \`${provider}\``];
   if (commit) footer.push(`commit \`${commit.slice(0, 7)}\``);
@@ -385,6 +387,7 @@ function renderMarkdownReview({
   truncated = false,
   prLens,
   abide: abideResult,
+  bugHunter,
   reviewedHeadSha,
   value
 }) {
@@ -429,6 +432,7 @@ function renderMarkdownReview({
     }
     lines.push('');
   }
+  if (bugHunter) lines.push('', ...bugHunterLines(bugHunter));
   return `${lines.join('\n').replace(/\n{3,}/g, '\n\n')}\n`;
 }
 
@@ -719,6 +723,7 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
     truncated,
     gate,
     abide: context.abide,
+    bugHunter: context.bugHunter,
     value: context.value,
     // A root-relative link keeps the PR on the same GitHub host.
     reviewDiffPath: slug ? `/${slug}/pull/${pr}/files` : ''
@@ -788,7 +793,7 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
         'Repair data:',
         JSON.stringify({ diff, ...settings.graphRepair })
       ].join('\n')
-    : compactReviewPrompt(diff, settings);
+    : settings.bugHunter ? bugHunterPrompt(diff) : compactReviewPrompt(diff, settings);
   const model = resolveReviewModel(settings.model);
   const command = commandForProvider(provider, prompt, {
     model,
@@ -796,25 +801,37 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
     inheritConfig: inheritCodexConfig()
   });
   const providerCommand = resolveProviderCommand(command.cmd, repoRoot);
-  const limitMs = settings.graphRepair
-    ? Math.min(resolveReviewTimeoutMs(timeoutMs), 60_000)
-    : resolveReviewTimeoutMs(timeoutMs);
-  const attempts = settings.graphRepair ? 1 : 2;
+  const bounded = settings.graphRepair || settings.bugHunter;
+  const limitMs = Math.min(
+    resolveReviewTimeoutMs(timeoutMs),
+    settings.graphRepair ? 60_000 : settings.bugHunter ? 120_000 : Infinity
+  );
+  const attempts = bounded ? 1 : 2;
+  const stage = settings.graphRepair ? 'graph repair' : settings.bugHunter ? 'BugHunter' : 'review';
+  const quiet = settings.agentQuiet || settings.bugHunter;
   let parseError;
   const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitguardex-review-'));
   try {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const startedAt = Date.now();
       console.log(
-        `${TOOL_PREFIX} code-assist ${provider} ${settings.graphRepair ? 'graph repair' : 'review'} attempt ${attempt + 1}/${attempts} started` +
-          `${model ? ` with model ${model}` : ''}${settings.agentQuiet ? '' : '; provider progress follows'}`
+        `${TOOL_PREFIX} code-assist ${provider} ${stage} attempt ${attempt + 1}/${attempts} started` +
+          `${model ? ` with model ${model}` : ''}${quiet ? '' : '; provider progress follows'}`
       );
-      const result = withProviderStderr(settings.agentQuiet, (stderr) =>
+      const result = withProviderStderr(quiet, (stderr) =>
         runner(providerCommand, command.args, {
           cwd: sandboxRoot,
           timeout: limitMs,
           input: command.input,
-          ...(settings.graphRepair ? { maxBuffer: 256_000 } : {}),
+          ...(bounded ? { maxBuffer: 256_000 } : {}),
+          ...(settings.bugHunter ? {
+            env: {
+              GH_TOKEN: undefined,
+              GITHUB_TOKEN: undefined,
+              GH_ENTERPRISE_TOKEN: undefined,
+              GITHUB_ENTERPRISE_TOKEN: undefined
+            }
+          } : {}),
           // Stdout alone is machine-readable; the provider replays the diff on stderr.
           stdio: ['pipe', 'pipe', stderr]
         })
@@ -853,6 +870,7 @@ function runProviderReviewPayload(provider, diff, repoRoot, timeoutMs, runner, s
           return { graph: extractJsonPayload(result.stdout).graph };
         }
         const payload = extractJsonPayload(result.stdout);
+        if (settings.bugHunter) return bugHunterResult(payload, diff, settings.truncated);
         const findings = findingsFromPayload(payload);
         console.log(
           `${TOOL_PREFIX} code-assist ${provider} review completed in ${Math.round((Date.now() - startedAt) / 1000)}s: ` +
@@ -999,6 +1017,23 @@ function runPrReview(options, deps = {}) {
     review = reviewWithProvider();
   }
   const { findings: providerFindings, graph } = review;
+  let bugHunter;
+  // An injected runner must opt in explicitly, independent of the caller's shell.
+  if (bugHunterEnabled(deps.run ? deps.env || {} : env)) {
+    try {
+      bugHunter = runProviderReviewPayload(provider, diff, repoRoot, options.timeoutMs, runner, {
+        model,
+        truncated,
+        bugHunter: true
+      });
+    } catch {
+      // The advisory pass cannot replace or block the primary verdict. Never
+      // publish raw secondary-provider errors, which could echo prompt data.
+      bugHunter = { status: 'unavailable', findings: [] };
+    }
+    console.log(`${TOOL_PREFIX} BugHunter: ${bugHunter.status} (${bugHunter.findings.length} finding(s))`);
+  }
+  const advisory = bugHunter ? { bugHunter } : {};
   const abideResult = collectAbideFindings(repoRoot, rawDiff, options, deps);
   if (abideResult.status === 'failed')
     console.log(`${TOOL_PREFIX} ${abideSummaryLine(abideResult)}`);
@@ -1021,6 +1056,7 @@ function runPrReview(options, deps = {}) {
     gate,
     prLens,
     abide: abideResult,
+    ...advisory,
     reviewedHeadSha: lensContext?.metadata.provenance.head.sha ?? prHeadSha
   };
   let savedArtifact;
@@ -1067,6 +1103,7 @@ function runPrReview(options, deps = {}) {
       findings,
       unanchored,
       truncated,
+      ...advisory,
       prLens
     };
   }
@@ -1080,6 +1117,7 @@ function runPrReview(options, deps = {}) {
       findings,
       unanchored,
       truncated,
+      ...advisory,
       prLens,
       reason: 'github-auth-unavailable'
     };
@@ -1094,6 +1132,7 @@ function runPrReview(options, deps = {}) {
     findings,
     unanchored,
     truncated,
+    ...advisory,
     inlineCount: outcome.posted,
     duplicates: outcome.duplicates,
     degraded: outcome.degraded,

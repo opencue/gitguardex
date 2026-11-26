@@ -1,6 +1,7 @@
 const { parseDiffLineMap } = require('./diff');
 
-const SOURCE = 'https://github.com/codexstar69/bug-hunter/blob/b412f9885e3ec074625a88c862c3f5b6724ec3b4/skills/hunter/SKILL.md';
+const SOURCE =
+  'https://github.com/codexstar69/bug-hunter/blob/b412f9885e3ec074625a88c862c3f5b6724ec3b4/skills/hunter/SKILL.md';
 const MAX_FINDINGS = 8;
 const SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 
@@ -31,10 +32,14 @@ function bugHunterResult(payload, diff, truncated) {
   for (const item of payload.findings.slice(0, MAX_FINDINGS)) {
     const { path, line, severity, message } = item ?? {};
     if (
-      typeof path !== 'string' || !Number.isSafeInteger(line) ||
-      !lineMap.get(path)?.has(line) || !SEVERITIES.has(severity) ||
-      typeof message !== 'string' || !message.trim()
-    ) continue;
+      typeof path !== 'string' ||
+      !Number.isSafeInteger(line) ||
+      !lineMap.get(path)?.has(line) ||
+      !SEVERITIES.has(severity) ||
+      typeof message !== 'string' ||
+      !message.trim()
+    )
+      continue;
     findings.push({ path, line, severity, message: message.trim().slice(0, 600) });
   }
   const partial = truncated || findings.length !== payload.findings.length;
