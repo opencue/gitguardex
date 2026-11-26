@@ -89,8 +89,14 @@ test('compactReviewPrompt confines the provider to the supplied diff', () => {
   assert.match(prompt, /not finding count or diff size/);
   assert.match(prompt, /"evidence":\{"path":"new\/file","line":12\}/);
   assert.match(prompt, /Do not return a numeric score/);
+  assert.match(prompt, /For each trade-off, give a "suggestedFix"/);
+  assert.match(prompt, /"doneWhen".*observable/);
   assert.match(prompt, /"improvements"/);
   assert.match(prompt, /at most two/);
+  assert.match(prompt, /how to verify it with a focused test, measurement, or observable check/);
+  assert.match(prompt, /Do not predict point gains or promise 100\/100/);
+  assert.match(prompt, /"opportunities"/);
+  assert.match(prompt, /Judge the likely impact of the revised behavior as a whole/);
 });
 
 test('runPrReview rejects a changed or missing expected head before loading the diff or running the provider', () => {
@@ -116,14 +122,20 @@ test('posting a review skips inline comment pagination only when there are no in
   const evidence = { path: 'a.js', line: 1 };
   const anchor = '/opencue/gitguardex/pull/42/files#diff-dc5985b2a377c4ea735c99979da277be3bd24be88cf411c11b52b5c3f9570536R1';
   const drivers = [
-    { area: 'performance', impact: 'benefit', weight: 'notable', reason: 'a.js avoids redundant work', evidence },
-    { area: 'maintenance', impact: 'trade-off', weight: 'limited', reason: 'a.js adds a cache to maintain', evidence },
+    { area: 'performance', impact: 'benefit', weight: 'notable', label: 'Fewer redundant calls', reason: 'a.js avoids redundant work', evidence },
+    { area: 'maintenance', impact: 'trade-off', weight: 'limited', label: 'Stale cache risk', reason: 'a.js adds a cache to maintain', evidence, suggestedFix: 'Invalidate the cached entry when the worktree moves', doneWhen: 'Moving a worktree drops its old cache entry' },
   ];
-  const first = 'Benchmark the cache with twenty concurrent worktrees';
-  const second = 'Test invalidation after a worktree moves';
+  const first = 'Reduce duplicate cache refreshes; measure refresh count with twenty concurrent worktrees';
+  const second = 'Guard concurrent cache writes; verify two overlapping updates keep the newest entry';
   const improvements = [null, first, ` ${first} `, 'x'.repeat(201), second, 'Omit this third action'];
+  const opportunities = [{
+    idea: 'Share live metadata across worktrees so review startup avoids full rescans',
+    pilot: 'Replay two worktrees from an existing cache fixture',
+    verify: 'Measure startup latency and verify branch changes still invalidate stale state',
+    evidence
+  }];
   for (const { findings, value, score, actions = false } of [
-    { findings: [], value: { score: 82, drivers, improvements }, score: 55, actions: true },
+    { findings: [], value: { score: 82, drivers, improvements, opportunities }, score: 55, actions: true },
     { findings: [{ ...finding, line: 500 }], value: { drivers, improvements: [] }, score: 55 },
     { findings: [finding], value: { drivers, improvements: 'not an array' }, score: 55 },
     { findings: [], value: { drivers: [{ ...drivers[0], evidence: { ...evidence, line: '1' } }, drivers[1]] } },
@@ -169,24 +181,98 @@ test('posting a review skips inline comment pagination only when there are no in
     assert.equal(postedPayload.comments.length, inlineCount);
     assert.match(postedPayload.body, findings.length ? /Merge gate: blocked/ : /No findings/);
     if (actions) {
-      assert.ok(postedPayload.body.includes(`**Suggested next steps**\n\n1. ${first}\n2. ${second}\n`));
+      assert.ok(postedPayload.body.includes(`**How to improve this PR**\n\n1. ${first}\n2. ${second}\n`));
+      assert.match(postedPayload.body, /High-impact opportunities · 80–100 potential/);
+      assert.match(postedPayload.body, /Share live metadata across worktrees.*\*\*First try:\*\* Replay two worktrees.*\*\*Verify:\*\* Measure startup latency/);
       assert.doesNotMatch(postedPayload.body, /Omit this third action/);
     } else {
-      assert.doesNotMatch(postedPayload.body, /Suggested next steps|Benchmark the cache/);
+      assert.doesNotMatch(postedPayload.body, /How to improve this PR|Reduce duplicate cache refreshes|High-impact opportunities/);
     }
     if (score === undefined) {
       assert.match(postedPayload.body, /PR value: unavailable/);
       assert.doesNotMatch(postedPayload.body, /PR value: \d+\/100/);
       assert.doesNotMatch(postedPayload.body, /\/files#diff-/);
+      assert.doesNotMatch(postedPayload.body, /This PR  [█░]+|Score breakdown|Priority fix/);
     } else {
       assert.ok(postedPayload.body.includes(`PR value: ${score}/100`));
+      assert.match(postedPayload.body, /🟢 \*\*\+5 vs\. neutral\*\*/);
+      assert.ok(postedPayload.body.includes(
+        `**Score breakdown:** **50** baseline → 🟢 [**+10** Fewer redundant calls](${anchor}) → 🟠 [**-5** Stale cache risk](${anchor}) → **55/100**`
+      ));
+      assert.ok(postedPayload.body.includes(
+        '```text\nNeutral  ██████████░░░░░░░░░░  50/100\nThis PR  ███████████░░░░░░░░░  55/100\n```'
+      ));
       assert.match(postedPayload.body, /Benefit\*\* · Performance & cost.*\+10.*avoids redundant work/);
       assert.match(postedPayload.body, /Trade-off\*\* · Maintainability & developer experience.*-5.*adds a cache/);
+      assert.match(postedPayload.body, /\*\*Priority fix · -5\*\*/);
+      assert.match(postedPayload.body, /\*\*Change:\*\* Invalidate the cached entry when the worktree moves/);
+      assert.match(postedPayload.body, /\*\*Done when:\*\* Moving a worktree drops its old cache entry/);
       assert.match(postedPayload.body, /not a merge verdict/i);
-      assert.equal(postedPayload.body.match(/\/files#diff-/g)?.length ?? 0, 2);
+      assert.match(postedPayload.body, /100\/100 is the scale ceiling, not a goal for every PR/);
+      assert.equal(postedPayload.body.match(/\/files#diff-/g)?.length ?? 0, actions ? 6 : 5);
       assert.ok(postedPayload.body.includes(` — [a&#46;js&#58;1](${anchor})`));
     }
   }
+});
+
+test('re-review shows proven changes and leaves unseen opportunities unverified', (t) => {
+  const target = initRepo();
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  const artifact = path.join(target, 'review.md');
+  const evidence = { path: 'a.js', line: 1 };
+  const firstValue = {
+    drivers: [{ area: 'product', impact: 'trade-off', weight: 'limited', label: 'Vanishing warning',
+      reason: 'A refusal dismisses the warning', suggestedFix: 'Keep warnings on refusal',
+      doneWhen: 'A refused retry leaves the warning visible', evidence }],
+    opportunities: [{ idea: 'Resume jobs on restart', pilot: 'Try two waiting fixtures',
+      verify: 'Each job resumes once without data loss', evidence }]
+  };
+  const secondValue = {
+    drivers: [{ area: 'product', impact: 'neutral', weight: 'none', reason: 'Warns on refusal', evidence }]
+  };
+  let diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+dismiss()\n';
+  let payload = { findings: [], value: firstValue };
+  let prompt;
+  let postedBody;
+  const deps = {
+    impactHistory: true,
+    run(_cmd, args, runOptions) {
+      if (args[0] === 'exec') {
+        prompt = runOptions.input;
+        return { status: 0, stdout: JSON.stringify(payload) };
+      }
+      if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+      if (args[0] === 'auth') return { status: 0 };
+      if (args[1] === 'view') return { status: 0, stdout: 'new-head' };
+      if (args[1] === 'diff') return { status: 0, stdout: diff };
+      assert.equal(args[0], 'api');
+      postedBody = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')).body;
+      return { status: 0 };
+    },
+  };
+  const options = { target, artifact, pr: 42, provider: 'codex', prLens: false, abide: false };
+  prReview.runPrReview(options, deps);
+  assert.doesNotMatch(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
+  assert.doesNotMatch(prompt, /Previous review data:/);
+
+  diff = diff.replace('dismiss()', 'keepWarning()');
+  payload = { findings: [], value: secondValue, followUp: [
+    { id: 'trade-off-1', status: 'addressed', evidence, observation: 'Warning stays visible after a refused re-CHECK' },
+    { id: 'opportunity-1', status: 'addressed', evidence: { ...evidence, line: 99 }, observation: 'Jobs resume' },
+    { id: 'opportunity-1', status: 'addressed', evidence },
+    { id: 'unknown', status: 'addressed', evidence, observation: 'No such item' },
+  ] };
+  prReview.runPrReview({ ...options, post: true }, deps);
+  assert.match(prompt, /Previous review data:.*Vanishing warning/s);
+  assert.match(postedBody, /Since the previous review/);
+  assert.match(postedBody, /Addressed in diff\*\*.*&#45;5.*Vanishing warning: Warning stays visible after a refused re&#45;CHECK.*#diff-[a-f0-9]{64}R1/);
+  assert.match(postedBody, /Not verified\*\*.*Resume jobs on restart.*Each job resumes once without data loss/);
+  assert.match(postedBody, /not evidence that tests were run/);
+  assert.match(postedBody, /PR value: 50\/100/);
+
+  prReview.runPrReview(options, deps);
+  assert.doesNotMatch(prompt, /Previous review data:/);
+  assert.doesNotMatch(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
 });
 
 test('quiet reviewer keeps the verdict and bounded failure diagnostics past the spawn buffer limit', () => {
@@ -792,7 +878,7 @@ printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact
   assert.match(artifact, /Neutral\*\* · Maintainability & developer experience.*preserves behavior/);
   assert.match(artifact, / — src\/a&#46;js&#58;1 \|$/m);
   assert.doesNotMatch(artifact, /\/files#diff-/);
-  assert.match(artifact, /Suggested next steps\*\*\n\n1\. 1&#41; Test the fallback .*&#36;x&#36;\n2\. &#45;&#45;&#45;/);
+  assert.match(artifact, /How to improve this PR\*\*\n\n1\. 1&#41; Test the fallback .*&#36;x&#36;\n2\. &#45;&#45;&#45;/);
   assert.doesNotMatch(artifact, /\n### fake heading|@example|<!-- gitguardex:fake -->|\[fake\]\(https:/);
 
   const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, {
