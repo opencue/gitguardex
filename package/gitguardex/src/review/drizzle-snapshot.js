@@ -107,6 +107,35 @@ function journalTag(entry, idx) {
   return entry.tag;
 }
 
+function uniqueJournalHistory(entries) {
+  let previousIdx = -1;
+  const tags = new Set();
+  for (const entry of entries) {
+    if (
+      !Number.isSafeInteger(entry?.idx) ||
+      entry.idx <= previousIdx ||
+      !nonemptyString(entry.tag) ||
+      tags.has(entry.tag)
+    )
+      return false;
+    previousIdx = entry.idx;
+    tags.add(entry.tag);
+  }
+  return true;
+}
+
+function fetchPrRevision(pr, repoRoot, runner) {
+  const gh = runner(GH_BIN, ['pr', 'view', String(pr), '--json', 'baseRefOid,headRefOid'], {
+    cwd: repoRoot,
+    timeout: 60_000
+  });
+  if (gh.status !== 0) return null;
+  const { baseRefOid: base, headRefOid: head } = JSON.parse(gh.stdout);
+  return typeof base === 'string' && SHA.test(base) && typeof head === 'string' && SHA.test(head)
+    ? { base, head }
+    : null;
+}
+
 function addedRegularText(section) {
   return /^diff --git [^\n]+\nnew file mode 100644\nindex 0+\.\.[\da-f]+\n--- \/dev\/null\n\+\+\+ b\/[^\n]+\n@@ -0,0 \+1(?:,\d+)? @@\n\+/.test(
     section
@@ -161,21 +190,14 @@ function projectDrizzleSnapshot(rawDiff, { pr, repoRoot, expectedBase, expectedH
   }
 
   try {
-    const gh = runner(GH_BIN, ['pr', 'view', String(pr), '--json', 'baseRefOid,headRefOid'], {
-      cwd: repoRoot,
-      timeout: 60_000
-    });
-    if (gh.status !== 0) return unchanged;
-    const { baseRefOid: base, headRefOid: head } = JSON.parse(gh.stdout);
+    const revision = fetchPrRevision(pr, repoRoot, runner);
     if (
-      typeof base !== 'string' ||
-      !SHA.test(base) ||
-      typeof head !== 'string' ||
-      !SHA.test(head) ||
-      (expectedBase && expectedBase !== base) ||
-      (expectedHead && expectedHead !== head)
+      !revision ||
+      (expectedBase && expectedBase !== revision.base) ||
+      (expectedHead && expectedHead !== revision.head)
     )
       return unchanged;
+    const { base, head } = revision;
 
     const git = (...args) => {
       const result = runner('git', args, {
@@ -209,6 +231,7 @@ function projectDrizzleSnapshot(rawDiff, { pr, repoRoot, expectedBase, expectedH
       !validSnapshot(oldSnapshot) ||
       !validSnapshot(newSnapshot) ||
       newSnapshot.id === oldSnapshot.id ||
+      newSnapshot.id === oldSnapshot.prevId ||
       newSnapshot.prevId !== oldSnapshot.id
     )
       return unchanged;
@@ -224,7 +247,11 @@ function projectDrizzleSnapshot(rawDiff, { pr, repoRoot, expectedBase, expectedH
       return unchanged;
     const older = journalEntries(readGeneratedJson(git('show', `${ancestor}:${journalFile}`)));
     const newer = journalEntries(readGeneratedJson(git('show', `${head}:${journalFile}`)));
-    if (newer.length !== older.length + 1 || !isDeepStrictEqual(older, newer.slice(0, -1)))
+    if (
+      newer.length !== older.length + 1 ||
+      !isDeepStrictEqual(older, newer.slice(0, -1)) ||
+      !uniqueJournalHistory(newer)
+    )
       return unchanged;
     journalTag(older.at(-1), number - 1);
     const tag = journalTag(newer.at(-1), number);
@@ -240,7 +267,7 @@ function projectDrizzleSnapshot(rawDiff, { pr, repoRoot, expectedBase, expectedH
       ...changes,
       ''
     ].join('\n');
-    return { diff: sections.join(''), snapshotPath: file, head };
+    return { diff: sections.join(''), snapshotPath: file, base, head };
   } catch {
     // Parse errors, missing objects, execution errors, and unsupported shapes
     // leave the full original input in place. The normal size gate then blocks.
@@ -248,4 +275,4 @@ function projectDrizzleSnapshot(rawDiff, { pr, repoRoot, expectedBase, expectedH
   }
 }
 
-module.exports = { projectDrizzleSnapshot };
+module.exports = { fetchPrRevision, projectDrizzleSnapshot };

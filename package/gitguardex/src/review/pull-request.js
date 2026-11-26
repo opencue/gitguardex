@@ -12,7 +12,7 @@ const {
   reviewFollowUpLines
 } = require('../pull-request/value-history');
 const { compactGeneratedReviewDiff } = require('./diff-context');
-const { projectDrizzleSnapshot } = require('./drizzle-snapshot');
+const { fetchPrRevision, projectDrizzleSnapshot } = require('./drizzle-snapshot');
 const abide = require('../abide');
 const {
   createRun,
@@ -149,7 +149,7 @@ function compactReviewPrompt(
       'In [unchanged lockfile context: ...] markers, old and new are original line numbers. Count the entire omitted range.'
     ] : []),
     ...(snapshotPath ? [
-      'A validated Drizzle snapshot delta replaces repeated schema content. Each JSON record lists the path and old/new values; omitted before/after means added/removed. Use the original SQL or application lines when possible; snapshot findings must use line 1 of the snapshot with no suggestion.'
+      'A validated Drizzle snapshot delta replaces repeated schema content. Each JSON record lists the path and old/new values; omitted before/after means added/removed. Use original SQL or application lines when possible. For snapshot findings and evidence use real line 1 only, and never suggest a snapshot edit.'
     ] : []),
     ...(prLens ? [GRAPH_PROMPT] : []),
     ...(!truncated && previousImpact.length
@@ -343,6 +343,7 @@ function renderReviewSummary({
   unanchored = [],
   duplicates = 0,
   commit = '',
+  reviewedBaseSha,
   truncated = false,
   snapshotPath,
   gate,
@@ -393,6 +394,7 @@ function renderReviewSummary({
 
   const footer = [`Provider \`${provider}\``];
   if (commit) footer.push(`commit \`${commit.slice(0, 7)}\``);
+  if (reviewedBaseSha) footer.push(`base \`${reviewedBaseSha.slice(0, 7)}\``);
   if (duplicates > 0) footer.push(`${duplicates} already reported`);
   if (truncated) footer.push('⚠️ diff truncated — review is partial');
   if (snapshotPath) footer.push(`Validated Drizzle snapshot delta: \`${snapshotPath}\``);
@@ -416,6 +418,7 @@ function renderMarkdownReview({
   abide: abideResult,
   bugHunter,
   reviewedHeadSha,
+  reviewedBaseSha,
   value,
   followUp
 }) {
@@ -428,6 +431,7 @@ function renderMarkdownReview({
     `- Severity: ${severityLine(findings)}`
   ];
   if (reviewedHeadSha) lines.push(`- Reviewed commit: ${reviewedHeadSha}`);
+  if (reviewedBaseSha) lines.push(`- Reviewed base: ${reviewedBaseSha}`);
   if (truncated) lines.push('- ⚠️ Diff truncated — review is partial');
   if (snapshotPath) lines.push(`- Validated Drizzle snapshot delta: \`${snapshotPath}\``);
   const abideLine = abideSummaryLine(abideResult);
@@ -735,8 +739,10 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
     fresh = anchored.filter((finding) => !alreadyPosted.has(findingFingerprint(finding)));
   }
   const duplicates = anchored.length - fresh.length;
-  const commit = fetchHeadSha(pr, repoRoot, runner);
-  if (context.reviewedHeadSha && commit !== context.reviewedHeadSha) {
+  const revision = context.reviewedBaseSha ? fetchPrRevision(pr, repoRoot, runner) : null;
+  const commit = context.reviewedBaseSha ? revision?.head : fetchHeadSha(pr, repoRoot, runner);
+  if ((context.reviewedHeadSha && commit !== context.reviewedHeadSha)
+    || (context.reviewedBaseSha && revision?.base !== context.reviewedBaseSha)) {
     throw new Error('PR changed before posting the review; rerun against the current diff');
   }
 
@@ -748,6 +754,7 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
     unanchored,
     duplicates,
     commit,
+    reviewedBaseSha: context.reviewedBaseSha,
     truncated,
     snapshotPath: context.snapshotPath,
     gate,
@@ -1091,6 +1098,9 @@ function runPrReview(options, deps = {}) {
   const findings = [...providerFindings, ...abideResult.findings];
   let prLens;
   const { anchored, unanchored, lineMap } = partitionByAnchor(findings, rawDiff);
+  // Only the real sentinel line was presented for this path. Other real
+  // lines must not validate evidence that refers to synthetic delta rows.
+  if (snapshotPath) lineMap.set(snapshotPath, new Set([1]));
   const value = normalizeReviewValue(review.value, lineMap);
   const gate = {
     ...evaluateReviewGate(findings, { blockSeverities: options.blockSeverities }),
@@ -1110,6 +1120,7 @@ function runPrReview(options, deps = {}) {
     prLens,
     abide: abideResult,
     ...advisory,
+    reviewedBaseSha: projection.base,
     reviewedHeadSha: lensContext?.metadata.provenance.head.sha ?? projection.head ?? prHeadSha
   };
   let savedArtifact;

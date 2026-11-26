@@ -17,7 +17,7 @@ const newId = '21234567-89ab-4def-8abc-0123456789ab';
 const oldEntry = { idx: 1, version: '7', when: 1, tag: '0001_previous', breakpoints: true };
 const newEntry = { idx: 2, version: '7', when: 2, tag: '0002_update_gym', breakpoints: true };
 
-function fixture(t, mutate = () => {}) {
+function fixture(t, mutate = () => {}, mutateBase = () => {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-review-drizzle-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const git = (...args) => {
@@ -89,6 +89,7 @@ function fixture(t, mutate = () => {}) {
     _meta: { columns: {}, schemas: {}, tables: {} }
   };
   const journal = { version: '7', dialect: 'postgresql', entries: [oldEntry] };
+  mutateBase({ oldSnapshot, journal });
   writeJson(previousPath, oldSnapshot);
   writeJson(journalPath, journal);
   git('init', '-q');
@@ -127,7 +128,7 @@ function fixture(t, mutate = () => {}) {
       };
     throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
   }
-  return { cwd, raw, project, runner };
+  return { cwd, raw, base, head, project, runner };
 }
 
 test('valid snapshot sends only semantic changes and retains every other diff section verbatim', (t) => {
@@ -207,6 +208,18 @@ test('incomplete, malformed and mismatched lineage leaves the large diff unrevie
     assert.deepEqual(project({ expectedBase: '0'.repeat(40) }), { diff: raw });
     assert.deepEqual(project({ expectedHead: '0'.repeat(40) }), { diff: raw });
   });
+  await t.test('cyclic predecessor link', (child) => {
+    const { raw, project } = fixture(child, undefined, ({ oldSnapshot }) => {
+      oldSnapshot.prevId = newId;
+    });
+    assert.deepEqual(project(), { diff: raw });
+  });
+  await t.test('duplicate journal tag', (child) => {
+    const { raw, project } = fixture(child, undefined, ({ journal }) => {
+      journal.entries.unshift({ ...newEntry, idx: 0 });
+    });
+    assert.deepEqual(project(), { diff: raw });
+  });
 });
 
 const reviewOptions = {
@@ -235,6 +248,17 @@ test('review uses compact input only before the cap and never offers synthetic-l
         return {
           status: 0,
           stdout: JSON.stringify({
+            value: {
+              drivers: [
+                {
+                  area: 'reliability',
+                  impact: 'benefit',
+                  weight: 'limited',
+                  reason: 'This row is not a real evidence anchor.',
+                  evidence: { path: snapshotPath, line: 100 }
+                }
+              ]
+            },
             findings: [
               {
                 path: snapshotPath,
@@ -253,7 +277,43 @@ test('review uses compact input only before the cap and never offers synthetic-l
   assert.equal(result.findings[0].line, 1);
   assert.equal(result.findings[0].suggestion, '');
   assert.deepEqual(result.unanchored, []);
-  assert.match(fs.readFileSync(result.artifactPath, 'utf8'), /Validated Drizzle snapshot delta/);
+  const artifact = fs.readFileSync(result.artifactPath, 'utf8');
+  assert.match(artifact, /Validated Drizzle snapshot delta/);
+  assert.match(artifact, /Reviewed base: [a-f0-9]{40}/);
+  assert.doesNotMatch(artifact, /This row is not a real evidence anchor/);
+});
+
+test('a base-only retarget prevents posting a projected review', (t) => {
+  const { cwd, base, head, runner } = fixture(t);
+  let revisionReads = 0;
+  assert.throws(
+    () =>
+      runPrReview(
+        {
+          ...reviewOptions,
+          target: cwd,
+          expectedBaseSha: base,
+          expectedHeadSha: head,
+          post: true
+        },
+        {
+          run(cmd, args, options) {
+            if (args[0] === 'auth') return { status: 0 };
+            if (args[0] === 'exec') return { status: 0, stdout: '{"findings":[]}' };
+            if (args.includes('headRefOid')) return { status: 0, stdout: head };
+            if (args.includes('baseRefOid,headRefOid') && ++revisionReads === 2) {
+              return {
+                status: 0,
+                stdout: JSON.stringify({ baseRefOid: '0'.repeat(40), headRefOid: head })
+              };
+            }
+            return runner(cmd, args, options);
+          }
+        }
+      ),
+    /PR changed before posting the review/
+  );
+  assert.equal(revisionReads, 2);
 });
 
 test('complete-review gate blocks unverifiable input and oversized remaining source before provider invocation', async (t) => {
