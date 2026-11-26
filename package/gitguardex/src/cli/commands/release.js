@@ -47,7 +47,10 @@ function ensureCleanWorkingTree(repoRoot) {
 }
 
 function readReleaseRepoPackageJson(repoRoot) {
-  const manifestPath = path.join(repoRoot, 'package.json');
+  const workspaceManifest = path.join(repoRoot, 'package', 'gitguardex', 'package.json');
+  const manifestPath = fs.existsSync(workspaceManifest)
+    ? workspaceManifest
+    : path.join(repoRoot, 'package.json');
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`Release blocked: package.json missing in ${repoRoot}`);
   }
@@ -243,6 +246,9 @@ function release(rawArgs) {
   }
 
   const releasePackageJson = readReleaseRepoPackageJson(repoRoot);
+  if (typeof releasePackageJson.version !== 'string' || !releasePackageJson.version.trim()) {
+    throw new Error('Release blocked: the package manifest has no version');
+  }
   const repoSlug = resolveReleaseGithubRepo(repoRoot);
   const currentTag = `v${releasePackageJson.version}`;
   const previousTag = resolvePreviousPublishedReleaseTag(repoSlug, currentTag);
