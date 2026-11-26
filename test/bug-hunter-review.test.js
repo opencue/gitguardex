@@ -138,9 +138,8 @@ for (const provider of ['codex', 'claude']) {
     assert.deepEqual(posted.comments, []);
     assert.equal(posted.commit_id, 'current-sha');
     assert.match(posted.body, /Merge gate: blocked.*1 blocking finding/);
-    assert.match(posted.body, /### BugHunter\n/);
-    assert.match(posted.body, /<summary>.*counter\.js:1<\/code><\/summary>/);
-    assert.match(posted.body, /<p>A valid zero now returns 42\.<\/p>/);
+    assert.match(posted.body, /#### Findings\n/);
+    assert.match(posted.body, /\| BugHunter \| <code>counter&#46;js&#58;1<\/code> \| A valid zero now returns 42&#46;/);
   });
 }
 

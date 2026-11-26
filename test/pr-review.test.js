@@ -574,6 +574,27 @@ test('renderReviewSummary reports the gate verdict and unanchored findings', () 
   assert.match(passing, /✅ \*\*Merge gate: pass\*\*/);
 });
 
+test('GitHub review lists Code Assist and both BugHunter findings under one heading', () => {
+  const body = prReview.renderReviewSummary({
+    provider: 'codex',
+    findings: [{ path: 'context.js', line: 4, severity: 'high', message: 'Context stays stale' }],
+    bugHunter: {
+      status: 'findings',
+      findings: [
+        { path: 'retry.js', line: 5, severity: 'medium', message: 'Retry runs twice' },
+        { path: 'queue.js', line: 9, severity: 'low', message: 'Queue skips a job' }
+      ]
+    }
+  });
+  assert.deepEqual(body.match(/^#### Findings$/gm), ['#### Findings']);
+  assert.doesNotMatch(body, /^### BugHunter|<details/gm);
+  assert.deepEqual(body.match(/^\| .* \| (?:Code Assist|BugHunter) \|.*$/gm), [
+    '| 🟠 high | Code Assist | <code>context&#46;js&#58;4</code> | Context stays stale |',
+    '| 🟡 medium | BugHunter | <code>retry&#46;js&#58;5</code> | Retry runs twice |',
+    '| 🔵 low | BugHunter | <code>queue&#46;js&#58;9</code> | Queue skips a job |'
+  ]);
+});
+
 
 test('capDiff flags truncation so a partial review never reads as a full one', () => {
   assert.deepEqual(prReview.capDiff('short', 100), { diff: 'short', truncated: false });

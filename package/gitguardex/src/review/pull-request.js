@@ -4,8 +4,15 @@ const { run } = require('../core/runtime');
 const { repoApiPath, repoNameWithOwner } = require('../github/api');
 const { codexReviewEffort, resolveProviderBin, withProviderStderr } = require('./provider-binary');
 const { partitionByAnchor } = require('./diff');
-const { bugHunterEnabled, bugHunterPrompt, bugHunterResult, bugHunterLines } = require('./bug-hunter');
-const { normalizeReviewValue, reviewValueInstructions, reviewValueLines } = require('../pull-request/value');
+const {
+  METHODOLOGY: BUG_HUNTER_METHODOLOGY,
+  bugHunterEnabled,
+  bugHunterPrompt,
+  bugHunterResult,
+  bugHunterStatusLine,
+  bugHunterLines
+} = require('./bug-hunter');
+const { escapeValueText, normalizeReviewValue, reviewValueInstructions, reviewValueLines } = require('../pull-request/value');
 const {
   openImpactHistory,
   improvementItems,
@@ -327,12 +334,16 @@ function severityLine(findings) {
 }
 
 function findingsTable(findings) {
-  const rows = ['| Severity | Location | Finding |', '|---|---|---|'];
+  const rows = ['| Severity | Source | Location | Finding |', '|---|---|---|---|'];
+  const cell = (value) => escapeValueText(value.replace(/[\p{Cc}\p{Cf}]/gu, ' '));
   for (const finding of sortBySeverity(findings)) {
     const meta = severityMeta(finding.severity);
-    const { lede } = splitMessage(finding.message, 140);
-    const cell = lede.replace(/\|/g, '\\|').replace(/\n+/g, ' ');
-    rows.push(`| ${meta.emoji} ${finding.severity} | \`${findingLocation(finding)}\` | ${cell} |`);
+    const summary = finding.source === 'BugHunter'
+      ? finding.message
+      : splitMessage(finding.message, 140).lede;
+    rows.push(
+      `| ${meta.emoji} ${finding.severity} | ${finding.source} | <code>${cell(findingLocation(finding))}</code> | ${cell(summary)} |`
+    );
   }
   return rows.join('\n');
 }
@@ -360,16 +371,15 @@ function renderReviewSummary({
   followUp,
   reviewDiffPath
 }) {
-  const lines = [MARKER, '### 🛡️ GitGuardex code-assist', ''];
-
-  if (findings.length === 0) {
-    lines.push(
-      bugHunter ? 'No primary code-assist findings.' : '✅ **No findings.** Nothing worth an inline comment in this diff.'
-    );
-  } else {
-    lines.push(`**${findings.length} finding(s)** — ${severityLine(findings)}`, '');
-  }
-  if (gate && (findings.length > 0 || bugHunter || gate.blocking.length > 0)) {
+  const lines = [MARKER, '### 🛡️ GitGuardex review', ''];
+  const combined = [
+    ...findings.map((finding) => ({
+      ...finding,
+      source: finding.category === 'abide' ? 'Abide' : 'Code Assist'
+    })),
+    ...(bugHunter?.findings ?? []).map((finding) => ({ ...finding, source: 'BugHunter' }))
+  ];
+  if (gate && (combined.length > 0 || bugHunter || gate.blocking.length > 0)) {
     const policy = `blocks on ${gate.blockSeverities.join('/')}${bugHunter ? ', any BugHunter finding,' : ''} or required PR improvements`;
     const count = `${gate.blocking.length} blocking finding(s)`;
     const detail = gate.bugHunterIncomplete
@@ -382,19 +392,16 @@ function renderReviewSummary({
       ''
     );
   }
-  if (findings.length > 0) lines.push(findingsTable(findings));
-
+  lines.push('#### Findings', '');
+  if (combined.length > 0)
+    lines.push(`**${combined.length} finding(s)** — ${severityLine(combined)}`, '', findingsTable(combined));
+  else lines.push(truncated || gate?.bugHunterIncomplete ? 'No confirmed findings.' : 'No findings.');
   if (unanchored.length > 0) {
-    lines.push(
-      '',
-      `<details><summary>⚠️ ${unanchored.length} finding(s) could not be anchored to the diff</summary>`,
-      '',
-      'These line numbers are outside the reviewed hunks, so GitHub cannot host them as inline comments.',
-      '',
-      findingsTable(unanchored),
-      '',
-      '</details>'
-    );
+    lines.push('', `⚠️ ${unanchored.length} finding(s) could not be anchored to the diff.`);
+  }
+  if (bugHunter && bugHunter.status !== 'clean') {
+    const status = bugHunterStatusLine(bugHunter);
+    if (status) lines.push('', status);
   }
 
   lines.push(
@@ -403,9 +410,7 @@ function renderReviewSummary({
       ? ['Items under **How to improve this PR** must be addressed and re-reviewed before a gated merge.', '']
       : []),
     ...reviewValueLines(value, truncated, reviewDiffPath),
-    ...reviewFollowUpLines(followUp, reviewDiffPath),
-    '',
-    ...bugHunterLines(bugHunter)
+    ...reviewFollowUpLines(followUp, reviewDiffPath)
   );
 
   const footer = [`Provider \`${provider}\``];
@@ -418,6 +423,7 @@ function renderReviewSummary({
     footer.push('⚠️ inline anchoring rejected by GitHub — reported in this summary instead');
   const abideLine = abideSummaryLine(abideResult);
   if (abideLine) footer.push(abideLine);
+  if (bugHunter) footer.push(BUG_HUNTER_METHODOLOGY);
   lines.push('', '---', footer.join(' · '));
 
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
