@@ -107,9 +107,27 @@ finish_event() {
   local label="${4:-}"
   local detail="${5:-}"
   local timestamp=""
+  local recovery="" outcome="" reason="" next_action=""
   [[ -n "$FINISH_EVENT_FILE" && -n "$FINISH_RUN_ID" ]] || return 0
+  if [[ "$state" == "running" || "$state" == "failed" ]]; then
+    case "$stage" in
+      preflight) next_action="Inspect the local check output and correct the failure before retrying finish." ;;
+      pr) next_action="Check whether the branch was pushed and the PR already exists before retrying finish." ;;
+      merge) next_action="Check whether GitHub already merged the PR before retrying gated finish." ;;
+      cleanup) next_action="Confirm the PR merged and the worktree is safe to remove before retrying cleanup." ;;
+    esac
+    if [[ "$state" == "failed" ]]; then
+      outcome="failed"
+      reason="${detail:-Stage failed}"
+    else
+      outcome="unconfirmed"
+      reason="No completed outcome recorded yet"
+    fi
+    recovery="$(printf ',"recovery":{"outcome":"%s","reason":"%s","nextAction":"%s"}' \
+      "$outcome" "$(finish_json_escape "$reason")" "$(finish_json_escape "$next_action")")"
+  fi
   timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  printf '{"schemaVersion":1,"runId":"%s","timestamp":"%s","branch":"%s","baseBranch":"%s","stage":"%s","state":"%s","index":%s,"total":8,"label":"%s","detail":"%s"}\n' \
+  printf '{"schemaVersion":1,"runId":"%s","timestamp":"%s","branch":"%s","baseBranch":"%s","stage":"%s","state":"%s","index":%s,"total":8,"label":"%s","detail":"%s"%s}\n' \
     "$(finish_json_escape "$FINISH_RUN_ID")" \
     "$timestamp" \
     "$(finish_json_escape "$FINISH_EVENT_BRANCH")" \
@@ -119,6 +137,7 @@ finish_event() {
     "$number" \
     "$(finish_json_escape "$label")" \
     "$(finish_json_escape "$detail")" \
+    "$recovery" \
     >> "$FINISH_EVENT_FILE" 2>/dev/null || true
 }
 
@@ -350,7 +369,7 @@ run_preflight() {
     echo "[agent-branch-finish] Pre-flight passed." >&2
     return 0
   fi
-  finish_progress failed preflight "failed"
+  finish_progress failed preflight "preflight exited with status ${preflight_status}"
   echo "[agent-branch-finish] Pre-flight FAILED; refusing push. Override with --no-preflight if you really mean it." >&2
   return 1
 }

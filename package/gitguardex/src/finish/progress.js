@@ -20,6 +20,28 @@ const SYMBOLS = {
 
 const TIMED_STAGES = new Set(['review', 'autofix']);
 
+const RECOVERY_ACTIONS = {
+  prepare: 'Inspect the worktree and pending changes before retrying finish.',
+  preflight: 'Inspect the local check output and correct the failure before retrying finish.',
+  pr: 'Check whether the branch was pushed and the PR already exists before retrying finish.',
+  review: 'Check the current PR head and base and the posted review before retrying gated finish.',
+  autofix: 'Check the repair commit and whether it was pushed before applying another fix.',
+  ci: 'Refresh checks and required approvals on the current PR head before retrying gated finish.',
+  merge: 'Check whether GitHub already merged the PR before retrying gated finish.',
+  cleanup: 'Confirm the PR merged and the worktree is safe to remove before retrying cleanup.',
+};
+
+function recoveryFields(stage, state, detail) {
+  if (state !== 'running' && state !== 'failed') return {};
+  return {
+    recovery: {
+      outcome: state === 'failed' ? 'failed' : 'unconfirmed',
+      reason: state === 'failed' ? (detail || 'Stage failed') : 'No completed outcome recorded yet',
+      nextAction: RECOVERY_ACTIONS[stage],
+    },
+  };
+}
+
 function createRunId(branch) {
   const digest = crypto.createHash('sha256').update(String(branch || '')).digest('hex').slice(0, 8);
   return `finish-${Date.now().toString(36)}-${process.pid}-${digest}`;
@@ -148,6 +170,8 @@ function createFinishProgress({
   const stageStartedAt = new Map();
   let activeTimedStage = '';
   let stopActiveHeartbeat = null;
+  let lastStage = 'prepare';
+  let failures = 0;
 
   output(`[gx:finish] ╭─ 🚀 GX FINISH · ${branch || 'current branch'} → ${baseBranch || 'configured base'}`);
   if (eventStream) {
@@ -189,6 +213,8 @@ function createFinishProgress({
     if (stage.state === state && stage.detail === normalizedDetail) return false;
     stage.state = state;
     stage.detail = normalizedDetail;
+    lastStage = id;
+    if (state === 'failed') failures += 1;
     const connector = id === 'cleanup' && state !== 'running' ? '╰─' : '├─';
     output(
       `[gx:finish] ${connector} ${SYMBOLS[state]} ${stage.index}/${STAGES.length}  ${stage.label}`
@@ -202,6 +228,7 @@ function createFinishProgress({
         total: STAGES.length,
         label: stage.label,
         detail: normalizedDetail,
+        ...recoveryFields(id, state, normalizedDetail),
       });
     }
     return true;
@@ -231,7 +258,7 @@ function createFinishProgress({
         startAt,
         ...(eventStream ? {
           eventDescriptor: eventStream.descriptor,
-          event: eventStream.event,
+          event: { ...eventStream.event, ...recoveryFields(id, 'running', normalizedDetail) },
         } : {}),
       });
     } catch (_error) {
@@ -249,8 +276,24 @@ function createFinishProgress({
     update(id, state, detail, displaySuffix);
   }
 
+  // Gate checks may throw after a stage reports success (e.g. the base moves).
+  // Preserve the error without replacing a more specific phase failure.
+  function trackFailure(operation) {
+    const previousFailures = failures;
+    try {
+      return operation();
+    } catch (error) {
+      if (failures === previousFailures) {
+        const reason = String(error?.message || 'Finish stopped').split('\n', 1)[0].slice(0, 500);
+        settle(lastStage, 'failed', reason);
+      }
+      throw error;
+    }
+  }
+
   return {
     start,
+    trackFailure,
     complete: (id, detail) => settle(id, 'complete', detail),
     skip: (id, detail) => settle(id, 'skipped', detail),
     fail: (id, detail) => settle(id, 'failed', detail),

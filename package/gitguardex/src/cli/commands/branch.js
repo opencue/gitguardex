@@ -353,7 +353,8 @@ function branch(rawArgs) {
       autoCommitWorktree ? 'checking worktree and pending changes' : 'resolving branch and finish policy',
     );
     const commitState = autoCommitWorktree
-      ? autoCommitWorktreeForFinish(repoRoot, autoCommitWorktree, finishBranch, { noAutoCommit, commitMessage })
+      ? progress.trackFailure(() =>
+        autoCommitWorktreeForFinish(repoRoot, autoCommitWorktree, finishBranch, { noAutoCommit, commitMessage }))
       : { changed: false, committed: false };
     if (commitState.committed && !agentQuiet) {
       console.log(`[${TOOL_NAME}] Auto-committed '${finishBranch}' before finish.`);
@@ -367,7 +368,7 @@ function branch(rawArgs) {
     // the merge never happens.
     let gateResult;
     if (gateReview) {
-      gateResult = runReviewGate({
+      gateResult = progress.trackFailure(() => runReviewGate({
         repoRoot,
         branch: finishBranch,
         // Must match how the shell resolves --base when it is omitted, which
@@ -390,7 +391,7 @@ function branch(rawArgs) {
         },
         progress,
         preflight: branchPreflightDuringCi(repoRoot, scriptArgs, { activeCwd, agentQuiet, progress }),
-      });
+      }));
     } else {
       progress.skip('review', 'review gate disabled');
       progress.skip('autofix', 'review gate disabled');
