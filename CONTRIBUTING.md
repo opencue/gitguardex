@@ -28,6 +28,12 @@ npm run package:check
   `templates/` are compatibility links to the CLI workspace; edit the canonical
   files there.
 
+## Additional documentation
+
+- Marketing: [GitHub About copy](./docs/marketing/about_description.txt) and
+  [video brief](./docs/marketing/video-brief.md).
+- Privacy: [optional telemetry and what it sends](./docs/telemetry.md).
+
 ## Pull request checklist
 
 - Keep changes small and focused
