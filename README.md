@@ -82,7 +82,7 @@ If a diff exceeds the review size limit, split the PR to continue. A standalone 
 
 BugHunter flags possible bugs, such as a second click queuing the same board twice. Its findings do not block a merge.
 
-[![Illustrative BugHunter review with two findings, file locations, and a note that the merge gate is unaffected.](./docs/images/bughunter-demo.png)](./docs/images/bughunter-demo.png)
+[![Animated BugHunter demo with two findings: the first is open with its evidence and location; the second is collapsed.](./docs/images/bughunter-review-demo.svg)](./docs/images/bughunter-review-demo.svg)
 
 ---
 
