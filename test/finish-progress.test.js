@@ -1,8 +1,10 @@
 const { test, assert } = require('./helpers/install-test-helpers');
+const { execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runReviewGate } = require('../src/finish/review-gate');
+const { readEventPage, readStatePage } = require('../src/finish/events');
 const { createFinishProgress, summarizeFinishRun } = require('../src/finish/progress');
 
 function cleanGateDeps() {
@@ -67,6 +69,128 @@ test('finish progress persists private structured JSONL events for agent polling
   assert.equal(events.at(-1).stage, 'review');
   assert.equal(events.at(-1).state, 'complete');
   assert.equal(events.at(-1).detail, 'clean');
+  assert.equal(events.at(-1).recovery, undefined);
+});
+
+test('a killed finish keeps a readable checkpoint without inventing a failure reason', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-interrupted-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const result = spawnSync(
+    process.execPath,
+    ['-e', `
+      const { createFinishProgress } = require(process.argv[1]);
+      const progress = createFinishProgress({
+        repoRoot: process.argv[2], branch: 'agent/test/recovery', baseBranch: 'main', write: () => {}
+      });
+      progress.start('ci', 'waiting for required GitHub checks');
+      require('node:fs').writeSync(1, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+      process.kill(process.pid, 'SIGKILL');
+    `, require.resolve('../src/finish/progress'), repoRoot],
+    { encoding: 'utf8', timeout: 10_000 },
+  );
+  assert.equal(result.signal, 'SIGKILL', result.stderr);
+  const page = readStatePage(repoRoot, result.stdout.trim());
+  const ci = page.stages.find(({ stage }) => stage === 'ci');
+  assert.equal(ci.state, 'running');
+  assert.equal(ci.detail, 'waiting for required GitHub checks');
+  assert.deepEqual(ci.recovery, {
+    outcome: 'unconfirmed',
+    reason: 'No completed outcome recorded yet',
+    nextAction: 'Refresh checks and required approvals on the current PR head before retrying gated finish.',
+  });
+});
+
+test('failed finish phases preserve the reported cause and an advisory next action', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-failed-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const progress = createFinishProgress({ repoRoot, write: () => {} });
+  progress.start('ci', 'waiting for required GitHub checks');
+  progress.fail('ci', 'mergeStateStatus=BLOCKED');
+  const { alerts } = readStatePage(repoRoot, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  assert.deepEqual(alerts.at(-1).recovery, {
+    outcome: 'failed',
+    reason: 'mergeStateStatus=BLOCKED',
+    nextAction: 'Refresh checks and required approvals on the current PR head before retrying gated finish.',
+  });
+});
+
+test('an exception after review completion records why finish stopped, then rethrows', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-thrown-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const progress = createFinishProgress({ repoRoot, write: () => {} });
+  const error = new Error('Source or base changed during review');
+  assert.throws(() => progress.trackFailure(() => {
+    progress.start('review', 'round 1/2');
+    progress.complete('review', 'clean review posted');
+    progress.skip('autofix', 'not needed');
+    throw error;
+  }), error);
+  const { stages, alerts } = readStatePage(repoRoot, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  assert.equal(stages.find(({ stage }) => stage === 'review').state, 'complete');
+  assert.equal(alerts.at(-1).stage, 'review');
+  assert.equal(alerts.at(-1).recovery?.reason, error.message);
+  assert.match(alerts.at(-1).recovery?.nextAction, /current PR head and base/);
+});
+
+test('overlapping preflight does not take ownership of an unreported CI failure', (t) => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-overlapping-'));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const progress = createFinishProgress({ repoRoot, write: () => {} });
+  const error = new Error('The saved review changed during CI');
+  assert.throws(() => progress.trackFailure(() => {
+    progress.start('ci', 'waiting for required GitHub checks');
+    progress.start('preflight', 'final verification');
+    progress.complete('preflight', 'passed');
+    throw error;
+  }), error);
+  const { stages, alerts } = readStatePage(repoRoot, progress.eventEnv.GUARDEX_FINISH_RUN_ID);
+  assert.equal(stages.find(({ stage }) => stage === 'preflight').state, 'complete');
+  assert.equal(alerts.at(-1).stage, 'ci');
+  assert.equal(alerts.at(-1).recovery?.reason, error.message);
+});
+
+function linkedCheckout(t) {
+  const repoRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gx-finish-hud-')));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd: repoRoot,
+    stdio: 'pipe',
+  });
+  git('init', '-q');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial', '--allow-empty');
+  const worktree = path.join(repoRoot, 'linked checkout');
+  git('worktree', 'add', '--detach', worktree);
+  return { repoRoot, worktree };
+}
+
+test('linked finishes appear in the primary checkout HUD without breaking worktree polling', (t) => {
+  const { repoRoot, worktree } = linkedCheckout(t);
+  const progress = createFinishProgress({ repoRoot: worktree, write: () => {} });
+  const runId = progress.eventEnv.GUARDEX_FINISH_RUN_ID;
+  const eventFile = progress.eventEnv.GUARDEX_FINISH_EVENT_FILE;
+  assert.equal(eventFile, path.join(repoRoot, '.omx', 'state', 'finish-runs', `${runId}.jsonl`));
+  assert.equal(fs.statSync(eventFile).nlink, 1);
+  const elsewhere = path.join(worktree, 'not-omx');
+  fs.mkdirSync(elsewhere);
+  fs.symlinkSync(elsewhere, path.join(worktree, '.omx'));
+  const first = readEventPage(worktree, runId);
+  progress.start('review', 'round 1/2');
+  const next = readEventPage(repoRoot, runId, first.cursor);
+  assert.equal(next.events.at(-1).stage, 'review');
+  assert.equal(next.events.at(-1).state, 'running');
+});
+
+test('an unsafe primary state directory does not stop worktree finish tracking', (t) => {
+  const { repoRoot, worktree } = linkedCheckout(t);
+  const target = path.join(repoRoot, 'not-omx');
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, path.join(repoRoot, '.omx'));
+  const progress = createFinishProgress({ repoRoot: worktree, write: () => {} });
+  const runId = progress.eventEnv.GUARDEX_FINISH_RUN_ID;
+  assert.equal(progress.eventEnv.GUARDEX_FINISH_EVENT_FILE,
+    path.join(worktree, '.omx', 'state', 'finish-runs', `${runId}.jsonl`));
+  assert.equal(readEventPage(worktree, runId).events[0].state, 'started');
+  assert.deepEqual(fs.readdirSync(target), []);
 });
 
 test('agent-quiet finish suppresses narrative transitions but keeps structured events', (t) => {

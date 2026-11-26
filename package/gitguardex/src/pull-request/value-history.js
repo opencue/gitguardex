@@ -6,6 +6,7 @@ const { artifactRoot } = require('../storage/run-artifacts');
 const { evidenceLink, escapeValueText, normalizeEvidence, plainText } = require('./value');
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
+const MAX_PENDING_IMPROVEMENTS = 16;
 const STATUSES = {
   addressed: 'Addressed in diff',
   'still-applies': 'Still applies',
@@ -31,7 +32,7 @@ function improvementItems(improvements, revision) {
 
 function snapshotImprovements(items) {
   if (!Array.isArray(items)) return [];
-  return items.slice(0, 2).flatMap((item) =>
+  return items.slice(0, MAX_PENDING_IMPROVEMENTS).flatMap((item) =>
     item &&
     plainText(item.label) &&
     /^improvement-[a-f0-9]{16}$/.test(item.id) &&
@@ -107,6 +108,15 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
   return {
     previous,
     pendingImprovements: last?.pendingImprovements ?? [],
+    assertCurrent(pendingImprovements) {
+      if (pendingImprovements?.length > MAX_PENDING_IMPROVEMENTS) {
+        throw new Error('Too many required PR improvements. Address the pending items and rerun.');
+      }
+      const current = readSnapshot(file)?.pendingImprovements ?? [];
+      if (JSON.stringify(current) !== JSON.stringify(last?.pendingImprovements ?? [])) {
+        throw new Error('Required PR improvement history changed. Rerun the review.');
+      }
+    },
     save(value, pendingImprovements) {
       if (!value && !pendingImprovements) return;
       const items = value ? [

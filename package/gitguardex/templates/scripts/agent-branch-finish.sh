@@ -107,9 +107,27 @@ finish_event() {
   local label="${4:-}"
   local detail="${5:-}"
   local timestamp=""
+  local recovery="" outcome="" reason="" next_action=""
   [[ -n "$FINISH_EVENT_FILE" && -n "$FINISH_RUN_ID" ]] || return 0
+  if [[ "$state" == "running" || "$state" == "failed" ]]; then
+    case "$stage" in
+      preflight) next_action="Inspect the local check output and correct the failure before retrying finish." ;;
+      pr) next_action="Check whether the branch was pushed and the PR already exists before retrying finish." ;;
+      merge) next_action="Check whether GitHub already merged the PR before retrying gated finish." ;;
+      cleanup) next_action="Confirm the PR merged and the worktree is safe to remove before retrying cleanup." ;;
+    esac
+    if [[ "$state" == "failed" ]]; then
+      outcome="failed"
+      reason="${detail:-Stage failed}"
+    else
+      outcome="unconfirmed"
+      reason="No completed outcome recorded yet"
+    fi
+    recovery="$(printf ',"recovery":{"outcome":"%s","reason":"%s","nextAction":"%s"}' \
+      "$outcome" "$(finish_json_escape "$reason")" "$(finish_json_escape "$next_action")")"
+  fi
   timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  printf '{"schemaVersion":1,"runId":"%s","timestamp":"%s","branch":"%s","baseBranch":"%s","stage":"%s","state":"%s","index":%s,"total":8,"label":"%s","detail":"%s"}\n' \
+  printf '{"schemaVersion":1,"runId":"%s","timestamp":"%s","branch":"%s","baseBranch":"%s","stage":"%s","state":"%s","index":%s,"total":8,"label":"%s","detail":"%s"%s}\n' \
     "$(finish_json_escape "$FINISH_RUN_ID")" \
     "$timestamp" \
     "$(finish_json_escape "$FINISH_EVENT_BRANCH")" \
@@ -119,6 +137,7 @@ finish_event() {
     "$number" \
     "$(finish_json_escape "$label")" \
     "$(finish_json_escape "$detail")" \
+    "$recovery" \
     >> "$FINISH_EVENT_FILE" 2>/dev/null || true
 }
 
@@ -350,7 +369,7 @@ run_preflight() {
     echo "[agent-branch-finish] Pre-flight passed." >&2
     return 0
   fi
-  finish_progress failed preflight "failed"
+  finish_progress failed preflight "preflight exited with status ${preflight_status}"
   echo "[agent-branch-finish] Pre-flight FAILED; refusing push. Override with --no-preflight if you really mean it." >&2
   return 1
 }
@@ -2133,14 +2152,19 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
 
   # The merge already landed (see the MERGED banner above), so a branch that
   # refuses to delete is a leftover to report, not a reason to fail the run and
-  # make a successful ship look broken. Keep the branch AND its remote in that
-  # case: the commits it still holds exist nowhere else.
+  # make a successful ship look broken. Keep both refs when deletion is refused.
   local_branch_cleaned=1
   if ! delete_local_branch_for_cleanup "$SOURCE_BRANCH"; then
     local_branch_cleaned=0
-    echo "[agent-branch-finish] Warning: kept local branch '${SOURCE_BRANCH}' — it holds commits that never landed in '${BASE_BRANCH}' (rebased during finish, or pushed after the merge)." >&2
-    echo "[agent-branch-finish] Inspect: git log ${BASE_BRANCH}..${SOURCE_BRANCH}" >&2
-    echo "[agent-branch-finish] Delete once you are satisfied: git branch -D ${SOURCE_BRANCH}" >&2
+    remaining_worktree="$(get_worktree_for_branch "$SOURCE_BRANCH")"
+    if [[ -n "$remaining_worktree" ]]; then
+      echo "[agent-branch-finish] Warning: kept local branch '${SOURCE_BRANCH}' — still checked out in worktree '${remaining_worktree}'." >&2
+      printf '[agent-branch-finish] Once the worktree is idle, retry: gx cleanup --base %q --branch %q\n' "$BASE_BRANCH" "$SOURCE_BRANCH" >&2
+    else
+      echo "[agent-branch-finish] Warning: kept local branch '${SOURCE_BRANCH}' — could not safely delete it after merge." >&2
+      printf '[agent-branch-finish] Inspect: git log %q\n' "${BASE_BRANCH}..${SOURCE_BRANCH}" >&2
+      printf '[agent-branch-finish] After resolving the cause, retry: gx cleanup --base %q --branch %q\n' "$BASE_BRANCH" "$SOURCE_BRANCH" >&2
+    fi
   fi
 
   if [[ "$local_branch_cleaned" -eq 1 && "$PUSH_ENABLED" -eq 1 && "$DELETE_REMOTE_BRANCH" -eq 1 ]]; then
@@ -2168,7 +2192,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
       prune_args+=(--delete-remote-branches)
     fi
   else
-    echo "[agent-branch-finish] Skipping branch deletion during prune so '${SOURCE_BRANCH}' survives; sweep later with: gx cleanup --base ${BASE_BRANCH}" >&2
+    echo "[agent-branch-finish] Skipping branch deletion during prune so '${SOURCE_BRANCH}' survives." >&2
   fi
 
   pivot_to_repo_root_before_prune
@@ -2184,7 +2208,7 @@ if [[ "$CLEANUP_AFTER_MERGE" -eq 1 ]]; then
   if [[ "$local_branch_cleaned" -eq 1 ]]; then
     kept_branch_summary=""
   else
-    kept_branch_summary="kept source branch (commits not in '${BASE_BRANCH}')"
+    kept_branch_summary="kept source branch (cleanup deferred)"
   fi
 
   if [[ "$source_worktree" == "$current_worktree" && "$source_worktree" == "${agent_worktree_root}"/* && -d "$source_worktree" ]]; then

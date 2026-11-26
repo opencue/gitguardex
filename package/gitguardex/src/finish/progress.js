@@ -20,6 +20,28 @@ const SYMBOLS = {
 
 const TIMED_STAGES = new Set(['review', 'autofix']);
 
+const RECOVERY_ACTIONS = {
+  prepare: 'Inspect the worktree and pending changes before retrying finish.',
+  preflight: 'Inspect the local check output and correct the failure before retrying finish.',
+  pr: 'Check whether the branch was pushed and the PR already exists before retrying finish.',
+  review: 'Check the current PR head and base and the posted review before retrying gated finish.',
+  autofix: 'Check the repair commit and whether it was pushed before applying another fix.',
+  ci: 'Refresh checks and required approvals on the current PR head before retrying gated finish.',
+  merge: 'Check whether GitHub already merged the PR before retrying gated finish.',
+  cleanup: 'Confirm the PR merged and the worktree is safe to remove before retrying cleanup.',
+};
+
+function recoveryFields(stage, state, detail) {
+  if (state !== 'running' && state !== 'failed') return {};
+  return {
+    recovery: {
+      outcome: state === 'failed' ? 'failed' : 'unconfirmed',
+      reason: state === 'failed' ? (detail || 'Stage failed') : 'No completed outcome recorded yet',
+      nextAction: RECOVERY_ACTIONS[stage],
+    },
+  };
+}
+
 function createRunId(branch) {
   const digest = crypto.createHash('sha256').update(String(branch || '')).digest('hex').slice(0, 8);
   return `finish-${Date.now().toString(36)}-${process.pid}-${digest}`;
@@ -44,8 +66,14 @@ function createPrivateDirectory(repoRoot, components) {
 
 function createEventStream(repoRoot, branch, baseBranch) {
   if (!repoRoot) return null;
+  const primary = primaryCheckout(repoRoot);
+  return openEventStream(repoRoot, primary, branch, baseBranch)
+    || (primary !== repoRoot ? openEventStream(repoRoot, repoRoot, branch, baseBranch) : null);
+}
+
+function openEventStream(repoRoot, stateRoot, branch, baseBranch) {
   try {
-    const directory = createPrivateDirectory(repoRoot, ['.omx', 'state', 'finish-runs']);
+    const directory = createPrivateDirectory(stateRoot, EVENT_DIRECTORY);
     const directoryDescriptor = fs.openSync(
       directory,
       fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
@@ -142,6 +170,8 @@ function createFinishProgress({
   const stageStartedAt = new Map();
   let activeTimedStage = '';
   let stopActiveHeartbeat = null;
+  let lastPrimaryStage = 'prepare';
+  let failures = 0;
 
   output(`[gx:finish] ╭─ 🚀 GX FINISH · ${branch || 'current branch'} → ${baseBranch || 'configured base'}`);
   if (eventStream) {
@@ -183,6 +213,10 @@ function createFinishProgress({
     if (stage.state === state && stage.detail === normalizedDetail) return false;
     stage.state = state;
     stage.detail = normalizedDetail;
+    // Skips do not advance the gate. Preflight can overlap CI and reports
+    // its own failures; it must not inherit a subsequent gate exception.
+    if (state !== 'skipped' && id !== 'preflight') lastPrimaryStage = id;
+    if (state === 'failed') failures += 1;
     const connector = id === 'cleanup' && state !== 'running' ? '╰─' : '├─';
     output(
       `[gx:finish] ${connector} ${SYMBOLS[state]} ${stage.index}/${STAGES.length}  ${stage.label}`
@@ -196,6 +230,7 @@ function createFinishProgress({
         total: STAGES.length,
         label: stage.label,
         detail: normalizedDetail,
+        ...recoveryFields(id, state, normalizedDetail),
       });
     }
     return true;
@@ -225,7 +260,7 @@ function createFinishProgress({
         startAt,
         ...(eventStream ? {
           eventDescriptor: eventStream.descriptor,
-          event: eventStream.event,
+          event: { ...eventStream.event, ...recoveryFields(id, 'running', normalizedDetail) },
         } : {}),
       });
     } catch (_error) {
@@ -243,8 +278,36 @@ function createFinishProgress({
     update(id, state, detail, displaySuffix);
   }
 
+  // Gate checks may throw after a stage reports success (e.g. the base moves).
+  // Preserve the error without replacing a more specific phase failure.
+  function trackFailure(operation) {
+    const previousFailures = failures;
+    try {
+      return operation();
+    } catch (error) {
+      if (failures === previousFailures) {
+        const reason = String(error?.message || 'Finish stopped').split('\n', 1)[0].slice(0, 500);
+        const stage = stageMap.get(lastPrimaryStage);
+        if (stage.state === 'complete') {
+          // A later guard can stop finish without undoing a completed check.
+          eventStream?.write({
+            ...stage,
+            stage: lastPrimaryStage,
+            total: STAGES.length,
+            kind: 'guard-failure',
+            ...recoveryFields(lastPrimaryStage, 'failed', reason),
+          });
+        } else {
+          settle(lastPrimaryStage, 'failed', reason);
+        }
+      }
+      throw error;
+    }
+  }
+
   return {
     start,
+    trackFailure,
     complete: (id, detail) => settle(id, 'complete', detail),
     skip: (id, detail) => settle(id, 'skipped', detail),
     fail: (id, detail) => settle(id, 'failed', detail),
@@ -276,7 +339,7 @@ function persistFinishOutput(eventFile, stdout, stderr) {
     throw new Error('unsafe finish log name');
   }
   const root = path.resolve(path.dirname(eventFile), '../../..');
-  const directory = createPrivateDirectory(root, ['.omx', 'state', 'finish-runs']);
+  const directory = createPrivateDirectory(root, EVENT_DIRECTORY);
   if (path.resolve(eventFile) !== path.join(directory, name)) throw new Error('unsafe finish log path');
   const file = path.join(directory, `${name}.output.log`);
   const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT
@@ -349,4 +412,5 @@ module.exports = {
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { EVENT_DIRECTORY, primaryCheckout } = require('./event-location');
 const { formatElapsed, startHeartbeat: startStageHeartbeat } = require('./heartbeat');

@@ -236,11 +236,14 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   let payload = { findings: [], value: firstValue };
   let prompt;
   let postedBody;
+  let failPost = false;
+  let duringReview;
   const deps = {
     impactHistory: true,
     run(_cmd, args, runOptions) {
       if (args[0] === 'exec') {
         prompt = runOptions.input;
+        duringReview?.();
         return { status: 0, stdout: JSON.stringify(payload) };
       }
       if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
@@ -249,13 +252,33 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
       if (args[1] === 'diff') return { status: 0, stdout: diff };
       assert.equal(args[0], 'api');
       postedBody = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')).body;
-      return { status: 0 };
+      return { status: failPost ? 1 : 0 };
     },
   };
   const options = { target, artifact, pr: 42, provider: 'codex', prLens: false, abide: false };
   prReview.runPrReview(options, deps);
   assert.doesNotMatch(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
   assert.doesNotMatch(prompt, /Previous review data:/);
+  failPost = true;
+  assert.throws(() => prReview.runPrReview({ ...options, post: true }, deps), /review post failed/);
+  assert.deepEqual(openImpactHistory(target, '42', diff, {}).pendingImprovements, []);
+  failPost = false;
+
+  const concurrent = { id: 'improvement-0111111111111111', label: 'Keep the parallel requirement', revision: 'a'.repeat(64) };
+  payload = { findings: [], value: secondValue };
+  duringReview = () => {
+    openImpactHistory(target, '43', diff, {}).save(null, [concurrent]);
+  };
+  assert.throws(
+    () => prReview.runPrReview({ ...options, pr: 43, post: true }, deps), /[Ii]mprovement history/
+  );
+  assert.deepEqual(openImpactHistory(target, '43', diff, {}).pendingImprovements, [concurrent]);
+  duringReview = undefined;
+  assert.deepEqual(
+    prReview.runPrReview({ ...options, pr: 43, post: true, pendingImprovements: [] }, deps).pendingImprovements,
+    [concurrent]
+  );
+  payload = { findings: [], value: firstValue };
   const first = prReview.runPrReview({ ...options, post: true }, deps);
   const proof = {
     id: first.pendingImprovements[0].id,
@@ -295,9 +318,20 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
 
   diff = diff.replace('keepWarning()', 'replayBothHeadings()');
   payload.followUp.push(proof);
-  assert.deepEqual(prReview.runPrReview(options, deps).pendingImprovements, []);
-  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, []);
+  const next = 'Check that failed retries preserve the warning';
+  payload.value = { ...secondValue, improvements: [next] };
+  assert.deepEqual(prReview.runPrReview(options, deps).pendingImprovements.map(({ label }) => label), [next]);
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements.map(({ label }) => label), [next]);
   assert.match(postedBody, /Addressed in diff\*\*.*Add the replay fixture.*The replay asserts both numeric headings/);
+  const pending = openImpactHistory(target, '42', diff, {}).pendingImprovements;
+  const completeDiff = diff;
+  diff += '+generated\n'.repeat(25000);
+  payload = { findings: [], value: secondValue, followUp: [] };
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, pending);
+  assert.match(postedBody, /Merge gate: blocked/);
+  diff = completeDiff + '+keepWarningOnRetry()\n';
+  payload.followUp = [{ ...proof, id: pending[0].id }];
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, []);
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {
@@ -564,6 +598,7 @@ test('renderReviewSummary reports the gate verdict and unanchored findings', () 
   assert.match(blocked, /⛔ \*\*Merge gate: blocked\*\* — 1 blocking finding/);
   assert.match(blocked, /🟠 1 high · 🔵 1 low/);
   assert.match(blocked, /could not be anchored to the diff/);
+  assert.match(blocked, /- <code>b&#46;js&#58;99<\/code>: stray/);
   assert.match(blocked, /commit `abcdef1`/);
 
   const passing = prReview.renderReviewSummary({

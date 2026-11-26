@@ -612,12 +612,14 @@ test('an enabled BugHunter pass without a complete verdict cannot clear the gate
   }
 });
 
-test('BugHunter autofix can repair another file but requires a clean re-review', () => {
+test('BugHunter autofix accounts for existing findings without blocking unrelated ones on the same line', () => {
   const clean = { status: 'clean', findings: [] };
-  for (const [bugHunter, findings, failure] of [
-    [clean, [], null],
-    [clean, [{ ...hunterFinding, severity: 'low' }], /still flags a previous BugHunter location/],
-    [undefined, [], /BugHunter.*did not complete/]
+  for (const [bugHunter, findings, changedPath, failure] of [
+    [clean, [], 'value.js', null],
+    [clean, [{ ...hunterFinding, severity: 'low' }], 'value.js', /still reports a previous BugHunter finding/],
+    [clean, [{ ...hunterFinding, message: 'unrelated advisory' }], 'value.js', null],
+    [clean, [], 'unrelated.js', /earlier blocking finding.*disappeared/],
+    [undefined, [], 'value.js', /BugHunter.*did not complete/]
   ]) {
     const opts = { ...gateArgs, options: { gateAutofix: true } };
     let round = 0;
@@ -632,7 +634,7 @@ test('BugHunter autofix can repair another file but requires a clean re-review',
       },
       runReviewFix: ({ findings }) => {
         assert.deepEqual(findings, [hunterFinding]);
-        return { status: 'fixed', changedFiles: ['cause.js'] };
+        return { status: 'fixed', changedFiles: [changedPath] };
       },
       pushBranch: () => { head = 'fixed-sha'; return { ok: true }; },
     });
@@ -648,6 +650,18 @@ test('BugHunter autofix can repair another file but requires a clean re-review',
 test('runReviewGate blocks when CI checks fail', () => {
   const deps = gateDeps({ waitForGreenCi: () => ({ status: 'checks-failed', pr: {} }) });
   assert.throws(() => runReviewGate(gateArgs, deps), /CI checks failed/);
+});
+
+test('an improvement published while CI was running invalidates a clean verdict', () => {
+  let pending = [];
+  const deps = gateDeps({
+    readPendingImprovements: () => pending,
+    waitForGreenCi: () => {
+      pending = [{ id: 'improvement-new', label: 'Concurrent review requirement' }];
+      return { status: 'green', pr: GREEN };
+    }
+  });
+  assert.throws(() => runReviewGate(gateArgs, deps), /improvement history changed/);
 });
 
 test('runReviewGate blocks when GitHub reports the PR not mergeable', () => {

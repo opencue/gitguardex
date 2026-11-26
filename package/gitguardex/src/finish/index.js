@@ -569,7 +569,7 @@ function finish(rawArgs, defaults = {}) {
       progress.start('prepare', worktreePath ? 'checking worktree and pending changes' : 'checking branch');
       let commitState = { changed: false, committed: false };
       if (worktreePath) {
-        commitState = autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options);
+        commitState = progress.trackFailure(() => autoCommitWorktreeForFinish(repoRoot, worktreePath, branch, options));
       }
 
       if (terse) {
@@ -694,12 +694,12 @@ function finish(rawArgs, defaults = {}) {
         finishArgs.push('--no-preflight');
       }
       if (options.mergeMode === 'pr' && options.gateReview) {
-        gateResult = runReviewGate({
+        gateResult = progress.trackFailure(() => runReviewGate({
           repoRoot, worktreePath, branch, baseBranch, options, progress,
           preflight: branchPreflightDuringCi(repoRoot, finishArgs, {
             activeCwd, agentQuiet: options.agentQuiet, progress,
           }),
-        });
+        }));
       } else {
         progress.skip('review', 'review gate disabled');
         progress.skip('autofix', 'review gate disabled');

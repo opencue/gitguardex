@@ -1,0 +1,39 @@
+{
+  "high-benefit": {
+    "drivers": [
+      {
+        "area": "product",
+        "impact": "benefit",
+        "magnitude": 88,
+        "label": "More timely summaries",
+        "reason": "Readers can check progress throughout the day.",
+        "evidence": { "path": "report.txt", "line": 1 }
+      }
+    ]
+  },
+  "high-risk": {
+    "drivers": [
+      {
+        "area": "performance",
+        "impact": "trade-off",
+        "magnitude": 93,
+        "likelihood": "plausible",
+        "label": "Unbounded report work",
+        "reason": "Large reports may take too long when they include every entry.",
+        "evidence": { "path": "report.txt", "line": 2 }
+      }
+    ]
+  },
+  "missing-evidence": null,
+  "invalid-evidence": {
+    "drivers": [
+      {
+        "area": "product",
+        "impact": "neutral",
+        "magnitude": 0,
+        "reason": "Output is unchanged.",
+        "evidence": { "path": "report.txt", "line": 3 }
+      }
+    ]
+  }
+}
