@@ -789,7 +789,7 @@ function syncReviewTitle(pr, { commit, base, value, truncated }, repoRoot, runne
  * review carrying the findings in the body: a review must never hard-fail on a
  * line-number technicality, because in gate mode that failure blocks the merge.
  */
-function postGithubReview(pr, context, repoRoot, runner = run) {
+function postGithubReview(pr, context, repoRoot, runner, beforePost) {
   const { provider, findings, anchored, unanchored, truncated, gate } = context;
   let fresh = anchored;
   if (anchored.length > 0) {
@@ -830,6 +830,7 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
   };
   if (commit) payload.commit_id = commit;
 
+  beforePost();
   let result = postReviewPayload(pr, payload, repoRoot, runner);
   let degraded = false;
   if (result.status !== 0 && payload.comments.length > 0) {
@@ -1273,15 +1274,14 @@ function runPrReview(options, deps = {}) {
   if (!history && !deps.run) {
     throw new Error('Required PR improvement history is unavailable. Rerun the review.');
   }
-  // Refuse a stale snapshot before posting, then commit the obligations
-  // only on a successful post. The locked write checks again before returning
-  // a gate verdict, including when our initial snapshot was empty.
-  history?.assertCurrent(pendingImprovements);
   const outcome = postGithubReview(
-    pr, { ...payload, expectedBaseSha: options.expectedBaseSha }, repoRoot, runner
+    pr, { ...payload, expectedBaseSha: options.expectedBaseSha }, repoRoot, runner, () => {
+      // Record obligations after validating the PR revision and before publishing them.
+      history?.assertCurrent(pendingImprovements);
+      if (!truncated) history?.save(value, pendingImprovements);
+    }
   );
-  if (truncated) history?.assertCurrent();
-  else history?.save(value, pendingImprovements);
+  history?.assertCurrent();
   return {
     posted: true,
     provider,

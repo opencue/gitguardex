@@ -12,6 +12,7 @@ const {
 } = require('./helpers/install-test-helpers');
 const prReview = require('../src/pr-review');
 const { openImpactHistory } = require('../src/pull-request/value-history');
+const { artifactRoot } = require('../src/storage/run-artifacts');
 const { parsePrReviewArgs } = require('../src/cli/args');
 const { codexReviewEffort } = require('../src/provider-binary');
 const CODEX_REVIEW_GUARD_ARGS = [
@@ -240,6 +241,7 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   let duringReview;
   const deps = {
     impactHistory: true,
+    env: {},
     run(_cmd, args, runOptions) {
       if (args[0] === 'exec') {
         prompt = runOptions.input;
@@ -261,7 +263,10 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.doesNotMatch(prompt, /Previous review data:/);
   failPost = true;
   assert.throws(() => prReview.runPrReview({ ...options, post: true }, deps), /review post failed/);
-  assert.deepEqual(openImpactHistory(target, '42', diff, {}).pendingImprovements, []);
+  assert.deepEqual(
+    openImpactHistory(target, '42', diff, {}).pendingImprovements.map(({ label }) => label),
+    firstValue.improvements
+  );
   failPost = false;
 
   const concurrent = { id: 'improvement-0111111111111111', label: 'Keep the parallel requirement', revision: 'a'.repeat(64) };
@@ -273,6 +278,15 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
     () => prReview.runPrReview({ ...options, pr: 43, post: true }, deps), /[Ii]mprovement history/
   );
   assert.deepEqual(openImpactHistory(target, '43', diff, {}).pendingImprovements, [concurrent]);
+  postedBody = undefined;
+  duringReview = () => {
+    openImpactHistory(target, '44', diff, {}, Date.now() + 1_000).save(null, []);
+  };
+  assert.throws(
+    () => prReview.runPrReview({ ...options, pr: 44, post: true }, deps),
+    /Could not save required PR improvements/
+  );
+  assert.equal(postedBody, undefined);
   duringReview = undefined;
   assert.deepEqual(
     prReview.runPrReview({ ...options, pr: 43, post: true, pendingImprovements: [] }, deps).pendingImprovements,
@@ -332,6 +346,26 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   diff = completeDiff + '+keepWarningOnRetry()\n';
   payload.followUp = [{ ...proof, id: pending[0].id }];
   assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, []);
+});
+
+test('invalid impact history blocks reads and cannot be overwritten by a stale review', (t) => {
+  const target = initRepo();
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  const root = artifactRoot(target);
+  const history = openImpactHistory(target, '42', 'diff', {});
+  history.save(null, []);
+  const file = path.join(root, fs.readdirSync(root).find((name) => name.endsWith('.json')));
+  const valid = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const invalid of ['{', ' '.repeat(16_385), JSON.stringify({ ...valid, pendingImprovements: [{}] })]) {
+    fs.writeFileSync(file, invalid);
+    assert.throws(() => openImpactHistory(target, '42', 'diff', {}), /history is unreadable/);
+    assert.throws(() => history.assertCurrent(), /history is unreadable/);
+    assert.throws(() => history.save(null, []), /Could not save required PR improvements/);
+    assert.equal(fs.readFileSync(file, 'utf8'), invalid);
+  }
+  delete valid.pendingImprovements;
+  fs.writeFileSync(file, JSON.stringify(valid));
+  assert.deepEqual(openImpactHistory(target, '42', 'diff', {}).pendingImprovements, []);
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {

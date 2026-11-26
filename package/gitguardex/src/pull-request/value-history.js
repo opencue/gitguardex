@@ -7,6 +7,7 @@ const { evidenceLink, escapeValueText, normalizeEvidence, plainText } = require(
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 const MAX_PENDING_IMPROVEMENTS = 16;
+const MAX_SNAPSHOT_BYTES = 16_384;
 const STATUSES = {
   addressed: 'Addressed in diff',
   'still-applies': 'Still applies',
@@ -31,25 +32,31 @@ function improvementItems(improvements, revision) {
 }
 
 function snapshotImprovements(items) {
-  if (!Array.isArray(items)) return [];
-  return items.slice(0, MAX_PENDING_IMPROVEMENTS).flatMap((item) =>
-    item &&
-    plainText(item.label) &&
-    /^improvement-[a-f0-9]{16}$/.test(item.id) &&
-    /^[a-f0-9]{64}$/.test(item.revision)
-      ? [{ id: item.id, label: plainText(item.label), revision: item.revision }]
-      : []
-  );
+  if (items === undefined) return [];
+  if (!Array.isArray(items) || items.length > MAX_PENDING_IMPROVEMENTS) {
+    throw new Error('Invalid required improvements list');
+  }
+  return items.map((item) => {
+    const label = plainText(item?.label);
+    if (!label || typeof item.id !== 'string' || !/^improvement-[a-f0-9]{16}$/.test(item.id) ||
+      typeof item.revision !== 'string' || !/^[a-f0-9]{64}$/.test(item.revision)) {
+      throw new Error('Invalid required improvement');
+    }
+    return { id: item.id, label, revision: item.revision };
+  });
 }
 
 function readSnapshot(file) {
   try {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.size > 16_384) return null;
+    const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (!stat) return null;
+    if (!stat.isFile() || stat.size > MAX_SNAPSHOT_BYTES) throw new Error('Invalid snapshot file');
     const { version, revision, startedAt, items, previous, pendingImprovements } = JSON.parse(
       fs.readFileSync(file, 'utf8')
     );
-    if (version !== 1 || !/^[0-9a-f]{64}$/.test(revision) || !Array.isArray(items)) return null;
+    if (version !== 1 || typeof revision !== 'string' || !/^[0-9a-f]{64}$/.test(revision) || !Array.isArray(items)) {
+      throw new Error('Invalid snapshot record');
+    }
     return {
       revision,
       startedAt: Number.isSafeInteger(startedAt) ? startedAt : 0,
@@ -57,8 +64,8 @@ function readSnapshot(file) {
       previous: snapshotItems(previous),
       pendingImprovements: snapshotImprovements(pendingImprovements)
     };
-  } catch {
-    return null;
+  } catch (cause) {
+    throw new Error('Required PR improvement history is unreadable. Rerun after restoring it.', { cause });
   }
 }
 
@@ -82,10 +89,12 @@ function writeSnapshot(file, { expectedImprovements, ...snapshot }) {
           pendingImprovements: snapshot.pendingImprovements
         }
       : snapshot;
+  const serialized = JSON.stringify({ version: 1, ...nextSnapshot });
+  if (Buffer.byteLength(serialized) > MAX_SNAPSHOT_BYTES) throw new Error('Snapshot exceeds size limit');
   const temporary = fs.mkdtempSync(`${file}.`);
   try {
     const next = path.join(temporary, 'snapshot.json');
-    fs.writeFileSync(next, JSON.stringify({ version: 1, ...nextSnapshot }), { mode: 0o600 });
+    fs.writeFileSync(next, serialized, { mode: 0o600 });
     fs.renameSync(next, file);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
@@ -105,15 +114,16 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
   const revision = hash(diff);
   const last = readSnapshot(file);
   const previous = (last?.revision === revision ? last.previous : last?.items) ?? [];
+  let expectedImprovements = last?.pendingImprovements ?? [];
   return {
     previous,
-    pendingImprovements: last?.pendingImprovements ?? [],
+    pendingImprovements: expectedImprovements,
     assertCurrent(pendingImprovements) {
       if (pendingImprovements?.length > MAX_PENDING_IMPROVEMENTS) {
         throw new Error('Too many required PR improvements. Address the pending items and rerun.');
       }
       const current = readSnapshot(file)?.pendingImprovements ?? [];
-      if (JSON.stringify(current) !== JSON.stringify(last?.pendingImprovements ?? [])) {
+      if (JSON.stringify(current) !== JSON.stringify(expectedImprovements)) {
         throw new Error('Required PR improvement history changed. Rerun the review.');
       }
     },
@@ -140,11 +150,12 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
         execFileSync('python3', [lock, `${file}.lock`, process.execPath, __filename, file], {
           input: JSON.stringify({
             revision, startedAt, items, previous, pendingImprovements,
-            expectedImprovements: pendingImprovements ? last?.pendingImprovements ?? [] : undefined
+            expectedImprovements: pendingImprovements ? expectedImprovements : undefined
           }),
           stdio: ['pipe', 'ignore', 'ignore'],
           timeout: 5_000
         });
+        if (pendingImprovements) expectedImprovements = pendingImprovements;
       } catch {
         if (pendingImprovements) throw new Error('Could not save required PR improvements. Rerun the review.');
         // Advisory history is best effort.
