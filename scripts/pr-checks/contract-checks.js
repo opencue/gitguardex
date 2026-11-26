@@ -83,9 +83,10 @@ function diffCoverage(base, head, scratch, root) {
   }
   if (!measured) return 'no changed lines measured by the coverage report';
 
+  const percent = (((measured - missed) / measured) * 100).toFixed(1);
   const diagnostics = [
     {
-      message: 'Coverage report measured ' + measured + ' changed lines; ' + missed + ' uncovered.',
+      message: `Changed-line coverage: ${percent}% (${measured - missed}/${measured} measured lines; ${missed} uncovered).`,
       severity: 'INFO',
       code: { value: 'diff-coverage' }
     }

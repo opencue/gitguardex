@@ -132,7 +132,7 @@ test('producer uses the exact Git patch and spec blobs; emits only advisory RDJS
   assert.deepEqual(f.files(), ['diff-cover.rdjson', 'oasdiff.rdjson'], result.stdout);
   const coverage = f.report('diff-cover');
   assert.equal(coverage.source.name, 'diff-cover');
-  assert.match(coverage.diagnostics[0].message, /1 changed lines; 1 uncovered/);
+  assert.match(coverage.diagnostics[0].message, /0\.0% \(0\/1 measured lines; 1 uncovered\)/);
   assert.deepEqual(coverage.diagnostics[1].location, {
     path: 'sample.js',
     range: { start: { line: 1 } }
