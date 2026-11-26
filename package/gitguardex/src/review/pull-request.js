@@ -723,6 +723,36 @@ function postReviewPayload(pr, payload, repoRoot, runner = run) {
   }
 }
 
+function syncReviewTitle(pr, { commit, base, value, truncated }, repoRoot, runner) {
+  const options = { cwd: repoRoot, timeout: 15_000 };
+  const current = runner(
+    GH_BIN,
+    ['pr', 'view', pr, '--json', 'title,state,headRefOid,baseRefOid'],
+    options
+  );
+  if (current.status !== 0) return;
+  const live = JSON.parse(current.stdout);
+  if (
+    live.state !== 'OPEN' ||
+    live.headRefOid !== commit ||
+    (base && live.baseRefOid !== base) ||
+    typeof live.title !== 'string'
+  ) return;
+
+  const managedPrefix = /^(?:\[(?:I(?:\d{1,3}|\?) R(?:\d{1,3}|\?)|Impact \d{1,3}\/100)\] )+/;
+  const original = live.title.replace(managedPrefix, '');
+  // Keep the leading conventional-commit type parseable after a squash merge.
+  const conventional = original.match(/^[a-z][a-z0-9-]*(?:\([^()\n]+\))?!?: /)?.[0] || '';
+  const subject = original.slice(conventional.length).replace(managedPrefix, '');
+  const { impactScore = null, riskScore = null } = (!truncated && value) || {};
+  const score = impactScore !== null || riskScore !== null
+    ? `[I${impactScore ?? '?'} R${riskScore ?? '?'}] `
+    : '';
+  const title = conventional + score + subject;
+  if (subject && title !== live.title)
+    runner(GH_BIN, ['pr', 'edit', pr, `--title=${title}`], options);
+}
+
 /**
  * Post one review. Findings whose fingerprint is already on the PR are skipped
  * so repeated `gx ship` attempts stop stacking identical comments.
@@ -793,15 +823,21 @@ function postGithubReview(pr, context, repoRoot, runner = run) {
   const outcome = { posted: fresh.length, duplicates, degraded, commit };
   // Review receipts verify the live server-side review on retry. No receipt
   // can come from a degraded post, missing ID, or a different commit.
-  if (!degraded) {
-    try {
-      const posted = JSON.parse(result.stdout);
-      if (Number.isSafeInteger(posted.id) && posted.id > 0 && posted.commit_id === commit) {
+  try {
+    const posted = JSON.parse(result.stdout);
+    if (commit && posted.commit_id === commit) {
+      if (!degraded && Number.isSafeInteger(posted.id) && posted.id > 0) {
         outcome.reviewId = posted.id;
         outcome.reviewBodyHash = crypto.createHash('sha256').update(payload.body).digest('hex');
       }
-    } catch { /* the review remains posted; only reuse is unavailable */ }
-  }
+      syncReviewTitle(
+        pr,
+        { commit, base: context.reviewedBaseSha || context.expectedBaseSha, value: context.value, truncated },
+        repoRoot,
+        runner
+      );
+    }
+  } catch { /* Unavailable metadata or title permissions cannot invalidate a posted review. */ }
   return outcome;
 }
 
@@ -1189,7 +1225,7 @@ function runPrReview(options, deps = {}) {
     };
   }
 
-  const outcome = postGithubReview(pr, payload, repoRoot, runner);
+  const outcome = postGithubReview(pr, { ...payload, expectedBaseSha: options.expectedBaseSha }, repoRoot, runner);
   history?.save(value);
   return {
     posted: true,
