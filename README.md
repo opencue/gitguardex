@@ -10,7 +10,7 @@
 [![CI](https://github.com/opencue/gitguardex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/opencue/gitguardex/actions/workflows/ci.yml)
 [License](./LICENSE)
 
-[Quick start](#install) · [AI code review](#code-assist-review-gate) · [Impact Assist](#impact-assist) · [How it compares](#how-it-compares)
+[Quick start](#install) · [PR walkthrough](#pr-walkthrough) · [AI code review](#code-assist-review-gate) · [Impact Assist](#impact-assist) · [How it compares](#how-it-compares)
 
 ## Install
 
@@ -36,6 +36,12 @@ gx branch finish --via-pr --wait-for-merge --cleanup
 ```
 
 Finish can commit and open the PR, run the selected gates, then squash-merge and clean up the finished lane. It does not override GitHub branch protection.
+
+## PR walkthrough
+
+This example follows a gated finish with optional autofix: start a worktree, open the PR, fix a blocking finding, then merge once review and required checks pass.
+
+![Simulated GitGuardex PR: claim files in a worktree, open the PR, fix a blocking review finding, and squash-merge after checks pass.](./docs/images/pr-workflow.svg)
 
 ## Code-assist review gate
 
@@ -66,14 +72,11 @@ gx branch finish --via-pr --wait-for-merge --cleanup --gate-review --gate-autofi
 
 If a diff exceeds the review size limit, split the PR to continue. A standalone review may report partial findings, but cannot pass the gate. See [preflight setup](./docs/preflight.md) for local checks.
 
-<details>
-<summary>See a real review on GitHub</summary>
+### Real GitHub review
 
 ![A GitGuardex review showing severity, file locations, and findings](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png)
 
 [Open the example PR](https://github.com/projects-kssk/Wireless_KFB_Project/pull/165) · [Full-size screenshot](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png)
-
-</details>
 
 ---
 
