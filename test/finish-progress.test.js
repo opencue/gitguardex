@@ -92,6 +92,9 @@ test('linked finishes appear in the primary checkout HUD without breaking worktr
   const eventFile = progress.eventEnv.GUARDEX_FINISH_EVENT_FILE;
   assert.equal(eventFile, path.join(repoRoot, '.omx', 'state', 'finish-runs', `${runId}.jsonl`));
   assert.equal(fs.statSync(eventFile).nlink, 1);
+  const elsewhere = path.join(worktree, 'not-omx');
+  fs.mkdirSync(elsewhere);
+  fs.symlinkSync(elsewhere, path.join(worktree, '.omx'));
   const first = readEventPage(worktree, runId);
   progress.start('review', 'round 1/2');
   const next = readEventPage(repoRoot, runId, first.cursor);

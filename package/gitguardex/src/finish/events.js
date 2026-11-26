@@ -25,10 +25,13 @@ function locateEventFile(repoRoot, runId) {
     // Keep old worktree-local runs and the writer's fail-open fallback readable.
     return eventFileInCheckout(repoRoot, runId);
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
     const primary = primaryCheckout(repoRoot);
     if (primary === repoRoot) throw error;
-    return eventFileInCheckout(primary, runId);
+    try {
+      return eventFileInCheckout(primary, runId);
+    } catch (primaryError) {
+      throw error.code === 'ENOENT' ? primaryError : error;
+    }
   }
 }
 
