@@ -70,6 +70,17 @@ test('BugHunter renders untrusted finding prose as text and identifies the pinne
   assert.match(report, /Does not affect the merge gate/);
 });
 
+test('BugHunter keeps partial results visible and opens only the first finding', () => {
+  const report = bugHunterLines({
+    status: 'partial',
+    findings: [FINDING, { ...FINDING, path: 'src/boards/queue.js', severity: 'medium' }]
+  }).join('\n');
+  assert.match(report, /Partial result:[^\n]+\n\n\*\*2 behavioral findings\*\*/);
+  assert.equal((report.match(/<details open>/g) || []).length, 1);
+  assert.match(report, /<details>\n<summary><strong>🟡 Medium<\/strong> · <code>queue\.js:1/);
+  assert.match(report, /<strong>Location:<\/strong> <code>src\/boards\/queue\.js:1/);
+});
+
 function mockedReview({ provider, enabled = true, failCodexLaunch = false, hunterResponse } = {}) {
   const calls = [];
   let posted;
@@ -127,7 +138,8 @@ for (const provider of ['codex', 'claude']) {
     assert.deepEqual(posted.comments, []);
     assert.equal(posted.commit_id, 'current-sha');
     assert.match(posted.body, /### BugHunter \(advisory\)/);
-    assert.match(posted.body, /counter\.js:1 — A valid zero now returns 42\./);
+    assert.match(posted.body, /<summary>.*counter\.js:1<\/code><\/summary>/);
+    assert.match(posted.body, /<p>A valid zero now returns 42\.<\/p>/);
   });
 }
 

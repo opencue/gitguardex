@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 410" width="800" height="410" role="img" aria-labelledby="title description">
+  <title id="title">BugHunter review preview</title>
+  <desc id="description">Two illustrative behavioral findings, separate from the merge decision. The second finding is shown collapsed.</desc>
+  <style>
+    text { font-family: system-ui, sans-serif; }
+    .mono { font-family: ui-monospace, monospace; }
+    .entry { animation: arrive 440ms ease-out both; }
+    .second { animation-delay: 180ms; }
+    .scan { animation: scan 750ms 100ms ease-out both; }
+    @keyframes arrive { from { opacity: .35; transform: translateY(8px); } }
+    @keyframes scan { from { opacity: 0; transform: translateX(-30px); } to { opacity: 0; transform: translateX(27px); } 45% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .entry, .scan { animation: none; } .scan { display: none; } }
+  </style>
+  <rect width="800" height="410" rx="17" fill="#0d1117"/>
+  <rect x="16" y="16" width="768" height="378" rx="14" fill="#101720" stroke="#344359"/>
+  <rect x="35" y="38" width="48" height="48" rx="11" fill="#162a42"/>
+  <circle cx="58" cy="61" r="10" fill="none" stroke="#79c0ff" stroke-width="2"/>
+  <path d="m65 68 6 6" stroke="#79c0ff" stroke-width="2" stroke-linecap="round"/>
+  <circle class="scan" cx="58" cy="61" r="13" fill="none" stroke="#79ffd2"/>
+  <text x="97" y="60" fill="#f0f6fc" font-size="24" font-weight="700">BugHunter</text>
+  <text x="97" y="81" fill="#a9bbd0" font-size="14">Advisory review · 2 behavioral findings</text>
+  <rect x="588" y="48" width="166" height="27" rx="13" fill="#162a42"/>
+  <text x="671" y="66" fill="#a4d6ff" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="1">ILLUSTRATIVE DEMO</text>
+  <g class="entry">
+    <rect x="35" y="108" width="730" height="137" rx="10" fill="#161e29" stroke="#344359"/>
+    <path d="m53 133 5 5 5-5" stroke="#e5bc63" stroke-width="1.7" fill="none"/>
+    <circle cx="82" cy="135" r="5" fill="#e5bc63"/>
+    <text x="96" y="140" fill="#f0d187" font-size="14" font-weight="700">MEDIUM</text>
+    <text class="mono" x="182" y="140" fill="#dbe9fc" font-size="14">recheck.ts:84</text>
+    <path d="M53 153h693" stroke="#344359"/>
+    <text x="53" y="177" fill="#e6edf3" font-size="16">Clicking again while a retry is pending can queue the same board twice.</text>
+    <text class="mono" x="53" y="211" fill="#a9bbd0" font-size="14">src/boards/recheck.ts:84</text>
+  </g>
+  <g class="entry second">
+    <rect x="35" y="256" width="730" height="47" rx="10" fill="#161e29" stroke="#344359"/>
+    <path d="m55 275 5 5-5 5" stroke="#82b9ed" stroke-width="1.7" fill="none"/>
+    <circle cx="82" cy="280" r="5" fill="#82b9ed"/>
+    <text x="96" y="285" fill="#a4d6ff" font-size="14" font-weight="700">LOW</text>
+    <text class="mono" x="182" y="285" fill="#dbe9fc" font-size="14">queue.ts:117</text>
+  </g>
+  <text x="35" y="346" fill="#b4c4d8" font-size="15">Does not affect the merge gate.</text>
+  <text x="35" y="373" fill="#8ea6c4" font-size="13">Expand a finding in the GitHub review to read its evidence.</text>
+</svg>
