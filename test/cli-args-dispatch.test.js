@@ -258,6 +258,9 @@ test('parseAgentsArgs applies interval overrides and validates the subcommand', 
 
   const handoff = ['send', '--session', 'target-session', '--message', 'private'];
   const prOptions = parseAgentsArgs([...handoff, '--pr', '42', '--pr-summary', 'public']);
+  assert.equal(parseAgentsArgs([...handoff, '--pr', '42', '--merge-ready']).mergeReady, true);
+  assert.throws(() => parseAgentsArgs([...handoff, '--merge-ready']), /--merge-ready requires/);
+  assert.throws(() => parseAgentsArgs(['inbox', '--merge-ready']), /--merge-ready requires/);
   assert.equal(prOptions.pr, '42');
   assert.equal(prOptions.prSummary, 'public');
   const retry = ['send', '--retry-pr-summary', 'handoff-42'];
