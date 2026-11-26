@@ -440,6 +440,10 @@ function maybeSelfUpdateBeforeStatus() {
     return;
   }
 
+  installGuardexUpdate(check, true);
+}
+
+function installGuardexUpdate(check, restart = false) {
   const installResult = run(NPM_BIN, ['i', '-g', `${packageJson.name}@latest`], { stdio: 'inherit' });
   if (installResult.status !== 0) {
     console.log(`[${TOOL_NAME}] Update failed. You can retry manually.`);
@@ -474,7 +478,63 @@ function maybeSelfUpdateBeforeStatus() {
   }
 
   console.log(`[${TOOL_NAME}] Updated to latest published version.`);
-  restartIntoUpdatedGuardex(check.latest);
+  if (restart) restartIntoUpdatedGuardex(check.latest);
+}
+
+const AGENT_NON_SESSION_COMMANDS = {
+  codex: new Set([
+    'exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'app-server', 'remote-control',
+    'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'queue', 'archive',
+    'delete', 'migrate-rollouts', 'migrate-nfs-db', 'unarchive', 'cloud', 'exec-server', 'features', 'help',
+  ]),
+  claude: new Set([
+    'agents', 'auth', 'doctor', 'gateway', 'help', 'import', 'install', 'mcp', 'plugin',
+    'purge', 'respawn', 'setup-token', 'ultrareview', 'update', 'upgrade',
+  ]),
+};
+
+function isInteractiveAgentLaunch(agent, args) {
+  const separator = args.indexOf('--');
+  const options = separator < 0 ? args : args.slice(0, separator);
+  // Including subcommand tokens after global options avoids prompting for
+  // e.g. "codex -c key=value exec" even when it inherits a terminal.
+  const nonSessionCommands = AGENT_NON_SESSION_COMMANDS[agent];
+  const subcommand = options.find((arg) =>
+    nonSessionCommands.has(arg) || (agent === 'codex' && ['agents', 'resume', 'fork'].includes(arg)),
+  );
+  return !nonSessionCommands.has(subcommand) && !options.some((arg) =>
+    ['-h', '--help', '-V', '-v', '--version'].includes(arg) ||
+    (agent === 'claude' && (arg === '-p' || arg === '--print')),
+  );
+}
+
+function update(args) {
+  const beforeAgent = args[0] === '--before-agent';
+  const usage = 'Usage: gx update\nCheck for a GitGuardex update and install it only after confirmation in a terminal.';
+  if (!beforeAgent && args.length === 1 && ['--help', '-h'].includes(args[0])) {
+    console.log(usage);
+    return;
+  }
+  if (beforeAgent) {
+    const [, agent, ...agentArgs] = args;
+    if (!Object.hasOwn(AGENT_NON_SESSION_COMMANDS, agent)) throw new Error('Expected codex or claude');
+    if (!isInteractiveAgentLaunch(agent, agentArgs)) return;
+  } else if (args.length) {
+    throw new Error(usage);
+  }
+  if (!isInteractiveTerminal()) return;
+
+  const check = checkForGuardexUpdate();
+  if (!check.checked || !check.updateAvailable) {
+    if (!beforeAgent)
+      console.log(`[${TOOL_NAME}] ${check.checked ? 'Already up to date.' : 'Could not check for updates.'}`);
+    return;
+  }
+  printUpdateAvailableBanner(check.current, check.latest);
+  process.stdout.write('Update now? [y/N] ');
+  const answer = readSingleLineFromStdin({ allowTtyEof: true }).trim().toLowerCase();
+  if (answer === 'y' || answer === 'yes') installGuardexUpdate(check);
+  else console.log(`\n[${TOOL_NAME}] Skipped update.`);
 }
 
 function maybeOpenSpecUpdateBeforeStatus() {
@@ -942,6 +1002,7 @@ module.exports = {
   detectOptionalLocalCompanionTools,
   askGlobalInstallForMissing,
   maybeSelfUpdateBeforeStatus,
+  update,
   maybeOpenSpecUpdateBeforeStatus,
   installGlobalToolchain,
   performCompanionInstall,

@@ -60,12 +60,13 @@ async function switchWorktree(args = [], deps = {}) {
 function shellInit(args = []) {
   if (args.length === 1 && ['--help', '-h'].includes(args[0])) {
     console.log(
-      'Usage: gx shell-init [bash|zsh|fish]\nPrint a shell function for gx switch; evaluate it in your interactive shell.'
+      'Usage: gx shell-init [bash|zsh|fish] [--agent-updates]\nPrint shell integration for gx switch. Add --agent-updates to offer GitGuardex updates before interactive codex and claude launches.\nBash/Zsh: eval "$(gx shell-init bash --agent-updates)" (use zsh for Zsh).\nFish: gx shell-init fish --agent-updates | source\nAdd the matching command to your shell startup file to keep it enabled. Existing agent aliases and functions are left alone.'
     );
     return;
   }
-  if (args.length > 1) throw new Error('Usage: gx shell-init [bash|zsh|fish]');
-  process.stdout.write(shellIntegration(args[0] || 'bash'));
+  const shells = args.filter((arg) => arg !== '--agent-updates');
+  if (shells.length > 1) throw new Error('Usage: gx shell-init [bash|zsh|fish] [--agent-updates]');
+  process.stdout.write(shellIntegration(shells[0], { agentUpdates: args.includes('--agent-updates') }));
 }
 
 module.exports = { switchWorktree, shellInit };

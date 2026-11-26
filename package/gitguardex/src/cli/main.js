@@ -328,6 +328,7 @@ async function main() {
   if (command === 'branch') return require('./commands/branch').branch(rest);
   if (command === 'switch') return require('./commands/worktree-navigation').switchWorktree(rest);
   if (command === 'shell-init') return require('./commands/worktree-navigation').shellInit(rest);
+  if (command === 'update') return require('../toolchain').update(rest);
   if (command === 'pivot') return require('./commands/branch').pivot(rest);
   if (command === 'ship') return require('./commands/branch').ship(rest);
   if (command === 'locks') return require('./commands/branch').locks(rest);

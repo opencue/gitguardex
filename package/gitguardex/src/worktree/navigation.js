@@ -210,9 +210,34 @@ function resolveWorktree(repoRoot, selector, options = {}, deps = {}) {
   return createLane(repoRoot, selector, selector, deps);
 }
 
-function shellIntegration(shell = 'bash') {
+function agentUpdateIntegration(shell) {
+  return ['codex', 'claude']
+    .map((agent) =>
+      shell === 'fish'
+        ? `if not functions --query ${agent}
+  function ${agent}
+    if status is-interactive
+      command gx update --before-agent ${agent} $argv; or true
+    end
+    command ${agent} $argv
+  end
+end
+`
+        : `if ! alias ${agent} >/dev/null 2>&1 && ! typeset -f ${agent} >/dev/null 2>&1; then
+  ${agent}() {
+    case $- in *i*) command gx update --before-agent ${agent} "$@" || : ;; esac
+    command ${agent} "$@"
+  }
+fi
+`,
+    )
+    .join('');
+}
+
+function shellIntegration(shell = 'bash', { agentUpdates = false } = {}) {
   if (!['bash', 'zsh', 'fish'].includes(shell))
     throw new Error('Supported shells: bash, zsh, fish');
+  const agentCode = agentUpdates ? agentUpdateIntegration(shell) : '';
   if (shell === 'fish')
     return `function gx
   if test "$argv[1]" = switch; and not contains -- --print $argv; and not contains -- --json $argv; and not contains -- --help $argv; and not contains -- -h $argv
@@ -226,7 +251,7 @@ function shellIntegration(shell = 'bash') {
     command gx $argv
   end
 end
-`;
+${agentCode}`;
   return `gx() {
   if [ "\${1-}" = switch ]; then
     case " $* " in
@@ -242,7 +267,7 @@ end
     command gx "$@"
   fi
 }
-`;
+${agentCode}`;
 }
 
 module.exports = { checkedRun, listWorktrees, resolveWorktree, shellIntegration };
