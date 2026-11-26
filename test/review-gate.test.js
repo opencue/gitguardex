@@ -587,8 +587,8 @@ test('an enabled BugHunter pass without a complete verdict cannot clear the gate
   }
 });
 
-test('autofix receives BugHunter findings and requires a clean re-review of an edited file', () => {
-  for (const changedFile of [hunterFinding.path, 'unrelated.js']) {
+test('BugHunter autofix can repair another file but requires a clean re-review', () => {
+  for (const bugHunter of [{ status: 'clean', findings: [] }, undefined]) {
     const opts = { ...gateArgs, options: { gateAutofix: true } };
     let round = 0;
     let head = 'initial-sha';
@@ -598,18 +598,18 @@ test('autofix receives BugHunter findings and requires a clean re-review of an e
         assert.equal(expectedHeadSha, head);
         return round++ === 0
           ? { posted: true, findings: [], bugHunter: { status: 'findings', findings: [hunterFinding] } }
-          : { posted: true, findings: [{ ...hunterFinding, severity: 'low' }], bugHunter: { status: 'clean', findings: [] } };
+          : { posted: true, findings: [{ ...hunterFinding, severity: 'low' }], bugHunter };
       },
       runReviewFix: ({ findings }) => {
         assert.deepEqual(findings, [hunterFinding]);
-        return { status: 'fixed', changedFiles: [changedFile] };
+        return { status: 'fixed', changedFiles: ['cause.js'] };
       },
       pushBranch: () => { head = 'fixed-sha'; return { ok: true }; },
     });
-    if (changedFile === hunterFinding.path) {
+    if (bugHunter) {
       assert.equal(runReviewGate(opts, deps).reviewedHeadSha, 'fixed-sha');
     } else {
-      assert.throws(() => runReviewGate(opts, deps), /disappeared without their file being changed/);
+      assert.throws(() => runReviewGate(opts, deps), /BugHunter.*did not complete/);
     }
     assert.equal(round, 2);
   }

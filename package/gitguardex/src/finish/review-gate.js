@@ -445,11 +445,11 @@ function runReviewGate(
   //    run so the fixer never grades its own homework.
   let review = reusable ? { findings: [] } : undefined;
   let verdict = reusable ? { clean: true, blocking: [] } : undefined;
-  // Files that have ever carried a BLOCKING finding, and files an auto-fix has
+  // Files that have carried a primary-review blocker, and files an auto-fix has
   // actually edited. A blocking finding that vanishes from a later round is only
   // treated as repaired when its file was touched — see resolveCarriedFindings.
   const blockedPaths = new Set();
-  const bugHunterBlockedPaths = new Set();
+  let hadBugHunterFindings = false;
   const repairedPaths = new Set();
   // A finding with no .path cannot be keyed into blockedPaths, so it needs its
   // own flag: if one ever blocked a round and then disappears, the gate must
@@ -514,13 +514,18 @@ function runReviewGate(
     }
 
     verdict = evaluate(review.findings, { bugHunter: review.bugHunter });
-    if (verdict.bugHunterIncomplete && verdict.blocking.length === 0) {
-      const message = `BugHunter did not complete (${review.bugHunter.status}). Rerun with a complete BugHunter verdict.`;
+    const bugHunterFindings = review.bugHunter?.findings ?? [];
+    hadBugHunterFindings ||= bugHunterFindings.length > 0;
+    if (
+      verdict.blocking.length === 0 &&
+      (verdict.bugHunterIncomplete || (hadBugHunterFindings && review.bugHunter?.status !== 'clean'))
+    ) {
+      const message = `BugHunter did not complete (${review.bugHunter?.status ?? 'missing'}). Rerun with a complete BugHunter verdict.`;
       reportProgress(progress, 'fail', 'review', message);
       throw new Error(`review gate: ${message} Refusing to merge.`);
     }
-    for (const finding of review.bugHunter?.findings ?? []) bugHunterBlockedPaths.add(finding.path);
     for (const finding of verdict.blocking) {
+      if (bugHunterFindings.includes(finding)) continue;
       if (finding && finding.path) {
         blockedPaths.add(finding.path);
       } else if (finding) {
@@ -618,15 +623,9 @@ function runReviewGate(
     );
   }
 
-  // A clean final verdict is not enough on its own. Review providers are
-  // nondeterministic: a blocking finding can simply fail to reappear in a later
-  // round, and reading that silence as "repaired" merges the bug. Every file
-  // that ever blocked must either still be under review or have actually been
-  // edited by a fix.
-  // A non-blocking primary finding in the same file cannot account for a
-  // BugHunter defect that disappeared without an edit.
-  const currentFindings = review.findings.filter((finding) => !bugHunterBlockedPaths.has(finding?.path));
-  const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings);
+  // Primary-review blockers still need a matching edit or current finding.
+  // BugHunter rechecks the full PR diff, so its clean verdict covers cross-file fixes.
+  const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, review.findings);
   if (unexplained.length > 0) {
     reportProgress(
       progress,
