@@ -80,9 +80,9 @@ If a diff exceeds the review size limit, split the PR to continue. A standalone 
 
 ### BugHunter demo
 
-BugHunter flags behavior to double-check, such as an action that can queue the same board twice. It runs alongside the main review and does not change the merge verdict.
+BugHunter flags possible bugs, such as a second click queuing the same board twice. Its findings do not block a merge.
 
-[![Illustrative BugHunter review with two findings, file locations, and a note that the merge gate is unaffected.](./docs/images/bughunter-demo.png)](./docs/images/bughunter-demo.png)
+[![Animated BugHunter demo with two findings: the first is open with its evidence and location; the second is collapsed.](./docs/images/bughunter-review-demo.svg)](./docs/images/bughunter-review-demo.svg)
 
 ---
 
@@ -90,13 +90,18 @@ BugHunter flags behavior to double-check, such as an action that can queue the s
 
 **Code review asks what could break. Impact Assist asks what the repository gains or gives up by merging.** The review renders this as a **PR impact** section: benefits, trade-offs, links to supporting diff lines, and suggested next steps when available.
 
-For example, a material benefit (**+25**) and a notable trade-off (**−10**) yield **65/100** from a neutral baseline of **50**. That is a diff-based estimate, not a benchmark or a merge verdict. If the diff is incomplete or the estimate has no valid supporting evidence, the section reports it as unavailable.
+The neutral baseline is **50**. The score is an estimate based on the diff, not a test result or a merge verdict. If the diff is incomplete or the estimate has no valid supporting evidence, the section reports it as unavailable.
 
 ### Impact Assist demo
 
-The chart compares this PR with the neutral baseline. For a trade-off, the review can show a fix and a pass condition. Bigger ideas include a small first experiment, and a later review can show what changed in the diff and what still needs verification.
+One change, two reviews:
 
-[![Illustrative PR impact review: 55/100 vs. 50 neutral, a priority fix for a −5 trade-off, a two-board restart experiment, and what changed since the previous review.](./docs/images/pr-impact-advisory-demo.png)](./docs/images/pr-impact-advisory-demo.png)
+- **First review · 55/100:** Waiting boards keep their place (**+10**), but a refused re-CHECK dismisses the active board’s warning (**−5**). Keep the warning visible until the operator dismisses it.
+- **Follow-up review · 60/100:** In the updated diff, a refused re-CHECK leaves the warning visible. The **−5** no longer applies.
+
+**Not yet verified:** recovery after a restart. First try: restart with two queued boards and check that both jobs resume exactly once, with no data loss.
+
+[![Illustrative follow-up: the chart shows 60/100; the missing warning is addressed in the diff and restart recovery is not verified.](./docs/images/pr-impact-advisory-demo.png)](./docs/images/pr-impact-advisory-demo.png)
 
 [See Impact Assist on a real GitGuardex PR](https://github.com/opencue/gitguardex/pull/907#pullrequestreview-6073301390).
 
