@@ -15,7 +15,7 @@ const cp = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { isDeepStrictEqual } = require('util');
-const { TOOL_NAME, SHORT_TOOL_NAME } = require('../../context');
+const { TOOL_NAME, SHORT_TOOL_NAME, CHECKOUT_ROOT, PACKAGE_ROOT } = require('../../context');
 const { gitRun, resolveRepoRoot } = require('../../git');
 const { requireValue } = require('../args');
 
@@ -43,8 +43,8 @@ const ABIDE_COMPILE_TIMEOUT_MS = 15 * 60_000;
 const ABIDE_CALIBRATE_TIMEOUT_MS = 10 * 60_000;
 
 const MANAGED_AGENT_SKILLS = [
-  { name: 'gitguardex', source: ['.claude', 'skills', 'gitguardex'] },
-  { name: 'opensrc', source: ['templates', 'codex', 'skills', 'opensrc'] },
+  { name: 'gitguardex', source: [CHECKOUT_ROOT, '.claude', 'skills', 'gitguardex'] },
+  { name: 'opensrc', source: [PACKAGE_ROOT, 'templates', 'codex', 'skills', 'opensrc'] },
 ];
 
 const MANAGED_HOOK_FILES = [
@@ -222,10 +222,6 @@ function mergeSettings(existing, template) {
   return base;
 }
 
-function findPackageRoot() {
-  return path.resolve(__dirname, '..', '..', '..');
-}
-
 function copyFileIfDifferent(srcPath, destPath, { dryRun }) {
   if (!fs.existsSync(srcPath)) {
     return { status: 'source-missing', dest: destPath };
@@ -247,10 +243,9 @@ function copyFileIfDifferent(srcPath, destPath, { dryRun }) {
 }
 
 function installHooks(repoRoot, { dryRun }) {
-  const packageRoot = findPackageRoot();
   const results = [];
   for (const hookFile of MANAGED_HOOK_FILES) {
-    const src = path.join(packageRoot, HOOKS_REL, hookFile);
+    const src = path.join(CHECKOUT_ROOT, HOOKS_REL, hookFile);
     const dest = path.join(repoRoot, HOOKS_REL, hookFile);
     const result = copyFileIfDifferent(src, dest, { dryRun });
     if (result.status === 'source-missing') continue;
@@ -267,10 +262,9 @@ function installHooks(repoRoot, { dryRun }) {
 }
 
 function installSlashCommands(repoRoot, { dryRun }) {
-  const packageRoot = findPackageRoot();
   const results = [];
   for (const filename of MANAGED_SLASH_COMMANDS) {
-    const src = path.join(packageRoot, COMMANDS_REL, filename);
+    const src = path.join(CHECKOUT_ROOT, COMMANDS_REL, filename);
     const dest = path.join(repoRoot, COMMANDS_REL, filename);
     const result = copyFileIfDifferent(src, dest, { dryRun });
     if (result.status === 'source-missing') continue;
@@ -280,10 +274,9 @@ function installSlashCommands(repoRoot, { dryRun }) {
 }
 
 function installAgentSkills(repoRoot, { dryRun }) {
-  const packageRoot = findPackageRoot();
   const results = [];
   for (const skill of MANAGED_AGENT_SKILLS) {
-    const srcDir = path.join(packageRoot, ...skill.source);
+    const srcDir = path.join(...skill.source);
     if (!fs.existsSync(srcDir)) {
       results.push({ skill: skill.name, status: 'source-missing' });
       continue;

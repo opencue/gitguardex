@@ -18,6 +18,9 @@ npm run package:check
   private and runs repository-wide checks. In its `src/`, `worktree/` owns
   checkout lifecycle, `pull-request/` owns GitHub PR operations and reporting,
   and `review/` owns review providers and diff handling.
+  To install from a checkout, pack the CLI with
+  `npm pack --workspace @imdeadpool/guardex` and install the resulting tarball,
+  not the root directory.
 - `package/frontend/` is the standalone frontend with its own lockfile. Run
   `npm ci --prefix package/frontend` to install it.
 - `scripts/`, `test/` and `.github/` are repository-level tooling, integration

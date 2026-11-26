@@ -4,6 +4,12 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
+const workspaceRoot = path.resolve(PACKAGE_ROOT, '../..');
+const CHECKOUT_ROOT =
+  path.join(workspaceRoot, 'package', 'gitguardex') === PACKAGE_ROOT &&
+  fs.existsSync(path.join(workspaceRoot, '.git'))
+    ? workspaceRoot
+    : PACKAGE_ROOT;
 const CLI_ENTRY_PATH = path.join(PACKAGE_ROOT, 'bin', 'multiagent-safety.js');
 const packageJsonPath = path.join(PACKAGE_ROOT, 'package.json');
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
@@ -91,7 +97,7 @@ const RTK_BIN = process.env.GUARDEX_RTK_BIN || 'rtk';
 let _ghBin;
 let _requiredSystemTools;
 const MAINTAINER_RELEASE_REPO = path.resolve(
-  process.env.GUARDEX_RELEASE_REPO || PACKAGE_ROOT,
+  process.env.GUARDEX_RELEASE_REPO || CHECKOUT_ROOT,
 );
 const NPM_BIN = process.env.GUARDEX_NPM_BIN || 'npm';
 const OPENSPEC_BIN = process.env.GUARDEX_OPENSPEC_BIN || 'openspec';
@@ -1286,6 +1292,7 @@ module.exports = {
   cp,
   cachedSpawn,
   PACKAGE_ROOT,
+  CHECKOUT_ROOT,
   CLI_ENTRY_PATH,
   packageJsonPath,
   packageJson,
