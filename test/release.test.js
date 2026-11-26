@@ -153,7 +153,7 @@ exit 1
 });
 
 
-test('release prefers the target repo package manifest when resolving the GitHub repo', () => {
+test('release prefers the CLI workspace manifest over the private repository root', () => {
   const repoDir = initRepoOnBranch('main');
   seedReleasePackageManifest(repoDir, {
     repository: {
@@ -161,6 +161,10 @@ test('release prefers the target repo package manifest when resolving the GitHub
       url: 'git+https://github.com/example/custom-release-target.git',
     },
   });
+  const workspacePath = path.join(repoDir, 'package/gitguardex');
+  fs.mkdirSync(workspacePath, { recursive: true });
+  fs.renameSync(path.join(repoDir, 'package.json'), path.join(workspacePath, 'package.json'));
+  fs.writeFileSync(path.join(repoDir, 'package.json'), '{"name":"private-repo","private":true}\n');
   fs.writeFileSync(
     path.join(repoDir, 'README.md'),
     `## Release notes

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const hooks = require('../src/worktree-hooks');
+const hooks = require('../package/gitguardex/src/worktree/hooks');
 const { runWorktreeHooksCommand } = require('../src/cli/commands/worktree-hooks');
 const legacy = require('../src/scaffold/provision-approvals');
 

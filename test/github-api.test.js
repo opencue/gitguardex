@@ -1,5 +1,5 @@
 const { test, assert } = require('./helpers/install-test-helpers');
-const { repoApiPath, repoNameWithOwner } = require('../src/github-api');
+const { repoApiPath, repoNameWithOwner } = require('../package/gitguardex/src/github/api');
 
 test('repoNameWithOwner resolves the canonical GitHub owner/name through gh repo view', () => {
   const calls = [];

@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const repoRoot = path.resolve(__dirname, '..')
-const frontendRoot = path.join(repoRoot, 'frontend')
+const frontendRoot = path.join(repoRoot, 'package/frontend')
 
 test('frontend package exposes the documented Next.js plus custom server scripts', () => {
   const packageJson = JSON.parse(

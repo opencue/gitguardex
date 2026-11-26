@@ -97,7 +97,7 @@ function loadFinish({ gitRun, run: runFn }) {
     }),
     summarizeFinishRun: () => ({})
   });
-  stub('src/worktree-hooks.js', { runLifecycleHookSync: () => {} });
+  stub('src/worktree/hooks.js', { runLifecycleHookSync: () => {} });
 
   const finishPath = require.resolve(path.join(repoRoot, 'src/finish/index.js'));
   delete require.cache[finishPath];
@@ -458,7 +458,7 @@ test('finish error message includes status in parentheses and retry hint', () =>
     }),
     summarizeFinishRun: () => ({})
   });
-  stub2('src/worktree-hooks.js', { runLifecycleHookSync: () => {} });
+  stub2('src/worktree/hooks.js', { runLifecycleHookSync: () => {} });
 
   const finishPath = require.resolve(path.join(repoRoot, 'src/finish/index.js'));
   delete require.cache[finishPath];

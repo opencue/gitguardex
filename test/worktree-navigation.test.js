@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { listWorktrees, resolveWorktree, shellIntegration } = require('../src/worktree-navigation');
+const { listWorktrees, resolveWorktree, shellIntegration } = require('../package/gitguardex/src/worktree/navigation');
 const { switchWorktree } = require('../src/cli/commands/worktree-navigation');
 
 function fixture(t) {

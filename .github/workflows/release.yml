@@ -95,8 +95,8 @@ jobs:
             echo "$PACKAGE_NAME@$PACKAGE_VERSION is already on npm; skipping publish."
             package_file="$(npm pack "$PACKAGE_NAME@$PACKAGE_VERSION" --pack-destination dist)"
           else
-            npm pkg set version="$PACKAGE_VERSION" gitHead="$GITHUB_SHA"
-            package_file="$(npm pack --pack-destination dist)"
+            npm pkg set version="$PACKAGE_VERSION" gitHead="$GITHUB_SHA" --workspace "$PACKAGE_NAME"
+            package_file="$(npm pack --workspace "$PACKAGE_NAME" --pack-destination dist)"
           fi
           # A bare dist/file.tgz is parsed by npm as GitHub shorthand.
           echo "package_path=./dist/$package_file" >> "$GITHUB_OUTPUT"

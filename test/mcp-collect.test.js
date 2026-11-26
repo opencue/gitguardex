@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const collect = require('../src/mcp/collect');
-const sharedGitState = require('../src/shared-git-state');
+const sharedGitState = require('../package/gitguardex/src/git/shared-state');
 
 test('bounded context preserves mandatory conflicts/errors and prioritizes relevant peers', () => {
   const context = { repo: 'r', worktree: '/r', branch: 'agent/me', protected: false,

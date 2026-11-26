@@ -5,8 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { parsePrReviewArgs } = require('../src/cli/args');
-const { runPrReview, compactReviewPrompt, evaluateReviewGate } = require('../src/pr-review');
-const { prLensEnabled } = require('../src/pr-lens');
+const { runPrReview, compactReviewPrompt, evaluateReviewGate } = require('../package/gitguardex/src/review/pull-request');
+const { prLensEnabled } = require('../package/gitguardex/src/pull-request/lens');
 const { createFakeBin, runNodeWithEnv } = require('./helpers/install-test-helpers');
 
 test('gx pr review routes --pr-lens through the real CLI and prints its local manifest', (t) => {

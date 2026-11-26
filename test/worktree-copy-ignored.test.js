@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawn } = require('node:child_process');
 const { once } = require('node:events');
-const { copyIgnoredFiles } = require('../src/worktree-copy-ignored');
+const { copyIgnoredFiles } = require('../package/gitguardex/src/worktree/copy-ignored');
 const { copyIgnored } = require('../src/cli/commands/worktree-copy-ignored');
 const { applyCopy } = require('../src/scaffold/provision-config');
 
@@ -353,7 +353,7 @@ test(
     const { copyIgnoredFiles } = require(process.argv[1]);
     process.stdout.write(JSON.stringify(copyIgnoredFiles(process.argv[2], process.argv[3])));
   `,
-        require.resolve('../src/worktree-copy-ignored'),
+        require.resolve('../package/gitguardex/src/worktree/copy-ignored'),
         source,
         target
       ],

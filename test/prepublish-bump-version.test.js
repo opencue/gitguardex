@@ -9,7 +9,7 @@ const {
   nextPatchVersion,
   runPrepublishBump,
   shouldSkip,
-} = require('../scripts/prepublish-bump-version');
+} = require('../package/gitguardex/scripts/prepublish-bump-version');
 
 function makePackage(version = '1.2.3') {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-prepublish-'));
@@ -129,6 +129,41 @@ test('runPrepublishBump leaves files unchanged when the current version is unpub
   assert.equal(result.changed, false);
   assert.equal(readPackage(repoRoot).version, '7.1.0');
   assert.equal(readLockfile(repoRoot).version, '7.1.0');
+});
+
+test('runPrepublishBump updates only the CLI entry in the workspace lock', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-workspace-publish-'));
+  const repoRoot = makePackage('7.1.0');
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+  const workspace = 'package/gitguardex';
+  const packageDir = path.join(root, workspace);
+  fs.mkdirSync(packageDir, { recursive: true });
+  for (const file of ['package.json', 'README.md']) {
+    fs.copyFileSync(path.join(repoRoot, file), path.join(packageDir, file));
+  }
+  const packages = {
+    '': { name: 'guardex-repository', version: '1.0.0' },
+    [workspace]: { name: '@imdeadpool/guardex', version: '7.1.0' },
+  };
+  fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({
+    name: 'guardex-repository', version: '1.0.0', lockfileVersion: 3, packages,
+  }));
+
+  runPrepublishBump({
+    repoRoot: packageDir,
+    env: {},
+    log: () => {},
+    npmView: (_name, version) => (version === '7.1.0' ? { state: 'published' } : { state: 'unpublished' }),
+  });
+
+  assert.equal(readPackage(packageDir).version, '7.1.1');
+  const lockfile = readLockfile(root);
+  assert.equal(lockfile.packages[workspace].version, '7.1.1');
+  assert.deepEqual(lockfile.packages[''], packages['']);
+  assert.equal(lockfile.version, '1.0.0');
 });
 
 test('runPrepublishBump skips dry-run and GitHub Actions publishes by default', () => {

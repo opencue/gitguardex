@@ -7,9 +7,9 @@ const {
   seedCommit,
 } = require('./helpers/install-test-helpers');
 const cp = require('node:child_process');
-const { runReviewFix, commandForFix, fixPrompt } = require('../src/review-fix');
+const { runReviewFix, commandForFix, fixPrompt } = require('../package/gitguardex/src/review/fix');
 const { runReviewGate } = require('../src/finish/review-gate');
-const { codexReviewEffort } = require('../src/provider-binary');
+const { codexReviewEffort } = require('../package/gitguardex/src/review/provider-binary');
 
 const FINDING = {
   path: 'src/a.js', startLine: 0, line: 3, severity: 'high', category: '', message: 'unsafe', suggestion: 'const safe = true',

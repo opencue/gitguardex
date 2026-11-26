@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - frontend/**
+      - package/frontend/**
       - scripts/sync-frontend-mirror.sh
       - .github/workflows/sync-frontend-mirror.yml
   workflow_dispatch:
@@ -23,12 +23,14 @@ jobs:
     env:
       TARGET_REPO: ${{ vars.GUARDEX_FRONTEND_MIRROR_REPO || 'recodeee/gitguardex-frontend' }}
       TARGET_BRANCH: ${{ vars.GUARDEX_FRONTEND_MIRROR_BRANCH || 'main' }}
-      SOURCE_PREFIX: frontend
+      SOURCE_PREFIX: package/frontend
       SYNC_TOKEN: ${{ secrets.GUARDEX_FRONTEND_MIRROR_PAT }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # A rerun of an old workflow must not deploy its historical tree.
+          ref: refs/heads/main
           fetch-depth: 0
 
       - name: Setup Node
@@ -36,16 +38,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package/frontend/package-lock.json
 
       - name: Install frontend
-        run: npm ci --prefix frontend --ignore-scripts
+        run: npm ci --prefix package/frontend --ignore-scripts
 
       - name: Verify frontend before mirroring
-        run: npm --prefix frontend run verify
+        run: npm --prefix package/frontend run verify
 
       - name: Audit frontend dependencies
-        run: npm audit --prefix frontend --audit-level=high
+        run: npm audit --prefix package/frontend --audit-level=high
 
       - name: Skip when mirror PAT is missing
         if: ${{ env.SYNC_TOKEN == '' }}

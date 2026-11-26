@@ -1,0 +1,31 @@
+{
+  "name": "guardex-how-it-works-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "main": "server.js",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "node server.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run build && npm run typecheck && npm run lint"
+  },
+  "dependencies": {
+    "express": "4.22.2",
+    "next": "16.4.6",
+    "react": "19.0.3",
+    "react-dom": "19.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.10",
+    "@types/react": "19.0.10",
+    "@types/react-dom": "19.0.4",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.6",
+    "typescript": "5.7.3"
+  }
+}

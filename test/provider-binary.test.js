@@ -9,7 +9,7 @@ const {
   codexReviewEffort,
   isCueAgentShim,
   resolveProviderBin,
-} = require('../src/provider-binary');
+} = require('../package/gitguardex/src/review/provider-binary');
 
 function makeExecutable(dir, name, body) {
   fs.mkdirSync(dir, { recursive: true });

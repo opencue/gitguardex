@@ -5,7 +5,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
-const packageJsonPath = path.join(repoRoot, 'package.json');
+const packageJsonPath = path.join(repoRoot, 'package/gitguardex/package.json');
 const readmePath = path.join(repoRoot, 'README.md');
 const aboutDescriptionPath = path.join(repoRoot, 'about_description.txt');
 
@@ -60,7 +60,7 @@ test('release workflow uploads signed GitHub release assets for the package tarb
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'release.yml');
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   assert.match(workflow, /name:\s+Pack release tarball/);
-  assert.match(workflow, /npm pack --pack-destination dist/);
+  assert.match(workflow, /npm pack --workspace "\$PACKAGE_NAME" --pack-destination dist/);
   assert.match(workflow, /sha256sum "\$PACKAGE_PATH" > "\$PACKAGE_PATH\.sha256"/);
   assert.match(workflow, /cosign sign-blob "\$PACKAGE_PATH" --bundle "\$PACKAGE_PATH\.sigstore\.json"/);
   assert.match(workflow, /name:\s+Sign tarball and attach GitHub release assets/);
@@ -262,7 +262,7 @@ test('package manifest pins runtime and dev dependency versions exactly', () => 
   const lockfile = fs.readFileSync(path.join(repoRoot, 'package-lock.json'), 'utf8');
 
   for (const sectionName of ['dependencies', 'devDependencies']) {
-    const section = pkg[sectionName] || {};
+    const section = sectionName === 'devDependencies' ? require('../package.json').devDependencies : pkg.dependencies;
     for (const [name, version] of Object.entries(section)) {
       assert.doesNotMatch(version, /^[~^]/, `${sectionName}.${name} must stay pinned exactly`);
     }
@@ -275,7 +275,7 @@ test('package manifest pins runtime and dev dependency versions exactly', () => 
 
 test('package publish lifecycle bumps already-published direct npm publish versions', () => {
   const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  const scriptPath = path.join(repoRoot, 'scripts', 'prepublish-bump-version.js');
+  const scriptPath = path.join(repoRoot, 'package/gitguardex/scripts/prepublish-bump-version.js');
   const scriptSource = fs.readFileSync(scriptPath, 'utf8');
 
   assert.equal(pkg.scripts?.prepublishOnly, 'node scripts/prepublish-bump-version.js');

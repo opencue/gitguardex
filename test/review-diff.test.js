@@ -1,5 +1,5 @@
 const { test, assert } = require('./helpers/install-test-helpers');
-const { parseDiffLineMap, isAnchored, partitionByAnchor } = require('../src/review-diff');
+const { parseDiffLineMap, isAnchored, partitionByAnchor } = require('../package/gitguardex/src/review/diff');
 
 const DIFF = [
   'diff --git a/src/a.js b/src/a.js',

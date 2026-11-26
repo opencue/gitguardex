@@ -7,7 +7,7 @@ const cp = require('node:child_process');
 
 const cliPath = path.resolve(__dirname, '..', '..', 'bin', 'multiagent-safety.js');
 const cliVersion = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8'),
+  fs.readFileSync(path.resolve(__dirname, '..', '..', 'package/gitguardex/package.json'), 'utf8'),
 ).version;
 const CONTROL_OPTION_KEYS = new Set(['env', 'guardexHomeDir', 'stripAgentSessionEnv']);
 const TEST_GIT_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-test-git-config-'));

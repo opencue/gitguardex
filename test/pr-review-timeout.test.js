@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const prReview = require('../src/pr-review');
+const prReview = require('../package/gitguardex/src/review/pull-request');
 
 // Both review providers are AGENTS: given tools they will read the repo, run a
 // type checker, and keep going. The spawn that runs them was the one subprocess

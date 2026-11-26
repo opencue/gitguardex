@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { evaluateReviewGate } = require('../src/pr-review');
+const { evaluateReviewGate } = require('../package/gitguardex/src/review/pull-request');
 const {
   waitForGreenCi,
   waitForPullRequestHead,

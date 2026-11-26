@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const prModule = require('../src/pr');
+const prModule = require('../package/gitguardex/src/pull-request/index');
 
 const BRANCH = 'agent/test/push-on-rerun';
 

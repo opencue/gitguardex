@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createFakeBin, runNodeWithEnv } = require('./helpers/install-test-helpers');
-const { runPrReview } = require('../src/pr-review');
+const { runPrReview } = require('../package/gitguardex/src/review/pull-request');
 const { parsePrReviewArgs } = require('../src/cli/args');
 
 const URL = 'https://github.com/example/repo/actions/runs/12/artifacts/34';

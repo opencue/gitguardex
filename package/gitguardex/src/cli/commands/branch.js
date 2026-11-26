@@ -1,0 +1,557 @@
+// `gx branch`, `gx pivot`, `gx ship`, `gx locks`, `gx worktree` — branch
+// workflow surface. Pure code-motion from src/cli/main.js.
+const {
+  TOOL_NAME,
+  SHORT_TOOL_NAME,
+  path,
+  fs,
+} = require('../../context');
+const {
+  resolveRepoRoot,
+  resolveFinishBaseBranch,
+  currentBranchName,
+  listAgentWorktrees,
+} = require('../../git');
+const {
+  run,
+  extractTargetedArgs,
+  runPackageAsset,
+  invokePackageAsset,
+} = require('../../core/runtime');
+const { runReviewGate } = require('../../finish/review-gate');
+const { branchPreflightDuringCi } = require('../../finish/preflight');
+const { createFinishProgress, summarizeFinishRun } = require('../../finish/progress');
+const { autoCommitWorktreeForFinish } = require('../../finish');
+const { finish, merge } = require('./finish');
+const { locks } = require('../shared-locks');
+const { REVIEW_PROVIDERS, applyGateFlagAt } = require('../shared/gate-flags');
+
+function printBranchFinishHelp() {
+  console.log(`USAGE: ${SHORT_TOOL_NAME} branch finish [options]
+
+Finish an agent branch by committing pending work, publishing it, opening or
+updating a PR, enforcing optional gates, merging, and cleaning up.
+
+TARGET
+  --target <path>             Target repository (default: current directory)
+  --branch <branch>           Agent branch to finish (default: current branch)
+  --base <branch>             Destination branch
+
+PUBLISH AND MERGE
+  --via-pr                    Finish through a pull request
+  --direct-only               Finish by direct merge only
+  --no-push                   Do not push the branch
+  --wait-for-merge            Wait until the PR is merged
+  --cleanup                   Remove the finished worktree and branch
+  --keep-remote-branch        Preserve the remote branch after merge
+
+VERIFICATION
+  --gate-review               Require AI review and green CI before merge
+  --gate-autofix              Repair blocking review findings and review again
+  --gate-autofix-rounds <n>   Limit repair rounds to 1-5 (default: 1)
+  --gate-baseline             Ignore failures already present on the base branch
+  --no-gate-abide             Skip abide's AGENTS.md rule verdicts in the review gate
+  --review-provider <name>    Pin codex|claude (default: Codex, Claude if Codex cannot launch)
+  --review-model <name>       Model used by the review provider
+  --review-timeout-ms <n>     Positive review timeout in milliseconds
+  --no-preflight              Skip the repository preflight script
+  --preflight                 Run the repository preflight script
+  --agent-quiet               Compact output; retain warnings and gate failures
+
+COMMIT
+  --no-auto-commit            Refuse to auto-commit pending work
+  --commit-message <message>  Message for the automatic finish commit
+
+  -h, --help                  Show this help without touching the repository`);
+}
+
+function isBranchFinishHelpRequest(args) {
+  return args.some((arg) => arg === '--help' || arg === '-h')
+    || (args.length === 1 && args[0] === 'help');
+}
+
+// Review-gate and auto-commit options are gx-level flags.
+// agent-branch-finish.sh does not parse them (it exits 1 on the unknown
+// argument), and its --via-pr path merges the moment the PR opens, so the shell
+// cannot enforce the gate itself. Pull the flags out of the script's argv and
+// honor them here.
+function splitGateReviewFlags(args) {
+  const scriptArgs = [];
+  let fastMode = false;
+  let noAutoCommit = false;
+  let commitMessage = '';
+  let agentQuiet = false;
+  // Gate-flag options — populated by applyGateFlagAt below.
+  const gateOpts = {
+    gateReview: false,
+    reviewProvider: undefined,
+    reviewModel: undefined,
+    reviewTimeoutMs: undefined,
+    gateAutofix: false,
+    gateAutofixRounds: 1,
+    gateBaseline: false,
+    gateAbide: true,
+    gateSerialCi: true,
+    allowNoChecks: false,
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const consumed = applyGateFlagAt(args, index, gateOpts);
+    if (consumed > 0) {
+      // Gate flags are consumed here; applyGateFlagAt already validated them.
+      index += consumed - 1;
+    } else if (arg === '--fast') {
+      fastMode = true;
+    } else if (arg === '--agent-quiet') {
+      agentQuiet = true;
+    } else if (arg === '--no-auto-commit') {
+      noAutoCommit = true;
+    } else if (arg === '--commit-message') {
+      commitMessage = String(args[index + 1] ?? '').trim();
+      if (!commitMessage || commitMessage.startsWith('-')) {
+        throw new Error('--commit-message requires a value');
+      }
+      index += 1;
+    } else {
+      scriptArgs.push(arg);
+    }
+  }
+
+  if (fastMode) {
+    const incompatibleFlag = args.find((arg) => [
+      '--gate-review',
+      '--gate-autofix',
+      '--gate-autofix-rounds',
+      '--preflight',
+      '--direct-only',
+    ].includes(arg));
+    const modeIndex = args.indexOf('--mode');
+    const modeValue = modeIndex >= 0 ? args[modeIndex + 1] : '';
+    const incompatibleMode = modeIndex >= 0 && modeValue !== 'pr'
+      ? `--mode ${modeValue || '<missing>'}`
+      : '';
+    const conflict = incompatibleFlag || incompatibleMode;
+    if (conflict) {
+      throw new Error(`--fast cannot be combined with ${conflict}`);
+    }
+
+    gateOpts.gateReview = false;
+    gateOpts.gateAutofix = false;
+    if (!scriptArgs.includes('--via-pr')) scriptArgs.push('--via-pr');
+    if (!scriptArgs.includes('--no-preflight')) scriptArgs.push('--no-preflight');
+  }
+
+  if (gateOpts.gateReview) {
+    const mode = readFlagValue(scriptArgs, '--mode');
+    if (scriptArgs.includes('--direct-only') || scriptArgs.includes('--no-push') || (mode && mode !== 'pr')) {
+      throw new Error('--gate-review requires a push-enabled PR finish; direct/local modes are incompatible.');
+    }
+    if (!scriptArgs.includes('--via-pr')) scriptArgs.push('--via-pr');
+  }
+
+  return {
+    ...gateOpts,
+    noAutoCommit,
+    commitMessage,
+    agentQuiet,
+    scriptArgs,
+  };
+}
+
+// Read `--flag value` or `--flag=value` out of an argv array.
+function readFlagValue(args, flag) {
+  const index = args.indexOf(flag);
+  if (index >= 0 && index + 1 < args.length) return args[index + 1];
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  return inline ? inline.slice(flag.length + 1) : undefined;
+}
+
+function isLinkedAgentWorktree(worktreePath) {
+  try {
+    return fs.statSync(path.join(worktreePath, '.git')).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isReadOnlyBranchStart(args) {
+  return args.some((arg) => ['--help', '-h', 'help', '--print-name-only', '--preview'].includes(arg));
+}
+
+// Identify options, not values that happen to look like one. Keep the shell
+// asset as the authority for all branch-start arguments other than --json.
+function branchStartOptionIndices(args, name) {
+  const takesValue = new Set([
+    '--task', '--task-id', '--agent', '--base', '--tier', '--provision-mode',
+    '--worktree-root', '--sparse-exclude', '--transfer-exclude'
+  ]);
+  const indices = [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === name) indices.push(index);
+    if (takesValue.has(args[index])) index++;
+  }
+  return indices;
+}
+
+function recoverStaleManagedWorktrees(repoRoot) {
+  const idleMinutes = process.env.GUARDEX_BRANCH_START_CLEANUP_IDLE_MINUTES || '15';
+  const result = runPackageAsset(
+    'worktreePrune',
+    [
+      '--prune-stale-lanes',
+      '--preserve-open-prs',
+      '--delete-branches',
+      '--idle-minutes',
+      idleMinutes,
+    ],
+    {
+      cwd: repoRoot,
+      timeout: 30_000,
+      env: { GUARDEX_PRUNE_ACTIVE_CWD: process.cwd() },
+    },
+  );
+
+  if (result.status !== 0) {
+    process.stderr.write(
+      `[${TOOL_NAME} branch start] Stale worktree recovery failed safely; continuing without cleanup.\n`,
+    );
+    return;
+  }
+
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  const removedWorktrees = Number(output.match(/removed_worktrees=(\d+)/)?.[1] || 0);
+  if (removedWorktrees > 0) {
+    const suffix = removedWorktrees === 1 ? '' : 's';
+    process.stdout.write(
+      `[${TOOL_NAME} branch start] Recovered ${removedWorktrees} stale managed worktree${suffix} before branch start.\n`,
+    );
+  }
+}
+
+function branch(rawArgs) {
+  const activeCwd = process.cwd();
+  const [subcommand, ...rest] = rawArgs;
+  if (subcommand === 'tasks') {
+    if (rest[0] === '--help' || rest[0] === '-h') {
+      process.stdout.write(
+        'Usage: gx branch tasks --json\n' +
+        'List ready linked worktrees in this repository and their occupancy (versioned JSON).\n' +
+        'Related: gx branch start --task-id <id> --json; gx branch run-task <id> <branch> <worktree> -- <command>\n'
+      );
+      return;
+    }
+    if (rest.length !== 1 || rest[0] !== '--json') throw new Error('Usage: gx branch tasks --json');
+    require('../../worktree/tasks').listTasks(resolveRepoRoot(activeCwd));
+    return;
+  }
+  if (subcommand === 'run-task') {
+    require('../../worktree/tasks').runTask(resolveRepoRoot(activeCwd), rest);
+    return;
+  }
+  if (subcommand === 'start') {
+    const { target, passthrough } = extractTargetedArgs(rest);
+    const repoRoot = resolveRepoRoot(target);
+    const readOnly = isReadOnlyBranchStart(passthrough);
+    const jsonIndices = branchStartOptionIndices(passthrough, '--json');
+    const json = jsonIndices.length > 0;
+    if (json && (readOnly || jsonIndices.length !== 1 ||
+        branchStartOptionIndices(passthrough, '--task-id').length !== 1))
+      throw new Error('--json requires a normal branch start with --task-id');
+    const quota = readOnly ? {} : require('../../worktree/quota').readWorktreeQuota(repoRoot);
+    if (!readOnly) {
+      const modeIndex = passthrough.indexOf('--provision-mode');
+      if (modeIndex >= 0 && !passthrough[modeIndex + 1]) throw new Error('--provision-mode requires a value');
+      require('../../scaffold/provision-config').provisioningMode({
+        mode: modeIndex >= 0 ? passthrough[modeIndex + 1] : undefined
+      });
+    }
+    if (passthrough.includes('--task-id')) {
+      if (passthrough.filter((arg) => arg === '--task-id').length !== 1)
+        throw new Error('--task-id must appear once');
+      require('../../worktree/start').validateTaskId(
+        passthrough[passthrough.indexOf('--task-id') + 1]
+      );
+    }
+    if (json) {
+      require('../../worktree/start').invokeTaskStart(repoRoot,
+        passthrough.filter((_, index) => index !== jsonIndices[0]), true);
+      return;
+    }
+    if (!isReadOnlyBranchStart(passthrough)) {
+      require('../../finish/post-branch-finish-cleanup').retryPendingFinishedCleanup(repoRoot, {
+        schedule: true
+      });
+      recoverStaleManagedWorktrees(repoRoot);
+    }
+    if ((passthrough.includes('--task-id') || Object.keys(quota).length) && !isReadOnlyBranchStart(passthrough)) {
+      require('../../worktree/start').invokeTaskStart(repoRoot, passthrough);
+      return;
+    }
+    invokePackageAsset('branchStart', passthrough, { cwd: repoRoot });
+    if (passthrough[0] === '--help' || passthrough[0] === '-h') {
+      process.stdout.write('  --json               With --task-id, emit a versioned task result on stdout\n');
+    }
+    return;
+  }
+  if (subcommand === 'finish') {
+    // Help is a read-only control path. Handle it before target resolution,
+    // worktree discovery, progress initialization, or the automatic commit.
+    if (isBranchFinishHelpRequest(rest)) {
+      printBranchFinishHelp();
+      process.exitCode = 0;
+      return;
+    }
+    const { target, passthrough } = extractTargetedArgs(rest);
+    const repoRoot = resolveRepoRoot(target);
+    const {
+      gateReview,
+      reviewProvider,
+      reviewModel,
+      reviewTimeoutMs,
+      gateAutofix,
+      gateAutofixRounds,
+      gateBaseline,
+      gateAbide,
+      gateSerialCi,
+      allowNoChecks,
+      noAutoCommit,
+      commitMessage,
+      agentQuiet,
+      scriptArgs,
+    } = splitGateReviewFlags(passthrough);
+    let finishBranch = readFlagValue(scriptArgs, '--branch');
+    if (!finishBranch) {
+      try {
+        finishBranch = currentBranchName(repoRoot);
+      } catch (err) {
+        if (err.message && err.message.includes('Detached HEAD')) {
+          throw new Error(
+            'Detached HEAD: pass --branch <agent/* branch> to gx branch finish explicitly.',
+          );
+        }
+        throw err;
+      }
+    }
+    const finishBase = resolveFinishBaseBranch(repoRoot, finishBranch, readFlagValue(scriptArgs, '--base'));
+    const finishWorktree = listAgentWorktrees(repoRoot)
+      .find((entry) => entry.branch === finishBranch)?.worktreePath || '';
+    // Keep the legacy behavior for agent branches checked out directly in the
+    // primary repository. Guardex-managed lanes are linked worktrees; limiting
+    // auto-commit to those avoids scooping primary-checkout runtime artifacts
+    // into an otherwise already-committed branch.
+    const autoCommitWorktree = finishWorktree && isLinkedAgentWorktree(finishWorktree)
+      ? finishWorktree
+      : '';
+    const progress = createFinishProgress({
+      repoRoot,
+      branch: finishBranch,
+      baseBranch: finishBase,
+      quiet: agentQuiet,
+    });
+    progress.start(
+      'prepare',
+      autoCommitWorktree ? 'checking worktree and pending changes' : 'resolving branch and finish policy',
+    );
+    const commitState = autoCommitWorktree
+      ? autoCommitWorktreeForFinish(repoRoot, autoCommitWorktree, finishBranch, { noAutoCommit, commitMessage })
+      : { changed: false, committed: false };
+    if (commitState.committed && !agentQuiet) {
+      console.log(`[${TOOL_NAME}] Auto-committed '${finishBranch}' before finish.`);
+    }
+    progress.complete(
+      'prepare',
+      commitState.committed ? 'pending changes auto-committed' : 'branch and base resolved',
+    );
+    // Fail-closed: runReviewGate throws on a dirty review, red CI, or a PR
+    // GitHub will not merge. Throwing here means the script never runs, so
+    // the merge never happens.
+    let gateResult;
+    if (gateReview) {
+      gateResult = runReviewGate({
+        repoRoot,
+        branch: finishBranch,
+        // Must match how the shell resolves --base when it is omitted, which
+        // honors branch.<name>.guardexBase. Resolving differently would gate one
+        // base and merge into another.
+        baseBranch: finishBase,
+        // review-gate.js falls back to its own default when this is undefined,
+        // which keeps a bare --gate-review behaving exactly as before.
+        options: {
+          reviewProvider,
+          reviewModel,
+          reviewTimeoutMs,
+          gateAutofix,
+          gateAutofixRounds,
+          gateBaseline,
+          gateAbide,
+          gateSerialCi,
+          allowNoChecks,
+          agentQuiet,
+        },
+        progress,
+        preflight: branchPreflightDuringCi(repoRoot, scriptArgs, { activeCwd, agentQuiet, progress }),
+      });
+    } else {
+      progress.skip('review', 'review gate disabled');
+      progress.skip('autofix', 'review gate disabled');
+      progress.skip('ci', 'review gate disabled; repository policy controls merge readiness');
+    }
+    const assetOptions = {
+      cwd: repoRoot,
+      env: {
+        GUARDEX_FINISH_ACTIVE_CWD: activeCwd,
+        GUARDEX_FINISH_CHECKLIST: '1',
+        GUARDEX_FINISH_GATE_DONE: gateReview ? '1' : '0',
+        GUARDEX_FINISH_PREFLIGHT_ONLY: '0',
+        GUARDEX_FINISH_REVIEWED_HEAD: gateResult?.reviewedHeadSha || '',
+        GUARDEX_FINISH_REVIEWED_BASE: gateResult?.reviewedBaseSha || '',
+        GUARDEX_FINISH_REQUIRE_PREFLIGHT: gateResult?.requiresLocalPreflight ? '1' : '0',
+        ...progress.eventEnv,
+      },
+    };
+    if (agentQuiet) {
+      const result = runPackageAsset('branchFinish', scriptArgs, { ...assetOptions, stdio: 'pipe' });
+      const summary = summarizeFinishRun({
+        eventFile: progress.eventEnv.GUARDEX_FINISH_EVENT_FILE,
+        branch: finishBranch,
+        baseBranch: finishBase,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        status: result.status,
+      });
+      process.stdout.write(`[gx:finish] ${JSON.stringify(summary)}\n`);
+      if (result.status !== 0) {
+        const stderrTail = String(result.stderr || '')
+          .split('\n')
+          .filter(Boolean)
+          .slice(-20)
+          .join('\n');
+        throw new Error(
+          `branchFinish command failed with status ${result.status}${stderrTail ? `\n${stderrTail}` : ''}`,
+        );
+      }
+    } else {
+      invokePackageAsset('branchFinish', scriptArgs, assetOptions);
+    }
+    return;
+  }
+  if (subcommand === 'merge') return merge(rest);
+  throw new Error(
+    `Usage: ${SHORT_TOOL_NAME} branch <start|finish|merge> [options] ` +
+    `(examples: '${SHORT_TOOL_NAME} branch start "<task>" "<agent>"', '${SHORT_TOOL_NAME} branch finish --branch <agent/...>')`,
+  );
+}
+
+// `gx pivot` — single-tool-call escape from a protected branch into an isolated
+// agent worktree. AI agents (Claude Code / Codex) cannot set the bypass env
+// vars from inside a tool call, so they need a whitelisted command that does
+// the whole hop: branch+worktree creation, dirty-tree migration, and a clean
+// trailer (`WORKTREE_PATH=...`, `BRANCH=...`, `NEXT_STEP=cd ...`) the agent can
+// parse to know exactly where to `cd`.
+//
+// On an existing agent/* branch, `gx pivot` short-circuits and just prints the
+// current worktree path — safe to call as a no-op.
+function pivot(rawArgs) {
+  const { target, passthrough } = extractTargetedArgs(rawArgs);
+  const repoRoot = resolveRepoRoot(target);
+  const headProc = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot });
+  const currentBranch = String(headProc.stdout || '').trim();
+  if (currentBranch.startsWith('agent/')) {
+    const wtProc = run('git', ['rev-parse', '--show-toplevel'], { cwd: repoRoot });
+    const wtPath = String(wtProc.stdout || '').trim() || repoRoot;
+    process.stdout.write(`[${TOOL_NAME} pivot] Already on agent branch '${currentBranch}'.\n`);
+    process.stdout.write(`WORKTREE_PATH=${wtPath}\n`);
+    process.stdout.write(`BRANCH=${currentBranch}\n`);
+    process.stdout.write(`NEXT_STEP=cd "${wtPath}"\n`);
+    process.exitCode = 0;
+    return;
+  }
+  const result = isReadOnlyBranchStart(passthrough)
+    ? runPackageAsset('branchStart', passthrough, { cwd: repoRoot })
+    : require('../../worktree/start').runTaskStart(repoRoot, passthrough);
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status !== 0) {
+    process.exitCode = result.status || 1;
+    return;
+  }
+  const stdoutText = String(result.stdout || '');
+  const wtMatch = stdoutText.match(/^\[agent-branch-start\] Worktree:\s+(.+)$/m);
+  const branchMatch = stdoutText.match(/^\[agent-branch-start\] (?:Created branch|Reusing existing branch):\s+(.+)$/m);
+  if (wtMatch) {
+    const wtPath = wtMatch[1].trim();
+    process.stdout.write('\n');
+    process.stdout.write(`WORKTREE_PATH=${wtPath}\n`);
+    if (branchMatch) process.stdout.write(`BRANCH=${branchMatch[1].trim()}\n`);
+    process.stdout.write(`NEXT_STEP=cd "${wtPath}"\n`);
+  }
+  process.exitCode = 0;
+}
+
+// `gx ship` — alias for the canonical "I am done" command. Defaults to
+// `finish --via-pr --wait-for-merge --cleanup` so AI agents don't strand
+// commits or worktrees by accident. Any explicit user-supplied flags survive.
+function ship(rawArgs) {
+  const args = Array.isArray(rawArgs) ? rawArgs.slice() : [];
+  const ensureFlag = (flag) => {
+    if (!args.includes(flag)) args.push(flag);
+  };
+  ensureFlag('--via-pr');
+  ensureFlag('--wait-for-merge');
+  ensureFlag('--cleanup');
+  // `gx ship` enforces the merge gate (clean review + green CI) by default;
+  // an explicit --no-gate-review / --skip-review-gate opts back out.
+  if (
+    !args.includes('--fast')
+    && !args.includes('--no-gate-review')
+    && !args.includes('--skip-review-gate')
+  ) {
+    ensureFlag('--gate-review');
+  }
+  return finish(args);
+}
+
+function worktree(rawArgs) {
+  const activeCwd = process.cwd();
+  const [subcommand, ...rest] = rawArgs;
+  if (subcommand === 'switch') return require('./worktree-navigation').switchWorktree(rest);
+  if (subcommand === 'hook') return require('./worktree-hooks').runWorktreeHooksCommand(rest);
+  if (subcommand === 'copy-ignored') return require('./worktree-copy-ignored').worktreeCopyIgnored(rest);
+  if (subcommand === 'estimate') return require('./worktree-estimate').worktreeEstimate(rest);
+  if (subcommand === 'prune-artifacts') return require('./storage').pruneArtifacts(rest);
+  if (subcommand === 'retry-cleanup') {
+    if (rest.length === 1 && ['--help', '-h'].includes(rest[0])) {
+      console.log(
+        'Usage: gx worktree retry-cleanup [--target <repo>]\nRetry saved post-finish jobs safely. Active, dirty or claimed worktrees are preserved.\nJobs survive restarts; a later branch start also retries them. No system daemon is installed.'
+      );
+      return;
+    }
+    const { target, passthrough } = extractTargetedArgs(rest);
+    if (passthrough.length) throw new Error('Usage: gx worktree retry-cleanup [--target <repo>]');
+    return require('../../finish/post-branch-finish-cleanup').retryPendingFinishedCleanup(
+      resolveRepoRoot(target),
+      { schedule: true }
+    );
+  }
+  if (subcommand === 'approve-hooks' || subcommand === 'provision') {
+    return require('./worktree-provision').worktreeProvision(subcommand, rest);
+  }
+  if (subcommand === 'prune') {
+    const { target, passthrough } = extractTargetedArgs(rest);
+    invokePackageAsset('worktreePrune', passthrough, {
+      cwd: resolveRepoRoot(target),
+      env: { GUARDEX_PRUNE_ACTIVE_CWD: process.env.GUARDEX_PRUNE_ACTIVE_CWD || activeCwd },
+    });
+    return;
+  }
+  throw new Error(`Usage: ${SHORT_TOOL_NAME} worktree <switch|hook|copy-ignored|prune|provision|approve-hooks|estimate|retry-cleanup|prune-artifacts> [options]`);
+}
+
+module.exports = {
+  splitGateReviewFlags,
+  branch,
+  pivot,
+  ship,
+  locks,
+  worktree,
+};

@@ -10,7 +10,7 @@ const {
 } = require('./helpers/install-test-helpers');
 
 const packageRoot = path.resolve(__dirname, '..');
-const hooksModule = path.join(packageRoot, 'src/worktree-hooks.js');
+const hooksModule = path.join(packageRoot, 'src/worktree/hooks.js');
 const finishModule = path.join(packageRoot, 'src/finish/index.js');
 
 function fixture(t, hooks) {
