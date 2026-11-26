@@ -100,16 +100,13 @@ function normalizeReviewValue(value, lineMap) {
       doneWhen: risk ? plainText(doneWhen) : ''
     });
   }
-  const cited = new Set();
   const reasons = new Set();
   const normalized = candidates
     .sort((a, b) => b.magnitude - a.magnitude)
     .filter((driver) => {
-      const { impact, evidence, reason } = driver;
-      const key = JSON.stringify([impact, evidence.path, evidence.line]);
+      const { impact, reason } = driver;
       const reasonKey = JSON.stringify([impact, reason.toLowerCase()]);
-      if (cited.has(key) || reasons.has(reasonKey)) return false;
-      cited.add(key);
+      if (reasons.has(reasonKey)) return false;
       reasons.add(reasonKey);
       return true;
     });

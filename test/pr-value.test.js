@@ -52,14 +52,20 @@ test('ungrounded, duplicate, or malformed estimates cannot erase a valid risk', 
     assert.equal(value.impactScore, null);
     assert.equal(value.riskScore, 71);
   }
-  const duplicated = normalizeReviewValue(
-    { drivers: [risk, { ...risk, magnitude: 95, reason: 'Different wording, same evidence.' }] },
-    lines
-  );
-  assert.equal(duplicated.drivers.length, 1);
-  assert.equal(duplicated.riskScore, 95);
   const full = normalizeReviewValue({ drivers: [driver('benefit', 100)] }, lines);
   assert.ok(reviewValueLines(full, false).includes(`Impact  ${'█'.repeat(20)}  100/100`));
+});
+
+test('one changed line can support separate risks but repeated reasons do not count twice', () => {
+  const refusal = driver('trade-off', 71, 24, 'A valid request can be refused.');
+  const recovery = driver('trade-off', 95, 24, 'An interrupted request cannot be resumed.');
+  const repeated = driver('trade-off', 60, 18, 'A VALID REQUEST CAN BE REFUSED.');
+  const value = normalizeReviewValue({ drivers: [refusal, recovery, repeated] }, lines);
+  assert.deepEqual(
+    value.drivers.map(({ magnitude }) => magnitude),
+    [95, 71]
+  );
+  assert.equal(value.riskScore, 95);
 });
 
 test('each trade-off shows its own safe fix without changing the score', () => {
