@@ -128,6 +128,7 @@ function startHeartbeat({
       runId: String(event.runId || ''),
       branch: String(event.branch || ''),
       baseBranch: String(event.baseBranch || ''),
+      ...(event.recovery ? { recovery: event.recovery } : {}),
     };
     stdio.push(eventDescriptor);
   }

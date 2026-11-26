@@ -133,7 +133,26 @@ test('overlapping preflight verifies only the pinned revision and never publishe
   assert.equal(fs.existsSync(env.PREFLIGHT_COUNTER), false);
   assert.equal(run({ GUARDEX_FINISH_PREFLIGHT_CACHE: '0' }).status, 0);
   assert.equal(fs.existsSync(env.PREFLIGHT_COUNTER), false);
-  assert.notEqual(run({ PREFLIGHT_EXIT: '1' }).status, 0);
+  const eventFile = path.join(root, 'finish.jsonl');
+  const failed = run({
+    PREFLIGHT_EXIT: '143',
+    GUARDEX_FINISH_CHECKLIST: '1',
+    GUARDEX_FINISH_EVENT_FILE: eventFile,
+    GUARDEX_FINISH_RUN_ID: 'finish-test',
+    GUARDEX_FINISH_EVENT_BRANCH: 'agent/overlap',
+    GUARDEX_FINISH_EVENT_BASE: 'main'
+  });
+  assert.equal(failed.status, 1, failed.stderr);
+  const events = fs.readFileSync(eventFile, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.map(({ stage, state }) => [stage, state]), [
+    ['preflight', 'running'],
+    ['preflight', 'failed']
+  ]);
+  assert.deepEqual(events.at(-1).recovery, {
+    outcome: 'failed',
+    reason: 'preflight exited with status 143',
+    nextAction: 'Inspect the local check output and correct the failure before retrying finish.'
+  });
   const passed = run();
   assert.equal(passed.status, 0, passed.stderr);
   assert.match(run().stderr, /reusing cached successful result/i);
