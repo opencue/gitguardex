@@ -78,6 +78,12 @@ If a diff exceeds the review size limit, split the PR to continue. A standalone 
 
 [Open the example PR](https://github.com/projects-kssk/Wireless_KFB_Project/pull/165) · [Full-size screenshot](https://raw.githubusercontent.com/recodeee/gitguardex/main/docs/images/code-assist-review-gate.png)
 
+### BugHunter demo
+
+BugHunter flags behavior to double-check, such as an action that can queue the same board twice. It runs alongside the main review and does not change the merge verdict.
+
+[![Illustrative BugHunter review with two findings, file locations, and a note that the merge gate is unaffected.](./docs/images/bughunter-demo.png)](./docs/images/bughunter-demo.png)
+
 ---
 
 ## Impact Assist
@@ -86,7 +92,13 @@ If a diff exceeds the review size limit, split the PR to continue. A standalone 
 
 For example, a material benefit (**+25**) and a notable trade-off (**−10**) yield **65/100** from a neutral baseline of **50**. That is a diff-based estimate, not a benchmark or a merge verdict. If the diff is incomplete or the estimate has no valid supporting evidence, the section reports it as unavailable.
 
-[See Impact Assist on a real GitGuardex PR](https://github.com/opencue/gitguardex/pull/897#pullrequestreview-6070455129).
+### Impact Assist demo
+
+The chart compares this PR with the neutral baseline. For a trade-off, the review can show a fix and a pass condition. Bigger ideas include a small first experiment, and a later review can show what changed in the diff and what still needs verification.
+
+[![Illustrative PR impact review: 55/100 vs. 50 neutral, a priority fix for a −5 trade-off, a two-board restart experiment, and what changed since the previous review.](./docs/images/pr-impact-advisory-demo.png)](./docs/images/pr-impact-advisory-demo.png)
+
+[See Impact Assist on a real GitGuardex PR](https://github.com/opencue/gitguardex/pull/907#pullrequestreview-6073301390).
 
 ## How it compares
 
