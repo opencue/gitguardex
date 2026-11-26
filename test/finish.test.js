@@ -1259,6 +1259,48 @@ exit 1
   assert.equal(result.stdout.trim(), '', 'agent branch should be deleted on origin');
 });
 
+test('agent-branch-finish reports why a merged branch still checked out in another worktree is kept', () => {
+  const { repoDir } = createBootstrappedRepo({ committed: true });
+  attachOriginRemote(repoDir);
+  const branch = 'agent/test-pr-active-worktree';
+  const worktree = path.join(fs.realpathSync(repoDir), '.omx', 'agent-worktrees', 'active-worktree');
+  const added = runCmd('git', ['worktree', 'add', '-b', branch, worktree, 'dev'], repoDir);
+  assert.equal(added.status, 0, added.stderr);
+  commitFile(worktree, 'active-worktree.txt', 'merged work\n', 'merged work');
+
+  const squash = runCmd('git', ['merge', '--squash', branch], repoDir);
+  assert.equal(squash.status, 0, squash.stderr);
+  commitAll(repoDir, 'squash merge active worktree changes', { allowProtectedBaseWrite: true });
+  const pushed = runHumanCmd('git', ['push', 'origin', 'dev'], repoDir);
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.equal(runCmd('git', ['diff', '--quiet', 'dev', branch], repoDir).status, 0);
+  assert.equal(runCmd('git', ['merge-base', '--is-ancestor', branch, 'dev'], repoDir).status, 1);
+
+  const procRoot = path.join(repoDir, '.git', 'fake-proc');
+  fs.mkdirSync(path.join(procRoot, '123'), { recursive: true });
+  fs.symlinkSync(worktree, path.join(procRoot, '123', 'cwd'));
+  const { fakePath: fakeGhPath } = createFakeGhScript(`
+if [[ "$1" == "pr" && "$2" == "list" && " $* " == *" --json state,mergedAt,url,headRefOid "* ]]; then
+  printf 'MERGED\\x1f2026-04-22T21:37:13Z\\x1fhttps://example.test/pr/active-worktree\\n'
+  exit 0
+fi
+exit 1
+`);
+
+  const finish = runBranchFinish(['--branch', branch, '--base', 'dev', '--mode', 'pr', '--cleanup'], repoDir, {
+    GUARDEX_GH_BIN: fakeGhPath,
+    GUARDEX_PROC_DIR: procRoot,
+  });
+
+  assert.equal(finish.status, 0, finish.stderr || finish.stdout);
+  assert.match(finish.stdout, /Skipping live process worktree/);
+  assert.ok(finish.stderr.includes(`still checked out in worktree '${worktree}'`), finish.stderr);
+  assert.match(finish.stderr, /gx cleanup --base dev --branch agent\/test-pr-active-worktree/);
+  assert.doesNotMatch(finish.stderr, /commits that never landed|git branch -D/);
+  assert.doesNotMatch(finish.stdout, /commits not in/);
+  assert.equal(runCmd('git', ['branch', '--show-current'], worktree).stdout.trim(), branch);
+});
+
 test('agent-branch-finish cleanup is idempotent after merged PR already pruned branch and worktree', () => {
   const repoDir = initRepo();
   seedCommit(repoDir);
