@@ -111,4 +111,4 @@ Split composition:
 - Branch/command text must be real: `gx branch start`, `gx branch finish
   --via-pr`, `agent/<role>/<task>`. (Avoid inventing fake CLI.)
 - Disclaimer somewhere small: *not affiliated with OpenAI, Anthropic, or Codex.*
-- Logo: `logo.png` at repo root.
+- Logo: [project logo](../../logo.png).

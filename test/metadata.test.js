@@ -7,7 +7,7 @@ const cp = require('node:child_process');
 const repoRoot = path.resolve(__dirname, '..');
 const packageJsonPath = path.join(repoRoot, 'package/gitguardex/package.json');
 const readmePath = path.join(repoRoot, 'README.md');
-const aboutDescriptionPath = path.join(repoRoot, 'about_description.txt');
+const aboutDescriptionPath = path.join(repoRoot, 'docs/marketing/about_description.txt');
 
 function escapeRegexLiteral(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -25,6 +25,18 @@ test('package manifest includes repository and support metadata', () => {
 test('security and contribution docs exist', () => {
   assert.equal(fs.existsSync(path.join(repoRoot, 'SECURITY.md')), true);
   assert.equal(fs.existsSync(path.join(repoRoot, 'CONTRIBUTING.md')), true);
+});
+
+test('contribution guide links to the marketing and telemetry docs', () => {
+  const guide = fs.readFileSync(path.join(repoRoot, 'CONTRIBUTING.md'), 'utf8');
+  for (const relativePath of [
+    'docs/marketing/about_description.txt',
+    'docs/marketing/video-brief.md',
+    'docs/telemetry.md',
+  ]) {
+    assert.ok(guide.includes(`(./${relativePath})`), `Missing guide link: ${relativePath}`);
+    assert.ok(fs.existsSync(path.join(repoRoot, relativePath)), `Missing file: ${relativePath}`);
+  }
 });
 
 test('release workflow publishes with provenance in CI', () => {
