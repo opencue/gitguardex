@@ -41,6 +41,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -57,6 +58,9 @@ jobs:
         run: npm run lint -- --reporter=github
 
       - name: Unit tests (with coverage)
+        id: unit
+        env:
+          GX_COVERAGE_REPORT: ${{ runner.temp }}/gx-coverage.lcov
         run: npm run test:coverage
 
       - name: Static and package checks
@@ -80,3 +84,87 @@ jobs:
         run: |
           scripts/npm-audit-retry.sh --audit-level=high
           scripts/npm-audit-retry.sh --prefix package/frontend --audit-level=high
+
+      # No write permissions, repository secrets, or pull_request_target. Knip
+      # can load project configuration; never run it in the reviewer's process.
+      - name: Collect advisory PR checks
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          GX_BASE: ${{ github.event.pull_request.base.sha }}
+          GX_HEAD: ${{ github.event.pull_request.head.sha }}
+          GX_PR: ${{ github.event.pull_request.number }}
+          GX_OPENAPI_SPEC: ${{ vars.GX_OPENAPI_SPEC }}
+          COVERAGE_OUTCOME: ${{ steps.unit.outcome }}
+        run: |
+          tools="$RUNNER_TEMP/gx-check-bin"
+          reports="$RUNNER_TEMP/gx-checks"
+          head_tree="$RUNNER_TEMP/gx-check-head"
+          mkdir -p "$tools" "$reports"
+          export PATH="$tools:$RUNNER_TEMP/gx-check-npm/node_modules/.bin:$PATH"
+          if ! npm install --prefix "$RUNNER_TEMP/gx-check-npm" --ignore-scripts --no-audit --no-fund knip@6.44.1; then
+            echo 'Knip installation unavailable.'
+          fi
+          if python3 -m venv "$RUNNER_TEMP/gx-check-python"; then
+            export PATH="$RUNNER_TEMP/gx-check-python/bin:$PATH"
+            if ! python -m pip install --only-binary=:all: diff-cover==10.2.0; then
+              echo 'diff-cover installation unavailable.'
+            fi
+          fi
+          install_tool() {
+            local url="$1" digest="$2" binary="$3" archive="$tools/$3.tar.gz"
+            if curl --proto '=https' --fail --silent --show-error --location --max-time 60 "$url" -o "$archive" &&
+               echo "$digest  $archive" | sha256sum --check --status; then
+              tar -xzf "$archive" -C "$tools" "$binary"
+            else
+              echo "$binary installation unavailable."
+            fi
+          }
+          install_tool https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint
+          if [[ -n "$GX_OPENAPI_SPEC" ]]; then
+            install_tool https://github.com/oasdiff/oasdiff/releases/download/v1.41.0/oasdiff_1.41.0_linux_amd64.tar.gz \
+              96365453163118e6503eb71742643d9ee67f91aedbaadd1a1ce9c6213e3b71c7 oasdiff
+          fi
+          # Preserve the ordinary merge-ref test. Use its coverage only when
+          # the tested tree matches the PR head; otherwise line numbers can drift.
+          export GX_COVERAGE_REPORT="$RUNNER_TEMP/gx-no-coverage.lcov"
+          if [[ "$COVERAGE_OUTCOME" == success ]] && git diff --quiet HEAD "$GX_HEAD"; then
+            GX_COVERAGE_REPORT="$RUNNER_TEMP/gx-coverage.lcov"
+          fi
+          base="$(git merge-base "$GX_BASE" "$GX_HEAD")"
+          git -c core.hooksPath=/dev/null worktree add --detach "$head_tree" "$GX_HEAD"
+          trap 'git -c core.hooksPath=/dev/null worktree remove --force "$head_tree"' EXIT
+          (
+            cd "$head_tree"
+            node scripts/pr-checks/source-checks.js "$base" "$GX_HEAD" "$reports" ||
+              echo 'Source checks unavailable.'
+            node scripts/pr-checks/contract-checks.js "$base" "$GX_HEAD" "$reports" ||
+              echo 'Contract checks unavailable.'
+          )
+          shopt -s nullglob
+          report_files=("$reports"/*.rdjson "$reports"/*.sarif)
+          GX_DIFF_BASE="$base" node -e '
+            const { spawnSync } = require("node:child_process");
+            const { readCheckReports, checkReportLines } = require("./package/gitguardex/src/review/check-reports");
+            const { partitionByAnchor } = require("./package/gitguardex/src/review/diff");
+            const { status, stdout } = spawnSync("git",
+              ["diff", "--no-ext-diff", "--no-textconv", process.env.GX_DIFF_BASE, process.env.GX_HEAD],
+              { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
+            const lineMap = status === 0 ? partitionByAnchor([], stdout).lineMap : new Map();
+            const files = `/${process.env.GITHUB_REPOSITORY}/pull/${process.env.GX_PR}/files`;
+            const lines = checkReportLines(readCheckReports(process.argv.slice(1)), lineMap, files);
+            console.log(lines.join("\n") || "### PR checks\n\nNo applicable or available reports.");
+          ' "${report_files[@]}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload PR check reports
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: gitguardex-checks-${{ github.event.pull_request.base.sha }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/gx-checks/*.rdjson
+            ${{ runner.temp }}/gx-checks/*.sarif
+          if-no-files-found: ignore

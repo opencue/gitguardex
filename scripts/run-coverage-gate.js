@@ -41,9 +41,18 @@ function testFiles(repoRoot) {
 
 function main() {
   const repoRoot = path.resolve(__dirname, '..');
+  const report = process.env.GX_COVERAGE_REPORT;
+  const reporters = report
+    ? [
+        '--test-reporter=tap',
+        '--test-reporter-destination=stdout',
+        '--test-reporter=lcov',
+        `--test-reporter-destination=${path.resolve(report)}`
+      ]
+    : [];
   const result = cp.spawnSync(
     process.execPath,
-    ['--test', '--experimental-test-coverage', ...testFiles(repoRoot)],
+    ['--test', '--experimental-test-coverage', ...reporters, ...testFiles(repoRoot)],
     {
       cwd: repoRoot,
       encoding: 'utf8',

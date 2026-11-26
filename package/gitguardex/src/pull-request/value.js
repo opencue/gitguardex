@@ -181,8 +181,6 @@ function reviewValueLines(value, truncated, reviewDiffPath) {
     ...(impactScore !== null || riskScore !== null
       ? ['```text', `Impact  ${scoreBar(impactScore)}`, `Risk    ${scoreBar(riskScore)}`, '```', '']
       : []),
-    'AI estimates from diff evidence, not a merge verdict. The strongest supported benefit and risk set their own scores. Risk scores show severity if the issue occurs, not likelihood. “Not established” does not mean zero.',
-    '',
     ...(priority
       ? [
           `> **Priority fix · risk ${priority.magnitude}/100** — ${sourceFor(priority.evidence)}`,
@@ -195,6 +193,11 @@ function reviewValueLines(value, truncated, reviewDiffPath) {
           ''
         ]
       : []),
+    '<details>',
+    `<summary>Score evidence · ${value.drivers.length} diff-backed item(s)</summary>`,
+    '',
+    'AI estimates, not a merge verdict. Each score reflects the strongest supported item on its own axis. Risk is severity, not likelihood. “Not established” does not mean zero.',
+    '',
     '| Driver | Magnitude | Likelihood | Evidence and rationale |',
     '| :--- | ---: | :--- | :--- |',
     ...value.drivers.map((driver) => {
@@ -219,6 +222,8 @@ function reviewValueLines(value, truncated, reviewDiffPath) {
       }
       return `| **${IMPACTS[impact]}** · ${AREAS[area]} | ${magnitude ? `**${magnitude}/100**` : '—'} | ${LIKELIHOOD[likelihood] ?? '—'} | **${escapeValueText(label)}:** ${escapeValueText(reason)} — ${sourceFor(evidence)}${advice} |`;
     }),
+    '',
+    '</details>',
     ...(value.improvements.length
       ? [
           '',
