@@ -36,3 +36,9 @@ The configured mirror, `Webu-PRO/gitguardex-frontend`, has
 Verified via the GitHub API that it is active on `refs/heads/main`, has no
 bypass actors, and exposes `non_fast_forward` as an effective rule for `main`.
 Keep this protection on any replacement mirror target.
+
+The mirror script checks the protected source tree after fetching the mirror
+parent. A stale checkout cannot publish a rollback as a fast-forward. The
+regression test deploys the current frontend even when an unrelated commit
+has advanced `main`, then verifies that deploying an older tree leaves the
+mirror unchanged.

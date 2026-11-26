@@ -11,6 +11,8 @@ usage() {
   cat <<'EOF'
 Usage: sync-frontend-mirror.sh [options]
 
+The source tree must still match the frontend on origin/main.
+
 Options:
   --repo <owner/name>     Target GitHub repository (default: $TARGET_REPO)
   --branch <name>         Target branch in the mirror repository (default: main)
@@ -132,6 +134,20 @@ if output="$(mirror_git ls-remote --exit-code --refs "$remote_url" "$target_ref"
   parents=(-p "$mirror_head")
 elif [[ $? -ne 2 ]]; then
   report_remote_failure Lookup "$output"
+fi
+
+# Check source freshness AFTER reading the mirror's parent. If a newer job
+# pushed first, its frontend is already on main. If it pushes after this check,
+# the normal fast-forward requirement rejects our competing mirror commit.
+# Compare trees, not revisions, so unrelated main changes do not skip a deploy.
+if ! git fetch --no-tags origin refs/heads/main ||
+  ! current_source_tree="$(git rev-parse --verify "FETCH_HEAD:$SOURCE_PREFIX" 2>/dev/null)"; then
+  echo "[frontend-mirror-sync] Cannot verify ${SOURCE_PREFIX} on origin/main; not publishing." >&2
+  exit 1
+fi
+if [[ "$current_source_tree" != "$source_tree" ]]; then
+  echo "[frontend-mirror-sync] Stale source checkout; not publishing an older frontend tree."
+  exit 0
 fi
 
 source_rev="$(git rev-parse HEAD)"

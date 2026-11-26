@@ -10,6 +10,7 @@ test('moving the frontend and publishing later changes preserves the mirror hist
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-frontend-mirror-'));
   t.after(() => fs.rmSync(sandbox, { force: true, recursive: true }));
   const local = path.join(sandbox, 'source');
+  const upstream = path.join(sandbox, 'source.git');
   const remote = path.join(sandbox, 'mirror.git');
   const config = path.join(sandbox, 'gitconfig');
   fs.writeFileSync(config, '');
@@ -30,8 +31,10 @@ test('moving the frontend and publishing later changes preserves the mirror hist
       stdio: ['ignore', 'pipe', 'pipe']
     }).trim();
   git(sandbox, 'init', '--initial-branch=main', local);
+  git(sandbox, 'init', '--bare', '--initial-branch=main', upstream);
   git(sandbox, 'init', '--bare', '--initial-branch=main', remote);
   git(local, 'config', 'core.hooksPath', '/dev/null');
+  git(local, 'remote', 'add', 'origin', upstream);
   git(
     local,
     'config',
@@ -61,15 +64,25 @@ test('moving the frontend and publishing later changes preserves the mirror hist
   fs.mkdirSync(path.join(local, 'package'));
   git(local, 'mv', 'frontend', 'package/frontend');
   git(local, 'commit', '-m', 'Move frontend without content changes');
+  const moved = git(local, 'rev-parse', 'HEAD');
+  git(local, 'push', 'origin', 'main');
   mirror();
   assert.equal(git(remote, 'rev-parse', 'main'), original);
 
   fs.writeFileSync(path.join(local, 'package/frontend/index.html'), 'second\n');
   git(local, 'commit', '-am', 'Update the moved frontend');
+  const update = git(local, 'rev-parse', 'HEAD');
+  git(local, 'commit', '--allow-empty', '-m', 'Advance main without changing the frontend');
+  git(local, 'push', 'origin', 'main');
+  git(local, 'checkout', '--detach', update);
   mirror();
   assert.equal(git(remote, 'rev-parse', 'main^'), original);
   assert.equal(
     git(remote, 'rev-parse', 'main^{tree}'),
     git(local, 'rev-parse', 'HEAD:package/frontend')
   );
+  const currentMirror = git(remote, 'rev-parse', 'main');
+  git(local, 'checkout', '--detach', moved);
+  assert.match(mirror(), /Stale source checkout/);
+  assert.equal(git(remote, 'rev-parse', 'main'), currentMirror);
 });
