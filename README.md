@@ -45,6 +45,32 @@ gx onboard   # optional 2-minute tour
 Requires **Node.js 18+**, Git, and GitHub CLI (`gh`). Recommended on macOS or
 Linux; use WSL on Windows.
 
+### Adaptive local build queue
+
+The npm install hook detects total RAM and reports the baseline. On Linux with
+Python 3, Codex and Claude can share one foreground heavy-job queue across
+worktrees:
+
+```sh
+gx mem-doctor --json
+gx run-heavy -- npm run build
+gx run-heavy -- npm test
+```
+
+GitGuardex finish preflight uses the same queue. The ceiling is one job per
+8 GiB of effective RAM (at least one, at most four); available RAM and active
+slots are rechecked before every admission, so zero jobs may start under
+pressure. On systemd systems with a user manager, jobs run in their own
+worker scopes under the caller's user app or session slice, with a soft
+`MemoryHigh` limit. It does not change earlyoom or systemd-oomd settings. Commands that do
+not use GitGuardex are not queued, and background daemons are not supported.
+
+Waiting defaults to 120 seconds (`GUARDEX_HEAVY_WAIT_SECONDS`); on expiry the
+command is not run and GitGuardex returns 75. Set `GUARDEX_HEAVY_SCOPE=0` to
+skip just the scope, or `GUARDEX_HEAVY_QUEUE=0` to run without the queue.
+macOS and Linux without Python run commands directly. Ignoring npm install
+scripts skips only the install report; the runtime still detects RAM.
+
 > [!WARNING]
 > GitGuardex is an independent project. It is not affiliated with OpenAI,
 > Anthropic, or Codex.

@@ -167,7 +167,8 @@ function hasRenderableHelp(command) {
 function helpFlagIsTopLevel(rest) {
   if (!rest.length) return false;
   if (!String(rest[0]).startsWith('-')) return false;
-  return rest.some((arg) => HELP_FLAGS.has(arg));
+  const separator = rest.indexOf('--');
+  return (separator === -1 ? rest : rest.slice(0, separator)).some((arg) => HELP_FLAGS.has(arg));
 }
 
 function printCommandHelp(command) {
@@ -349,6 +350,8 @@ async function main() {
   if (command === 'release') return require('./commands/release').release(rest);
   if (command === 'watch') return require('./commands/watch').watch(rest);
   if (command === 'budget') return require('../budget').runBudgetCommand(rest);
+  if (command === 'mem-doctor') return require('../heavy').memDoctor(rest);
+  if (command === 'run-heavy') return require('../heavy').runHeavy(rest);
   if (command === 'ci-init') return require('../ci-init').runCiInitCommand(rest);
   if (command === 'speckit') return require('../speckit').runSpeckitCommand(rest);
 
