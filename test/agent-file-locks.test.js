@@ -473,6 +473,14 @@ defineSpawnSuite('agent-file-locks cross-worktree (G2)', () => {
     assert.deepEqual(inbox('before-restart'), [expected]);
     assert.deepEqual(mine(next, b), []);
     assert.deepEqual(mine(owner, b), []);
+    assert.notEqual(
+      runLockTool(['handoffs', '--min', '--json', '--target', owner], next, a).status,
+      0,
+    );
+    const unreadable = path.join(path.dirname(receipt), `${'0'.repeat(32)}.json`);
+    fs.writeFileSync(unreadable, '{');
+    assert.deepEqual(inbox('one-unreadable-record'), [expected]);
+    fs.unlinkSync(unreadable);
     assert.equal(locksAt(next, ['handoff-ack', id], b).status, 2);
     assert.notEqual(runLockTool(['handoff-ack', id, '--target', owner], next, a).status, 0);
     assert.equal(locksAt(owner, ['handoff-ack', id], a).status, 0);

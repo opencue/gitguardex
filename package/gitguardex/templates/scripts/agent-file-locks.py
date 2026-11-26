@@ -788,6 +788,7 @@ def read_handoff(path: Path) -> dict[str, Any]:
         request = json.loads(path.read_text())
         if (not isinstance(request, dict) or request.get('id') != path.stem
                 or not re.fullmatch(r'[a-f0-9]{32}', path.stem)
+                or not isinstance(request.get('file'), str)
                 or not isinstance(request.get('owner'), dict) or not isinstance(request.get('recipient'), dict)):
             raise ValueError('invalid request')
         return request
@@ -844,7 +845,13 @@ def cmd_handoffs(args: argparse.Namespace, repo_root: Path) -> int:
     locks = load_all_locks(repo_root)
     rows = []
     for path in paths:
-        entry = read_handoff(path)
+        try:
+            entry = read_handoff(path)
+        except LockError as exc:
+            if not args.mine:
+                raise
+            print(f'[agent-file-locks] {exc}; skipping unreadable handoff', file=sys.stderr)
+            continue
         commit = entry.get('commit')
         check = entry.get('check')
         owners = locks.get(entry['file'], [])
@@ -1326,7 +1333,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     request = sub.add_parser('handoff-request', help='Ask the current file owner to transfer a local worktree lock')
     request.add_argument('file', help='File to request (repo-relative or absolute)')
-    handoffs = sub.add_parser('handoffs', help='List pending and approved local handoffs')
+    handoffs = sub.add_parser('handoffs', allow_abbrev=False, help='List pending and approved local handoffs')
     handoffs.add_argument('--mine', action='store_true', help='Show pending requests for this owner worktree')
     handoffs.add_argument('--json', action='store_true', help='Emit owner requests as JSON (requires --mine)')
     ack = sub.add_parser('handoff-ack', help='Acknowledge a request without transferring the lock')

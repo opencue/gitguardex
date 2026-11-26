@@ -595,6 +595,12 @@ test('merge-ready is advisory, tied to the observed PR head, and does not write 
   assert.match(inbox().stdout, /Merge-ready at .* \(advisory\)/);
   assert.equal(inbox({ receiptId: messageId }).result.headSha, headSha);
   assert.ok(calls.every((args) => args[1] === 'view'));
+
+  const live = prHandoffFixture();
+  live.deps.runGh = deps.runGh;
+  const delivered = runSendCommand(repoRoot, { ...live.options, mergeReady: true }, live.deps);
+  assert.equal(delivered.result.kind, 'sent');
+  assert.ok(live.calls[0].envelope.includes(`event: merge-ready at ${headSha} (advisory)\n`));
 });
 
 test('a restarted worktree inbox shows a pending lock handoff without a queued message', () => {
