@@ -76,7 +76,7 @@ function parseCheckReport(data, fallback) {
             file = '';
           }
           return diagnostic({
-          message: item?.message?.text ?? item?.message?.markdown,
+            message: item?.message?.text ?? item?.message?.markdown,
             level: item?.level,
             file,
             line: location?.region?.startLine,
