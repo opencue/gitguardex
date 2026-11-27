@@ -86,15 +86,18 @@ After enablement, ordinary `claim`, `allow-delete`, `validate`, `release`, and `
 
 ## Publish PR impact and risk to GitHub
 
-For GitHub PRs, prefer the repository's required review gate if it already
-posts the review. Otherwise, use the repository's designated reviewer:
+When delivering a GitHub PR, publish the scores as part of the authorized
+delivery workflow. Prefer the repository's required review gate if it
+already posts the review. Otherwise, if publishing is authorized, use the
+repository's designated reviewer:
 
 ```sh
 gx pr-review --pr <number> --provider <repository-reviewer> --post --artifact <local-path>
 ```
 
-The artifact alone is local-only. Use `--no-post` only if a local/private
-review is requested or posting is forbidden. Never bypass a required gate.
+The artifact alone is local-only. Keep standalone reviews local with
+`--no-post` unless the user or the repository workflow authorizes publishing.
+Never bypass a required gate or publish a private review.
 
 When both evidence-backed scores are available, GitGuardex updates the open
 PR title with `[I<number> R<number>]` (impact and risk, each out of 100), so

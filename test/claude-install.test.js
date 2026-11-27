@@ -160,7 +160,7 @@ test('installAgentSkills installs gitguardex and opensrc skills', () => {
     const result = claudeModule.installAgentSkills(repoRoot, { dryRun: false });
     assert.equal(result.status, 'ok');
     const installedSkill = fs.readFileSync(path.join(repoRoot, '.claude/skills/gitguardex/SKILL.md'), 'utf8');
-    const bundledSkill = fs.readFileSync(path.join(__dirname, '../skills/gitguardex/SKILL.md'), 'utf8');
+    const bundledSkill = fs.readFileSync(path.join(__dirname, '../package/gitguardex/skills/gitguardex/SKILL.md'), 'utf8');
     assert.equal(installedSkill, bundledSkill, 'Claude should install the bundled GitGuardex skill');
     assert.match(installedSkill, /--post --artifact/);
     assert.equal(fs.existsSync(path.join(repoRoot, '.claude/skills/opensrc/SKILL.md')), true);
