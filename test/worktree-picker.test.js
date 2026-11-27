@@ -131,7 +131,7 @@ test('picker filters branch and path without changing selection identities', asy
 });
 
 test('picker decorates only GX rows once and falls back without changing a choice', async () => {
-  const entry = { path: '/lane with spaces', branch: 'agent/test' };
+  const entry = { path: '/conflict lane with spaces', branch: 'agent/test-dirty' };
   let calls = 0;
   let statuses = new Map([[entry, { text: 'dirty · main: +2/-1 · possible merge conflict' }]]);
   const deps = {
@@ -159,6 +159,13 @@ test('picker decorates only GX rows once and falls back without changing a choic
   await tick();
   assert.match(fallback.read(), /Worktrunk status unavailable/);
   assert.match(fallback.read(), /1\. agent\/test/);
+  for (const query of ['/dirty', '/conflict']) {
+    fallback.clear();
+    fallback.write(`${query}\n`);
+    await tick();
+    assert.match(fallback.read(), /1\. agent\/test-dirty/);
+    assert.doesNotMatch(fallback.read(), /Worktrunk status unavailable/);
+  }
   fallback.write('q\n');
   assert.equal(await pickFallback, null);
 

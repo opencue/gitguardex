@@ -95,14 +95,10 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
       if (!answer || /^(?:q|quit|cancel)$/i.test(answer)) return null;
       if (answer.startsWith('/')) {
         const query = answer.slice(1).toLowerCase();
-        const statusFilter = options.worktrunk && (query === 'dirty' || query === 'conflict');
-        if (statusFilter && !statuses) {
-          pendingUpdate = false;
-          output.write(
-            statuses === undefined
-              ? 'Worktrunk status is still loading; try again shortly.\n'
-              : unavailable
-          );
+        const statusFilter =
+          options.worktrunk && statuses !== null && (query === 'dirty' || query === 'conflict');
+        if (statusFilter && statuses === undefined) {
+          output.write('Worktrunk status is still loading; try again shortly.\n');
           continue;
         }
         visible = statusFilter
