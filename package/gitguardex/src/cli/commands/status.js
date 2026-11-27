@@ -209,7 +209,7 @@ function status(rawArgs) {
   const inGitRepo = isGitRepo(targetPath);
   const scanResult = inGitRepo ? runScanInternal({ target: targetPath, json: false }) : null;
   const worktrees = scanResult ? summarizeAgentWorktrees(scanResult.repoRoot) : null;
-  const worktreeCount = worktrees ? worktrees.agent + worktrees.detached : 0;
+  const worktreeCount = worktrees ? worktrees.agent + worktrees.detached + worktrees.otherManaged : 0;
   const repoServiceStatus = scanResult
     ? scanResult.guardexEnabled === false
       ? 'disabled'
@@ -346,6 +346,7 @@ function status(rawArgs) {
 
   const worktreeLine = worktreeCount > 0
     ? `[${TOOL_NAME}] Worktrees: ${worktrees.agent} agent branch${worktrees.agent === 1 ? '' : 'es'} · ${worktrees.detached} detached`
+      + (worktrees.otherManaged ? ` · ${worktrees.otherManaged} other managed` : '')
     : null;
   if (scanResult.guardexEnabled === false) {
     console.log(
