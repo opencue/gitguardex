@@ -1,6 +1,18 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
+
+const activePosixProbes = new Set();
+const probeExitSignals = ['SIGHUP', 'SIGINT', 'SIGTERM'];
+
+function stopProbesOnSignal(signal) {
+  for (const stop of activePosixProbes) stop();
+  if (process.listenerCount(signal) === 1) {
+    // Restore the default signal behavior when no caller handles it.
+    process.off(signal, stopProbesOnSignal);
+    process.kill(process.pid, signal);
+  }
+}
 
 function canonicalPath(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
@@ -39,24 +51,25 @@ function findWorktrunk(dirs, roots) {
   return null;
 }
 
-function statusText(row, base) {
+function rowStatus(row, base) {
   const parts = [];
   const changes = row.worktree.changes;
-  if (
-    ['staged', 'modified', 'untracked', 'renamed', 'deleted', 'conflicted'].some(
-      (key) => changes?.[key] === true
-    )
-  ) {
-    parts.push('dirty');
-  }
+  const dirty = ['staged', 'modified', 'untracked', 'renamed', 'deleted', 'conflicted'].some(
+    (key) => changes?.[key] === true
+  );
+  if (dirty) parts.push('dirty');
   const { ahead, behind, merge_conflicts: conflicts } = row.default_branch || {};
   const validCount = (value) => Number.isSafeInteger(value) && value >= 0;
   if (base && validCount(ahead) && validCount(behind)) parts.push(`${base}: +${ahead}/-${behind}`);
-  if (base && conflicts === true) parts.push(`possible merge conflict with ${base}`);
-  return parts.join(' · ');
+  const unresolved = changes?.conflicted === true;
+  if (unresolved) parts.push('unresolved conflicts');
+  if (conflicts === true)
+    parts.push(base ? `possible merge conflict with ${base}` : 'possible merge conflict');
+  return { dirty, conflict: unresolved || conflicts === true, text: parts.join(' · ') };
 }
 
-function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
+async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
+  if (deps.signal?.aborted) return null;
   const candidates = new Map(entries.map((entry) => [entry, canonicalPath(entry.path)]));
   const roots = [canonicalPath(repoRoot), ...candidates.values()].filter(Boolean);
   const dirs = (deps.pathEnv ?? process.env.PATH ?? '')
@@ -67,31 +80,105 @@ function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   const executable = findWorktrunk(dirs, roots);
   if (!executable) return null;
 
-  const result = (deps.spawn || spawnSync)(
-    executable,
-    [
-      '-C',
-      repoRoot,
-      '--config-set',
-      'list.full=false',
-      '--config-set',
-      'list.json-schema=2',
-      'list',
-      '--format=json'
-    ],
-    {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: dirs.join(path.delimiter) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 3000,
-      killSignal: 'SIGKILL',
-      maxBuffer: 1024 * 1024
+  const detached = process.platform !== 'win32';
+  const args = [
+    '-C',
+    detached ? repoRoot : '.',
+    '--config-set',
+    'list.full=false',
+    '--config-set',
+    'list.json-schema=2',
+    'list',
+    '--format=json'
+  ];
+  const env = { ...process.env, PATH: dirs.join(path.delimiter) };
+  let command = executable;
+  let commandArgs = args;
+  if (!detached) {
+    const systemRoot = canonicalPath(process.env.SystemRoot);
+    if (!systemRoot) return null;
+    command = canonicalPath(
+      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    );
+    if (!outsideWorktrees(command, roots)) return null;
+    const script = fs.readFileSync(path.join(__dirname, 'worktrunk-job.ps1'), 'utf8');
+    commandArgs = [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64')
+    ];
+    env.GUARDEX_WORKTRUNK_EXE = executable;
+    env.GUARDEX_WORKTRUNK_ROOT = path.resolve(repoRoot);
+    // Every argument is constant here; the target path goes in WorkingDirectory.
+    env.GUARDEX_WORKTRUNK_ARGS = args.join(' ');
+  }
+  const maxBuffer = 1024 * 1024;
+  let stop;
+  let timer;
+  const stdout = await new Promise((resolve) => {
+    if (detached && !activePosixProbes.size) {
+      for (const signal of probeExitSignals) process.prependListener(signal, stopProbesOnSignal);
     }
-  );
-  if (result.error || result.status !== 0) return null;
+    const child = (deps.spawn || spawn)(command, commandArgs, {
+      detached,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(!detached && { cwd: path.dirname(command), windowsHide: true })
+    });
+    let stopped = false;
+    stop = () => {
+      if (stopped) return;
+      stopped = true;
+      if (child.pid) {
+        try {
+          // Git subprocesses inherit Worktrunk's process group.
+          if (detached) process.kill(-child.pid, 'SIGKILL');
+          else child.kill('SIGKILL'); // Closing the launcher closes its Windows Job Object.
+        } catch (error) {
+          if (error.code !== 'ESRCH') child.kill('SIGKILL');
+        }
+      }
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const chunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBuffer) stop();
+      else chunks.push(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > maxBuffer) stop();
+    });
+    child.once('error', () => resolve(null));
+    child.once('close', (code) => {
+      const result = code === 0 && !stopped ? Buffer.concat(chunks).toString('utf8') : null;
+      if (detached) stop();
+      resolve(result);
+    });
+    timer = setTimeout(stop, detached ? 3000 : 8000);
+    if (detached) activePosixProbes.add(stop);
+    deps.signal?.addEventListener('abort', stop, { once: true });
+    if (deps.signal?.aborted) stop();
+  }).finally(() => {
+    clearTimeout(timer);
+    if (detached) {
+      activePosixProbes.delete(stop);
+      if (!activePosixProbes.size) {
+        for (const signal of probeExitSignals) process.off(signal, stopProbesOnSignal);
+      }
+    }
+    deps.signal?.removeEventListener('abort', stop);
+  });
+  if (stdout === null || deps.signal?.aborted) return null;
   let data;
   try {
-    data = JSON.parse(result.stdout);
+    data = JSON.parse(stdout);
   } catch {
     return null;
   }
@@ -121,8 +208,8 @@ function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
       row.head?.sha !== entry.head
     )
       continue;
-    const text = statusText(row, safeBase);
-    if (text) statuses.set(entry, text);
+    const status = rowStatus(row, safeBase);
+    if (status.text) statuses.set(entry, status);
   }
   return statuses;
 }

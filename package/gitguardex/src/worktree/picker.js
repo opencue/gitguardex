@@ -1,4 +1,5 @@
 const readline = require('node:readline/promises');
+const { clearScreenDown, cursorTo, moveCursor } = require('node:readline');
 const { listWorktrees, checkedRun } = require('./navigation');
 const { loadWorktrunkStatuses } = require('./worktrunk-status');
 
@@ -39,15 +40,14 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
     );
   const entries = (deps.listWorktrees || listWorktrees)(repoRoot);
   if (!entries.length) throw new Error('No worktrees available');
-  const statuses = options.worktrunk
-    ? (deps.loadWorktrunkStatuses || loadWorktrunkStatuses)(repoRoot, entries, deps)
-    : null;
-  if (options.worktrunk && !statuses)
-    output.write('Worktrunk status unavailable; using the GitGuardex picker.\n');
+  let statuses;
+  let pendingUpdate = false;
+  let choosing = false;
   let visible = entries;
+  const unavailable = 'Worktrunk status unavailable; using the GitGuardex picker.\n';
   const display = () =>
     visible.forEach((entry, index) => {
-      const status = statuses?.get(entry);
+      const status = statuses?.get(entry)?.text;
       output.write(
         `${index + 1}. ${terminalText(entry.branch || '(detached)')}  ${terminalText(entry.path)}${status ? `  [${terminalText(status)}]` : ''}\n`
       );
@@ -55,19 +55,73 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
   display();
   const rl = deps.question ? null : readline.createInterface({ input, output });
   const question = deps.question || ((prompt) => rl.question(prompt));
+  const controller = options.worktrunk ? new AbortController() : null;
+  const loading = 'Loading Worktrunk status (/dirty or /conflict to filter).';
+  let loadingAbovePrompt = Boolean(controller);
+  const showStatusUpdate = () => {
+    pendingUpdate = false;
+    if (statuses) display();
+    else output.write(unavailable);
+  };
+  if (controller) {
+    output.write(`${loading}\n`);
+    rl?.once('close', () => controller.abort());
+    const settled = (result) => {
+      if (controller.signal.aborted) return;
+      statuses = result;
+      pendingUpdate = true;
+      // Redraw only a blank choice prompt, preserving readline's cursor position.
+      if (!rl || !choosing || rl.line) return;
+      const { rows, cols } = rl.getCursorPos();
+      const loadingRows = loadingAbovePrompt
+        ? Math.ceil(loading.length / (output.columns || loading.length))
+        : 0;
+      if (rows + loadingRows) moveCursor(output, 0, -(rows + loadingRows));
+      cursorTo(output, 0);
+      clearScreenDown(output);
+      showStatusUpdate();
+      output.write(rl.getPrompt());
+      if (cols === 0) {
+        output.write(' '); // Force the wrap when the prompt ends at the right edge.
+        cursorTo(output, 0);
+      }
+    };
+    Promise.resolve()
+      .then(() =>
+        (deps.loadWorktrunkStatuses || loadWorktrunkStatuses)(repoRoot, entries, {
+          ...deps,
+          signal: controller.signal
+        })
+      )
+      .then(settled, () => settled(null));
+  }
   try {
     while (true) {
+      if (pendingUpdate) showStatusUpdate();
+      choosing = true;
       const answer = (
         await question('Worktree number (/text filters, p N previews, q cancels): ')
       ).trim();
+      choosing = false;
+      loadingAbovePrompt = false;
       if (!answer || /^(?:q|quit|cancel)$/i.test(answer)) return null;
       if (answer.startsWith('/')) {
         const query = answer.slice(1).toLowerCase();
-        visible = entries.filter((entry) =>
-          `${entry.branch} ${entry.path}`.toLowerCase().includes(query)
-        );
+        const statusFilter =
+          options.worktrunk && statuses !== null && (query === 'dirty' || query === 'conflict');
+        if (statusFilter && statuses === undefined) {
+          output.write('Worktrunk status is still loading; try again shortly.\n');
+          continue;
+        }
+        visible = statusFilter
+          ? entries.filter((entry) => statuses.get(entry)?.[query] === true)
+          : entries.filter((entry) =>
+              `${entry.branch} ${entry.path}`.toLowerCase().includes(query)
+            );
+        if (statuses) pendingUpdate = false; // The list below includes the latest status.
         display();
-        if (!visible.length) output.write('No matches. Use / to clear the filter.\n');
+        if (!visible.length)
+          output.write(`No ${statusFilter ? 'known ' : ''}matches. Use / to clear the filter.\n`);
         continue;
       }
       const match = answer.match(/^(p\s+)?([1-9]\d*)$/i);
@@ -89,6 +143,7 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
       if (/^(?:q|quit|cancel)$/i.test(confirm)) return null;
     }
   } finally {
+    controller?.abort();
     rl?.close();
   }
 }

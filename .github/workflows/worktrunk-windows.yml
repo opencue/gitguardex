@@ -1,0 +1,29 @@
+name: Worktrunk Windows
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - '.github/workflows/worktrunk-windows.yml'
+      - 'package/gitguardex/src/worktree/worktrunk-*'
+      - 'test/worktree-worktrunk-status.test.js'
+      - 'test/worktree-worktrunk-windows.test.js'
+
+permissions:
+  contents: read
+
+jobs:
+  process-tree:
+    name: Worktrunk process tree (Windows)
+    if: github.event.pull_request.draft == false
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+      - run: node --test test/worktree-worktrunk-status.test.js test/worktree-worktrunk-windows.test.js

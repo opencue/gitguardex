@@ -1,7 +1,10 @@
 const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
+const { EventEmitter, once } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { PassThrough } = require('node:stream');
 const test = require('node:test');
 const { loadWorktrunkStatuses } = require('../package/gitguardex/src/worktree/worktrunk-status');
 
@@ -33,23 +36,38 @@ function row(entry, changes = {}) {
   };
 }
 
-function result(items, base = 'main') {
-  return {
-    status: 0,
-    stdout: JSON.stringify({
-      schema: 2,
-      collected: { ci: false, summary: false },
-      repo: { default_branch: base },
-      items
-    })
-  };
+function output(items, base = 'main') {
+  return JSON.stringify({
+    schema: 2,
+    collected: { ci: false, summary: false },
+    repo: { default_branch: base },
+    items
+  });
 }
 
-test('uses schema 2 local facts only for unambiguous current GX entries', (t) => {
+function mockProbe(stdout, { code = 0, error, stderr } = {}) {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  queueMicrotask(() => {
+    if (error) child.emit('error', error);
+    child.stdout.end(stdout);
+    child.stderr.end(stderr);
+    child.emit('close', code);
+  });
+  return child;
+}
+
+function providerExecutable(file, options) {
+  return process.platform === 'win32' ? options.env.GUARDEX_WORKTRUNK_EXE : file;
+}
+
+test('uses schema 2 local facts only for unambiguous current GX entries', async (t) => {
   const { root, repo, bin, executable, entry } = fixture(t);
   const wt = executable(bin, 'wt');
   const lane = entry('lane with spaces', 'agent/test');
   const detached = entry('detached', '', true);
+  const conflicted = entry('conflicted', 'agent/conflicted');
   const stale = entry('stale', 'agent/stale');
   const wrongBranch = entry('wrong branch', 'agent/old');
   const duplicate = entry('duplicate', 'agent/duplicate');
@@ -57,75 +75,92 @@ test('uses schema 2 local facts only for unambiguous current GX entries', (t) =>
   const foreign = entry('foreign', 'agent/foreign');
   const alias = path.join(root, 'alias');
   fs.symlinkSync(lane.path, alias, 'junction');
-  const hits = loadWorktrunkStatuses(
+  const hits = await loadWorktrunkStatuses(
     repo,
-    [lane, detached, stale, wrongBranch, duplicate, unknown],
+    [lane, detached, conflicted, stale, wrongBranch, duplicate, unknown],
     {
       pathEnv: bin,
       spawn(file, args, options) {
-        assert.equal(file, wt);
-        assert.deepEqual(args, [
+        assert.equal(providerExecutable(file, options), wt);
+        const windows = process.platform === 'win32';
+        const expected = [
           '-C',
-          repo,
+          windows ? '.' : repo,
           '--config-set',
           'list.full=false',
           '--config-set',
           'list.json-schema=2',
           'list',
           '--format=json'
-        ]);
+        ];
+        if (windows) {
+          assert.equal(path.basename(file).toLowerCase(), 'powershell.exe');
+          assert.equal(options.env.GUARDEX_WORKTRUNK_ROOT, repo);
+          assert.equal(options.env.GUARDEX_WORKTRUNK_ARGS, expected.join(' '));
+        } else {
+          assert.deepEqual(args, expected);
+        }
         assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
-        assert.equal(options.timeout, 3000);
-        assert.equal(options.maxBuffer, 1024 * 1024);
-        return result([
-          {
-            ...row({ ...lane, path: alias }, { untracked: true }),
-            default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
-          },
-          row(detached, { staged: true }),
-          row({ ...stale, head: 'old' }, { staged: true }),
-          row({ ...wrongBranch, branch: 'agent/replacement' }, { staged: true }),
-          row(duplicate, { staged: true }),
-          row(duplicate, { deleted: true }),
-          row(unknown, { modified: null, untracked: 'true' }),
-          row(foreign, { staged: true }),
-          null
-        ]);
+        return mockProbe(
+          output([
+            {
+              ...row({ ...lane, path: alias }, { untracked: true }),
+              default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
+            },
+            row(detached, { staged: true }),
+            row(conflicted, { conflicted: true }),
+            row({ ...stale, head: 'old' }, { staged: true }),
+            row({ ...wrongBranch, branch: 'agent/replacement' }, { staged: true }),
+            row(duplicate, { staged: true }),
+            row(duplicate, { deleted: true }),
+            row(unknown, { modified: null, untracked: 'true' }),
+            row(foreign, { staged: true }),
+            null
+          ])
+        );
       }
     }
   );
   assert.deepEqual(
     [...hits],
     [
-      [lane, 'dirty · main: +2/-1 · possible merge conflict with main'],
-      [detached, 'dirty']
+      [
+        lane,
+        {
+          dirty: true,
+          conflict: true,
+          text: 'dirty · main: +2/-1 · possible merge conflict with main'
+        }
+      ],
+      [detached, { dirty: true, conflict: false, text: 'dirty' }],
+      [conflicted, { dirty: true, conflict: true, text: 'dirty · unresolved conflicts' }]
     ]
   );
 });
 
-test('skips checkout and relative PATH entries, including symlinks back into a checkout', (t) => {
+test('skips checkout and relative PATH entries, including symlinks back into a checkout', async (t) => {
   const { repo, bin, executable, entry } = fixture(t);
   const lane = entry('lane', 'agent/test');
   const unsafe = executable(lane.path, 'wt');
   fs.symlinkSync(unsafe, path.join(bin, path.basename(unsafe)));
   const safe = executable(bin, 'git-wt');
   const pathEnv = ['', '.', lane.path, bin, repo].join(path.delimiter);
-  const statuses = loadWorktrunkStatuses(repo, [lane], {
+  const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv,
     spawn(file, _args, options) {
-      assert.equal(file, safe);
+      assert.equal(providerExecutable(file, options), safe);
       assert.equal(options.env.PATH, fs.realpathSync(bin));
-      return result([]);
+      return mockProbe(output([]));
     }
   });
   assert.equal(statuses.size, 0);
 });
 
-test('degrades to native status on missing binary, invalid protocol, or failed probe', (t) => {
+test('degrades to native status on missing binary, invalid protocol, or failed probe', async (t) => {
   const { repo, bin, executable, entry } = fixture(t);
   const lane = entry('lane', 'agent/test');
   assert.equal(
-    loadWorktrunkStatuses(repo, [lane], {
+    await loadWorktrunkStatuses(repo, [lane], {
       pathEnv: '',
       spawn: () => assert.fail('should not spawn')
     }),
@@ -133,45 +168,53 @@ test('degrades to native status on missing binary, invalid protocol, or failed p
   );
   const wt = executable(bin, 'wt');
   executable(bin, 'git-wt');
-  for (const failure of [
-    { status: 1, stdout: '', stderr: 'unclean output' },
-    { status: null, error: { code: 'ETIMEDOUT' } },
-    { status: null, error: { code: 'ENOBUFS' } },
-    { status: 0, stdout: 'not JSON' },
-    { status: 0, stdout: '[]' },
-    { status: 0, stdout: '{"schema":2,"items":[],"collected":{"ci":true,"summary":false}}' }
+  const oversized = Buffer.alloc(1024 * 1024 + 1);
+  for (const [stdout, result] of [
+    ['', { error: new Error('probe failed to start') }],
+    [output([]), { code: 1 }],
+    [oversized],
+    [output([]), { stderr: oversized }],
+    ['not JSON'],
+    ['[]'],
+    ['{"schema":2,"items":[],"collected":{"ci":true,"summary":false}}']
   ]) {
     let calls = 0;
     assert.equal(
-      loadWorktrunkStatuses(repo, [lane], {
+      await loadWorktrunkStatuses(repo, [lane], {
         pathEnv: bin,
-        spawn(file) {
-          assert.equal(file, wt);
+        spawn(file, _args, options) {
+          assert.equal(providerExecutable(file, options), wt);
           calls += 1;
-          return failure;
+          return mockProbe(stdout, result);
         }
       }),
       null
     );
     assert.equal(calls, 1);
   }
-  const statuses = loadWorktrunkStatuses(repo, [lane], {
+  const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv: bin,
     spawn: () =>
-      result(
-        [
-          {
-            ...row(lane, { modified: true }),
-            default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
-          }
-        ],
-        'main\u202e'
+      mockProbe(
+        output(
+          [
+            {
+              ...row(lane, { modified: true }),
+              default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
+            }
+          ],
+          'main\u202e'
+        )
       )
   });
-  assert.equal(statuses.get(lane), 'dirty');
+  assert.deepEqual(statuses.get(lane), {
+    dirty: true,
+    conflict: true,
+    text: 'dirty · possible merge conflict'
+  });
 });
 
-test('does not split expanded PATH symlinks into new search directories', (t) => {
+test('does not split expanded PATH symlinks into new search directories', async (t) => {
   const { root, repo, bin, executable, entry } = fixture(t);
   const lane = entry('lane', 'agent/test');
   const delimited = path.join(root, `bin${path.delimiter}with delimiter`);
@@ -181,12 +224,129 @@ test('does not split expanded PATH symlinks into new search directories', (t) =>
   fs.symlinkSync(delimited, alias, 'junction');
   const safe = executable(bin, 'git-wt');
 
-  loadWorktrunkStatuses(repo, [lane], {
+  const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv: [alias, bin].join(path.delimiter),
     spawn(file, _args, options) {
-      assert.equal(file, safe);
+      assert.equal(providerExecutable(file, options), safe);
       assert.equal(options.env.PATH, fs.realpathSync(bin));
-      return result([]);
+      return mockProbe(output([]));
     }
   });
+  assert.equal(statuses.size, 0);
+});
+
+test('abort kills the Worktrunk process group and skips an already-aborted probe', async (t) => {
+  if (process.platform === 'win32') return t.skip('requires POSIX process groups');
+  const { repo, bin, executable } = fixture(t);
+  const wt = executable(bin, 'wt');
+  fs.writeFileSync(wt, '#!/bin/sh\n(printf ready; /bin/sleep 1; printf survived >&3) &\nwait\n');
+  const controller = new AbortController();
+  let probe;
+  let ready;
+  let closed;
+  let descendantOutput = '';
+  const pending = loadWorktrunkStatuses(repo, [], {
+    pathEnv: bin,
+    signal: controller.signal,
+    spawn(file, args, options) {
+      probe = spawn(file, args, { ...options, stdio: [...options.stdio, 'pipe'] });
+      probe.stdio[3].on('data', (chunk) => {
+        descendantOutput += chunk;
+      });
+      ready = new Promise((resolve) => probe.stdout.once('data', resolve));
+      closed = new Promise((resolve) => probe.once('close', (_code, signal) => resolve(signal)));
+      return probe;
+    }
+  });
+  await ready;
+  controller.abort();
+  const closedOutput = probe.stdout.destroyed && probe.stderr.destroyed;
+  assert.equal(await pending, null);
+  assert.equal(await closed, 'SIGKILL');
+  assert.equal(descendantOutput, '', 'the descendant must stop before it can write to its pipe');
+  assert.equal(closedOutput, true, 'output pipes must not wait for a descendant to exit');
+  assert.equal(
+    await loadWorktrunkStatuses(repo, [], {
+      pathEnv: bin,
+      signal: controller.signal,
+      spawn: () => assert.fail('should not spawn')
+    }),
+    null
+  );
+});
+
+test('the Worktrunk deadline returns null and kills the probe descendant', { timeout: 8000 }, async (t) => {
+  if (process.platform === 'win32') return t.skip('requires POSIX process groups');
+  const { repo, bin, executable } = fixture(t);
+  const wt = executable(bin, 'wt');
+  // The descendant signals readiness and holds fd 3 open while it sleeps.
+  fs.writeFileSync(wt, '#!/bin/sh\n(printf ready >&3; exec /bin/sleep 30) &\nwait\n');
+  let probe;
+  let ready;
+  let closed;
+  const pending = loadWorktrunkStatuses(repo, [], {
+    pathEnv: bin,
+    spawn(file, args, options) {
+      probe = spawn(file, args, { ...options, stdio: [...options.stdio, 'pipe'] });
+      ready = once(probe.stdio[3], 'data');
+      closed = once(probe, 'close');
+      t.after(() => {
+        if (!probe.pid) return;
+        try {
+          process.kill(-probe.pid, 'SIGKILL');
+        } catch (error) {
+          if (error.code !== 'ESRCH') throw error;
+        }
+      });
+      return probe;
+    }
+  });
+  assert.equal(String((await ready)[0]), 'ready');
+  assert.equal(await pending, null);
+  // A surviving descendant would keep the pipe open and prevent the close event.
+  assert.deepEqual(await closed, [null, 'SIGKILL']);
+});
+
+test('terminating the picker process group stops detached Worktrunk descendants', { timeout: 12000 }, async (t) => {
+  if (process.platform === 'win32') return t.skip('requires POSIX process groups');
+  const { repo, bin, executable } = fixture(t);
+  fs.writeFileSync(executable(bin, 'wt'), '#!/bin/sh\n(printf "%s\\n" "$$" >&3; exec /bin/sleep 30) &\nwait\n');
+  const modulePath = require.resolve('../package/gitguardex/src/worktree/worktrunk-status');
+  const driverScript = `
+    const { spawn } = require('node:child_process');
+    require(process.argv[1]).loadWorktrunkStatuses(process.argv[2], [], {
+      pathEnv: process.argv[3],
+      spawn: (file, args, options) => spawn(file, args, { ...options, stdio: [...options.stdio, 3] })
+    });
+  `;
+  for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM']) {
+    await t.test(signal, async (t) => {
+      const driver = spawn(process.execPath, ['-e', driverScript, modulePath, repo, bin], {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'inherit', 'pipe']
+      });
+      let probeGroup;
+      t.after(() => {
+        driver.kill('SIGKILL');
+        if (!probeGroup) return;
+        try {
+          process.kill(-probeGroup, 'SIGKILL');
+        } catch (error) {
+          if (error.code !== 'ESRCH') throw error;
+        }
+      });
+      // The sleeping descendant retains fd 3 independently of the driver.
+      const output = driver.stdio[3];
+      const exit = once(driver, 'exit');
+      const [pid] = await once(output, 'data', { signal: AbortSignal.timeout(4000) });
+      probeGroup = Number(String(pid).trim());
+      assert.ok(Number.isSafeInteger(probeGroup) && probeGroup > 1);
+      const end = once(output, 'end', { signal: AbortSignal.timeout(2000) });
+      process.kill(-driver.pid, signal);
+      const [[code, exitSignal]] = await Promise.all([exit, end]);
+      probeGroup = null;
+      assert.equal(code, null);
+      assert.equal(exitSignal, signal);
+    });
+  }
 });
