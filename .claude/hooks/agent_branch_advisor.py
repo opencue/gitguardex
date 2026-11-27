@@ -44,9 +44,10 @@ repo somehow carries an older skill_guard.py without these helpers.
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
-# gx-hook-state-lock-v3: never write import caches outside the lock.
+# gx-hook-state-lock-v4: never write import caches outside the lock.
 sys.dont_write_bytecode = True
 
 try:
@@ -78,7 +79,14 @@ except Exception:  # noqa: BLE001
 try:
     from _session_presence import locked_hook_state
 except ImportError:
-    locked_hook_state = None
+    def locked_hook_state():
+        hook = Path(__file__).resolve()
+        return nullcontext(
+            hook.is_file() and not any(
+                parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
+                for parent in hook.parents[3:]
+            )
+        )
 
 
 SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit")
@@ -133,7 +141,7 @@ def _read_state(session_id: str) -> dict:
 
 
 def _write_state(session_id: str, updates: dict) -> None:
-    if not session_id or locked_hook_state is None:
+    if not session_id:
         return
     try:
         with locked_hook_state() as writable:

@@ -12,7 +12,7 @@ import sys
 from contextlib import nullcontext
 from pathlib import Path
 
-# gx-hook-state-lock-v3: never write import caches outside the lock.
+# gx-hook-state-lock-v4: never write import caches outside the lock.
 sys.dont_write_bytecode = True
 
 try:

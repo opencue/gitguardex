@@ -101,12 +101,12 @@ function isManagedAgentWorktree(repoRoot, worktreePath) {
   );
 }
 
-const HOOK_RUNTIME_ENTRIES = new Set([
+const HOOK_RUNTIME_PREFIXES = [
   '!! .claude/hooks/state/',
   '!! .claude/hooks/__pycache__/',
   '!! .codex/hooks/state/',
   '!! .codex/hooks/__pycache__/'
-]);
+];
 
 const HOOK_RUNTIME_SOURCES = [
   '_session_presence.py',
@@ -122,17 +122,18 @@ function hasUncoordinatedHookRuntime(worktreePath) {
   for (const directory of directories) {
     for (const name of HOOK_RUNTIME_SOURCES) {
       const hook = path.join(directory, name);
+      let source;
       try {
-        fs.lstatSync(hook);
+        // An absent or dangling hook cannot write into the checkout.
+        source = fs.realpathSync(hook);
       } catch (error) {
         if (error.code === 'ENOENT') continue;
         throw error;
       }
-      const source = fs.realpathSync(hook);
       if (
         !directories.includes(path.dirname(source)) ||
         !fs.statSync(source).isFile() ||
-        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v3')
+        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v4')
       ) {
         return true;
       }
@@ -359,7 +360,7 @@ function hookRuntimeSnapshot(worktreePath, paths) {
   try {
     for (const relative of paths) {
       const source = path.join(worktreePath, relative);
-      if (fs.realpathSync(source) !== source || !fs.lstatSync(source).isDirectory()) return null;
+      if (fs.realpathSync(source) !== source) return null;
       visit(source);
     }
     return JSON.stringify(snapshot);
@@ -369,7 +370,15 @@ function hookRuntimeSnapshot(worktreePath, paths) {
 }
 
 function archiveHookRuntime(plan, paths) {
-  const tracked = run('git', ['-C', plan.worktreePath, 'ls-files', '-z', '--', ...paths]);
+  const tracked = run('git', [
+    '--literal-pathspecs',
+    '-C',
+    plan.worktreePath,
+    'ls-files',
+    '-z',
+    '--',
+    ...paths
+  ]);
   if (tracked.status !== 0 || tracked.stdout) return false;
   const snapshot = hookRuntimeSnapshot(plan.worktreePath, paths);
   if (snapshot === null) return false;
@@ -546,13 +555,13 @@ function cleanupFinishedDetachedWorktree(input) {
   // Serialize with this lane's hook writers and separately with claims/prune.
   const commonDir = commonGitDirectory(plan.repoRoot);
   const lockRunner = path.join(__dirname, 'with-claims-lock.py');
-  const laneDigest = crypto.createHash('sha256').update(plan.worktreePath).digest('hex');
   const result = run(
     'python3',
     [
       lockRunner,
       '--try-lock',
-      path.join(path.dirname(plan.worktreePath), `.gitguardex-hook-state-${laneDigest}.lock`),
+      '--existing-lock',
+      path.join(plan.worktreePath, '.git'),
       '--and-lock',
       path.join(commonDir, 'agent-file-locks.lock'),
       process.execPath,
@@ -582,6 +591,18 @@ function removeFinishedWorktreeLocked(plan) {
   if (!plan || !worktreeIdentityMatches(plan)) return false;
 
   try {
+    const lockFd = Number.parseInt(process.env.GUARDEX_FINISH_WORKTREE_LOCK_FD, 10);
+    const holdsCheckoutLock = () => {
+      const locked = fs.fstatSync(lockFd, { bigint: true });
+      const current = fs.lstatSync(path.join(plan.worktreePath, '.git'), { bigint: true });
+      return (
+        locked.isFile() &&
+        current.isFile() &&
+        locked.dev === current.dev &&
+        locked.ino === current.ino
+      );
+    };
+    if (!holdsCheckoutLock()) return false;
     process.chdir(plan.repoRoot);
     if (fs.realpathSync(plan.worktreePath) !== plan.worktreePath) return false;
     const registered = run('git', ['-C', plan.repoRoot, 'worktree', 'list', '--porcelain', '-z']);
@@ -608,7 +629,7 @@ function removeFinishedWorktreeLocked(plan) {
     if (!worktreeIdentityMatches(plan)) return false;
     // A legacy hook may create its first ignored file after the final status check.
     if (hasUncoordinatedHookRuntime(plan.worktreePath)) return false;
-    // Matching mode reports the ignored hook directory, not its untracked parent.
+    // Matching mode reports ignored hook directories or individually ignored descendants.
     const readStatus = () => run(
       'git',
       [
@@ -626,12 +647,12 @@ function removeFinishedWorktreeLocked(plan) {
     const status = readStatus();
     const hookEntries = (status.stdout || '')
       .split('\0')
-      .filter((entry) => HOOK_RUNTIME_ENTRIES.has(entry));
+      .filter((entry) => HOOK_RUNTIME_PREFIXES.some((prefix) => entry.startsWith(prefix)));
     if (status.status !== 0 || hasUnsafeWorktreeChanges(status.stdout, hookEntries)) {
       return false;
     }
     if (!worktreeIdentityMatches(plan) || !hasExpectedDetachedHead()) return false;
-    const hookPaths = hookEntries.map((entry) => entry.slice(3, -1));
+    const hookPaths = hookEntries.map((entry) => entry.slice(3).replace(/\/$/, ''));
     let archived;
     if (hookEntries.length) {
       archived = archiveHookRuntime(plan, hookPaths);
@@ -647,12 +668,13 @@ function removeFinishedWorktreeLocked(plan) {
           worktreeIdentityMatches(plan) &&
           !probeWorktreeOwnership(plan.worktreePath).active &&
           hookRuntimeSnapshot(plan.worktreePath, hookPaths) === snapshot &&
-          hasExpectedDetachedHead();
+          hasExpectedDetachedHead() &&
+          holdsCheckoutLock();
       } finally {
         if (!readyToRemove) fs.rmSync(archive, { recursive: true, force: true });
       }
       if (!readyToRemove) return false;
-    }
+    } else if (!holdsCheckoutLock()) return false;
 
     const remove = run('git', ['-C', plan.repoRoot, 'worktree', 'remove', plan.worktreePath], {
       cwd: plan.repoRoot

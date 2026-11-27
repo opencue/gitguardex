@@ -11,6 +11,9 @@ args = sys.argv[1:]
 nonblocking = args[0] == "--try-lock"
 if nonblocking:
     args = args[1:]
+existing_lock = args[0] == "--existing-lock"
+if existing_lock:
+    args = args[1:]
 lock_path, *command = args
 paths = [lock_path]
 if command[0] == "--and-lock":
@@ -19,8 +22,9 @@ if command[0] == "--and-lock":
 deadline = time.monotonic() + (0 if nonblocking else 20)
 with ExitStack() as locks:
     fds = []
-    for path in paths:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    for index, path in enumerate(paths):
+        access = os.O_RDONLY if existing_lock and index == 0 else os.O_RDWR | os.O_CREAT
+        fd = os.open(path, access | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         locks.callback(os.close, fd)
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -35,4 +39,5 @@ with ExitStack() as locks:
                 time.sleep(0.1)
         fds.append(fd)
     # The worker keeps both locks even if this launcher exits first.
-    raise SystemExit(subprocess.run(command, pass_fds=fds).returncode)
+    env = dict(os.environ, GUARDEX_FINISH_WORKTREE_LOCK_FD=str(fds[0])) if existing_lock else None
+    raise SystemExit(subprocess.run(command, pass_fds=fds, env=env).returncode)

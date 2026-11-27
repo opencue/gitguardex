@@ -26,7 +26,6 @@ Everything here is best-effort and fail-open: any error returns an empty/default
 result rather than raising, so a hook importing this never blocks a session.
 """
 
-import hashlib
 import json
 import os
 import stat
@@ -80,7 +79,7 @@ def _git(cwd: str, args: list[str]) -> "str | None":
     return result.stdout.strip() or None
 
 
-# gx-hook-state-lock-v3
+# gx-hook-state-lock-v4
 @contextmanager
 def locked_hook_state():
     """Serialize hook writes with GX removing this particular checkout."""
@@ -89,7 +88,7 @@ def locked_hook_state():
         parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
         for parent in root.parents
     )
-    if not managed or (fcntl is None and os.name != "posix"):
+    if not managed:
         # Finished cleanup does not remove standalone or ordinary checkouts.
         yield Path(__file__).is_file()
         return
@@ -99,12 +98,8 @@ def locked_hook_state():
     try:
         if fcntl is not None:
             git_entry = root / ".git"
-            before = git_entry.lstat()
-            # Keep the lock beside the checkout so it survives removal and
-            # still works when the common .git directory is read-only.
-            digest = hashlib.sha256(os.fsencode(root)).hexdigest()
-            lock = root.parent / f".gitguardex-hook-state-{digest}.lock"
-            fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            # Lock this generation's existing .git pointer without writing it.
+            fd = os.open(git_entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             info = os.fstat(fd)
             if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
                 deadline = time.monotonic() + 10
@@ -118,7 +113,7 @@ def locked_hook_state():
                         time.sleep(0.05)
                 # Check the checkout generation after waiting, before mkdir.
                 after = git_entry.lstat()
-                allowed = (before.st_dev, before.st_ino, before.st_ctime_ns) == (
+                allowed = (info.st_dev, info.st_ino, info.st_ctime_ns) == (
                     after.st_dev, after.st_ino, after.st_ctime_ns
                 )
     except (OSError, RuntimeError):

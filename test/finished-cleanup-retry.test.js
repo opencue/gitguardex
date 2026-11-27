@@ -21,7 +21,6 @@ const {
 } = require('../src/finish/post-branch-finish-cleanup');
 const { cp, runNode, withGuardexHome } = require('./helpers/install-test-helpers');
 const { once } = require('node:events');
-const { createHash } = require('node:crypto');
 
 async function holdProcess(t, command, args, cwd) {
   const child = cp.spawn(command, args, { cwd, env: withGuardexHome() });
@@ -34,12 +33,17 @@ async function holdProcess(t, command, args, cwd) {
   };
 }
 
-function fixture(t, hooks = {}) {
+function fixture(t, hooks = {}, danglingHook = false) {
   const repoRoot = initRepo();
   for (const [name, source] of Object.entries(hooks)) {
     const file = path.join(repoRoot, '.claude/hooks', name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, source);
+  }
+  if (danglingHook) {
+    const hooksDir = path.join(repoRoot, '.codex/hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.symlinkSync('../../.claude/hooks/skill_tracker.py', path.join(hooksDir, 'skill_tracker.py'));
   }
   seedCommit(repoRoot);
   const worktreePath = path.join(repoRoot, '.omx/agent-worktrees/finished');
@@ -85,8 +89,7 @@ function runSkillTracker(repoRoot) {
 }
 
 function laneHookMutex(plan) {
-  const digest = createHash('sha256').update(plan.worktreePath).digest('hex');
-  return path.join(path.dirname(plan.worktreePath), `.gitguardex-hook-state-${digest}.lock`);
+  return path.join(plan.worktreePath, '.git');
 }
 
 test('skill tracking works in standalone hooks, but not an incomplete managed checkout', (t) => {
@@ -103,17 +106,60 @@ test('skill tracking works in standalone hooks, but not an incomplete managed ch
   assert.equal(runSkillTracker(plan.worktreePath), null);
 });
 
-test('managed hook tracking does not need a writable common Git directory', (t) => {
+test('managed hook tracking does not need a writable parent or common Git directory', (t) => {
   const plan = fixture(t, skillTrackerHooks());
-  const commonDir = path.join(plan.repoRoot, '.git');
-  const oldMode = fs.statSync(commonDir).mode & 0o777;
-  fs.chmodSync(commonDir, 0o555);
+  const readOnly = [
+    path.dirname(plan.worktreePath),
+    path.join(plan.repoRoot, '.git'),
+    laneHookMutex(plan)
+  ];
+  const modes = readOnly.map((file) => fs.statSync(file).mode & 0o777);
+  for (const file of readOnly) fs.chmodSync(file, fs.statSync(file).isDirectory() ? 0o555 : 0o444);
   try {
     assert.deepEqual(runSkillTracker(plan.worktreePath), ['my-skill']);
-    assert.ok(fs.existsSync(laneHookMutex(plan)));
   } finally {
-    fs.chmodSync(commonDir, oldMode);
+    readOnly.forEach((file, index) => fs.chmodSync(file, modes[index]));
   }
+});
+
+test('the advisor records state without a helper only outside a managed worktree', (t) => {
+  const hooks = Object.fromEntries(
+    ['agent_branch_advisor.py', 'skill_guard.py'].map((name) => [
+      name,
+      fs.readFileSync(path.join(__dirname, '../.claude/hooks', name))
+    ])
+  );
+  const plan = fixture(t, hooks);
+  for (const [root, shouldWrite] of [
+    [plan.repoRoot, true],
+    [plan.worktreePath, false]
+  ]) {
+    const result = runCmd(
+      'python3',
+      [
+        '-B',
+        '-c',
+        'import sys; sys.path.insert(0, ".claude/hooks"); from agent_branch_advisor import mark_advised; mark_advised("test")'
+      ],
+      root
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(path.join(root, '.claude/hooks/state/advisor-test.json')), shouldWrite);
+  }
+});
+
+test('finished cleanup captures individually ignored files despite a dangling hook entry point', (t) => {
+  const plan = fixture(t, {}, true);
+  const cache = '.codex/hooks/__pycache__/hook[1].pyc';
+  fs.appendFileSync(path.join(plan.repoRoot, '.git/info/exclude'), '*.pyc\n');
+  fs.mkdirSync(path.dirname(path.join(plan.worktreePath, cache)), { recursive: true });
+  fs.writeFileSync(path.join(plan.worktreePath, cache), 'bytecode');
+  persistFinishedCleanup(plan);
+  retryPendingFinishedCleanup(plan.repoRoot);
+  assert.ok(!fs.existsSync(plan.worktreePath));
+  const archiveRoot = path.join(plan.repoRoot, '.git/gitguardex-finished-hook-archives');
+  const [archive] = fs.readdirSync(archiveRoot);
+  assert.equal(fs.readFileSync(path.join(archiveRoot, archive, cache), 'utf8'), 'bytecode');
 });
 
 test('a delayed hook writes only if its checkout survives an available cleanup lock', { timeout: 15000 }, async (t) => {
