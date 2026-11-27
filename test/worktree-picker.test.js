@@ -145,8 +145,10 @@ test('picker decorates only GX rows once and falls back without changing a choic
     worktreePreview: () => ({ diff: 'Diff', pr: null })
   };
   const tty = terminal();
+  tty.options.output.columns = 28;
   const pick = pickWorktree('/repo', tty.options, deps);
   await tick();
+  assert.match(tty.read(), /\x1b\[2A/);
   assert.match(tty.read(), /1\. agent\/test.*dirty · main: \+2\/-1 · possible merge conflict/);
   tty.write('1\n');
   await tick();

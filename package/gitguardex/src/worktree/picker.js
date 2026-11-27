@@ -1,5 +1,5 @@
 const readline = require('node:readline/promises');
-const { clearLine, cursorTo } = require('node:readline');
+const { clearScreenDown, cursorTo, moveCursor } = require('node:readline');
 const { listWorktrees, checkedRun } = require('./navigation');
 const { loadWorktrunkStatuses } = require('./worktrunk-status');
 
@@ -68,12 +68,18 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
       if (controller.signal.aborted) return;
       statuses = result;
       pendingUpdate = true;
-      // Only repaint a blank one-row choice prompt, never input the user is editing.
-      if (!rl || !choosing || rl.line || rl.getCursorPos().rows !== 0) return;
+      // Redraw only a blank choice prompt, preserving readline's cursor position.
+      if (!rl || !choosing || rl.line) return;
+      const { rows, cols } = rl.getCursorPos();
+      if (rows) moveCursor(output, 0, -rows);
       cursorTo(output, 0);
-      clearLine(output, 0);
+      clearScreenDown(output);
       showStatusUpdate();
-      rl.prompt(true);
+      output.write(rl.getPrompt());
+      if (cols === 0) {
+        output.write(' '); // Force the wrap when the prompt ends at the right edge.
+        cursorTo(output, 0);
+      }
     };
     Promise.resolve()
       .then(() =>

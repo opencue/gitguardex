@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 function canonicalPath(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
@@ -99,7 +99,18 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
         try {
           // Git subprocesses inherit Worktrunk's process group.
           if (detached) process.kill(-child.pid, 'SIGKILL');
-          else child.kill('SIGKILL');
+          else {
+            const systemRoot = process.env.SystemRoot;
+            const killed =
+              systemRoot &&
+              path.win32.isAbsolute(systemRoot) &&
+              spawnSync(
+                path.win32.join(systemRoot, 'System32', 'taskkill.exe'),
+                ['/pid', String(child.pid), '/t', '/f'],
+                { stdio: 'ignore', windowsHide: true, timeout: 1000 }
+              ).status === 0;
+            if (!killed) child.kill('SIGKILL');
+          }
         } catch (error) {
           if (error.code !== 'ESRCH') child.kill('SIGKILL');
         }
