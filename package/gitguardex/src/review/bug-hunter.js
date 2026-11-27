@@ -2,6 +2,7 @@ const { parseDiffLineMap } = require('./diff');
 
 const SOURCE =
   'https://github.com/codexstar69/bug-hunter/blob/b412f9885e3ec074625a88c862c3f5b6724ec3b4/skills/hunter/SKILL.md';
+const METHODOLOGY = `[Bug Hunter methodology](${SOURCE})`;
 const MAX_FINDINGS = 8;
 const SEVERITIES = new Map([
   ['low', '🔵 Low'],
@@ -36,16 +37,16 @@ function bugHunterResult(payload, diff, truncated) {
   const findings = [];
   for (const item of payload.findings.slice(0, MAX_FINDINGS)) {
     const { path, line, severity, message } = item ?? {};
+    const clean = typeof message === 'string' ? message.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim() : '';
     if (
       typeof path !== 'string' ||
       !Number.isSafeInteger(line) ||
       !lineMap.get(path)?.has(line) ||
       !SEVERITIES.has(severity) ||
-      typeof message !== 'string' ||
-      !message.trim()
+      !clean
     )
       continue;
-    findings.push({ path, line, severity, message: message.trim().slice(0, 600) });
+    findings.push({ path, line, severity, message: clean.slice(0, 600) });
   }
   const partial = truncated || findings.length !== payload.findings.length;
   return { status: partial ? 'partial' : findings.length ? 'findings' : 'clean', findings };
@@ -57,16 +58,19 @@ function escapedText(value) {
     .replace(/[&<>@\x60\[\]()*_~!#|:\\]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
+function bugHunterStatusLine(result) {
+  if (result?.status === 'unavailable') return 'BugHunter did not complete; no BugHunter verdict.';
+  if (result?.status === 'partial')
+    return 'Partial result: the diff was truncated or some findings could not be verified.';
+  if (result?.status === 'clean') return 'No behavioral findings in the supplied diff.';
+  return '';
+}
+
 function bugHunterLines(result) {
   if (!result) return [];
-  const lines = ['### BugHunter (advisory)', ''];
-  if (result.status === 'unavailable') {
-    lines.push('BugHunter did not complete; no BugHunter verdict.');
-  } else if (result.status === 'partial') {
-    lines.push('Partial result: the diff was truncated or some findings could not be verified.');
-  } else if (result.status === 'clean') {
-    lines.push('No behavioral findings in the supplied diff.');
-  }
+  const lines = ['### BugHunter', ''];
+  const status = bugHunterStatusLine(result);
+  if (status) lines.push(status);
   const count = result.findings.length;
   if (count > 0) {
     if (result.status === 'partial') lines.push('');
@@ -88,8 +92,8 @@ function bugHunterLines(result) {
       '</details>'
     );
   }
-  lines.push('', `[Bug Hunter methodology](${SOURCE}) · Does not affect the merge gate.`);
+  lines.push('', `${METHODOLOGY} · With \`--gate-review\`, all findings must be fixed before merging.`);
   return lines;
 }
 
-module.exports = { bugHunterEnabled, bugHunterPrompt, bugHunterResult, bugHunterLines };
+module.exports = { METHODOLOGY, bugHunterEnabled, bugHunterPrompt, bugHunterResult, bugHunterStatusLine, bugHunterLines };

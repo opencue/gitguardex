@@ -291,6 +291,30 @@ test('gate stops fixing after the round budget and still blocks', () => {
   assert.equal(fixes, 2, 'exactly the budgeted number of rounds ran');
 });
 
+test('default gated autofix keeps fixing through a second blocker before starting CI', () => {
+  const events = [];
+  const secondFinding = { ...FINDING, message: 'another issue' };
+  const deps = gateDeps({
+    runPrReview: () => {
+      events.push('review');
+      return {
+        findings: events.length === 1 ? [FINDING] : events.length === 4 ? [secondFinding] : [],
+        posted: true,
+      };
+    },
+    runReviewFix: ({ findings }) => {
+      events.push(findings[0].message);
+      return { status: 'fixed', changedFiles: [FINDING.path] };
+    },
+    pushBranch: () => { events.push('push'); return { ok: true }; },
+    waitForGreenCi: () => { events.push('CI'); return { status: 'green' }; },
+  });
+  runReviewGate({
+    repoRoot: '/tmp', worktreePath: '/tmp/wt', branch: 'agent/x/y', baseBranch: 'main', options: { gateAutofix: true },
+  }, deps);
+  assert.deepEqual(events, ['review', FINDING.message, 'push', 'review', secondFinding.message, 'push', 'review', 'CI']);
+});
+
 test('gate falls through to the block when the fix changes nothing', () => {
   let fixes = 0;
   const deps = gateDeps({

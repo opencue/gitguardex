@@ -559,9 +559,109 @@ test('runReviewGate blocks on a high/critical finding', () => {
   assert.throws(() => runReviewGate(gateArgs, deps), /blocking finding/);
 });
 
+test('required PR improvements reach autofix and need a fresh verification before CI', () => {
+  const item = { id: 'improvement-example', label: 'Add a replay fixture that verifies both numeric headings' };
+  for (const confirmed of [false, true]) {
+    let head = 'initial-sha';
+    const opts = { ...gateArgs, options: { gateAutofix: true } };
+    const deps = gateDeps({
+      readHeadSha: () => head,
+      runPrReview: ({ pendingImprovements = [], expectedHeadSha }) => {
+        assert.equal(expectedHeadSha, head);
+        if (head === 'initial-sha') return { posted: true, findings: [], pendingImprovements: [item] };
+        assert.deepEqual(pendingImprovements, [item]);
+        return { posted: true, findings: [], pendingImprovements: confirmed ? [] : [item] };
+      },
+      runReviewFix: ({ findings }) => {
+        assert.equal(findings[0]?.message, item.label);
+        return { status: 'fixed', changedFiles: ['test/pr-review.test.js'] };
+      },
+      pushBranch: () => { head = 'fixed-sha'; return { ok: true }; },
+      ...(confirmed ? {} : { waitForGreenCi: () => assert.fail('unverified suggestions still block CI') }),
+    });
+    if (confirmed) assert.equal(runReviewGate(opts, deps).reviewedHeadSha, 'fixed-sha');
+    else assert.throws(() => runReviewGate(opts, deps), /blocking finding[\s\S]*Add a replay fixture/);
+  }
+});
+
+const hunterFinding = { severity: 'medium', path: 'value.js', line: 110, message: 'drops a distinct risk' };
+
+test('BugHunter medium and low findings block before CI', () => {
+  for (const severity of ['medium', 'low']) {
+    const deps = gateDeps({
+      runPrReview: () => ({
+        posted: true, findings: [],
+        bugHunter: { status: 'findings', findings: [{ ...hunterFinding, severity }] },
+      }),
+      markPullRequestReady: () => assert.fail('must not promote a blocked PR'),
+      waitForGreenCi: () => assert.fail('must not start CI on a blocked PR'),
+    });
+    assert.throws(() => runReviewGate(gateArgs, deps), /blocking finding[\s\S]*value\.js:110/);
+  }
+});
+
+test('an enabled BugHunter pass without a complete verdict cannot clear the gate', () => {
+  for (const status of ['unavailable', 'partial']) {
+    const deps = gateDeps({
+      runPrReview: () => ({ posted: true, findings: [], bugHunter: { status, findings: [] } }),
+      runReviewFix: () => assert.fail('no validated findings to fix'),
+      waitForGreenCi: () => assert.fail('must not start CI without a verdict'),
+    });
+    const opts = { ...gateArgs, options: { gateAutofix: true } };
+    assert.throws(() => runReviewGate(opts, deps), /BugHunter.*did not complete/);
+  }
+});
+
+test('BugHunter autofix accounts for existing findings without blocking unrelated ones on the same line', () => {
+  const clean = { status: 'clean', findings: [] };
+  for (const [bugHunter, findings, changedPath, failure] of [
+    [clean, [], 'value.js', null],
+    [clean, [{ ...hunterFinding, severity: 'low' }], 'value.js', /still reports a previous BugHunter finding/],
+    [clean, [{ ...hunterFinding, message: 'unrelated advisory' }], 'value.js', null],
+    [clean, [], 'unrelated.js', /earlier blocking finding.*disappeared/],
+    [undefined, [], 'value.js', /BugHunter.*did not complete/]
+  ]) {
+    const opts = { ...gateArgs, options: { gateAutofix: true } };
+    let round = 0;
+    let head = 'initial-sha';
+    const deps = gateDeps({
+      readHeadSha: () => head,
+      runPrReview: ({ expectedHeadSha }) => {
+        assert.equal(expectedHeadSha, head);
+        return round++ === 0
+          ? { posted: true, findings: [], bugHunter: { status: 'findings', findings: [hunterFinding] } }
+          : { posted: true, findings, bugHunter };
+      },
+      runReviewFix: ({ findings }) => {
+        assert.deepEqual(findings, [hunterFinding]);
+        return { status: 'fixed', changedFiles: [changedPath] };
+      },
+      pushBranch: () => { head = 'fixed-sha'; return { ok: true }; },
+    });
+    if (!failure) {
+      assert.equal(runReviewGate(opts, deps).reviewedHeadSha, 'fixed-sha');
+    } else {
+      assert.throws(() => runReviewGate(opts, deps), failure);
+    }
+    assert.equal(round, 2);
+  }
+});
+
 test('runReviewGate blocks when CI checks fail', () => {
   const deps = gateDeps({ waitForGreenCi: () => ({ status: 'checks-failed', pr: {} }) });
   assert.throws(() => runReviewGate(gateArgs, deps), /CI checks failed/);
+});
+
+test('an improvement published while CI was running invalidates a clean verdict', () => {
+  let pending = [];
+  const deps = gateDeps({
+    readPendingImprovements: () => pending,
+    waitForGreenCi: () => {
+      pending = [{ id: 'improvement-new', label: 'Concurrent review requirement' }];
+      return { status: 'green', pr: GREEN };
+    }
+  });
+  assert.throws(() => runReviewGate(gateArgs, deps), /improvement history changed/);
 });
 
 test('runReviewGate blocks when GitHub reports the PR not mergeable', () => {

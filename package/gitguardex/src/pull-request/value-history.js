@@ -2,15 +2,117 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { GH_BIN } = require('../context');
+const { run } = require('../core/runtime');
+const { repoApiPath } = require('../github/api');
 const { artifactRoot } = require('../storage/run-artifacts');
 const { evidenceLink, escapeValueText, normalizeEvidence, plainText } = require('./value');
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
+const MARKER_PREFIX = '<!-- gitguardex:required-improvements-v1 ';
+const DISMISS_PREFIX = '/gx-dismiss-improvement ';
+const DISMISS_ARGS = /^(\d+) (improvement-[a-f0-9]{16}) ([a-f0-9]{40}) ([a-f0-9]{40}) (.+)$/;
+const TRUSTED_REVIEWERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+const MAX_IMPROVEMENTS_PER_REVIEW = 16;
 const STATUSES = {
   addressed: 'Addressed in diff',
   'still-applies': 'Still applies',
   unverified: 'Not verified'
 };
+
+function improvementItems(improvements, revision) {
+  return (improvements ?? []).map((label) => ({
+    id: `improvement-${hash(label.toLowerCase()).slice(0, 16)}`, label, revision
+  }));
+}
+
+function improvementMarker(issued, addressed, base) {
+  if (!issued.length && !addressed.length) return '';
+  const record = Buffer.from(JSON.stringify({ issued, addressed, base })).toString('base64url');
+  return `${MARKER_PREFIX}${record} -->`;
+}
+
+function improvementRecords(items) {
+  if (!Array.isArray(items) || items.length > MAX_IMPROVEMENTS_PER_REVIEW) {
+    throw new Error('Invalid required improvement list');
+  }
+  return items.map((item) => {
+    const label = plainText(item?.label);
+    const revision = item?.revision;
+    if (!label || typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) {
+      throw new Error('Invalid required improvement');
+    }
+    const [record] = improvementItems([label], revision);
+    if (record.id !== item.id) throw new Error('Invalid required improvement id');
+    return record;
+  });
+}
+
+// The review is the durable event. Unrelated or concurrent reviews cannot replace
+// the outstanding set, and a resolution can only clear the issuance it saw.
+function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
+  try {
+    const result = runner(GH_BIN, [
+      'api', '--paginate', repoApiPath(repoRoot, `pulls/${pr}/reviews?per_page=100`, runner),
+      '-q', ` .[] | select((.body // "") | contains(${JSON.stringify(MARKER_PREFIX)})
+          or startswith(${JSON.stringify(DISMISS_PREFIX)}))
+        | {id, state, author_association, author_type: .user.type, login: .user.login, commit_id, body} | @json`
+    ], { cwd: repoRoot, timeout: 60_000 });
+    if (result.status !== 0) throw new Error('GitHub review listing failed');
+    const pending = new Map();
+    const permissions = new Map();
+    for (const line of String(result.stdout || '').split('\n').filter(Boolean)) {
+      const review = JSON.parse(line);
+      if (review.state !== 'COMMENTED' || !TRUSTED_REVIEWERS.has(review.author_association)) continue;
+      const [first, marker] = review.body?.split(/\r?\n/, 2) ?? [];
+      let dismissedId;
+      if (first?.startsWith(DISMISS_PREFIX)) {
+        const dismissal = DISMISS_ARGS.exec(first.slice(DISMISS_PREFIX.length));
+        if (!dismissal || review.author_type !== 'User') continue;
+        const [, issuance, id, head, base, reason] = dismissal;
+        if (!plainText(reason) || String(pending.get(id)?.reviewId) !== issuance ||
+            head !== review.commit_id || head !== scope.head || base !== scope.base) continue;
+        dismissedId = id;
+      } else if (!marker?.startsWith(MARKER_PREFIX)) continue;
+      if (!review.login) continue;
+      if (!permissions.has(review.login)) {
+        const lookup = runner(GH_BIN, [
+          'api', repoApiPath(repoRoot, `collaborators/${encodeURIComponent(review.login)}/permission`, runner),
+          '-q', '.permission'
+        ], { cwd: repoRoot, timeout: 60_000 });
+        const permission = String(lookup.stdout || '').trim();
+        if (lookup.status !== 0 || !['admin', 'write', 'read', 'none'].includes(permission)) {
+          throw new Error('GitHub reviewer permission lookup failed');
+        }
+        permissions.set(review.login, permission);
+      }
+      if (!['admin', 'write'].includes(permissions.get(review.login))) continue;
+      if (dismissedId) {
+        pending.delete(dismissedId);
+        scope.dismissed?.add(dismissedId);
+        continue;
+      }
+      const packed = marker.slice(MARKER_PREFIX.length);
+      const match = /^([a-zA-Z0-9_-]{1,32768}) -->$/.exec(packed);
+      if (!match) throw new Error('Invalid required improvement marker');
+      const event = JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8'));
+      const resolutions = improvementRecords(event.addressed);
+      if (resolutions.length && scope.head && scope.head === review.commit_id && event.base && event.base === scope.base) {
+        for (const { id, revision } of resolutions) {
+          if (pending.get(id)?.revision === revision) pending.delete(id);
+        }
+      }
+      for (const record of improvementRecords(event.issued)) {
+        if (pending.has(record.id)) continue;
+        scope.dismissed?.delete(record.id);
+        pending.set(record.id, { ...record, head: review.commit_id, reviewId: review.id });
+      }
+    }
+    return [...pending.values()];
+  } catch (cause) {
+    throw new Error('Cannot verify published required PR improvement history. Rerun the review.', { cause });
+  }
+}
 
 function snapshotItems(items) {
   if (!Array.isArray(items)) return [];
@@ -109,10 +211,14 @@ function openImpactHistory(repoRoot, pr, diff, env, startedAt = Date.now()) {
 function normalizeImpactFollowUp(previous, proposed, lineMap) {
   const verified = new Map();
   if (Array.isArray(proposed)) {
-    const ids = new Set(previous.map(({ id }) => id));
+    const items = new Map(previous.map((item) => [item.id, item]));
     for (const row of proposed) {
-      if (!ids.has(row?.id) || !['addressed', 'still-applies'].includes(row.status)) continue;
-      const evidence = normalizeEvidence(row.evidence, lineMap);
+      const item = items.get(row?.id);
+      if (!item || !['addressed', 'still-applies'].includes(row.status)) continue;
+      const { path, line, side } = row.evidence ?? {};
+      if (side === 'LEFT' && (!item.revision || row.status !== 'addressed' ||
+        typeof path !== 'string' || !path || !Number.isInteger(line) || line < 1)) continue;
+      const evidence = side === 'LEFT' ? { path, line, side } : normalizeEvidence(row.evidence, lineMap);
       const observation = plainText(row.observation);
       if (evidence && observation && !verified.has(row.id)) {
         verified.set(row.id, { status: row.status, observation, evidence });
@@ -132,9 +238,10 @@ function reviewFollowUpLines(items, diffPath) {
     '',
     ...items.map(({ label, status, observation, evidence, check }) => {
       const detail = observation ? `: ${escapeValueText(observation)}` : '';
-      const source = evidence
-        ? ` — ${evidenceLink(escapeValueText(`${evidence.path}:${evidence.line}`), evidence, diffPath)}`
-        : '';
+      const location = evidence && escapeValueText(`${evidence.path}:${evidence.line}`);
+      const source = evidence ? ` — ${evidence.side === 'LEFT'
+        ? `${location} (removed since issuance)`
+        : evidenceLink(location, evidence, diffPath)}` : '';
       const next = status !== 'addressed' && check ? ` · **Check:** ${escapeValueText(check)}` : '';
       return `- **${STATUSES[status]}** · ${escapeValueText(label)}${detail}${source}${next}`;
     })
@@ -143,4 +250,8 @@ function reviewFollowUpLines(items, diffPath) {
 
 if (require.main === module) writeSnapshot(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8')));
 
-module.exports = { openImpactHistory, normalizeImpactFollowUp, reviewFollowUpLines };
+module.exports = {
+  openImpactHistory, improvementItems, improvementMarker, readPublishedImprovements,
+  DISMISS_PREFIX, MAX_IMPROVEMENTS_PER_REVIEW,
+  normalizeImpactFollowUp, reviewFollowUpLines
+};

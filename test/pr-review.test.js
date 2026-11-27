@@ -11,7 +11,9 @@ const {
   defineSpawnSuite,
 } = require('./helpers/install-test-helpers');
 const prReview = require('../src/pr-review');
-const { openImpactHistory } = require('../src/pull-request/value-history');
+const {
+  openImpactHistory, improvementItems, improvementMarker, readPublishedImprovements,
+} = require('../src/pull-request/value-history');
 const { parsePrReviewArgs } = require('../src/cli/args');
 const { codexReviewEffort } = require('../src/provider-binary');
 const CODEX_REVIEW_GUARD_ARGS = [
@@ -167,10 +169,16 @@ test('posting a review skips inline comment pagination only when there are no in
         }
         if (args[1] === 'diff') return { status: 0, stdout: diff };
         if (args.includes('--paginate')) {
+          if (args.some((item) => item.includes('/reviews?'))) {
+            return { status: 0, stdout: postedPayload ? JSON.stringify({
+              state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', body: postedPayload.body,
+            }) : '' };
+          }
           commentReads += 1;
           return { status: 0, stdout: '' };
         }
         assert.equal(args[0], 'api');
+        if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
         postedPayload = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
         return { status: 0 };
       } },
@@ -183,8 +191,9 @@ test('posting a review skips inline comment pagination only when there are no in
     assert.equal(result.findings.length, findings.length);
     assert.equal(postedPayload.commit_id, 'pushed-sha');
     assert.equal(postedPayload.comments.length, inlineCount);
-    assert.match(postedPayload.body, findings.length ? /Merge gate: blocked/ : /No findings/);
+    assert.match(postedPayload.body, findings.length || actions ? /Merge gate: blocked/ : /No findings/);
     if (actions) {
+      assert.deepEqual(result.pendingImprovements.map(({ label }) => label), [first, second]);
       assert.ok(postedPayload.body.includes(`**How to improve this PR**\n\n1. ${first}\n2. ${second}\n`));
       assert.match(postedPayload.body, /High-impact opportunities/);
       assert.match(postedPayload.body, /Share live metadata across worktrees.*\*\*First try:\*\* Replay two worktrees.*\*\*Verify:\*\* Measure startup latency/);
@@ -217,13 +226,16 @@ test('posting a review skips inline comment pagination only when there are no in
 
 test('re-review shows proven changes and leaves unseen opportunities unverified', (t) => {
   const target = initRepo();
+  const otherClone = initRepo();
   t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(otherClone, { recursive: true, force: true }));
   const artifact = path.join(target, 'review.md');
   const evidence = { path: 'a.js', line: 1 };
   const firstValue = {
     drivers: [{ area: 'product', impact: 'trade-off', magnitude: 19, likelihood: 'demonstrated', label: 'Vanishing warning',
       reason: 'A refusal dismisses the warning', suggestedFix: 'Keep warnings on refusal',
       doneWhen: 'A refused retry leaves the warning visible', evidence }],
+    improvements: ['Add the replay fixture; verify both numeric headings render'],
     opportunities: [{ idea: 'Resume jobs on restart', pilot: 'Try two waiting fixtures',
       verify: 'Each job resumes once without data loss', evidence }]
   };
@@ -231,29 +243,101 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
     drivers: [{ area: 'product', impact: 'neutral', magnitude: 0, reason: 'Warns on refusal', evidence }]
   };
   let diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-old\n+dismiss()\n';
+  let head = 'a'.repeat(40);
+  let base = 'b'.repeat(40);
+  let compareFiles = [];
+  let comparisonStatus = 'ahead';
   let payload = { findings: [], value: firstValue };
   let prompt;
   let postedBody;
+  let failPost = false;
+  let failRead = false;
+  let rejectInline = false;
+  const published = [];
   const deps = {
     impactHistory: true,
-    run(_cmd, args, runOptions) {
+    env: {},
+    run(cmd, args, runOptions) {
+      if (cmd === 'git') {
+        if (comparisonStatus !== 'diverged') return { status: 1 };
+        if (args[0] === 'cat-file') return { status: 0 };
+        assert.deepEqual(args.slice(args.indexOf('--unified=0') + 1), [
+          'a'.repeat(40), head, '--', ...(args.at(-1) === '--' ? [] : [evidence.path])
+        ]);
+        assert.ok(args.includes('--literal-pathspecs'));
+        return { status: 0, stdout: compareFiles[0]?.patch || '' };
+      }
       if (args[0] === 'exec') {
         prompt = runOptions.input;
         return { status: 0, stdout: JSON.stringify(payload) };
       }
       if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
       if (args[0] === 'auth') return { status: 0 };
-      if (args[1] === 'view') return { status: 0, stdout: 'new-head' };
+      if (args[1] === 'view') {
+        return { status: 0, stdout: args.includes('baseRefOid,headRefOid')
+          ? JSON.stringify({ baseRefOid: base, headRefOid: head })
+          : head };
+      }
       if (args[1] === 'diff') return { status: 0, stdout: diff };
       assert.equal(args[0], 'api');
-      postedBody = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')).body;
-      return { status: 0 };
+      if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
+      if (args[1].includes('/compare/')) {
+        return { status: 0, stdout: JSON.stringify({
+          status: comparisonStatus,
+          files: comparisonStatus === 'diverged'
+            ? [{ filename: evidence.path, patch: '@@ -0,0 +1 @@\n+dismiss()' }]
+            : compareFiles,
+        }) };
+      }
+      if (args.includes('--paginate')) {
+        return { status: failRead ? 1 : 0, stdout: published.map((entry) => JSON.stringify(entry)).join('\n') };
+      }
+      const posting = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
+      assert.equal(posting.commit_id, head);
+      if (rejectInline && posting.comments.length) return { status: 1 };
+      postedBody = posting.body;
+      if (!failPost) published.push({
+        id: published.length + 1,
+        state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head, body: postedBody
+      });
+      return { status: failPost ? 1 : 0 };
     },
   };
   const options = { target, artifact, pr: 42, provider: 'codex', prLens: false, abide: false };
   prReview.runPrReview(options, deps);
   assert.doesNotMatch(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
   assert.doesNotMatch(prompt, /Previous review data:/);
+  failPost = true;
+  assert.throws(() => prReview.runPrReview({ ...options, post: true }, deps), /review post failed/);
+  assert.equal(published.length, 0);
+  failPost = false;
+  rejectInline = true;
+  payload = { findings: [{ ...evidence, severity: 'medium', message: 'An inline finding' }], value: firstValue };
+  const first = prReview.runPrReview({ ...options, post: true }, deps);
+  assert.equal(first.degraded, true);
+  rejectInline = false;
+  payload = { findings: [], value: secondValue };
+  const fromOtherClone = () => prReview.runPrReview({ ...options, target: otherClone, post: true }, deps);
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
+  failRead = true;
+  assert.throws(fromOtherClone, /published required PR improvement history/);
+  failRead = false;
+  const proof = {
+    id: first.pendingImprovements[0].id,
+    status: 'addressed',
+    evidence,
+    observation: 'The replay asserts both numeric headings'
+  };
+  payload = { findings: [], value: firstValue, followUp: [proof] };
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, first.pendingImprovements);
+
+  const initialDiff = diff;
+  head = 'c'.repeat(40);
+  diff += 'diff --git a/b.js b/b.js\n--- a/b.js\n+++ b/b.js\n@@ -1 +1 @@\n-old\n+new\n';
+  compareFiles = [{ filename: 'b.js', patch: '@@ -1 +1 @@\n-old\n+new' }];
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
+  compareFiles = [{ filename: 'a.js', patch: '@@ -1 +1,2 @@\n dismiss()\n+new' }];
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
 
   diff = diff.replace('dismiss()', 'keepWarning()');
   payload = { findings: [], value: secondValue, followUp: [
@@ -264,7 +348,7 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   ] };
   prReview.runPrReview(options, deps);
   assert.match(fs.readFileSync(artifact, 'utf8'), /Since the previous review/);
-  prReview.runPrReview({ ...options, post: true }, deps);
+  const unverified = prReview.runPrReview({ ...options, post: true }, deps);
   assert.match(prompt, /Previous review data:.*Vanishing warning/s);
   assert.match(postedBody, /Since the previous review/);
   assert.match(postedBody, /Addressed in diff\*\*.*19\/100.*Vanishing warning: Warning stays visible after a refused re&#45;CHECK.*#diff-[a-f0-9]{64}R1/);
@@ -273,6 +357,128 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   assert.match(postedBody, /Impact: not established.*Risk: not established/);
 
   assert.match(prompt, /Previous review data:.*Resume jobs on restart/s);
+  assert.deepEqual(unverified.pendingImprovements, first.pendingImprovements);
+  assert.match(postedBody, /Merge gate: blocked/);
+  assert.match(postedBody, /Not verified\*\*.*Add the replay fixture/);
+
+  payload.followUp.push(
+    { id: first.pendingImprovements[0].id, status: 'addressed', evidence: { ...evidence, line: 99 }, observation: 'Invalid evidence' }
+  );
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, first.pendingImprovements);
+
+  head = 'd'.repeat(40);
+  comparisonStatus = 'diverged';
+  diff += '\n';
+  payload.followUp.push(proof);
+  assert.deepEqual(fromOtherClone().pendingImprovements, first.pendingImprovements);
+  diff = diff.replace('keepWarning()', 'replayBothHeadings()');
+  compareFiles = [{ filename: 'a.js', patch: '@@ -1 +1 @@\n-dismiss()\n+replayBothHeadings()' }];
+  const next = 'Check that failed retries preserve the warning';
+  payload.value = { ...secondValue, improvements: [next] };
+  const count = published.length;
+  failPost = true;
+  assert.throws(fromOtherClone, /review post failed/);
+  assert.equal(published.length, count);
+  failPost = false;
+  const pending = prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements;
+  comparisonStatus = 'ahead';
+  assert.deepEqual(pending.map(({ label }) => label), [next]);
+  assert.match(postedBody, /Addressed in diff\*\*.*Add the replay fixture.*The replay asserts both numeric headings/);
+  const completeDiff = diff;
+  diff += '+generated\n'.repeat(25000);
+  payload = { findings: [], value: secondValue, followUp: [] };
+  assert.deepEqual(prReview.runPrReview({ ...options, post: true }, deps).pendingImprovements, pending);
+  assert.match(postedBody, /Merge gate: blocked/);
+  head = 'e'.repeat(40);
+  diff = completeDiff.replace('replayBothHeadings()', 'replayBothHeadingsAndKeepWarning()');
+  compareFiles = [{ filename: 'a.js', patch: '@@ -1 +1 @@\n-replayBothHeadings()\n+replayBothHeadingsAndKeepWarning()' }];
+  payload.followUp = [proof, { ...proof, id: pending[0].id }];
+  assert.deepEqual(fromOtherClone().pendingImprovements, []);
+  payload.followUp = [];
+  assert.deepEqual(fromOtherClone().pendingImprovements, []);
+  base = 'f'.repeat(40);
+  assert.equal(fromOtherClone().pendingImprovements.length, 2);
+  base = 'b'.repeat(40);
+  head = '1'.repeat(40);
+  diff = initialDiff;
+  assert.equal(fromOtherClone().pendingImprovements.length, 2);
+  published.push({
+    state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
+    body: `/gx-dismiss-improvement 1 ${first.pendingImprovements[0].id} ${head} ${base} This fixture already exists.`
+  });
+  payload = { findings: [], value: firstValue };
+  assert.deepEqual(fromOtherClone().pendingImprovements.map(({ label }) => label), [next]);
+});
+
+test('published improvements survive overlapping reviews and ignore untrusted resolutions', () => {
+  const [a, b] = improvementItems(['Keep the warning', 'Add a replay test'], 'a'.repeat(64));
+  const renewed = { ...a, revision: 'b'.repeat(64) };
+  const head = 'c'.repeat(40);
+  const base = 'd'.repeat(40);
+  const entry = (marker, login = 'writer', state = 'COMMENTED') => ({
+    state, author_association: 'MEMBER', login, commit_id: head,
+    body: `${prReview.MARKER}\n${marker}\n### GitGuardex review`
+  });
+  const reviews = [
+    entry(improvementMarker([a], [])),
+    entry(improvementMarker([b], []), 'reader'),
+    entry(improvementMarker([], [a], base), 'reader'),
+    entry(improvementMarker([], [a], base), 'writer', 'PENDING'),
+    entry(improvementMarker([], [a])),
+  ];
+  const read = () => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+    if (args[1].endsWith('/permission')) {
+      return { status: 0, stdout: args[1].includes('/writer/') ? 'write' : 'read' };
+    }
+    return { status: 0, stdout: reviews.map((review) => JSON.stringify(review)).join('\n') };
+  }, { head, base });
+  assert.deepEqual(read().map(({ id, revision }) => ({ id, revision })), [{ id: a.id, revision: a.revision }]);
+  reviews.push(
+    entry(improvementMarker([], [a], base)),
+    entry(improvementMarker([renewed], [])),
+    entry(improvementMarker([], [a], base)),
+  );
+  assert.deepEqual(read().map(({ revision }) => revision), [renewed.revision]);
+  reviews.push(entry('<!-- gitguardex:required-improvements-v1 invalid -->'));
+  assert.throws(read, /Cannot verify published required PR improvement history/);
+});
+
+test('only a submitted, scoped write-authorized dismissal clears its exact issuance', () => {
+  const [item] = improvementItems(['Keep the warning'], 'a'.repeat(64));
+  const head = 'c'.repeat(40);
+  const base = 'd'.repeat(40);
+  const issued = (id) => ({
+    id, state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head,
+    body: `${prReview.MARKER}\n${improvementMarker([item], [])}`
+  });
+  const command = `/gx-dismiss-improvement 1 ${item.id} ${head} ${base}`;
+  const dismissal = {
+    state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
+    body: `${command} The warning is already retained.`
+  };
+  const reviews = [issued(1)];
+  const read = (scope = { head, base }) => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+    if (args[1].endsWith('/permission')) {
+      return { status: 0, stdout: args[1].includes('/writer/') ? 'write' : 'read' };
+    }
+    return { status: 0, stdout: reviews.map((entry) => JSON.stringify(entry)).join('\n') };
+  }, scope);
+  for (const invalid of [
+    { login: 'reader' }, { state: 'PENDING' }, { author_type: 'Bot' },
+    { commit_id: 'e'.repeat(40) }, { body: command }, { body: dismissal.body.replace(' 1 ', ' 2 ') }
+  ]) {
+    reviews.push({ ...dismissal, ...invalid });
+    assert.equal(read().length, 1);
+    reviews.pop();
+  }
+  reviews.push(dismissal);
+  assert.deepEqual(read(), []);
+  assert.equal(read({ head: 'f'.repeat(40), base }).length, 1);
+  assert.equal(read({ head, base: 'f'.repeat(40) }).length, 1);
+  reviews.push(issued(3), dismissal);
+  assert.equal(read().length, 1, 'a dismissal cannot clear a later issuance with the same label');
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {
@@ -539,6 +745,7 @@ test('renderReviewSummary reports the gate verdict and unanchored findings', () 
   assert.match(blocked, /⛔ \*\*Merge gate: blocked\*\* — 1 blocking finding/);
   assert.match(blocked, /🟠 1 high · 🔵 1 low/);
   assert.match(blocked, /could not be anchored to the diff/);
+  assert.match(blocked, /- <code>b&#46;js&#58;99<\/code>: stray/);
   assert.match(blocked, /commit `abcdef1`/);
 
   const passing = prReview.renderReviewSummary({
@@ -547,6 +754,27 @@ test('renderReviewSummary reports the gate verdict and unanchored findings', () 
     gate: { clean: true, blocking: [], blockSeverities: ['high', 'critical'] },
   });
   assert.match(passing, /✅ \*\*Merge gate: pass\*\*/);
+});
+
+test('GitHub review lists Code Assist and both BugHunter findings under one heading', () => {
+  const body = prReview.renderReviewSummary({
+    provider: 'codex',
+    findings: [{ path: 'context.js', line: 4, severity: 'high', message: 'Context stays stale' }],
+    bugHunter: {
+      status: 'findings',
+      findings: [
+        { path: 'retry.js', line: 5, severity: 'medium', message: 'Retry runs twice' },
+        { path: 'queue.js', line: 9, severity: 'low', message: 'Queue skips a job' }
+      ]
+    }
+  });
+  assert.deepEqual(body.match(/^#### Findings$/gm), ['#### Findings']);
+  assert.doesNotMatch(body, /^### BugHunter|<details/gm);
+  assert.deepEqual(body.match(/^\| .* \| (?:Code Assist|BugHunter) \|.*$/gm), [
+    '| 🟠 high | Code Assist | <code>context&#46;js&#58;4</code> | Context stays stale |',
+    '| 🟡 medium | BugHunter | <code>retry&#46;js&#58;5</code> | Retry runs twice |',
+    '| 🔵 low | BugHunter | <code>queue&#46;js&#58;9</code> | Queue skips a job |'
+  ]);
 });
 
 
@@ -786,7 +1014,7 @@ fi
 if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then printf '%s\\n' 'deadbeefcafe0000'; exit 0; fi
 if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
-  printf '%s\\n' '<!-- gitguardex:f:${fingerprint} -->'
+  if [[ "$3" == */comments\?* ]]; then printf '%s\\n' '<!-- gitguardex:f:${fingerprint} -->'; fi
   exit 0
 fi
 if [[ "$1" == "api" ]]; then
@@ -920,6 +1148,66 @@ printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact
   }
 });
 
+});
+
+test('required improvement accepts a verified deletion after a file is reverted to base', (t) => {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'guardex-review-'));
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  const issuedHead = 'a'.repeat(40);
+  const head = 'b'.repeat(40);
+  const base = 'c'.repeat(40);
+  const [requirement] = improvementItems(['Remove dismiss()'], 'd'.repeat(64));
+  const published = [{
+    state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: issuedHead,
+    body: `${prReview.MARKER}\n${improvementMarker([requirement], [], base)}`
+  }];
+  const file = 'a.js';
+  const patch = '@@ -1 +0,0 @@\n-dismiss()';
+  let files = [];
+  let line = 2;
+  let prompt;
+  const review = () => prReview.runPrReview({ target, pr: 42, post: true, provider: 'codex', prLens: false, abide: false }, {
+    env: {},
+    run(cmd, args, options) {
+      if (cmd === 'git' && args[0] === 'cat-file') {
+        return { status: 0, stdout: args[1] === '-t' ? 'blob\n' : '' };
+      }
+      if (cmd === 'git' && args[0] === '--literal-pathspecs') {
+        return { status: 0, stdout: `diff --git a/${file} b/${file}\n${patch}` };
+      }
+      if (args[0] === 'exec') {
+        prompt = options.input;
+        const evidence = { path: file, line, side: 'LEFT' };
+        const followUp = [{ id: requirement.id, status: 'addressed', observation: 'Removed dismiss()', evidence }];
+        return { status: 0, stdout: JSON.stringify({ findings: [], followUp }) };
+      }
+      if (args[0] === 'repo') return { status: 0, stdout: 'owner/repo' };
+      if (args[0] === 'auth') return { status: 0 };
+      if (args[1] === 'view') {
+        return { status: 0, stdout: args.includes('baseRefOid,headRefOid')
+          ? JSON.stringify({ baseRefOid: base, headRefOid: head }) : head };
+      }
+      if (args[1] === 'diff') return { status: 0, stdout: '' };
+      if (args.includes('--paginate')) return { status: 0, stdout: published.map((entry) => JSON.stringify(entry)).join('\n') };
+      if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
+      if (args[1].endsWith(`/compare/${issuedHead}...${head}`)) {
+        return { status: 0, stdout: JSON.stringify({ status: 'ahead', files }) };
+      }
+      const { body } = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
+      published.push({ ...published[0], commit_id: head, body });
+      return { status: 0, stdout: '' };
+    }
+  });
+  assert.equal(review().pendingImprovements.length, 1);
+  assert.match(prompt, /Requirement comparisons:.*dismiss\(\)/s);
+  line = 1;
+  for (const comparisonFiles of [[], [{ filename: file }], [{ filename: file, patch }]]) {
+    files = comparisonFiles;
+    published.splice(1);
+    assert.deepEqual(review().pendingImprovements, []);
+    assert.match(prompt, /Requirement comparisons:.*dismiss\(\)/s);
+    assert.match(published.at(-1).body, /a&#46;js&#58;1 \(removed since issuance\)/);
+  }
 });
 
 // --- abide verdicts in the review gate ---------------------------------------
