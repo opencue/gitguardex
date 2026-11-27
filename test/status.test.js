@@ -565,6 +565,10 @@ test('status counts registered agent worktrees without treating them as active s
   const detached = path.join(managed, 'detached lane');
   runCmd('git', ['worktree', 'add', '-b', 'agent/codex/status', agentTree], repoDir);
   runCmd('git', ['worktree', 'add', '--detach', detached], repoDir);
+  runCmd('git', ['worktree', 'add', '--detach', path.join(repoDir, 'personal')], repoDir);
+  const missing = path.join(managed, 'missing');
+  runCmd('git', ['worktree', 'add', '-b', 'agent/codex/missing', missing], repoDir);
+  fs.renameSync(missing, path.join(managed, 'unregistered'));
 
   const result = runNode(['status', '--json'], agentTree);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -574,6 +578,9 @@ test('status counts registered agent worktrees without treating them as active s
   assert.match(readable.stdout, /Worktrees: 1 agent branch · 1 detached/);
   assert.match(readable.stdout, /worktree prune --dry-run --keep-clean-unmerged --preserve-open-prs --include-pr-merged/);
   assert.doesNotMatch(readable.stdout, /active agent worktree|finish --all/);
+  const disabled = runNodeWithEnv(['status'], repoDir, { GUARDEX_ON: '0' });
+  assert.match(disabled.stdout, /Repo safety service: .*disabled/);
+  assert.match(disabled.stdout, /Worktrees: 1 agent branch · 1 detached/);
 });
 
 test('status --json returns cli, services, and repo summary', () => {

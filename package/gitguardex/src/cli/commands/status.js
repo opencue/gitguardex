@@ -344,12 +344,16 @@ function status(rawArgs) {
     return payload;
   }
 
+  const worktreeLine = worktreeCount > 0
+    ? `[${TOOL_NAME}] Worktrees: ${worktrees.agent} agent branch${worktrees.agent === 1 ? '' : 'es'} · ${worktrees.detached} detached`
+    : null;
   if (scanResult.guardexEnabled === false) {
     console.log(
       `[${TOOL_NAME}] Repo safety service: ${statusDot('disabled')} disabled (${describeGuardexRepoToggle(scanResult.guardexToggle)}).`
     );
     console.log(`[${TOOL_NAME}] Repo: ${scanResult.repoRoot}`);
     console.log(`[${TOOL_NAME}] Branch: ${scanResult.branch}`);
+    if (worktreeLine) console.log(worktreeLine);
     const disabledHint = deriveNextStepHint({
       scanResult,
       invoked: invokedBasename,
@@ -385,11 +389,7 @@ function status(rawArgs) {
       `[${TOOL_NAME}] Review watcher: ${statusDot('active')} running (pid ${payload.repo.reviewDaemon.pid})`
     );
   }
-  if (worktreeCount > 0) {
-    console.log(
-      `[${TOOL_NAME}] Worktrees: ${worktrees.agent} agent branch${worktrees.agent === 1 ? '' : 'es'} · ${worktrees.detached} detached`
-    );
-  }
+  if (worktreeLine) console.log(worktreeLine);
   const activeHint = deriveNextStepHint({
     scanResult,
     worktreeCount,
