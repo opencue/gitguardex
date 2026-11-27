@@ -49,10 +49,11 @@ function rowStatus(row, base) {
   const { ahead, behind, merge_conflicts: conflicts } = row.default_branch || {};
   const validCount = (value) => Number.isSafeInteger(value) && value >= 0;
   if (base && validCount(ahead) && validCount(behind)) parts.push(`${base}: +${ahead}/-${behind}`);
-  const conflict = conflicts === true;
-  if (conflict)
+  const unresolved = changes?.conflicted === true;
+  if (unresolved) parts.push('unresolved conflicts');
+  if (conflicts === true)
     parts.push(base ? `possible merge conflict with ${base}` : 'possible merge conflict');
-  return { dirty, conflict, text: parts.join(' · ') };
+  return { dirty, conflict: unresolved || conflicts === true, text: parts.join(' · ') };
 }
 
 async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {

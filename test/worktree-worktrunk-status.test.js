@@ -48,6 +48,7 @@ test('uses schema 2 local facts only for unambiguous current GX entries', async 
   const wt = executable(bin, 'wt');
   const lane = entry('lane with spaces', 'agent/test');
   const detached = entry('detached', '', true);
+  const conflicted = entry('conflicted', 'agent/conflicted');
   const stale = entry('stale', 'agent/stale');
   const wrongBranch = entry('wrong branch', 'agent/old');
   const duplicate = entry('duplicate', 'agent/duplicate');
@@ -58,7 +59,7 @@ test('uses schema 2 local facts only for unambiguous current GX entries', async 
   let stdinClosed = false;
   const hits = await loadWorktrunkStatuses(
     repo,
-    [lane, detached, stale, wrongBranch, duplicate, unknown],
+    [lane, detached, conflicted, stale, wrongBranch, duplicate, unknown],
     {
       pathEnv: bin,
       execFile(file, args, options, done) {
@@ -84,6 +85,7 @@ test('uses schema 2 local facts only for unambiguous current GX entries', async 
               default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
             },
             row(detached, { staged: true }),
+            row(conflicted, { conflicted: true }),
             row({ ...stale, head: 'old' }, { staged: true }),
             row({ ...wrongBranch, branch: 'agent/replacement' }, { staged: true }),
             row(duplicate, { staged: true }),
@@ -115,7 +117,8 @@ test('uses schema 2 local facts only for unambiguous current GX entries', async 
           text: 'dirty · main: +2/-1 · possible merge conflict with main'
         }
       ],
-      [detached, { dirty: true, conflict: false, text: 'dirty' }]
+      [detached, { dirty: true, conflict: false, text: 'dirty' }],
+      [conflicted, { dirty: true, conflict: true, text: 'dirty · unresolved conflicts' }]
     ]
   );
 });
