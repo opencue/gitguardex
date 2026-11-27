@@ -56,13 +56,15 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
   const rl = deps.question ? null : readline.createInterface({ input, output });
   const question = deps.question || ((prompt) => rl.question(prompt));
   const controller = options.worktrunk ? new AbortController() : null;
+  const loading = 'Loading Worktrunk status (/dirty or /conflict to filter).';
+  let loadingAbovePrompt = Boolean(controller);
   const showStatusUpdate = () => {
     pendingUpdate = false;
     if (statuses) display();
     else output.write(unavailable);
   };
   if (controller) {
-    output.write('Loading Worktrunk status (/dirty or /conflict to filter).\n');
+    output.write(`${loading}\n`);
     rl?.once('close', () => controller.abort());
     const settled = (result) => {
       if (controller.signal.aborted) return;
@@ -71,7 +73,10 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
       // Redraw only a blank choice prompt, preserving readline's cursor position.
       if (!rl || !choosing || rl.line) return;
       const { rows, cols } = rl.getCursorPos();
-      if (rows) moveCursor(output, 0, -rows);
+      const loadingRows = loadingAbovePrompt
+        ? Math.ceil(loading.length / (output.columns || loading.length))
+        : 0;
+      if (rows + loadingRows) moveCursor(output, 0, -(rows + loadingRows));
       cursorTo(output, 0);
       clearScreenDown(output);
       showStatusUpdate();
@@ -98,6 +103,7 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
         await question('Worktree number (/text filters, p N previews, q cancels): ')
       ).trim();
       choosing = false;
+      loadingAbovePrompt = false;
       if (!answer || /^(?:q|quit|cancel)$/i.test(answer)) return null;
       if (answer.startsWith('/')) {
         const query = answer.slice(1).toLowerCase();

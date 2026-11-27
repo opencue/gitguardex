@@ -148,7 +148,7 @@ test('picker decorates only GX rows once and falls back without changing a choic
   tty.options.output.columns = 28;
   const pick = pickWorktree('/repo', tty.options, deps);
   await tick();
-  assert.match(tty.read(), /\x1b\[2A/);
+  assert.match(tty.read(), /\x1b\[5A\x1b\[1G\x1b\[0J1\. agent\/test/);
   assert.match(tty.read(), /1\. agent\/test.*dirty · main: \+2\/-1 · possible merge conflict/);
   tty.write('1\n');
   await tick();
@@ -159,7 +159,7 @@ test('picker decorates only GX rows once and falls back without changing a choic
   const fallback = terminal();
   const pickFallback = pickWorktree('/repo', fallback.options, deps);
   await tick();
-  assert.match(fallback.read(), /Worktrunk status unavailable/);
+  assert.match(fallback.read(), /\x1b\[1A\x1b\[1G\x1b\[0JWorktrunk status unavailable/);
   assert.match(fallback.read(), /1\. agent\/test/);
   for (const query of ['/dirty', '/conflict']) {
     fallback.clear();
