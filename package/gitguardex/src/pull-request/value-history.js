@@ -77,7 +77,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         const item = pending.get(id);
         if (!plainText(reason) || String(item?.reviewId) !== issuance ||
             head !== review.commit_id || head !== scope.head || !scope.base ||
-            (base !== scope.base && item.head !== head)) continue;
+            (base !== scope.base && (item.head !== head || item.base !== base))) continue;
         dismissedId = id;
         dismissalReason = plainText(reason);
         dismissalBase = base;
@@ -129,7 +129,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         const previous = pending.get(record.id);
         const currentReissue =
           (currentDismissals.has(record.id) || historicalDismissals.has(previous) ||
-            (previous && previous.base !== event.base)) &&
+            (previous && (previous.head !== review.commit_id || previous.base !== event.base))) &&
           review.commit_id === scope.head && event.base === scope.base;
         if (previous && !currentReissue) continue;
         if (currentReissue) currentDismissals.delete(record.id);
