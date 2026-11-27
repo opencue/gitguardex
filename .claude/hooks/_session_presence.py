@@ -28,10 +28,17 @@ result rather than raising, so a hook importing this never blocks a session.
 
 import json
 import os
+import stat
 import subprocess
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 DEFAULT_WINDOW_SEC = 900
 # Runtime / bookkeeping churn that is not the agent's actual work.
@@ -70,6 +77,80 @@ def _git(cwd: str, args: list[str]) -> "str | None":
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+def _managed_git_entry() -> "Path | None":
+    root = state_dir().parents[2]
+    if any(
+        parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
+        for parent in root.parents
+    ):
+        git_entry = root / ".git"
+        # An ordinary clone in this directory has its own Git directory; still
+        # lock before writing, without mistaking it for a removable linked tree.
+        return git_entry / "HEAD" if stat.S_ISDIR(git_entry.lstat().st_mode) else git_entry
+    return None
+
+
+def _git_entry_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return info.st_dev, info.st_ino, info.st_ctime_ns
+
+
+def _try_exclusive_flock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    # Use the same kernel lock on supported POSIX hosts with a minimal Python build.
+    # If native flock is unavailable too, managed hook writes stay disabled.
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.flock(fd, 2 | 4) == -1:  # LOCK_EX | LOCK_NB on Linux/WSL and macOS
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+# gx-hook-state-lock-v4
+@contextmanager
+def locked_hook_state(expected: "os.stat_result | None" = None):
+    """Serialize hook writes with GX removing this particular checkout."""
+    try:
+        git_entry = _managed_git_entry()
+    except OSError:
+        yield False
+        return
+    if git_entry is None:
+        # Finished cleanup does not remove standalone or ordinary checkouts.
+        yield expected is None and Path(__file__).is_file()
+        return
+
+    fd = None
+    allowed = False
+    try:
+        info = git_entry.lstat() if expected is None else expected
+        if os.name == "posix" and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            identity = _git_entry_identity(info)
+            # Lock this generation's existing .git pointer without writing it.
+            fd = os.open(git_entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            if _git_entry_identity(os.fstat(fd)) != identity:
+                raise RuntimeError("checkout changed before locking")
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    _try_exclusive_flock(fd)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            allowed = _git_entry_identity(git_entry.lstat()) == identity
+    except (OSError, RuntimeError, ImportError, AttributeError):
+        pass
+    try:
+        yield allowed
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def worktree_top(cwd: str) -> "str | None":
@@ -154,45 +235,51 @@ def record_edit(
     if not session_id:
         return None
     try:
+        git_entry = _managed_git_entry()
+        expected = git_entry.lstat() if git_entry is not None else None
         top = worktree_top(cwd) or cwd or ""
         rel = _relpath(file_path, top)
         if not rel or not is_trackable(rel):
             return None
 
-        record = _read_record(session_id)
-        files = record.get("files")
-        if not isinstance(files, list):
-            files = []
-        if rel in files:
-            files.remove(rel)  # move-to-most-recent
-        files.append(rel)
-        if len(files) > MAX_FILES:
-            files = files[-MAX_FILES:]
+        branch = current_branch(cwd)
+        with locked_hook_state(expected) as writable:
+            if not writable:
+                return None
+            record = _read_record(session_id)
+            files = record.get("files")
+            if not isinstance(files, list):
+                files = []
+            if rel in files:
+                files.remove(rel)  # move-to-most-recent
+            files.append(rel)
+            if len(files) > MAX_FILES:
+                files = files[-MAX_FILES:]
 
-        record.update(
-            {
-                "session_id": session_id,
-                "repo_root": top,
-                "worktree": top,
-                "branch": current_branch(cwd),
-                "current_file": rel,
-                "files": files,
-                "last_seen": _iso(now),
-                "tool": tool,
-                # Legacy fields kept so anything reading the old dirty record
-                # shape still works.
-                "modified": True,
-                "last_modified": _iso(now),
-            }
-        )
+            record.update(
+                {
+                    "session_id": session_id,
+                    "repo_root": top,
+                    "worktree": top,
+                    "branch": branch,
+                    "current_file": rel,
+                    "files": files,
+                    "last_seen": _iso(now),
+                    "tool": tool,
+                    # Legacy fields kept so anything reading the old dirty record
+                    # shape still works.
+                    "modified": True,
+                    "last_modified": _iso(now),
+                }
+            )
 
-        sdir = state_dir()
-        sdir.mkdir(parents=True, exist_ok=True)
-        path = _record_path(session_id)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, indent=2))
-        os.replace(tmp, path)  # atomic
-        return record
+            sdir = state_dir()
+            sdir.mkdir(parents=True, exist_ok=True)
+            path = _record_path(session_id)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(record, indent=2))
+            os.replace(tmp, path)  # atomic
+            return record
     except Exception:  # noqa: BLE001 - fail-open: a tracker error must never block an edit
         return None
 

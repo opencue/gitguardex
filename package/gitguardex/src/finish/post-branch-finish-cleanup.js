@@ -101,12 +101,55 @@ function isManagedAgentWorktree(repoRoot, worktreePath) {
   );
 }
 
-function hasUnsafeWorktreeChanges(output) {
+const HOOK_RUNTIME_PREFIXES = [
+  '!! .claude/hooks/state/',
+  '!! .claude/hooks/__pycache__/',
+  '!! .codex/hooks/state/',
+  '!! .codex/hooks/__pycache__/'
+];
+const losslessUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+const HOOK_RUNTIME_SOURCES = [
+  '_session_presence.py',
+  'agent_branch_advisor.py',
+  'post_edit_tracker.py',
+  'skill_activation.py',
+  'skill_guard.py',
+  'skill_tracker.py'
+];
+
+function hasUncoordinatedHookRuntime(worktreePath) {
+  const directories = ['.claude/hooks', '.codex/hooks'].map((name) => path.join(worktreePath, name));
+  for (const directory of directories) {
+    for (const name of HOOK_RUNTIME_SOURCES) {
+      const hook = path.join(directory, name);
+      let source;
+      try {
+        // An absent or dangling hook cannot write into the checkout.
+        source = fs.realpathSync(hook);
+      } catch (error) {
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
+        throw error;
+      }
+      if (
+        !directories.includes(path.dirname(source)) ||
+        !fs.statSync(source).isFile() ||
+        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v4')
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasUnsafeWorktreeChanges(output, archivableEntries = []) {
   return String(output || '')
     .split('\0')
     .filter(Boolean)
     .some((entry) => {
       if (!entry.startsWith('!! ')) return true;
+      if (archivableEntries.includes(entry)) return false;
       const ignoredPath = entry.slice(3).replace(/\/$/, '');
       const segments = ignoredPath.split('/');
       return !(
@@ -187,18 +230,21 @@ function prepareBranchFinishCleanup(argv, activeCwd) {
 
   try {
     const { target, passthrough } = extractTargetedArgs(finishArgs, activeCwd);
-    const repoRoot = resolveSharedRepoRoot(target);
     const branch = flagValue(passthrough, '--branch') || currentBranchName(target);
-    const worktreePath = listAgentWorktrees(repoRoot).find(
+    const worktreePath = listAgentWorktrees(target).find(
       (entry) => entry.branch === branch
     )?.worktreePath;
-    if (
-      !worktreePath ||
-      !isManagedAgentWorktree(repoRoot, worktreePath) ||
-      !pathContains(worktreePath, activeCwd)
-    ) {
-      return null;
-    }
+    return prepareActiveWorktreeCleanup(target, worktreePath, activeCwd);
+  } catch {
+    return null;
+  }
+}
+
+function prepareActiveWorktreeCleanup(target, worktreePath, activeCwd) {
+  if (!worktreePath || !pathContains(worktreePath, activeCwd)) return null;
+  try {
+    const repoRoot = resolveSharedRepoRoot(target);
+    if (!isManagedAgentWorktree(repoRoot, worktreePath)) return null;
     const worktreeIdentity = captureWorktreeIdentity(worktreePath);
     return worktreeIdentity ? { repoRoot, worktreePath, worktreeIdentity } : null;
   } catch {
@@ -276,8 +322,8 @@ function previewDependencyCleanup(target, branchFilter) {
   );
 }
 
-function cleanupQueueDirectory(repoRoot, create = false) {
-  const directory = path.join(commonGitDirectory(repoRoot), 'gitguardex-pending-cleanup');
+function privateCleanupDirectory(repoRoot, name, create) {
+  const directory = path.join(commonGitDirectory(repoRoot), name);
   if (create) {
     try {
       fs.mkdirSync(directory, { mode: 0o700 });
@@ -292,8 +338,73 @@ function cleanupQueueDirectory(repoRoot, create = false) {
     stat.mode & 0o077 ||
     (process.getuid && stat.uid !== process.getuid())
   )
-    throw new Error('Unsafe cleanup queue directory');
+    throw new Error(`Unsafe cleanup directory: ${directory}`);
   return directory;
+}
+
+function cleanupQueueDirectory(repoRoot, create = false) {
+  return privateCleanupDirectory(repoRoot, 'gitguardex-pending-cleanup', create);
+}
+
+function hookRuntimeSnapshot(worktreePath, paths) {
+  const snapshot = [];
+  const visit = (file) => {
+    const stat = fs.lstatSync(file, { bigint: true });
+    // A preserved link could point back into the checkout being removed.
+    if (!stat.isFile() && !stat.isDirectory()) throw new Error('Unsupported hook artifact');
+    // ctime catches in-place rewrites even if the writer restores mtime.
+    snapshot.push([file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String));
+    if (stat.isDirectory()) {
+      const names = fs.readdirSync(file, { encoding: 'buffer' });
+      for (const name of names.map((bytes) => losslessUtf8.decode(bytes)).sort()) {
+        visit(path.join(file, name));
+      }
+    }
+  };
+  try {
+    for (const relative of paths) {
+      const source = path.join(worktreePath, relative);
+      if (fs.realpathSync(source) !== source) return null;
+      visit(source);
+    }
+    return JSON.stringify(snapshot);
+  } catch {
+    return null;
+  }
+}
+
+function archiveHookRuntime(plan, paths) {
+  const tracked = run('git', [
+    '--literal-pathspecs',
+    '-C',
+    plan.worktreePath,
+    'ls-files',
+    '-z',
+    '--',
+    ...paths
+  ]);
+  if (tracked.status !== 0 || tracked.stdout) return false;
+  const snapshot = hookRuntimeSnapshot(plan.worktreePath, paths);
+  if (snapshot === null) return false;
+
+  const root = privateCleanupDirectory(plan.repoRoot, 'gitguardex-finished-hook-archives', true);
+  const archive = fs.mkdtempSync(path.join(root, path.basename(plan.worktreePath).slice(0, 60) + '-'));
+  console.log(`[${TOOL_NAME}] Saving finished worktree hook artifacts to ${archive}`);
+  try {
+    for (const relative of paths) {
+      const source = path.join(plan.worktreePath, relative);
+      const destination = path.join(archive, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+      fs.cpSync(source, destination, {
+        recursive: true,
+        preserveTimestamps: true
+      });
+    }
+  } catch (error) {
+    fs.rmSync(archive, { recursive: true, force: true });
+    throw error;
+  }
+  return { archive, snapshot };
 }
 
 function readPrivateJob(file) {
@@ -445,13 +556,18 @@ function cleanupFinishedDetachedWorktree(input) {
     console.error(`[${TOOL_NAME}] pre-remove preserved finished worktree: ${error.message}`);
     return false;
   }
-  // Same OS mutex as claims writers and prune; never release anyone's claims.
+  // Serialize with this lane's hook writers and separately with claims/prune.
+  const commonDir = commonGitDirectory(plan.repoRoot);
+  const lockRunner = path.join(__dirname, 'with-claims-lock.py');
   const result = run(
     'python3',
     [
-      path.join(__dirname, 'with-claims-lock.py'),
+      lockRunner,
       '--try-lock',
-      path.join(commonGitDirectory(plan.repoRoot), 'agent-file-locks.lock'),
+      '--existing-lock',
+      path.join(plan.worktreePath, '.git'),
+      '--and-lock',
+      path.join(commonDir, 'agent-file-locks.lock'),
       process.execPath,
       __filename,
       '--remove-locked',
@@ -459,8 +575,8 @@ function cleanupFinishedDetachedWorktree(input) {
     ],
     { cwd: plan.repoRoot }
   );
+  if (result.stdout) process.stdout.write(result.stdout);
   if (result.status === 0) {
-    if (result.stdout) process.stdout.write(result.stdout);
     retireCleanupJob(plan);
     try {
       require('../worktree/hooks').runLifecycleHookSync(plan.repoRoot, 'post-remove', {
@@ -479,6 +595,18 @@ function removeFinishedWorktreeLocked(plan) {
   if (!plan || !worktreeIdentityMatches(plan)) return false;
 
   try {
+    const lockFd = Number.parseInt(process.env.GUARDEX_FINISH_WORKTREE_LOCK_FD, 10);
+    const holdsCheckoutLock = () => {
+      const locked = fs.fstatSync(lockFd, { bigint: true });
+      const current = fs.lstatSync(path.join(plan.worktreePath, '.git'), { bigint: true });
+      return (
+        locked.isFile() &&
+        current.isFile() &&
+        locked.dev === current.dev &&
+        locked.ino === current.ino
+      );
+    };
+    if (!holdsCheckoutLock()) return false;
     process.chdir(plan.repoRoot);
     if (fs.realpathSync(plan.worktreePath) !== plan.worktreePath) return false;
     const registered = run('git', ['-C', plan.repoRoot, 'worktree', 'list', '--porcelain', '-z']);
@@ -496,32 +624,82 @@ function removeFinishedWorktreeLocked(plan) {
     }
     if (!found) return false;
     if (hasWorktreeClaims(plan.worktreePath)) return false;
-    const commit = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
-    if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
+    const hasExpectedDetachedHead = () => {
+      const commit = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
+      if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
+      return run('git', ['-C', plan.worktreePath, 'symbolic-ref', '-q', 'HEAD']).status === 1;
+    };
     if (probeWorktreeOwnership(plan.worktreePath).active) return false;
     if (!worktreeIdentityMatches(plan)) return false;
-    const status = run(
-      'git',
-      ['-C', plan.worktreePath, 'status', '--porcelain=v1', '-z', '--ignored'],
-      { cwd: plan.repoRoot }
-    );
-    const head = run('git', ['-C', plan.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: plan.repoRoot
-    });
-    if (
-      status.status !== 0 ||
-      hasUnsafeWorktreeChanges(status.stdout) ||
-      head.status !== 0 ||
-      String(head.stdout || '').trim() !== 'HEAD'
-    ) {
+    // A legacy hook may create its first ignored file after the final status check.
+    if (hasUncoordinatedHookRuntime(plan.worktreePath)) return false;
+    // Matching mode reports ignored hook directories or individually ignored descendants.
+    const readStatus = () => {
+      // Porcelain -z contains raw filenames. Fail closed on invalid UTF-8 rather
+      // than silently replacing distinct filenames with the same string.
+      const result = cp.spawnSync(
+        'git',
+        [
+          '-C',
+          plan.worktreePath,
+          'status',
+          '--porcelain=v1',
+          '-z',
+          '--ignored=matching',
+          '--untracked-files=normal',
+          '--ignore-submodules=none'
+        ],
+        { cwd: plan.repoRoot, encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 }
+      );
+      return {
+        status: result.status,
+        stdout: result.status === 0 ? losslessUtf8.decode(result.stdout) : ''
+      };
+    };
+    const status = readStatus();
+    const hookEntries = (status.stdout || '')
+      .split('\0')
+      .filter((entry) => HOOK_RUNTIME_PREFIXES.some((prefix) => entry.startsWith(prefix)));
+    if (status.status !== 0 || hasUnsafeWorktreeChanges(status.stdout, hookEntries)) {
       return false;
     }
-    if (!worktreeIdentityMatches(plan)) return false;
+    if (!worktreeIdentityMatches(plan) || !hasExpectedDetachedHead()) return false;
+    const hookPaths = hookEntries.map((entry) => entry.slice(3).replace(/\/$/, ''));
+    let archived;
+    if (hookEntries.length) {
+      archived = archiveHookRuntime(plan, hookPaths);
+      if (!archived) return false;
+      const { archive, snapshot } = archived;
+      // Git removes ignored hook state with the checkout. Keep the originals until then.
+      let readyToRemove = false;
+      try {
+        const remaining = readStatus();
+        readyToRemove =
+          remaining.status === 0 &&
+          !hasUnsafeWorktreeChanges(remaining.stdout, hookEntries) &&
+          worktreeIdentityMatches(plan) &&
+          !probeWorktreeOwnership(plan.worktreePath).active &&
+          hookRuntimeSnapshot(plan.worktreePath, hookPaths) === snapshot &&
+          hasExpectedDetachedHead() &&
+          holdsCheckoutLock();
+      } finally {
+        if (!readyToRemove) fs.rmSync(archive, { recursive: true, force: true });
+      }
+      if (!readyToRemove) return false;
+    } else if (!holdsCheckoutLock()) return false;
 
     const remove = run('git', ['-C', plan.repoRoot, 'worktree', 'remove', plan.worktreePath], {
       cwd: plan.repoRoot
     });
     if (remove.status !== 0) {
+      // A failed removal can still delete files. Keep the archive if any originals changed.
+      if (
+        archived &&
+        worktreeIdentityMatches(plan) &&
+        hookRuntimeSnapshot(plan.worktreePath, hookPaths) === archived.snapshot
+      ) {
+        fs.rmSync(archived.archive, { recursive: true, force: true });
+      }
       console.error(
         `[${TOOL_NAME}] Warning: finished detached worktree cleanup failed: ${plan.worktreePath}`
       );
@@ -582,9 +760,11 @@ function scheduleFinishedDetachedWorktreeCleanup(input, options = {}) {
       );
     });
     child.unref();
-    console.log(
-      `[${TOOL_NAME}] Scheduled finished worktree cleanup after active processes leave: ${plan.worktreePath}`
-    );
+    if (!options.quiet) {
+      console.log(
+        `[${TOOL_NAME}] Scheduled finished worktree cleanup after active processes leave: ${plan.worktreePath}`
+      );
+    }
     return true;
   } catch (error) {
     console.error(
@@ -641,6 +821,7 @@ module.exports = {
   isManagedAgentWorktree,
   probeLiveProcessInWorktree,
   probeWorktreeOwnership,
+  prepareActiveWorktreeCleanup,
   prepareBranchFinishCleanup,
   previewDependencyCleanup,
   persistFinishedCleanup,

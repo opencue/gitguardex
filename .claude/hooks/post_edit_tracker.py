@@ -19,6 +19,9 @@ Fail-open: any error → exit 0, never blocks the edit.
 import json
 import sys
 
+# gx-hook-state-lock-v4: never write import caches outside the lock.
+sys.dont_write_bytecode = True
+
 try:
     from _session_presence import record_edit
 except ImportError:  # presence module missing → nothing to record, fail open

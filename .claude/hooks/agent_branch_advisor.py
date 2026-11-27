@@ -44,7 +44,11 @@ repo somehow carries an older skill_guard.py without these helpers.
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
+
+# gx-hook-state-lock-v4: never write import caches outside the lock.
+sys.dont_write_bytecode = True
 
 try:
     from skill_guard import (
@@ -71,6 +75,18 @@ try:
     )
 except Exception:  # noqa: BLE001
     read_live_sessions = None
+
+try:
+    from _session_presence import locked_hook_state
+except ImportError:
+    def locked_hook_state():
+        hook = Path(__file__).resolve()
+        return nullcontext(
+            hook.is_file() and not any(
+                parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
+                for parent in hook.parents[3:]
+            )
+        )
 
 
 SUPPORTED_EVENTS = ("SessionStart", "UserPromptSubmit")
@@ -124,15 +140,20 @@ def _read_state(session_id: str) -> dict:
         return {}
 
 
-def _write_state(session_id: str, data: dict) -> None:
+def _write_state(session_id: str, updates: dict) -> None:
     if not session_id:
         return
     try:
-        path = _advisor_state_path(session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data))
-        os.replace(tmp, path)  # atomic: never leave a truncated state file
+        with locked_hook_state() as writable:
+            if not writable:
+                return
+            state = _read_state(session_id)
+            state.update(updates)
+            path = _advisor_state_path(session_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(state))
+            os.replace(tmp, path)  # atomic: never leave a truncated state file
     except OSError:
         pass
 
@@ -148,9 +169,7 @@ def already_advised(session_id: str) -> bool:
 
 def mark_advised(session_id: str) -> None:
     """Record that the full advisory fired for this session. Best-effort."""
-    state = _read_state(session_id)
-    state["advised"] = True
-    _write_state(session_id, state)
+    _write_state(session_id, {"advised": True})
 
 
 def presence_text(cwd: str, session_id: str, event: str) -> "str | None":
@@ -178,8 +197,7 @@ def presence_text(cwd: str, session_id: str, event: str) -> "str | None":
     state = _read_state(session_id)
     if event == "UserPromptSubmit" and state.get("presence_fp") == fingerprint:
         return None
-    state["presence_fp"] = fingerprint
-    _write_state(session_id, state)
+    _write_state(session_id, {"presence_fp": fingerprint})
     return format_block(sessions)
 
 
