@@ -43,7 +43,7 @@ const ABIDE_COMPILE_TIMEOUT_MS = 15 * 60_000;
 const ABIDE_CALIBRATE_TIMEOUT_MS = 10 * 60_000;
 
 const MANAGED_AGENT_SKILLS = [
-  { name: 'gitguardex', source: [CHECKOUT_ROOT, '.claude', 'skills', 'gitguardex'] },
+  { name: 'gitguardex', source: [PACKAGE_ROOT, 'skills', 'gitguardex'] },
   { name: 'opensrc', source: [PACKAGE_ROOT, 'templates', 'codex', 'skills', 'opensrc'] },
 ];
 

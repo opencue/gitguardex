@@ -1,6 +1,6 @@
 ---
 name: gitguardex
-description: "Use for GitGuardex branch/worktree safety, agent or subagent collision avoidance, file ownership, and gated PR finishing. Not for code-quality review."
+description: "Use for GitGuardex branch/worktree safety, agent coordination, file ownership, gated PR finishing, and publishing PR impact and risk to GitHub."
 ---
 
 Use when a GitGuardex-managed repository needs safe edits or multi-agent coordination.
@@ -83,6 +83,26 @@ After enablement, ordinary `claim`, `allow-delete`, `validate`, `release`, and `
 - Push the agent branch when full remote-lane visibility matters. A lock still makes an unpushed branch visible as a lock-owning remote lane.
 - Release locks before disabling shared state or abandoning a lane. Cross-machine locks are not automatically reaped because one host cannot safely prove that another host's process is dead.
 - `gx locks shared-disable` stops shared reads and writes for this repository; it does not delete remote refs owned by any machine.
+
+## Publish PR impact and risk to GitHub
+
+For GitHub PRs, prefer the repository's required review gate if it already
+posts the review. Otherwise, use the repository's designated reviewer:
+
+```sh
+gx pr-review --pr <number> --provider <repository-reviewer> --post --artifact <local-path>
+```
+
+The artifact alone is local-only. Use `--no-post` only if a local/private
+review is requested or posting is forbidden. Never bypass a required gate.
+
+When both evidence-backed scores are available, GitGuardex updates the open
+PR title with `[I<number> R<number>]` (impact and risk, each out of 100), so
+they are visible in GitHub's PR list. Scores are advisory, not approval.
+Verify the title and a review on the current head with
+`gh pr view <number> --json title,headRefOid,reviews`. Re-review a stale head.
+Report verified scores next to the PR link, or say why they are unavailable.
+Do not invent scores or add a score prefix manually.
 
 ## Finish checklist in Codex
 
