@@ -1168,23 +1168,6 @@ function runPrReview(options, deps = {}) {
   if (options.post && !prHeadSha && githubAuthAvailable(process.env, runner)) {
     throw new Error('Cannot capture PR head SHA before review; refusing to post an unverified review.');
   }
-  // Requirement history needs the base only when replaying or checking a resolution.
-  let refs;
-  const scope = {
-    head: prHeadSha,
-    dismissed: new Set(),
-    get base() {
-      refs ??= fetchPrRevision(pr, repoRoot, runner) || {};
-      return refs.head === prHeadSha ? refs.base : undefined;
-    }
-  };
-  const priorImprovements = options.post && prHeadSha
-    ? readPublishedImprovements(repoRoot, pr, runner, scope)
-    : options.pendingImprovements ?? [];
-  const prBaseSha = prHeadSha && (priorImprovements.length || refs) ? scope.base : undefined;
-  if (prBaseSha && options.expectedBaseSha && prBaseSha !== options.expectedBaseSha) {
-    throw new Error(`PR #${pr} base changed before review; rerun against the current diff.`);
-  }
   const impactStartedAt = Date.now();
   const rawDiff = fetchPrDiff(pr, repoRoot, runner);
   const projection = !lensContext && rawDiff.length > MAX_DIFF_CHARS
@@ -1201,6 +1184,23 @@ function runPrReview(options, deps = {}) {
     throw new Error(
       `review diff exceeds the ${MAX_DIFF_CHARS} character limit; split the PR and rerun the gate`
     );
+  }
+  // Requirement history needs the base only when replaying or checking a resolution.
+  let refs;
+  const scope = {
+    head: prHeadSha,
+    dismissed: new Set(),
+    get base() {
+      refs ??= fetchPrRevision(pr, repoRoot, runner) || {};
+      return refs.head === prHeadSha ? refs.base : undefined;
+    }
+  };
+  const priorImprovements = options.post && prHeadSha
+    ? readPublishedImprovements(repoRoot, pr, runner, scope)
+    : options.pendingImprovements ?? [];
+  const prBaseSha = prHeadSha && (priorImprovements.length || refs) ? scope.base : undefined;
+  if (prBaseSha && options.expectedBaseSha && prBaseSha !== options.expectedBaseSha) {
+    throw new Error(`PR #${pr} base changed before review; rerun against the current diff.`);
   }
   const env = deps.env || process.env;
   const history =
