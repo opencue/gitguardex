@@ -579,7 +579,9 @@ test('migrate removes legacy copied assets and installs user-level skills on req
   assert.equal(migratedPackage.scripts['agent:cleanup'], undefined);
   assert.equal(migratedPackage.scripts['agent:branch:start'], 'bash ./scripts/custom-branch-start.sh');
 
-  assert.equal(fs.existsSync(path.join(guardexHomeDir, '.codex', 'skills', 'gitguardex', 'SKILL.md')), true);
+  const readGlobalSkill = (agent) => fs.readFileSync(path.join(guardexHomeDir, agent, 'skills', 'gitguardex', 'SKILL.md'), 'utf8');
+  assert.match(readGlobalSkill('.codex'), /--post --artifact/);
+  assert.equal(readGlobalSkill('.claude'), readGlobalSkill('.codex'));
   assert.equal(fs.existsSync(path.join(guardexHomeDir, '.codex', 'skills', 'opensrc', 'SKILL.md')), true);
   assert.equal(fs.existsSync(path.join(guardexHomeDir, '.claude', 'commands', 'gitguardex.md')), true);
 

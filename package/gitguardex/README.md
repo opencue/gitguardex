@@ -8,6 +8,9 @@ npm install -g @imdeadpool/guardex
 gx --help
 ```
 
+Run `gx install-agent-skills` once to install the bundled GitGuardex skill
+globally for Codex and Claude Code.
+
 See the [project README](https://github.com/opencue/gitguardex#readme) for setup
 and workflows, and the [repository](https://github.com/opencue/gitguardex)
 for source and contributing information.
@@ -21,6 +24,10 @@ Risk: 21/100**. A benefit cannot lower a risk score. The risk score describes
 severity if it happens; the row reports the estimated likelihood separately.
 Missing evidence is **not established**, not zero or a default 50. These
 estimates are advisory, not measurements or merge verdicts.
+
+Use the repository's posting review gate or `gx pr-review --post` to make
+the scores visible in GitHub. When both scores are supported and the PR is
+current and writable, its title gets an `[I63 R21]`-style prefix.
 
 ## Agent handoffs
 

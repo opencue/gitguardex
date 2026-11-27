@@ -258,6 +258,10 @@ const USER_LEVEL_SKILL_ASSETS = [
     destination: path.join('.codex', 'skills', 'gitguardex', 'SKILL.md'),
   },
   {
+    source: path.join(TEMPLATE_ROOT, 'codex', 'skills', 'gitguardex', 'SKILL.md'),
+    destination: path.join('.claude', 'skills', 'gitguardex', 'SKILL.md'),
+  },
+  {
     source: path.join(TEMPLATE_ROOT, 'codex', 'skills', 'guardex-merge-skills-to-dev', 'SKILL.md'),
     destination: path.join('.codex', 'skills', 'guardex-merge-skills-to-dev', 'SKILL.md'),
   },
