@@ -144,7 +144,8 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
     child.once('close', (code) => {
       resolve(code === 0 && !stopped ? Buffer.concat(chunks).toString('utf8') : null);
     });
-    timer = setTimeout(stop, 3000);
+    // Windows PowerShell may compile the job launcher on a cold start.
+    timer = setTimeout(stop, detached ? 3000 : 8000);
     deps.signal?.addEventListener('abort', stop, { once: true });
     if (deps.signal?.aborted) stop();
   }).finally(() => {

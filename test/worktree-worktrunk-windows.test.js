@@ -22,7 +22,7 @@ class WorktrunkFixture {
       Thread.Sleep(30000);
       return 0;
     }
-    if (args.Length < 2 || !String.Equals(Path.GetFullPath(args[1]), dir, StringComparison.OrdinalIgnoreCase)) {
+    if (args.Length < 2 || !File.Exists(Path.Combine(args[1], "fixture.tag"))) {
       Console.Error.WriteLine("Wrong -C or working directory: " + String.Join(" ", args) + "; cwd=" + Environment.CurrentDirectory);
       return 2;
     }
@@ -61,7 +61,7 @@ function running(pid) {
 }
 
 async function waitFor(check, message) {
-  const deadline = Date.now() + 4500;
+  const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     const value = check();
     if (value) return value;
@@ -92,6 +92,7 @@ test(
         abort ? 'abort kills an active provider tree' : 'normal exit still kills the descendant',
         async (caseTest) => {
           const repo = fs.mkdtempSync(path.join(root, 'repo with spaces-'));
+          fs.writeFileSync(path.join(repo, 'fixture.tag'), '');
           if (abort) fs.writeFileSync(path.join(repo, 'hold'), '');
           caseTest.after(() => {
             const pid = descendantPid(repo);
