@@ -68,8 +68,11 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   const executable = findWorktrunk(dirs, roots);
   if (!executable) return null;
 
+  let child;
+  // execFile's killSignal applies to its timeout, not to AbortSignal cancellation.
+  const abort = () => child?.kill('SIGKILL');
   const stdout = await new Promise((resolve) => {
-    const child = (deps.execFile || execFile)(
+    child = (deps.execFile || execFile)(
       executable,
       [
         '-C',
@@ -84,7 +87,6 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
       {
         encoding: 'utf8',
         env: { ...process.env, PATH: dirs.join(path.delimiter) },
-        signal: deps.signal,
         timeout: 3000,
         killSignal: 'SIGKILL',
         maxBuffer: 1024 * 1024
@@ -92,7 +94,9 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
       (error, output) => resolve(error ? null : output)
     );
     child.stdin?.destroy();
-  });
+    deps.signal?.addEventListener('abort', abort, { once: true });
+    if (deps.signal?.aborted) abort();
+  }).finally(() => deps.signal?.removeEventListener('abort', abort));
   if (stdout === null || deps.signal?.aborted) return null;
   let data;
   try {
