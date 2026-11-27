@@ -32,6 +32,15 @@ commit IDs and integration outcomes:
 - **Local merges:** accepted edits that Git merged as-is. **Successful PRs:**
   GitHub confirmed a merge, or `null` when GitHub was not measured.
 
+### Recorded offline run
+
+[`offline-results.json`](./offline-results.json) is the raw output from
+`node scripts/benchmark-parallel-agents.js --pairs 3` (whitespace compacted).
+Across the three overlap pairs, plain Git had three merge conflicts.
+GitGuardex denied three initial claims and had no merge conflicts after the
+blocked lane retried on the new base. Both arms merged all six disjoint edits.
+No hosted PRs or model performance were measured.
+
 ## Use the same real model in both arms
 
 Provide a trusted executable (a wrapper around the model CLI or API of your
