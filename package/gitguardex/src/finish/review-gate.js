@@ -11,6 +11,7 @@ const { run } = require('../core/runtime');
 const { TOOL_NAME } = require('../context');
 const pr = require('../pull-request/index');
 const prReview = require('../review/pull-request');
+const { readPublishedImprovements, DISMISS_PREFIX } = require('../pull-request/value-history');
 const reviewFix = require('../review/fix');
 const { reviewReceipt } = require('./review-receipt');
 const { mapWorktreePathsByBranch } = require('../git');
@@ -362,7 +363,7 @@ function runReviewGate(
   const requireChecks = !options.allowNoChecks;
   // Fix rounds are opt-in and bounded: an unfixable finding must fall through to
   // the block rather than spin the provider forever.
-  const maxFixRounds = options.gateAutofix ? Math.max(1, options.gateAutofixRounds || 1) : 0;
+  const maxFixRounds = options.gateAutofix ? Math.max(1, options.gateAutofixRounds || 3) : 0;
   // Fixes are edits to the checked-out branch, so they run in the worktree that
   // holds it — repoRoot may be the primary checkout sitting on a protected base.
   const fixCwd = worktreePath || resolveWorktreeForBranch(repoRoot, branch);
@@ -412,7 +413,10 @@ function runReviewGate(
       }, options)
       : null
   );
-  const reusable = opened.pr.headRefOid === initialHeadSha
+  const readPending = deps.readPendingImprovements || ((head) =>
+    deps.runPrReview ? [] : readPublishedImprovements(repoRoot, prNumber, run, { head, base: reviewedBaseSha })
+  );
+  const reusable = opened.pr.headRefOid === initialHeadSha && readPending(initialHeadSha)?.length === 0
     ? getReceipt(initialHeadSha)?.read()
     : null;
 
@@ -445,15 +449,18 @@ function runReviewGate(
   //    run so the fixer never grades its own homework.
   let review = reusable ? { findings: [] } : undefined;
   let verdict = reusable ? { clean: true, blocking: [] } : undefined;
-  // Files that have ever carried a BLOCKING finding, and files an auto-fix has
+  // Files that have carried a blocker, and files an auto-fix has
   // actually edited. A blocking finding that vanishes from a later round is only
   // treated as repaired when its file was touched — see resolveCarriedFindings.
   const blockedPaths = new Set();
+  const previousBugHunter = new Set();
+  const findingIdentity = ({ path, line, message }) => JSON.stringify([path, line, message]);
   const repairedPaths = new Set();
   // A finding with no .path cannot be keyed into blockedPaths, so it needs its
   // own flag: if one ever blocked a round and then disappears, the gate must
   // fail closed rather than silently treating its absence as a fix.
   let hasPathlessBlocker = false;
+  let pendingImprovements = [];
   let autofixAttempted = false;
   // Pin CI from the first review, and advance only after a reviewed autofix.
   let pushedHeadSha = initialHeadSha;
@@ -480,6 +487,7 @@ function runReviewGate(
         requireCompleteDiff: true,
         expectedBaseSha: reviewedBaseSha,
         expectedHeadSha: pushedHeadSha,
+        ...(pendingImprovements.length ? { pendingImprovements } : {}),
         model: options.reviewModel,
         timeoutMs: options.reviewTimeoutMs,
         agentQuiet: options.agentQuiet,
@@ -512,8 +520,26 @@ function runReviewGate(
       throw error;
     }
 
-    verdict = evaluate(review.findings);
+    if (pendingImprovements.length && !Array.isArray(review.pendingImprovements)) {
+      const message = 'Required PR improvements were not re-verified. Refusing to merge.';
+      reportProgress(progress, 'fail', 'review', message);
+      throw new Error(`review gate: ${message}`);
+    }
+    pendingImprovements = review.pendingImprovements ?? [];
+    verdict = evaluate(review.findings, { bugHunter: review.bugHunter, pendingImprovements });
+    const bugHunterFindings = review.bugHunter?.findings ?? [];
+    for (const finding of bugHunterFindings) previousBugHunter.add(findingIdentity(finding));
+    if (
+      verdict.blocking.length === 0 &&
+      (verdict.bugHunterIncomplete ||
+        (previousBugHunter.size && review.bugHunter?.status !== 'clean'))
+    ) {
+      const message = `BugHunter did not complete (${review.bugHunter?.status ?? 'missing'}). Rerun with a complete BugHunter verdict.`;
+      reportProgress(progress, 'fail', 'review', message);
+      throw new Error(`review gate: ${message} Refusing to merge.`);
+    }
     for (const finding of verdict.blocking) {
+      if (finding.improvement) continue;
       if (finding && finding.path) {
         blockedPaths.add(finding.path);
       } else if (finding) {
@@ -601,21 +627,36 @@ function runReviewGate(
       );
     }
     const detail = verdict.blocking
-      .map((f) => `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`)
+      .map((f) =>
+        f.improvement
+          ? `  - REQUIRED PR IMPROVEMENT: ${f.message}`
+          : `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`
+      )
       .join('\n');
+    const dismissalCommands = pendingImprovements
+      .filter(({ reviewId }) => Number.isSafeInteger(reviewId) && reviewId > 0)
+      .map(({ id, reviewId }) => `  ${DISMISS_PREFIX}${reviewId} ${id} ${pushedHeadSha} ${reviewedBaseSha} <reason>`);
     throw new Error(
       `review gate: ${verdict.blocking.length} blocking finding(s). Refusing to merge.\n${detail}\n` +
         (maxFixRounds > 0
-          ? 'Auto-fix did not clear them. Fix manually or rerun with --skip-review-gate.'
-          : 'Fix the findings, rerun with --gate-autofix to let the agent repair them, or bypass with --skip-review-gate.')
+          ? 'Auto-fix did not clear them. Fix the remaining findings and rerun the gate.'
+          : 'Fix the findings or rerun with --gate-autofix to let the agent repair them.') +
+        (dismissalCommands.length
+          ? '\nFor a false-positive required improvement, post its command with a reason as the first line of a GitHub Comment review (write access required):\n' +
+            dismissalCommands.join('\n')
+          : '')
     );
   }
 
-  // A clean final verdict is not enough on its own. Review providers are
-  // nondeterministic: a blocking finding can simply fail to reappear in a later
-  // round, and reading that silence as "repaired" merges the bug. Every file
-  // that ever blocked must either still be under review or have actually been
-  // edited by a fix.
+  const survivingBugHunterFinding = previousBugHunter.size && review.findings.find(
+    (finding) => previousBugHunter.has(findingIdentity(finding))
+  );
+  if (survivingBugHunterFinding) {
+    const { path, line } = survivingBugHunterFinding;
+    const message = `The primary review still reports a previous BugHunter finding: ${path}:${line}.`;
+    reportProgress(progress, 'fail', 'review', message);
+    throw new Error(`review gate: ${message} Refusing to merge.`);
+  }
   const unexplained = resolveCarriedFindings(blockedPaths, repairedPaths, review.findings);
   if (unexplained.length > 0) {
     reportProgress(
@@ -795,6 +836,9 @@ function runReviewGate(
   }
 
   assertReviewedRevision();
+  if (readPending(pushedHeadSha)?.length !== 0) {
+    throw new Error('review gate: required PR improvement history changed or is unavailable. Rerun before merging.');
+  }
   if (reusable && getReceipt(pushedHeadSha)?.read()?.id !== reusable.id) {
     throw new Error('review gate: the saved Codex review changed during CI. Rerun before merging.');
   }

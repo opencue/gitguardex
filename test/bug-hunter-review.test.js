@@ -63,11 +63,11 @@ test('BugHunter renders untrusted finding prose as text and identifies the pinne
     status: 'findings',
     findings: [{ ...FINDING, message: '@team\n[link](https://example.test) <img> ```suggestion' }]
   }).join('\n');
-  assert.match(report, /### BugHunter \(advisory\)/);
+  assert.match(report, /### BugHunter\n/);
   assert.match(report, /counter\.js:1/);
   assert.doesNotMatch(report, /@team|\[link\]|<img>|```suggestion/);
   assert.match(report, /b412f9885e3ec074625a88c862c3f5b6724ec3b4/);
-  assert.match(report, /Does not affect the merge gate/);
+  assert.match(report, /all findings must be fixed before merging/);
 });
 
 test('BugHunter keeps partial results visible and opens only the first finding', () => {
@@ -102,6 +102,7 @@ function mockedReview({ provider, enabled = true, failCodexLaunch = false, hunte
         if (args[0] === 'auth') return { status: 0 };
         if (args[1] === 'view') return { status: 0, stdout: 'current-sha' };
         if (args[1] === 'diff') return { status: 0, stdout: DIFF };
+        if (args.includes('--paginate')) return { status: 0, stdout: '' };
         assert.equal(args[0], 'api');
         posted = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
         return { status: 0, stdout: '{"id":1,"commit_id":"current-sha"}' };
@@ -112,7 +113,7 @@ function mockedReview({ provider, enabled = true, failCodexLaunch = false, hunte
 }
 
 for (const provider of ['codex', 'claude']) {
-  test(`BugHunter runs separately through ${provider} and posts a non-blocking finding`, () => {
+  test(`BugHunter runs separately through ${provider} and posts a blocking finding`, () => {
     const { result, calls, posted } = mockedReview({
       provider,
       hunterResponse: { status: 0, stdout: JSON.stringify({ findings: [FINDING] }) }
@@ -134,12 +135,12 @@ for (const provider of ['codex', 'claude']) {
     assert.ok(Object.hasOwn(hunter.env, 'GH_TOKEN'));
     assert.equal(result.bugHunter.status, 'findings');
     assert.deepEqual(result.findings, []);
-    assert.equal(evaluateReviewGate(result.findings).clean, true);
+    assert.equal(evaluateReviewGate(result.findings, { bugHunter: result.bugHunter }).clean, false);
     assert.deepEqual(posted.comments, []);
     assert.equal(posted.commit_id, 'current-sha');
-    assert.match(posted.body, /### BugHunter \(advisory\)/);
-    assert.match(posted.body, /<summary>.*counter\.js:1<\/code><\/summary>/);
-    assert.match(posted.body, /<p>A valid zero now returns 42\.<\/p>/);
+    assert.match(posted.body, /Merge gate: blocked.*1 blocking finding/);
+    assert.match(posted.body, /#### Findings\n/);
+    assert.match(posted.body, /\| BugHunter \| <code>counter&#46;js&#58;1<\/code> \| A valid zero now returns 42&#46;/);
   });
 }
 
@@ -163,6 +164,7 @@ test('BugHunter failures are visible and never retried or treated as clean', () 
     assert.equal(calls.length, 2);
     assert.equal(result.posted, true);
     assert.equal(result.bugHunter.status, 'unavailable');
+    assert.match(posted.body, /Merge gate: blocked.*BugHunter did not complete/);
     assert.match(posted.body, /did not complete; no BugHunter verdict/);
     assert.doesNotMatch(posted.body, /provider-private-error/);
   }
@@ -194,7 +196,7 @@ test('a no-post review includes the BugHunter verdict in the local artifact', (t
   assert.equal(result.bugHunter.status, 'clean');
   assert.match(
     fs.readFileSync(artifact, 'utf8'),
-    /### BugHunter \(advisory\)[\s\S]+No behavioral findings/
+    /### BugHunter[\s\S]+No behavioral findings/
   );
 });
 
@@ -229,6 +231,8 @@ test('a receipt from a disabled or failed BugHunter pass cannot skip the enabled
   assert.deepEqual(receipt(false).read(), { id: 1, count: 0 });
   assert.equal(receipt(true).read(), null);
   receipt(true).write({ ...review, bugHunter: { status: 'unavailable' } });
+  assert.equal(receipt(true).read(), null);
+  receipt(true).write({ ...review, bugHunter: { status: 'findings', findings: [FINDING] } });
   assert.equal(receipt(true).read(), null);
   receipt(true).write({ ...review, bugHunter: { status: 'clean' } });
   assert.deepEqual(receipt(true).read(), { id: 1, count: 0 });

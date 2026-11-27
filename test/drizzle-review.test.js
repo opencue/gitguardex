@@ -300,6 +300,8 @@ test('a base-only retarget prevents posting a projected review', (t) => {
           run(cmd, args, options) {
             if (args[0] === 'auth') return { status: 0 };
             if (args[0] === 'exec') return { status: 0, stdout: '{"findings":[]}' };
+            if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+            if (args[0] === 'api' && args.includes('--paginate')) return { status: 0, stdout: '' };
             if (args.includes('headRefOid')) return { status: 0, stdout: head };
             if (args.includes('baseRefOid,headRefOid') && ++revisionReads === 2) {
               return {

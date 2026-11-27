@@ -1365,7 +1365,7 @@ function parseFinishArgs(rawArgs, defaults = {}) {
     // Let the gate repair its own blocking findings instead of only reporting
     // them. Off by default: this writes commits to the branch.
     gateAutofix: false,
-    gateAutofixRounds: 1,
+    gateAutofixRounds: 3,
     gateAbide: defaults.gateAbide ?? true,
     // After a bulk `--all` finish, sweep merged-but-stranded worktree dirs whose
     // branch was merged out-of-band and never reaped (the post-merge "retained"

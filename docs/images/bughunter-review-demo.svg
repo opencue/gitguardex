@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 410" width="800" height="410" role="img" aria-labelledby="title description">
   <title id="title">BugHunter review preview</title>
-  <desc id="description">Two illustrative behavioral findings, separate from the merge decision. The second finding is shown collapsed.</desc>
+  <desc id="description">Two illustrative behavioral findings, one medium and one low, block the merge. The second finding is shown collapsed.</desc>
   <style>
     text { font-family: system-ui, sans-serif; }
     .mono { font-family: ui-monospace, monospace; }
@@ -18,7 +18,7 @@
   <path d="m65 68 6 6" stroke="#79c0ff" stroke-width="2" stroke-linecap="round"/>
   <circle class="scan" cx="58" cy="61" r="13" fill="none" stroke="#79ffd2"/>
   <text x="97" y="60" fill="#f0f6fc" font-size="24" font-weight="700">BugHunter</text>
-  <text x="97" y="81" fill="#a9bbd0" font-size="14">Advisory review · 2 behavioral findings</text>
+  <text x="97" y="81" fill="#ff9a94" font-size="14" font-weight="700">Merge blocked · 2 behavioral findings</text>
   <rect x="588" y="48" width="166" height="27" rx="13" fill="#162a42"/>
   <text x="671" y="66" fill="#a4d6ff" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="1">ILLUSTRATIVE DEMO</text>
   <g class="entry">
@@ -38,6 +38,6 @@
     <text x="96" y="285" fill="#a4d6ff" font-size="14" font-weight="700">LOW</text>
     <text class="mono" x="182" y="285" fill="#dbe9fc" font-size="14">queue.ts:117</text>
   </g>
-  <text x="35" y="346" fill="#b4c4d8" font-size="15">Does not affect the merge gate.</text>
+  <text x="35" y="346" fill="#b4c4d8" font-size="15">Fix both findings and re-review before merging.</text>
   <text x="35" y="373" fill="#8ea6c4" font-size="13">Expand a finding in the GitHub review to read its evidence.</text>
 </svg>

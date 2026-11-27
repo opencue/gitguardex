@@ -62,6 +62,7 @@ function review({
       };
     }
     if (args[0] === 'api') {
+      if (args.includes('--paginate')) return { status: 0, stdout: '' };
       events.push('post');
       return { status: postStatus, stdout: JSON.stringify({ commit_id: postedHead, id: 25 }) };
     }

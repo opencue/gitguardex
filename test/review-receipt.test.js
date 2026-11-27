@@ -44,7 +44,12 @@ test('a verified receipt is reusable only for the same revision, policy and post
     reviewBodyHash: createHash('sha256').update(posted.body).digest('hex'),
     findings: [{ severity: 'low' }]
   };
-  for (const patch of [{ provider: 'claude' }, { truncated: true }, { degraded: true }]) {
+  for (const patch of [
+    { provider: 'claude' },
+    { truncated: true },
+    { degraded: true },
+    { pendingImprovements: [{ label: 'Add a regression test' }] }
+  ]) {
     receipt().write({ ...review, ...patch });
     assert.equal(receipt().read(), null);
   }
@@ -55,6 +60,14 @@ test('a verified receipt is reusable only for the same revision, policy and post
   assert.equal(receipt(revision, { reviewModel: 'different' }).read(), null);
   assert.equal(receipt(revision, {}, { GUARDEX_REVIEW_COMPACT_DIFF: '1' }).read(), null);
   assert.equal(remoteLookups, 1, 'incompatible receipts need no remote lookup');
+
+  const receipts = path.join(root, '.git', 'guardex', 'review-receipts');
+  const file = path.join(receipts, fs.readdirSync(receipts)[0]);
+  const { policy, ...legacy } = JSON.parse(fs.readFileSync(file));
+  assert.ok(policy);
+  fs.writeFileSync(file, JSON.stringify(legacy));
+  assert.equal(receipt().read(), null, 'legacy same-head receipts cannot skip the new gate');
+  receipt().write(review);
 
   fs.mkdirSync(path.join(root, '.abide'));
   fs.writeFileSync(path.join(root, '.abide/rubric.json'), '{}');

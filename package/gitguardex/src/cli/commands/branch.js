@@ -48,7 +48,7 @@ PUBLISH AND MERGE
 VERIFICATION
   --gate-review               Require AI review and green CI before merge
   --gate-autofix              Repair blocking review findings and review again
-  --gate-autofix-rounds <n>   Limit repair rounds to 1-5 (default: 1)
+  --gate-autofix-rounds <n>   Limit repair rounds to 1-5 (default: 3)
   --gate-baseline             Ignore failures already present on the base branch
   --no-gate-abide             Skip abide's AGENTS.md rule verdicts in the review gate
   --review-provider <name>    Pin codex|claude (default: Codex, Claude if Codex cannot launch)
@@ -88,7 +88,7 @@ function splitGateReviewFlags(args) {
     reviewModel: undefined,
     reviewTimeoutMs: undefined,
     gateAutofix: false,
-    gateAutofixRounds: 1,
+    gateAutofixRounds: 3,
     gateBaseline: false,
     gateAbide: true,
     gateSerialCi: true,
