@@ -102,8 +102,10 @@ Never bypass a required gate or publish a private review.
 When both evidence-backed scores are available, GitGuardex updates the open
 PR title with `[I<number> R<number>]` (impact and risk, each out of 100), so
 they are visible in GitHub's PR list. Scores are advisory, not approval.
-Verify the title and a review on the current head with
-`gh pr view <number> --json title,headRefOid,reviews`. Re-review a stale head.
+With `gh pr view <number> --json title,headRefOid,reviews`, confirm this run
+successfully posted the designated GitGuardex review on the current head and
+that the title prefix matches that review's scores. An existing prefix or
+unrelated review does not prove success. Re-review a stale head.
 Report verified scores next to the PR link, or say why they are unavailable.
 Do not invent scores or add a score prefix manually.
 
