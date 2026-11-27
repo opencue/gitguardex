@@ -22,7 +22,10 @@ class WorktrunkFixture {
       Thread.Sleep(30000);
       return 0;
     }
-    if (args.Length < 2 || !String.Equals(Path.GetFullPath(args[1]), dir, StringComparison.OrdinalIgnoreCase)) return 2;
+    if (args.Length < 2 || !String.Equals(Path.GetFullPath(args[1]), dir, StringComparison.OrdinalIgnoreCase)) {
+      Console.Error.WriteLine("Wrong -C or working directory: " + String.Join(" ", args) + "; cwd=" + Environment.CurrentDirectory);
+      return 2;
+    }
     var child = Process.Start(new ProcessStartInfo {
       FileName = typeof(WorktrunkFixture).Assembly.Location,
       Arguments = "--descendant",
@@ -64,7 +67,7 @@ async function waitFor(check, message) {
     if (value) return value;
     await delay(25);
   }
-  assert.fail(message);
+  assert.fail(typeof message === 'function' ? message() : message);
 }
 
 test(
@@ -95,19 +98,31 @@ test(
             if (pid && running(pid)) process.kill(pid, 'SIGKILL');
           });
           const controller = new AbortController();
+          let diagnostic = 'no probe spawned';
           const result = loadWorktrunkStatuses(repo, [], {
             pathEnv: root,
             signal: controller.signal,
             spawn(file, args, options) {
-              return spawn(file, args, {
+              diagnostic = `spawned ${path.basename(file)}`;
+              const child = spawn(file, args, {
                 ...options,
                 env: { ...options.env, GX_WT_FIXTURE_DIR: repo }
               });
+              child.stderr.on('data', (chunk) => {
+                diagnostic += `\n${chunk}`;
+              });
+              child.once('exit', (code, signal) => {
+                diagnostic += `\nexit: ${code ?? signal}`;
+              });
+              child.once('error', (error) => {
+                diagnostic += `\n${error.message}`;
+              });
+              return child;
             }
           });
           const pid = await waitFor(
             () => descendantPid(repo),
-            'Worktrunk did not start its descendant'
+            () => `Worktrunk did not start its descendant: ${diagnostic}`
           );
           if (abort) controller.abort();
           const statuses = await result;
