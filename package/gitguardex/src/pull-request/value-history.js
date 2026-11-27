@@ -10,6 +10,8 @@ const { evidenceLink, escapeValueText, normalizeEvidence, plainText } = require(
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 const MARKER_PREFIX = '<!-- gitguardex:required-improvements-v1 ';
+const DISMISS_PREFIX = '/gx-dismiss-improvement ';
+const DISMISS_ARGS = /^(\d+) (improvement-[a-f0-9]{16}) ([a-f0-9]{40}) ([a-f0-9]{40}) (.+)$/;
 const TRUSTED_REVIEWERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 const MAX_IMPROVEMENTS_PER_REVIEW = 16;
 const STATUSES = {
@@ -52,8 +54,9 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
   try {
     const result = runner(GH_BIN, [
       'api', '--paginate', repoApiPath(repoRoot, `pulls/${pr}/reviews?per_page=100`, runner),
-      '-q', ` .[] | select((.body // "") | contains(${JSON.stringify(MARKER_PREFIX)}))
-        | {state, author_association, login: .user.login, commit_id, body} | @json`
+      '-q', ` .[] | select((.body // "") | contains(${JSON.stringify(MARKER_PREFIX)})
+          or startswith(${JSON.stringify(DISMISS_PREFIX)}))
+        | {id, state, author_association, author_type: .user.type, login: .user.login, commit_id, body} | @json`
     ], { cwd: repoRoot, timeout: 60_000 });
     if (result.status !== 0) throw new Error('GitHub review listing failed');
     const pending = new Map();
@@ -61,8 +64,16 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
     for (const line of String(result.stdout || '').split('\n').filter(Boolean)) {
       const review = JSON.parse(line);
       if (review.state !== 'COMMENTED' || !TRUSTED_REVIEWERS.has(review.author_association)) continue;
-      const marker = review.body?.split('\n', 3)[1];
-      if (!marker?.startsWith(MARKER_PREFIX)) continue;
+      const [first, marker] = review.body?.split(/\r?\n/, 2) ?? [];
+      let dismissedId;
+      if (first?.startsWith(DISMISS_PREFIX)) {
+        const dismissal = DISMISS_ARGS.exec(first.slice(DISMISS_PREFIX.length));
+        if (!dismissal || review.author_type !== 'User') continue;
+        const [, issuance, id, head, base, reason] = dismissal;
+        if (!plainText(reason) || String(pending.get(id)?.reviewId) !== issuance ||
+            head !== review.commit_id || head !== scope.head || base !== scope.base) continue;
+        dismissedId = id;
+      } else if (!marker?.startsWith(MARKER_PREFIX)) continue;
       if (!review.login) continue;
       if (!permissions.has(review.login)) {
         const lookup = runner(GH_BIN, [
@@ -76,6 +87,11 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         permissions.set(review.login, permission);
       }
       if (!['admin', 'write'].includes(permissions.get(review.login))) continue;
+      if (dismissedId) {
+        pending.delete(dismissedId);
+        scope.dismissed?.add(dismissedId);
+        continue;
+      }
       const packed = marker.slice(MARKER_PREFIX.length);
       const match = /^([a-zA-Z0-9_-]{1,32768}) -->$/.exec(packed);
       if (!match) throw new Error('Invalid required improvement marker');
@@ -87,7 +103,9 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         }
       }
       for (const record of improvementRecords(event.issued)) {
-        if (!pending.has(record.id)) pending.set(record.id, { ...record, head: review.commit_id });
+        if (pending.has(record.id)) continue;
+        scope.dismissed?.delete(record.id);
+        pending.set(record.id, { ...record, head: review.commit_id, reviewId: review.id });
       }
     }
     return [...pending.values()];
@@ -233,6 +251,7 @@ function reviewFollowUpLines(items, diffPath) {
 if (require.main === module) writeSnapshot(process.argv[2], JSON.parse(fs.readFileSync(0, 'utf8')));
 
 module.exports = {
-  openImpactHistory, improvementItems, improvementMarker, readPublishedImprovements, MAX_IMPROVEMENTS_PER_REVIEW,
+  openImpactHistory, improvementItems, improvementMarker, readPublishedImprovements,
+  DISMISS_PREFIX, MAX_IMPROVEMENTS_PER_REVIEW,
   normalizeImpactFollowUp, reviewFollowUpLines
 };

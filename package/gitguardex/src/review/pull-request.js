@@ -1172,6 +1172,7 @@ function runPrReview(options, deps = {}) {
   let refs;
   const scope = {
     head: prHeadSha,
+    dismissed: new Set(),
     get base() {
       refs ??= fetchPrRevision(pr, repoRoot, runner) || {};
       return refs.head === prHeadSha ? refs.base : undefined;
@@ -1281,7 +1282,7 @@ function runPrReview(options, deps = {}) {
   const addressed = new Set(followUp.filter(({ status }) => status === 'addressed').map(({ id }) => id));
   const priorIds = new Set(priorImprovements.map(({ id }) => id));
   const issuedImprovements = improvementItems(truncated ? [] : value?.improvements, revision)
-    .filter(({ id }) => !priorIds.has(id));
+    .filter(({ id }) => !priorIds.has(id) && !scope.dismissed.has(id));
   if (value) value.improvements = issuedImprovements.map(({ label }) => label);
   const pendingImprovements = [
     ...priorImprovements.filter(({ id }) => !addressed.has(id)),

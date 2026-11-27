@@ -11,7 +11,7 @@ const { run } = require('../core/runtime');
 const { TOOL_NAME } = require('../context');
 const pr = require('../pull-request/index');
 const prReview = require('../review/pull-request');
-const { readPublishedImprovements } = require('../pull-request/value-history');
+const { readPublishedImprovements, DISMISS_PREFIX } = require('../pull-request/value-history');
 const reviewFix = require('../review/fix');
 const { reviewReceipt } = require('./review-receipt');
 const { mapWorktreePathsByBranch } = require('../git');
@@ -363,7 +363,7 @@ function runReviewGate(
   const requireChecks = !options.allowNoChecks;
   // Fix rounds are opt-in and bounded: an unfixable finding must fall through to
   // the block rather than spin the provider forever.
-  const maxFixRounds = options.gateAutofix ? Math.max(1, options.gateAutofixRounds || 1) : 0;
+  const maxFixRounds = options.gateAutofix ? Math.max(1, options.gateAutofixRounds || 3) : 0;
   // Fixes are edits to the checked-out branch, so they run in the worktree that
   // holds it — repoRoot may be the primary checkout sitting on a protected base.
   const fixCwd = worktreePath || resolveWorktreeForBranch(repoRoot, branch);
@@ -633,11 +633,18 @@ function runReviewGate(
           : `  - ${String(f.severity).toUpperCase()} ${f.path}:${f.line} ${f.message}`
       )
       .join('\n');
+    const dismissalCommands = pendingImprovements
+      .filter(({ reviewId }) => Number.isSafeInteger(reviewId) && reviewId > 0)
+      .map(({ id, reviewId }) => `  ${DISMISS_PREFIX}${reviewId} ${id} ${pushedHeadSha} ${reviewedBaseSha} <reason>`);
     throw new Error(
       `review gate: ${verdict.blocking.length} blocking finding(s). Refusing to merge.\n${detail}\n` +
         (maxFixRounds > 0
-          ? 'Auto-fix did not clear them. Fix manually or rerun with --skip-review-gate.'
-          : 'Fix the findings, rerun with --gate-autofix to let the agent repair them, or bypass with --skip-review-gate.')
+          ? 'Auto-fix did not clear them. Fix the remaining findings and rerun the gate.'
+          : 'Fix the findings or rerun with --gate-autofix to let the agent repair them.') +
+        (dismissalCommands.length
+          ? '\nFor a false-positive required improvement, post its command with a reason as the first line of a GitHub Comment review (write access required):\n' +
+            dismissalCommands.join('\n')
+          : '')
     );
   }
 

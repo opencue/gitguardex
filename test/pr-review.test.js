@@ -297,6 +297,7 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
       if (rejectInline && posting.comments.length) return { status: 1 };
       postedBody = posting.body;
       if (!failPost) published.push({
+        id: published.length + 1,
         state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head, body: postedBody
       });
       return { status: failPost ? 1 : 0 };
@@ -401,6 +402,12 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
   head = '1'.repeat(40);
   diff = initialDiff;
   assert.equal(fromOtherClone().pendingImprovements.length, 2);
+  published.push({
+    state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
+    body: `/gx-dismiss-improvement 1 ${first.pendingImprovements[0].id} ${head} ${base} This fixture already exists.`
+  });
+  payload = { findings: [], value: firstValue };
+  assert.deepEqual(fromOtherClone().pendingImprovements.map(({ label }) => label), [next]);
 });
 
 test('published improvements survive overlapping reviews and ignore untrusted resolutions', () => {
@@ -435,6 +442,43 @@ test('published improvements survive overlapping reviews and ignore untrusted re
   assert.deepEqual(read().map(({ revision }) => revision), [renewed.revision]);
   reviews.push(entry('<!-- gitguardex:required-improvements-v1 invalid -->'));
   assert.throws(read, /Cannot verify published required PR improvement history/);
+});
+
+test('only a submitted, scoped write-authorized dismissal clears its exact issuance', () => {
+  const [item] = improvementItems(['Keep the warning'], 'a'.repeat(64));
+  const head = 'c'.repeat(40);
+  const base = 'd'.repeat(40);
+  const issued = (id) => ({
+    id, state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head,
+    body: `${prReview.MARKER}\n${improvementMarker([item], [])}`
+  });
+  const command = `/gx-dismiss-improvement 1 ${item.id} ${head} ${base}`;
+  const dismissal = {
+    state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
+    body: `${command} The warning is already retained.`
+  };
+  const reviews = [issued(1)];
+  const read = (scope = { head, base }) => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+    if (args[1].endsWith('/permission')) {
+      return { status: 0, stdout: args[1].includes('/writer/') ? 'write' : 'read' };
+    }
+    return { status: 0, stdout: reviews.map((entry) => JSON.stringify(entry)).join('\n') };
+  }, scope);
+  for (const invalid of [
+    { login: 'reader' }, { state: 'PENDING' }, { author_type: 'Bot' },
+    { commit_id: 'e'.repeat(40) }, { body: command }, { body: dismissal.body.replace(' 1 ', ' 2 ') }
+  ]) {
+    reviews.push({ ...dismissal, ...invalid });
+    assert.equal(read().length, 1);
+    reviews.pop();
+  }
+  reviews.push(dismissal);
+  assert.deepEqual(read(), []);
+  assert.equal(read({ head: 'f'.repeat(40), base }).length, 1);
+  assert.equal(read({ head, base: 'f'.repeat(40) }).length, 1);
+  reviews.push(issued(3), dismissal);
+  assert.equal(read().length, 1, 'a dismissal cannot clear a later issuance with the same label');
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {
