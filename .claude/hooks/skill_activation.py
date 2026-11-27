@@ -6,6 +6,9 @@ import re
 import sys
 from pathlib import Path
 
+# gx-hook-state-lock-v1: never write import caches outside the lock.
+sys.dont_write_bytecode = True
+
 try:
     from _analytics import emit_event
 except ImportError:

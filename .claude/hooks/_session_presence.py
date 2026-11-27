@@ -28,10 +28,17 @@ result rather than raising, so a hook importing this never blocks a session.
 
 import json
 import os
+import stat
 import subprocess
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 DEFAULT_WINDOW_SEC = 900
 # Runtime / bookkeeping churn that is not the agent's actual work.
@@ -54,13 +61,14 @@ def window_sec() -> int:
         return DEFAULT_WINDOW_SEC
 
 
-def _git(cwd: str, args: list[str]) -> "str | None":
+def _git(cwd: str, args: list[str], *, env=None) -> "str | None":
     if not cwd:
         return None
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,
             timeout=5,
@@ -70,6 +78,46 @@ def _git(cwd: str, args: list[str]) -> "str | None":
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+# gx-hook-state-lock-v1
+@contextmanager
+def locked_hook_state():
+    """Serialize hook writes with GX removing this particular checkout."""
+    fd = None
+    allowed = False
+    try:
+        if fcntl is not None:
+            # The payload's cwd can name a different worktree. Lock the one
+            # the hook's state directory is actually in.
+            root = state_dir().parents[2]
+            git_entry = root / ".git"
+            before = git_entry.lstat()
+            env = dict(os.environ)
+            for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+                env.pop(key, None)
+            common = _git(
+                str(root), ["rev-parse", "--path-format=absolute", "--git-common-dir"], env=env
+            )
+            if common and os.path.isabs(common):
+                lock = Path(common).resolve() / "agent-file-locks.lock"
+                fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                info = os.fstat(fd)
+                if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    # A writer delayed by cleanup must not recreate the
+                    # directory after Git removes or replaces the checkout.
+                    after = git_entry.lstat()
+                    allowed = (
+                        before.st_dev, before.st_ino, before.st_ctime_ns
+                    ) == (after.st_dev, after.st_ino, after.st_ctime_ns)
+    except (OSError, RuntimeError):
+        pass
+    try:
+        yield allowed
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def worktree_top(cwd: str) -> "str | None":
@@ -159,40 +207,44 @@ def record_edit(
         if not rel or not is_trackable(rel):
             return None
 
-        record = _read_record(session_id)
-        files = record.get("files")
-        if not isinstance(files, list):
-            files = []
-        if rel in files:
-            files.remove(rel)  # move-to-most-recent
-        files.append(rel)
-        if len(files) > MAX_FILES:
-            files = files[-MAX_FILES:]
+        branch = current_branch(cwd)
+        with locked_hook_state() as writable:
+            if not writable:
+                return None
+            record = _read_record(session_id)
+            files = record.get("files")
+            if not isinstance(files, list):
+                files = []
+            if rel in files:
+                files.remove(rel)  # move-to-most-recent
+            files.append(rel)
+            if len(files) > MAX_FILES:
+                files = files[-MAX_FILES:]
 
-        record.update(
-            {
-                "session_id": session_id,
-                "repo_root": top,
-                "worktree": top,
-                "branch": current_branch(cwd),
-                "current_file": rel,
-                "files": files,
-                "last_seen": _iso(now),
-                "tool": tool,
-                # Legacy fields kept so anything reading the old dirty record
-                # shape still works.
-                "modified": True,
-                "last_modified": _iso(now),
-            }
-        )
+            record.update(
+                {
+                    "session_id": session_id,
+                    "repo_root": top,
+                    "worktree": top,
+                    "branch": branch,
+                    "current_file": rel,
+                    "files": files,
+                    "last_seen": _iso(now),
+                    "tool": tool,
+                    # Legacy fields kept so anything reading the old dirty record
+                    # shape still works.
+                    "modified": True,
+                    "last_modified": _iso(now),
+                }
+            )
 
-        sdir = state_dir()
-        sdir.mkdir(parents=True, exist_ok=True)
-        path = _record_path(session_id)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, indent=2))
-        os.replace(tmp, path)  # atomic
-        return record
+            sdir = state_dir()
+            sdir.mkdir(parents=True, exist_ok=True)
+            path = _record_path(session_id)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(record, indent=2))
+            os.replace(tmp, path)  # atomic
+            return record
     except Exception:  # noqa: BLE001 - fail-open: a tracker error must never block an edit
         return None
 

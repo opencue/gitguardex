@@ -11,6 +11,14 @@ import json
 import sys
 from pathlib import Path
 
+# gx-hook-state-lock-v1: never write import caches outside the lock.
+sys.dont_write_bytecode = True
+
+try:
+    from _session_presence import locked_hook_state
+except ImportError:
+    locked_hook_state = None
+
 try:
     from _analytics import emit_event
 except ImportError:
@@ -21,26 +29,30 @@ except ImportError:
 
 def record_skill_used(session_id: str, skill_name: str) -> None:
     """Record skill invocation in session state for skill_guard lookups."""
-    hook_dir = Path(__file__).resolve().parent
-    state_dir = hook_dir / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    state_path = state_dir / f"skills-used-{session_id}.json"
+    if locked_hook_state is None:
+        return
+    with locked_hook_state() as writable:
+        if not writable:
+            return
+        state_dir = Path(__file__).resolve().parent / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_path = state_dir / f"skills-used-{session_id}.json"
 
-    state: dict[str, list[str]] = {"suggestedSkills": [], "usedSkills": []}
-    if state_path.exists():
-        try:
-            with open(state_path) as f:
-                state = json.load(f)
-        except (json.JSONDecodeError, PermissionError):
-            pass
+        state: dict[str, list[str]] = {"suggestedSkills": [], "usedSkills": []}
+        if state_path.exists():
+            try:
+                with open(state_path) as f:
+                    state = json.load(f)
+            except (json.JSONDecodeError, PermissionError):
+                pass
 
-    used = state.get("usedSkills", [])
-    if skill_name not in used:
-        used.append(skill_name)
-    state["usedSkills"] = used
+        used = state.get("usedSkills", [])
+        if skill_name not in used:
+            used.append(skill_name)
+        state["usedSkills"] = used
 
-    with open(state_path, "w") as f:
-        json.dump(state, f, indent=2)
+        with open(state_path, "w") as f:
+            json.dump(state, f, indent=2)
 
 
 def main() -> None:

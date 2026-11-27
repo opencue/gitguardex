@@ -33,8 +33,13 @@ async function holdProcess(t, command, args, cwd) {
   };
 }
 
-function fixture(t) {
+function fixture(t, hooks = {}) {
   const repoRoot = initRepo();
+  for (const [name, source] of Object.entries(hooks)) {
+    const file = path.join(repoRoot, '.claude/hooks', name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, source);
+  }
   seedCommit(repoRoot);
   const worktreePath = path.join(repoRoot, '.omx/agent-worktrees/finished');
   const result = runCmd('git', ['worktree', 'add', '--detach', worktreePath, 'HEAD'], repoRoot);
@@ -50,6 +55,57 @@ function seedHookState(plan) {
   fs.writeFileSync(log, 'hook log');
   return log;
 }
+
+test('finished cleanup preserves legacy hooks even before they have written state', (t) => {
+  const plan = fixture(t, { 'skill_tracker.py': '# old writer, no shared lock\n' });
+  const queued = persistFinishedCleanup(plan);
+  retryPendingFinishedCleanup(plan.repoRoot);
+  assert.ok(fs.existsSync(plan.worktreePath));
+  assert.ok(fs.existsSync(queued.jobFile));
+});
+
+test('a delayed hook writes only if its original checkout survives the cleanup lock', { timeout: 15000 }, async (t) => {
+  const hooks = Object.fromEntries(['_session_presence.py', 'skill_tracker.py'].map((name) => [
+    name, fs.readFileSync(path.join(__dirname, '../.claude/hooks', name))
+  ]));
+  for (const remove of [false, true]) {
+    const plan = fixture(t, hooks);
+    const lock = path.join(plan.repoRoot, '.git/agent-file-locks.lock');
+    const release = await holdProcess(t, 'python3', [
+      '-c',
+      "import fcntl,sys; f=open(sys.argv[1],'a+'); fcntl.flock(f,fcntl.LOCK_EX); print('ready',flush=True); sys.stdin.read()",
+      lock
+    ], plan.repoRoot);
+    const hook = path.join(plan.worktreePath, '.claude/hooks/skill_tracker.py');
+    const writer = cp.spawn('python3', ['-B', '-c', [
+      'import fcntl, runpy, sys',
+      'flock = fcntl.flock',
+      'def observe(fd, op):',
+      '    print("waiting", flush=True)',
+      '    return flock(fd, op)',
+      'fcntl.flock = observe',
+      'sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])',
+      'runpy.run_path(sys.argv[1], run_name="__main__")'
+    ].join('\n'), hook], { cwd: plan.repoRoot, env: withGuardexHome() });
+    t.after(() => writer.kill());
+    const exited = once(writer, 'exit');
+    writer.stdin.end(JSON.stringify({ session_id: 'test', tool_input: { name: 'my-skill' } }));
+    assert.equal(await Promise.race([
+      once(writer.stdout, 'data').then(([chunk]) => chunk.toString().trim()),
+      exited.then(() => 'exited')
+    ]), 'waiting');
+    const log = path.join(plan.worktreePath, '.claude/hooks/state/skills-used-test.json');
+    assert.ok(!fs.existsSync(log));
+    if (remove) {
+      const result = runCmd('git', ['worktree', 'remove', plan.worktreePath], plan.repoRoot);
+      assert.equal(result.status, 0, result.stderr);
+    }
+    await release();
+    assert.deepEqual(await exited, [0, null]);
+    if (remove) assert.ok(!fs.existsSync(plan.worktreePath));
+    else assert.deepEqual(JSON.parse(fs.readFileSync(log, 'utf8')).usedSkills, ['my-skill']);
+  }
+});
 
 test('finished cleanup archives only known ignored hook artifacts before removing the worktree', (t) => {
   const plan = fixture(t);

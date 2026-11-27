@@ -108,6 +108,39 @@ const HOOK_RUNTIME_ENTRIES = new Set([
   '!! .codex/hooks/__pycache__/'
 ]);
 
+const HOOK_RUNTIME_SOURCES = [
+  '_session_presence.py',
+  'agent_branch_advisor.py',
+  'post_edit_tracker.py',
+  'skill_activation.py',
+  'skill_guard.py',
+  'skill_tracker.py'
+];
+
+function hasUncoordinatedHookRuntime(worktreePath) {
+  const directories = ['.claude/hooks', '.codex/hooks'].map((name) => path.join(worktreePath, name));
+  for (const directory of directories) {
+    for (const name of HOOK_RUNTIME_SOURCES) {
+      const hook = path.join(directory, name);
+      try {
+        fs.lstatSync(hook);
+      } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        throw error;
+      }
+      const source = fs.realpathSync(hook);
+      if (
+        !directories.includes(path.dirname(source)) ||
+        !fs.statSync(source).isFile() ||
+        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v1')
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function hasUnsafeWorktreeChanges(output, archivableEntries = []) {
   return String(output || '')
     .split('\0')
@@ -509,7 +542,7 @@ function cleanupFinishedDetachedWorktree(input) {
     console.error(`[${TOOL_NAME}] pre-remove preserved finished worktree: ${error.message}`);
     return false;
   }
-  // Same OS mutex as claims writers and prune; never release anyone's claims.
+  // Same OS mutex as hook-state writers, claims and prune; never release anyone's claims.
   const result = run(
     'python3',
     [
@@ -567,6 +600,8 @@ function removeFinishedWorktreeLocked(plan) {
     };
     if (probeWorktreeOwnership(plan.worktreePath).active) return false;
     if (!worktreeIdentityMatches(plan)) return false;
+    // A legacy hook may create its first ignored file after the final status check.
+    if (hasUncoordinatedHookRuntime(plan.worktreePath)) return false;
     // Matching mode reports the ignored hook directory, not its untracked parent.
     const readStatus = () => run(
       'git',
