@@ -127,11 +127,11 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
                 id: 20,
                 body: `<!-- gitguardex:pr-review -->\n${improvementMarker([item], [], targetBase)}`
               },
-              {
+              ...(dismissalBase ? [{
                 ...review,
                 id: 21,
                 body: `/gx-dismiss-improvement 20 ${item.id} ${head} ${dismissalBase} Covered by integration tests.`
-              },
+              }] : []),
               {
                 ...review,
                 id: 22,
@@ -158,6 +158,7 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
   const currentCard = render('write', 'd'.repeat(40), head, base, currentDismissal);
   assert.match(currentCard, currentReason);
   assert.doesNotMatch(currentCard, reason);
+  assert.match(render('write', 'd'.repeat(40), head, base, currentDismissal, null), currentReason);
   const cardAfterTwoBaseChanges = render(
     'write', 'd'.repeat(40), head, base, currentDismissal, 'e'.repeat(40)
   );
