@@ -3,13 +3,14 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const activePosixProbes = new Set();
+const probeExitSignals = ['SIGHUP', 'SIGTERM'];
 
-function stopProbesOnHangup() {
+function stopProbesOnSignal(signal) {
   for (const stop of activePosixProbes) stop();
-  if (process.listenerCount('SIGHUP') === 1) {
-    // Restore the default signal behavior when no caller handles SIGHUP.
-    process.off('SIGHUP', stopProbesOnHangup);
-    process.kill(process.pid, 'SIGHUP');
+  if (process.listenerCount(signal) === 1) {
+    // Restore the default signal behavior when no caller handles it.
+    process.off(signal, stopProbesOnSignal);
+    process.kill(process.pid, signal);
   }
 }
 
@@ -117,7 +118,9 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   let stop;
   let timer;
   const stdout = await new Promise((resolve) => {
-    if (detached && !activePosixProbes.size) process.prependListener('SIGHUP', stopProbesOnHangup);
+    if (detached && !activePosixProbes.size) {
+      for (const signal of probeExitSignals) process.prependListener(signal, stopProbesOnSignal);
+    }
     const child = (deps.spawn || spawn)(command, commandArgs, {
       detached,
       env,
@@ -164,7 +167,9 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
     clearTimeout(timer);
     if (detached) {
       activePosixProbes.delete(stop);
-      if (!activePosixProbes.size) process.off('SIGHUP', stopProbesOnHangup);
+      if (!activePosixProbes.size) {
+        for (const signal of probeExitSignals) process.off(signal, stopProbesOnSignal);
+      }
     }
     deps.signal?.removeEventListener('abort', stop);
   });
