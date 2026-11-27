@@ -323,38 +323,22 @@ function archiveHookRuntime(plan, entries) {
   const root = privateCleanupDirectory(plan.repoRoot, 'gitguardex-finished-hook-archives', true);
   const archive = fs.mkdtempSync(path.join(root, path.basename(plan.worktreePath).slice(0, 60) + '-'));
   console.log(`[${TOOL_NAME}] Saving finished worktree hook artifacts to ${archive}`);
-  const moved = [];
   try {
     for (const relative of paths) {
       const source = path.join(plan.worktreePath, relative);
       const destination = path.join(archive, relative);
       fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-      fs.renameSync(source, destination);
-      moved.push({ source, destination });
+      fs.cpSync(source, destination, {
+        recursive: true,
+        preserveTimestamps: true,
+        verbatimSymlinks: true
+      });
     }
   } catch (error) {
-    const rollbackErrors = [];
-    for (const { source, destination } of moved.reverse()) {
-      try {
-        const parent = path.dirname(source);
-        if (fs.realpathSync(parent) !== parent || fs.lstatSync(source, { throwIfNoEntry: false })) {
-          throw new Error(`Unsafe hook state restore path: ${source}`);
-        }
-        fs.renameSync(destination, source);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError.message);
-      }
-    }
-    if (rollbackErrors.length) {
-      console.error(
-        `[${TOOL_NAME}] Warning: hook archive rollback incomplete; remaining artifacts at ${archive}: ${rollbackErrors.join('; ')}`
-      );
-    } else {
-      fs.rmSync(archive, { recursive: true, force: true });
-    }
+    fs.rmSync(archive, { recursive: true, force: true });
     throw error;
   }
-  return true;
+  return archive;
 }
 
 function readPrivateJob(file) {
@@ -593,11 +577,21 @@ function removeFinishedWorktreeLocked(plan) {
     }
     if (!worktreeIdentityMatches(plan)) return false;
     if (hookEntries.length) {
-      if (!archiveHookRuntime(plan, hookEntries)) return false;
-      const remaining = readStatus();
-      if (remaining.status !== 0 || hasUnsafeWorktreeChanges(remaining.stdout)) return false;
-      if (!worktreeIdentityMatches(plan) || probeWorktreeOwnership(plan.worktreePath).active)
-        return false;
+      const archive = archiveHookRuntime(plan, hookEntries);
+      if (!archive) return false;
+      // Git removes ignored hook state with the checkout. Keep the originals until then.
+      let readyToRemove = false;
+      try {
+        const remaining = readStatus();
+        readyToRemove =
+          remaining.status === 0 &&
+          !hasUnsafeWorktreeChanges(remaining.stdout, hookEntries) &&
+          worktreeIdentityMatches(plan) &&
+          !probeWorktreeOwnership(plan.worktreePath).active;
+      } finally {
+        if (!readyToRemove) fs.rmSync(archive, { recursive: true, force: true });
+      }
+      if (!readyToRemove) return false;
     }
 
     const remove = run('git', ['-C', plan.repoRoot, 'worktree', 'remove', plan.worktreePath], {
