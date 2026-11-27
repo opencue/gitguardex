@@ -9,6 +9,7 @@ skill_guard.py can check sessionSkillUsed and allow edits.
 
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 # gx-hook-state-lock-v2: never write import caches outside the lock.
@@ -17,7 +18,15 @@ sys.dont_write_bytecode = True
 try:
     from _session_presence import locked_hook_state
 except ImportError:
-    locked_hook_state = None
+
+    def locked_hook_state():
+        # A standalone install may contain only this script. Managed lanes
+        # still require the shared lock helper to coordinate with cleanup.
+        hook = Path(__file__).resolve()
+        return nullcontext(hook.is_file() and not any(
+            parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
+            for parent in hook.parents[3:]
+        ))
 
 try:
     from _analytics import emit_event
@@ -29,8 +38,6 @@ except ImportError:
 
 def record_skill_used(session_id: str, skill_name: str) -> None:
     """Record skill invocation in session state for skill_guard lookups."""
-    if locked_hook_state is None:
-        return
     with locked_hook_state() as writable:
         if not writable:
             return

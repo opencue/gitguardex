@@ -26,6 +26,7 @@ Everything here is best-effort and fail-open: any error returns an empty/default
 result rather than raising, so a hook importing this never blocks a session.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -120,18 +121,31 @@ def locked_hook_state():
                     # blocking hook writers in other worktrees.
                     digest = hashlib.sha256(os.fsencode(root)).hexdigest()
                     lock = Path(common).resolve() / f"gitguardex-hook-state-{digest}.lock"
-                    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-                    info = os.fstat(fd)
-                    if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                        deadline = time.monotonic() + 10
-                        while True:
-                            try:
-                                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                break
-                            except BlockingIOError:
-                                if time.monotonic() >= deadline:
-                                    raise
-                                time.sleep(0.05)
+                    try:
+                        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                    except OSError as error:
+                        if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                            raise
+                        # A read-only Git directory can have no lane lock yet.
+                        # If a lock exists, keep requiring it before writing.
+                        try:
+                            lock.lstat()
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            raise
+                    info = os.fstat(fd) if fd is not None else None
+                    if info is None or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1):
+                        if fd is not None:
+                            deadline = time.monotonic() + 10
+                            while True:
+                                try:
+                                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                    break
+                                except BlockingIOError:
+                                    if time.monotonic() >= deadline:
+                                        raise
+                                    time.sleep(0.05)
                         # A writer delayed by cleanup must not recreate the
                         # directory after Git removes or replaces the checkout.
                         after = git_entry.lstat()
