@@ -311,14 +311,33 @@ function cleanupQueueDirectory(repoRoot, create = false) {
   return privateCleanupDirectory(repoRoot, 'gitguardex-pending-cleanup', create);
 }
 
-function archiveHookRuntime(plan, entries) {
-  const paths = entries.map((entry) => entry.slice(3, -1));
+function hookRuntimeSnapshot(worktreePath, paths) {
+  const snapshot = [];
+  const visit = (file) => {
+    const stat = fs.lstatSync(file, { bigint: true });
+    // ctime catches in-place rewrites even if the writer restores mtime.
+    snapshot.push([file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String));
+    if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(file).sort()) visit(path.join(file, name));
+    }
+  };
+  try {
+    for (const relative of paths) {
+      const source = path.join(worktreePath, relative);
+      if (fs.realpathSync(source) !== source || !fs.lstatSync(source).isDirectory()) return null;
+      visit(source);
+    }
+    return JSON.stringify(snapshot);
+  } catch {
+    return null;
+  }
+}
+
+function archiveHookRuntime(plan, paths) {
   const tracked = run('git', ['-C', plan.worktreePath, 'ls-files', '-z', '--', ...paths]);
   if (tracked.status !== 0 || tracked.stdout) return false;
-  for (const relative of paths) {
-    const source = path.join(plan.worktreePath, relative);
-    if (fs.realpathSync(source) !== source || !fs.lstatSync(source).isDirectory()) return false;
-  }
+  const snapshot = hookRuntimeSnapshot(plan.worktreePath, paths);
+  if (snapshot === null) return false;
 
   const root = privateCleanupDirectory(plan.repoRoot, 'gitguardex-finished-hook-archives', true);
   const archive = fs.mkdtempSync(path.join(root, path.basename(plan.worktreePath).slice(0, 60) + '-'));
@@ -338,7 +357,7 @@ function archiveHookRuntime(plan, entries) {
     fs.rmSync(archive, { recursive: true, force: true });
     throw error;
   }
-  return archive;
+  return { archive, snapshot };
 }
 
 function readPrivateJob(file) {
@@ -541,8 +560,11 @@ function removeFinishedWorktreeLocked(plan) {
     }
     if (!found) return false;
     if (hasWorktreeClaims(plan.worktreePath)) return false;
-    const commit = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
-    if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
+    const hasExpectedDetachedHead = () => {
+      const commit = run('git', ['-C', plan.worktreePath, 'rev-parse', 'HEAD']);
+      if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
+      return run('git', ['-C', plan.worktreePath, 'symbolic-ref', '-q', 'HEAD']).status === 1;
+    };
     if (probeWorktreeOwnership(plan.worktreePath).active) return false;
     if (!worktreeIdentityMatches(plan)) return false;
     // Matching mode reports the ignored hook directory, not its untracked parent.
@@ -564,21 +586,16 @@ function removeFinishedWorktreeLocked(plan) {
     const hookEntries = (status.stdout || '')
       .split('\0')
       .filter((entry) => HOOK_RUNTIME_ENTRIES.has(entry));
-    const head = run('git', ['-C', plan.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: plan.repoRoot
-    });
-    if (
-      status.status !== 0 ||
-      hasUnsafeWorktreeChanges(status.stdout, hookEntries) ||
-      head.status !== 0 ||
-      String(head.stdout || '').trim() !== 'HEAD'
-    ) {
+    if (status.status !== 0 || hasUnsafeWorktreeChanges(status.stdout, hookEntries)) {
       return false;
     }
-    if (!worktreeIdentityMatches(plan)) return false;
+    if (!worktreeIdentityMatches(plan) || !hasExpectedDetachedHead()) return false;
+    const hookPaths = hookEntries.map((entry) => entry.slice(3, -1));
+    let archived;
     if (hookEntries.length) {
-      const archive = archiveHookRuntime(plan, hookEntries);
-      if (!archive) return false;
+      archived = archiveHookRuntime(plan, hookPaths);
+      if (!archived) return false;
+      const { archive, snapshot } = archived;
       // Git removes ignored hook state with the checkout. Keep the originals until then.
       let readyToRemove = false;
       try {
@@ -587,7 +604,9 @@ function removeFinishedWorktreeLocked(plan) {
           remaining.status === 0 &&
           !hasUnsafeWorktreeChanges(remaining.stdout, hookEntries) &&
           worktreeIdentityMatches(plan) &&
-          !probeWorktreeOwnership(plan.worktreePath).active;
+          !probeWorktreeOwnership(plan.worktreePath).active &&
+          hookRuntimeSnapshot(plan.worktreePath, hookPaths) === snapshot &&
+          hasExpectedDetachedHead();
       } finally {
         if (!readyToRemove) fs.rmSync(archive, { recursive: true, force: true });
       }
@@ -598,6 +617,14 @@ function removeFinishedWorktreeLocked(plan) {
       cwd: plan.repoRoot
     });
     if (remove.status !== 0) {
+      // A failed removal can still delete files. Keep the archive if any originals changed.
+      if (
+        archived &&
+        worktreeIdentityMatches(plan) &&
+        hookRuntimeSnapshot(plan.worktreePath, hookPaths) === archived.snapshot
+      ) {
+        fs.rmSync(archived.archive, { recursive: true, force: true });
+      }
       console.error(
         `[${TOOL_NAME}] Warning: finished detached worktree cleanup failed: ${plan.worktreePath}`
       );
