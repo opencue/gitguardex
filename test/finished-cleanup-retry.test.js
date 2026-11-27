@@ -184,6 +184,14 @@ test('the advisor records state without a helper only outside a managed worktree
   }
 });
 
+test('an ordinary clone in the agent worktree directory still records hook state under a lock', (t) => {
+  const plan = fixture(t, skillTrackerHooks());
+  const clone = path.join(path.dirname(plan.worktreePath), 'ordinary-clone');
+  const result = runCmd('git', ['clone', plan.repoRoot, clone], plan.repoRoot);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(runSkillTracker(clone), ['my-skill']);
+});
+
 test('finished cleanup captures individually ignored files despite a dangling hook entry point', (t) => {
   const plan = fixture(t, {}, true);
   const cache = '.codex/hooks/__pycache__/hook[1].pyc';
@@ -196,6 +204,38 @@ test('finished cleanup captures individually ignored files despite a dangling ho
   const archiveRoot = path.join(plan.repoRoot, '.git/gitguardex-finished-hook-archives');
   const [archive] = fs.readdirSync(archiveRoot);
   assert.equal(fs.readFileSync(path.join(archiveRoot, archive, cache), 'utf8'), 'bytecode');
+});
+
+test('finished cleanup preserves artifacts with names that cannot be decoded losslessly', (t) => {
+  const plan = fixture(t);
+  const dir = path.join(plan.worktreePath, '.codex/hooks/__pycache__');
+  fs.appendFileSync(path.join(plan.repoRoot, '.git/info/exclude'), '*.pyc\n');
+  fs.mkdirSync(dir, { recursive: true });
+  const rawName = Buffer.concat([Buffer.from(dir + '/'), Buffer.from([0xff]), Buffer.from('.pyc')]);
+  fs.writeFileSync(rawName, 'preserve these bytes');
+  fs.writeFileSync(path.join(dir, '\uFFFD.pyc'), 'different artifact');
+  const queued = persistFinishedCleanup(plan);
+  retryPendingFinishedCleanup(plan.repoRoot);
+  assert.ok(fs.existsSync(queued.jobFile));
+  assert.equal(fs.readFileSync(rawName, 'utf8'), 'preserve these bytes');
+});
+
+test('finished cleanup permits a tracked non-directory hooks path', (t) => {
+  const root = initRepo();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, '.claude'));
+  fs.writeFileSync(path.join(root, '.claude/hooks'), 'not a directory');
+  seedCommit(root);
+  const worktreePath = path.join(root, '.omx/agent-worktrees/finished');
+  const result = runCmd('git', ['worktree', 'add', '--detach', worktreePath, 'HEAD'], root);
+  assert.equal(result.status, 0, result.stderr);
+  persistFinishedCleanup({
+    repoRoot: root,
+    worktreePath,
+    worktreeIdentity: captureWorktreeIdentity(worktreePath)
+  });
+  retryPendingFinishedCleanup(root);
+  assert.ok(!fs.existsSync(worktreePath));
 });
 
 test('a delayed hook writes only if its checkout survives an available cleanup lock', { timeout: 15000 }, async (t) => {

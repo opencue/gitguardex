@@ -107,6 +107,7 @@ const HOOK_RUNTIME_PREFIXES = [
   '!! .codex/hooks/state/',
   '!! .codex/hooks/__pycache__/'
 ];
+const losslessUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 const HOOK_RUNTIME_SOURCES = [
   '_session_presence.py',
@@ -127,7 +128,7 @@ function hasUncoordinatedHookRuntime(worktreePath) {
         // An absent or dangling hook cannot write into the checkout.
         source = fs.realpathSync(hook);
       } catch (error) {
-        if (error.code === 'ENOENT') continue;
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
         throw error;
       }
       if (
@@ -354,7 +355,10 @@ function hookRuntimeSnapshot(worktreePath, paths) {
     // ctime catches in-place rewrites even if the writer restores mtime.
     snapshot.push([file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String));
     if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(file).sort()) visit(path.join(file, name));
+      const names = fs.readdirSync(file, { encoding: 'buffer' });
+      for (const name of names.map((bytes) => losslessUtf8.decode(bytes)).sort()) {
+        visit(path.join(file, name));
+      }
     }
   };
   try {
@@ -630,20 +634,28 @@ function removeFinishedWorktreeLocked(plan) {
     // A legacy hook may create its first ignored file after the final status check.
     if (hasUncoordinatedHookRuntime(plan.worktreePath)) return false;
     // Matching mode reports ignored hook directories or individually ignored descendants.
-    const readStatus = () => run(
-      'git',
-      [
-        '-C',
-        plan.worktreePath,
-        'status',
-        '--porcelain=v1',
-        '-z',
-        '--ignored=matching',
-        '--untracked-files=normal',
-        '--ignore-submodules=none'
-      ],
-      { cwd: plan.repoRoot }
-    );
+    const readStatus = () => {
+      // Porcelain -z contains raw filenames. Fail closed on invalid UTF-8 rather
+      // than silently replacing distinct filenames with the same string.
+      const result = cp.spawnSync(
+        'git',
+        [
+          '-C',
+          plan.worktreePath,
+          'status',
+          '--porcelain=v1',
+          '-z',
+          '--ignored=matching',
+          '--untracked-files=normal',
+          '--ignore-submodules=none'
+        ],
+        { cwd: plan.repoRoot, encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 }
+      );
+      return {
+        status: result.status,
+        stdout: result.status === 0 ? losslessUtf8.decode(result.stdout) : ''
+      };
+    };
     const status = readStatus();
     const hookEntries = (status.stdout || '')
       .split('\0')

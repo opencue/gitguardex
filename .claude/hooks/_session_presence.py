@@ -85,7 +85,10 @@ def _managed_git_entry() -> "Path | None":
         parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
         for parent in root.parents
     ):
-        return root / ".git"
+        git_entry = root / ".git"
+        # An ordinary clone in this directory has its own Git directory; still
+        # lock before writing, without mistaking it for a removable linked tree.
+        return git_entry / "HEAD" if stat.S_ISDIR(git_entry.lstat().st_mode) else git_entry
     return None
 
 
@@ -111,7 +114,11 @@ def _try_exclusive_flock(fd: int) -> None:
 @contextmanager
 def locked_hook_state(expected: "os.stat_result | None" = None):
     """Serialize hook writes with GX removing this particular checkout."""
-    git_entry = _managed_git_entry()
+    try:
+        git_entry = _managed_git_entry()
+    except OSError:
+        yield False
+        return
     if git_entry is None:
         # Finished cleanup does not remove standalone or ordinary checkouts.
         yield expected is None and Path(__file__).is_file()
