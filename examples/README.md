@@ -28,9 +28,10 @@ gx pr evidence 123 --post  # create or update your evidence comment on PR #123
 ```
 
 The card shows the exact head and base commits, a link to current-head review
-evidence, CI and GitHub merge status, a next step, and GitHub-recorded review
-dismissals with their reasons when available. An ordinary posted review is not
-proof of a clean gate for both commits; only a verified local gate receipt
+evidence, CI and GitHub merge status, a next step, and recorded dismissal
+reasons from GitHub reviews or revision-scoped GitGuardex improvements.
+An ordinary posted review is not proof of a clean gate for both commits;
+only a verified local gate receipt
 provides that evidence. The card is a snapshot, not an approval, and never
 overrides GitHub requirements. Refresh it after a push, review, or CI rerun.
 Use the same GitHub account to update the existing card.

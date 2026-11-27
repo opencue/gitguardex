@@ -448,17 +448,18 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   const [item] = improvementItems(['Keep the warning'], 'a'.repeat(64));
   const head = 'c'.repeat(40);
   const base = 'd'.repeat(40);
-  const issued = (id) => ({
-    id, state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head,
-    body: `${prReview.MARKER}\n${improvementMarker([item], [])}`
+  const issued = (id, issuedBase = base, issuedHead = head) => ({
+    id, state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: issuedHead,
+    body: `${prReview.MARKER}\n${improvementMarker([item], [], issuedBase)}`
   });
   const command = `/gx-dismiss-improvement 1 ${item.id} ${head} ${base}`;
   const dismissal = {
-    state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
+    id: 2, state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
     body: `${command} The warning is already retained.`
   };
   const reviews = [issued(1)];
-  const read = (scope = { head, base }) => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+  const dismissalEvidence = new Map();
+  const read = (scope = { head, base, dismissalEvidence }) => readPublishedImprovements('/repo', 42, (_cmd, args) => {
     if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
     if (args[1].endsWith('/permission')) {
       return { status: 0, stdout: args[1].includes('/writer/') ? 'write' : 'read' };
@@ -471,14 +472,86 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   ]) {
     reviews.push({ ...dismissal, ...invalid });
     assert.equal(read().length, 1);
+    assert.equal(dismissalEvidence.size, 0);
     reviews.pop();
   }
   reviews.push(dismissal);
   assert.deepEqual(read(), []);
+  assert.deepEqual(dismissalEvidence.get(item.id), {
+    label: 'Keep the warning', reviewId: 2, reason: 'The warning is already retained.'
+  });
   assert.equal(read({ head: 'f'.repeat(40), base }).length, 1);
   assert.equal(read({ head, base: 'f'.repeat(40) }).length, 1);
   reviews.push(issued(3), dismissal);
   assert.equal(read().length, 1, 'a dismissal cannot clear a later issuance with the same label');
+  assert.equal(dismissalEvidence.size, 0);
+
+  const oldBase = 'f'.repeat(40);
+  const reissueDismissal = { ...dismissal, id: 4, body: dismissal.body.replace(' 1 ', ' 3 ') };
+  reviews.splice(0, reviews.length, issued(1, oldBase), {
+    ...dismissal, body: dismissal.body.replace(base, oldBase)
+  }, issued(3), reissueDismissal);
+  assert.deepEqual(read({ head, base }), []);
+  assert.deepEqual(read(), []);
+  assert.equal(dismissalEvidence.get(item.id)?.reviewId, 4);
+
+  const intermediateBase = '9'.repeat(40);
+  reviews.splice(2, 2, issued(3, intermediateBase), issued(4), {
+    ...reissueDismissal, id: 5, body: reissueDismissal.body.replace(' 3 ', ' 4 ')
+  });
+  assert.deepEqual(read({ head, base }), [], 'an intermediate-base reissue cannot shadow the current one');
+  assert.deepEqual(read(), []);
+  assert.deepEqual(dismissalEvidence.get(item.id), {
+    label: 'Keep the warning', reviewId: 5, reason: 'The warning is already retained.'
+  });
+  assert.equal(read({ head, base: intermediateBase })[0]?.reviewId, 3);
+
+  for (const issuance of [issued(1, oldBase), issued(1, base, 'e'.repeat(40))]) {
+    dismissalEvidence.clear();
+    reviews.splice(0, reviews.length, issuance, dismissal);
+    assert.deepEqual(read(), []);
+    assert.equal(dismissalEvidence.size, 0);
+  }
+
+  reviews.splice(0, reviews.length, issued(1), dismissal, issued(3, oldBase), issued(4));
+  assert.equal(read({ head, base })[0]?.reviewId, 4);
+  assert.equal(read()[0]?.reviewId, 4);
+  assert.equal(dismissalEvidence.size, 0);
+  reviews.push({
+    ...reissueDismissal, id: 5, body: reissueDismissal.body.replace(' 3 ', ' 4 ')
+  });
+  assert.deepEqual(read(), []);
+  assert.equal(dismissalEvidence.get(item.id)?.reviewId, 5);
+});
+
+test('replaying improvement history clears waiver evidence after write access is revoked', () => {
+  const [item] = improvementItems(['Keep the warning'], 'a'.repeat(64));
+  const head = 'c'.repeat(40);
+  const base = 'd'.repeat(40);
+  const entry = (id, login, commit_id, body) => ({
+    id, login, commit_id, body, state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User'
+  });
+  const issued = `${prReview.MARKER}\n${improvementMarker([item], [], base)}`;
+  const reviews = [
+    entry(1, 'maintainer', 'e'.repeat(40), issued),
+    entry(2, 'contributor', head, issued),
+    entry(3, 'contributor', head, `/gx-dismiss-improvement 2 ${item.id} ${head} ${base} Reviewed.`)
+  ];
+  let contributorPermission = 'write';
+  const dismissalEvidence = new Map();
+  const read = () => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+    if (args[1].endsWith('/permission')) {
+      return { status: 0, stdout: args[1].includes('/contributor/') ? contributorPermission : 'write' };
+    }
+    return { status: 0, stdout: reviews.map((review) => JSON.stringify(review)).join('\n') };
+  }, { head, base, dismissalEvidence });
+
+  assert.deepEqual(read(), []);
+  assert.equal(dismissalEvidence.get(item.id)?.reviewId, 3);
+  contributorPermission = 'read';
+  assert.equal(read()[0]?.reviewId, 1);
+  assert.equal(dismissalEvidence.size, 0);
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {
@@ -977,6 +1050,7 @@ printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","ca
 
   const result = runNodeWithEnv(['pr-review', '--provider', 'codex', '--pr', '12', '--post', '--target', repoDir], repoDir, {
     PATH: `${fakeGh.fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}`,
+    GUARDEX_REVIEW_BUG_HUNTER: '0',
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -1109,8 +1183,12 @@ exit 1
 printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact":"benefit","magnitude":68,"reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)","evidence":{"path":"src/a.js","line":1}}],"improvements":["1) Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$","---"]}}'
 `);
 
-  const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
+  const reviewEnv = {
     PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
+    GUARDEX_REVIEW_BUG_HUNTER: '0',
+  };
+  const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
+    ...reviewEnv,
     GITHUB_TOKEN: '',
     GH_TOKEN: '',
   });
@@ -1130,9 +1208,7 @@ printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact
   assert.match(artifact, /How to improve this PR\*\*\n\n1\. 1&#41; Test the fallback .*&#36;x&#36;\n2\. &#45;&#45;&#45;/);
   assert.doesNotMatch(artifact, /\n### fake heading|@example|<!-- gitguardex:fake -->|\[fake\]\(https:/);
 
-  const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, {
-    PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
-  });
+  const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, reviewEnv);
   assert.equal(second.status, 0, second.stderr || second.stdout);
   const secondPath = second.stdout.match(/Wrote PR review artifact: (.+)/)[1].trim();
   assert.notEqual(secondPath, artifactPath);
@@ -1140,9 +1216,7 @@ printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact
   assert.match(fs.readFileSync(secondPath, 'utf8'), /No findings/);
 
   for (const explicit of ['custom-review.md', path.join(repoDir, 'absolute-review.md')]) {
-    const custom = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir, '--artifact', explicit], repoDir, {
-      PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
-    });
+    const custom = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir, '--artifact', explicit], repoDir, reviewEnv);
     assert.equal(custom.status, 0, custom.stderr || custom.stdout);
     assert.match(fs.readFileSync(path.resolve(repoDir, explicit), 'utf8'), /No findings/);
   }

@@ -4,6 +4,7 @@ const { run } = require('../core/runtime');
 const { reviewReceipt } = require('../finish/review-receipt');
 const { MARKER: REVIEW_MARKER } = require('../review/pull-request');
 const { summarizeStatusCheckRollup } = require('./checks');
+const { DISMISS_PREFIX, readPublishedImprovements } = require('./value-history');
 
 const MARKER = '<!-- gitguardex:merge-evidence -->';
 const REVISION_FIELDS = 'number,url,headRefOid,baseRefOid,baseRefName';
@@ -93,11 +94,12 @@ function evidenceCard(pr, report, receipt, dismissals, observed) {
       ? `[Posted review for this head](${reviewLink(pr, report.id)}) · GitGuardex verdict and reviewed base not independently verified`
       : 'No GitGuardex report found for this head';
   const exceptions = dismissals.length
-    ? dismissals.map(
-        ({ id, reason }) => `- [GitHub dismissed review](${reviewLink(pr, id)}): ${literal(reason)}`
-      )
+    ? dismissals.map(({ id, reason, label }) => {
+        const type = label ? 'GitGuardex dismissed improvement' : 'GitHub dismissed review';
+        return `- [${type}](${reviewLink(pr, id)}): ${label ? `${literal(label)} — ` : ''}${literal(reason)}`;
+      })
     : [
-        '- No dismissed GitHub review observed for this head. GitGuardex gate-only waivers are not inferred.'
+        '- No verified dismissals observed for this revision. Other gate-only waivers are not inferred.'
       ];
 
   return [
@@ -111,7 +113,7 @@ function evidenceCard(pr, report, receipt, dismissals, observed) {
     `- **Review:** ${review}`,
     `- **Next:** ${next}`,
     '',
-    '**Recorded exceptions (GitHub)**',
+    '**Recorded exceptions**',
     ...exceptions,
     '',
     `_Observed ${observed}; this is not approval or merge authorization. Refresh after the PR, reviews, or checks change._`
@@ -149,7 +151,7 @@ function mergeEvidence(repoRoot, number, { post = false, runner = run } = {}) {
     );
   const reviews = page(
     `pulls/${number}/reviews`,
-    `.[] | select(.commit_id == "${pr.headRefOid}") | {id,state,marked: ((.body // "") | startswith("${REVIEW_MARKER}"))}`
+    `.[] | select(.commit_id == "${pr.headRefOid}") | {id,state,marked: ((.body // "") | startswith("${REVIEW_MARKER}")), scoping: ((.body // "") | startswith("${DISMISS_PREFIX}"))}`
   ).filter(({ id }) => Number.isSafeInteger(id) && id > 0);
   const report = reviews.findLast(({ marked, state }) => marked && state === 'COMMENTED');
   const dismissedIds = new Set(
@@ -163,6 +165,17 @@ function mergeEvidence(repoRoot, number, { post = false, runner = run } = {}) {
     );
     for (const id of dismissedIds) {
       dismissals.push({ id, reason: events.findLast((event) => event.id === String(id))?.reason });
+    }
+  }
+  if (reviews.some(({ scoping, state }) => scoping && state === 'COMMENTED')) {
+    const dismissalEvidence = new Map();
+    readPublishedImprovements(repoRoot, number, runner, {
+      head: pr.headRefOid,
+      base: pr.baseRefOid,
+      dismissalEvidence
+    });
+    for (const { reviewId: id, label, reason } of dismissalEvidence.values()) {
+      if (Number.isSafeInteger(id) && id > 0) dismissals.push({ id, label, reason });
     }
   }
   const receipt =

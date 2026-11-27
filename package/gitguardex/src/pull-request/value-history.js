@@ -52,6 +52,7 @@ function improvementRecords(items) {
 // the outstanding set, and a resolution can only clear the issuance it saw.
 function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
   try {
+    scope.dismissalEvidence?.clear();
     const result = runner(GH_BIN, [
       'api', '--paginate', repoApiPath(repoRoot, `pulls/${pr}/reviews?per_page=100`, runner),
       '-q', ` .[] | select((.body // "") | contains(${JSON.stringify(MARKER_PREFIX)})
@@ -60,19 +61,27 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
     ], { cwd: repoRoot, timeout: 60_000 });
     if (result.status !== 0) throw new Error('GitHub review listing failed');
     const pending = new Map();
+    const historicalDismissals = new WeakSet();
+    const currentDismissals = new Set();
     const permissions = new Map();
     for (const line of String(result.stdout || '').split('\n').filter(Boolean)) {
       const review = JSON.parse(line);
       if (review.state !== 'COMMENTED' || !TRUSTED_REVIEWERS.has(review.author_association)) continue;
       const [first, marker] = review.body?.split(/\r?\n/, 2) ?? [];
       let dismissedId;
+      let dismissalReason;
+      let dismissalBase;
       if (first?.startsWith(DISMISS_PREFIX)) {
         const dismissal = DISMISS_ARGS.exec(first.slice(DISMISS_PREFIX.length));
         if (!dismissal || review.author_type !== 'User') continue;
         const [, issuance, id, head, base, reason] = dismissal;
-        if (!plainText(reason) || String(pending.get(id)?.reviewId) !== issuance ||
-            head !== review.commit_id || head !== scope.head || base !== scope.base) continue;
+        const item = pending.get(id);
+        if (!plainText(reason) || String(item?.reviewId) !== issuance ||
+            head !== review.commit_id || head !== scope.head || !scope.base ||
+            (base !== scope.base && (item.head !== head || item.base !== base))) continue;
         dismissedId = id;
+        dismissalReason = plainText(reason);
+        dismissalBase = base;
       } else if (!marker?.startsWith(MARKER_PREFIX)) continue;
       if (!review.login) continue;
       if (!permissions.has(review.login)) {
@@ -88,6 +97,18 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       }
       if (!['admin', 'write'].includes(permissions.get(review.login))) continue;
       if (dismissedId) {
+        const item = pending.get(dismissedId);
+        if (dismissalBase !== scope.base) {
+          // A historical dismissal can explain a reissue on a new base.
+          historicalDismissals.add(item);
+          continue;
+        }
+        if (item.head === scope.head && item.base === scope.base) {
+          currentDismissals.add(dismissedId);
+          scope.dismissalEvidence?.set(dismissedId, {
+            label: item.label, reviewId: review.id, reason: dismissalReason
+          });
+        }
         pending.delete(dismissedId);
         scope.dismissed?.add(dismissedId);
         continue;
@@ -103,9 +124,18 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         }
       }
       for (const record of improvementRecords(event.issued)) {
-        if (pending.has(record.id)) continue;
+        if (scope.dismissalEvidence && review.commit_id === scope.head && event.base === scope.base) {
+          scope.dismissalEvidence.delete(record.id);
+        }
+        const previous = pending.get(record.id);
+        const currentReissue =
+          (currentDismissals.has(record.id) || historicalDismissals.has(previous) ||
+            (previous && (previous.head !== review.commit_id || previous.base !== event.base))) &&
+          review.commit_id === scope.head && event.base === scope.base;
+        if (previous && !currentReissue) continue;
+        if (currentReissue) currentDismissals.delete(record.id);
         scope.dismissed?.delete(record.id);
-        pending.set(record.id, { ...record, head: review.commit_id, reviewId: review.id });
+        pending.set(record.id, { ...record, head: review.commit_id, base: event.base, reviewId: review.id });
       }
     }
     return [...pending.values()];
