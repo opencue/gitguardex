@@ -339,9 +339,39 @@ function resolveCarriedFindings(blockedPaths, repairedPaths, currentFindings) {
  * passes a clean AI review AND green CI AND GitHub reports it mergeable. Returns
  * `{ prNumber }` on pass; the caller then proceeds to the real merge.
  */
-function runReviewGate(
+function runReviewGate(args, deps = {}) {
+  const publish = deps.publishEvidence ||
+    (deps.openPullRequest ? null : require('../pull-request/evidence').mergeEvidence);
+  let target;
+  const refresh = (gatePhase) => {
+    if (!publish || !target?.head) return;
+    try {
+      publish(args.repoRoot, String(target.number), {
+        post: true, expectedHead: target.head, expectedBase: target.base, gatePhase,
+      });
+    } catch {
+      // Comments are advisory. GitHub permissions, outages, or a moved PR
+      // must not alter the gate outcome or leak API details to the PR.
+      if (!args.options?.agentQuiet) gateLog(`PR #${target.number}: merge status comment not refreshed`);
+    }
+  };
+  try {
+    const result = enforceReviewGate(args, deps, (number, head, base, phase) => {
+      target = { number, head, base };
+      if (phase) refresh(phase);
+    });
+    refresh('checked');
+    return result;
+  } catch (error) {
+    refresh('paused');
+    throw error;
+  }
+}
+
+function enforceReviewGate(
   { repoRoot, worktreePath, branch, baseBranch, options = {}, progress, preflight },
-  deps = {}
+  deps,
+  observePr
 ) {
   // Quiet mode suppresses successful narration, never warnings or blocking errors.
   const logProgress = options.agentQuiet ? () => {} : gateLog;
@@ -381,6 +411,7 @@ function runReviewGate(
   const prNumber = opened.pr.number;
   const initialHeadSha = headSha(fixCwd);
   const reviewedBaseSha = baseSha(fixCwd, baseBranch);
+  observePr(prNumber, initialHeadSha, reviewedBaseSha);
   if (!reviewedBaseSha) {
     throw new Error('review gate: cannot resolve the remote base commit. Refusing to merge.');
   }
@@ -591,6 +622,7 @@ function runReviewGate(
       );
     }
     pushedHeadSha = headSha(fixCwd);
+    observePr(prNumber, pushedHeadSha, reviewedBaseSha);
     const headSync = waitHead(repoRoot, branch, pushedHeadSha, {
       timeoutSeconds: options.gateHeadTimeoutSeconds,
       pollSeconds: options.gateHeadPollSeconds
@@ -757,6 +789,7 @@ function runReviewGate(
   }
 
   reportProgress(progress, 'start', 'ci', 'waiting for required GitHub checks');
+  observePr(prNumber, pushedHeadSha, reviewedBaseSha, 'checking');
   const revision = { reviewedHeadSha: pushedHeadSha, reviewedBaseSha };
   // Promotion has already started remote CI. Run the pinned local preflight
   // now instead of serializing it after the CI wait. Neither pass replaces the

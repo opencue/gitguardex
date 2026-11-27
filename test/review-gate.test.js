@@ -434,6 +434,31 @@ test('runReviewGate pins CI even when no autofix was needed', () => {
   assert.equal(expected, 'initial-sha');
 });
 
+test('gated finish refreshes one PR status before CI and at the end without depending on publication', () => {
+  const events = [];
+  const publishEvidence = (cwd, number, options) => {
+    events.push([cwd, number, options.expectedHead, options.expectedBase, options.gatePhase]);
+    throw new Error('comment write failed');
+  };
+  runReviewGate(gateArgs, gateDeps({
+    publishEvidence,
+    waitForGreenCi: () => {
+      events.push('CI');
+      return { status: 'green', pr: { mergeStateStatus: 'CLEAN' } };
+    },
+  }));
+  assert.deepEqual(events.splice(0), [
+    ['/r', '42', 'initial-sha', 'base-sha', 'checking'], 'CI',
+    ['/r', '42', 'initial-sha', 'base-sha', 'checked'],
+  ]);
+
+  assert.throws(() => runReviewGate(gateArgs, gateDeps({
+    publishEvidence,
+    runPrReview: () => { throw new Error('provider unavailable'); },
+  })), /provider unavailable/);
+  assert.deepEqual(events, [['/r', '42', 'initial-sha', 'base-sha', 'paused']]);
+});
+
 test('runReviewGate refuses missing base and source/base drift during review', () => {
   assert.throws(() => runReviewGate(gateArgs, gateDeps({
     readBaseSha: () => '',
