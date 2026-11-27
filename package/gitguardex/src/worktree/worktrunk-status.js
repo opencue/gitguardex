@@ -2,7 +2,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const constrainedLanguageExitCode = 125; // Reserved by worktrunk-job.ps1.
 const activePosixProbes = new Set();
 const probeExitSignals = ['SIGHUP', 'SIGINT', 'SIGTERM'];
 
@@ -71,8 +70,6 @@ function rowStatus(row, base) {
 
 async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   if (deps.signal?.aborted) return null;
-  const detached = process.platform !== 'win32';
-  if (!detached) repoRoot = path.resolve(repoRoot);
   const candidates = new Map(entries.map((entry) => [entry, canonicalPath(entry.path)]));
   const roots = [canonicalPath(repoRoot), ...candidates.values()].filter(Boolean);
   const dirs = (deps.pathEnv ?? process.env.PATH ?? '')
@@ -83,6 +80,7 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   const executable = findWorktrunk(dirs, roots);
   if (!executable) return null;
 
+  const detached = process.platform !== 'win32';
   const args = [
     '-C',
     detached ? repoRoot : '.',
@@ -112,26 +110,72 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
       Buffer.from(script, 'utf16le').toString('base64')
     ];
     env.GUARDEX_WORKTRUNK_EXE = executable;
-    env.GUARDEX_WORKTRUNK_ROOT = repoRoot;
+    env.GUARDEX_WORKTRUNK_ROOT = path.resolve(repoRoot);
     // Every argument is constant here; the target path goes in WorkingDirectory.
     env.GUARDEX_WORKTRUNK_ARGS = args.join(' ');
   }
-  const options = {
-    detached,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    ...(!detached && { cwd: path.dirname(command), windowsHide: true })
-  };
-  const timeout = detached ? 3000 : 8000;
-  const started = performance.now();
-  let stdout = await runProbe(command, commandArgs, options, deps, timeout);
-  if (!detached && stdout === constrainedLanguageExitCode && !deps.signal?.aborted) {
-    const remaining = timeout - (performance.now() - started);
-    if (remaining > 0) {
-      stdout = await runProbe(executable, args, { ...options, cwd: repoRoot }, deps, remaining);
+  const maxBuffer = 1024 * 1024;
+  let stop;
+  let timer;
+  const stdout = await new Promise((resolve) => {
+    if (detached && !activePosixProbes.size) {
+      for (const signal of probeExitSignals) process.prependListener(signal, stopProbesOnSignal);
     }
-  }
-  if (typeof stdout !== 'string' || deps.signal?.aborted) return null;
+    const child = (deps.spawn || spawn)(command, commandArgs, {
+      detached,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(!detached && { cwd: path.dirname(command), windowsHide: true })
+    });
+    let stopped = false;
+    stop = () => {
+      if (stopped) return;
+      stopped = true;
+      if (child.pid) {
+        try {
+          // Git subprocesses inherit Worktrunk's process group.
+          if (detached) process.kill(-child.pid, 'SIGKILL');
+          else child.kill('SIGKILL'); // Closing the launcher closes its Windows Job Object.
+        } catch (error) {
+          if (error.code !== 'ESRCH') child.kill('SIGKILL');
+        }
+      }
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const chunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBuffer) stop();
+      else chunks.push(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > maxBuffer) stop();
+    });
+    child.once('error', () => resolve(null));
+    child.once('close', (code) => {
+      const result = code === 0 && !stopped ? Buffer.concat(chunks).toString('utf8') : null;
+      if (detached) stop();
+      resolve(result);
+    });
+    timer = setTimeout(stop, detached ? 3000 : 8000);
+    if (detached) activePosixProbes.add(stop);
+    deps.signal?.addEventListener('abort', stop, { once: true });
+    if (deps.signal?.aborted) stop();
+  }).finally(() => {
+    clearTimeout(timer);
+    if (detached) {
+      activePosixProbes.delete(stop);
+      if (!activePosixProbes.size) {
+        for (const signal of probeExitSignals) process.off(signal, stopProbesOnSignal);
+      }
+    }
+    deps.signal?.removeEventListener('abort', stop);
+  });
+  if (stdout === null || deps.signal?.aborted) return null;
   let data;
   try {
     data = JSON.parse(stdout);
@@ -168,67 +212,6 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
     if (status.text) statuses.set(entry, status);
   }
   return statuses;
-}
-
-function runProbe(command, args, options, deps, timeout) {
-  const { detached } = options;
-  const maxBuffer = 1024 * 1024;
-  let stop;
-  let timer;
-  return new Promise((resolve) => {
-    if (detached && !activePosixProbes.size) {
-      for (const signal of probeExitSignals) process.prependListener(signal, stopProbesOnSignal);
-    }
-    const child = (deps.spawn || spawn)(command, args, options);
-    let stopped = false;
-    stop = () => {
-      if (stopped) return;
-      stopped = true;
-      if (child.pid) {
-        try {
-          // Git subprocesses inherit Worktrunk's process group.
-          if (detached) process.kill(-child.pid, 'SIGKILL');
-          else child.kill('SIGKILL'); // When contained, closing the launcher closes the Job Object.
-        } catch (error) {
-          if (error.code !== 'ESRCH') child.kill('SIGKILL');
-        }
-      }
-      child.stdout.destroy();
-      child.stderr.destroy();
-    };
-    const chunks = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    child.stdout.on('data', (chunk) => {
-      stdoutBytes += chunk.length;
-      if (stdoutBytes > maxBuffer) stop();
-      else chunks.push(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderrBytes += chunk.length;
-      if (stderrBytes > maxBuffer) stop();
-    });
-    child.once('error', () => resolve(null));
-    child.once('close', (code) => {
-      const result = !stopped && code === 0 ? Buffer.concat(chunks).toString('utf8') : null;
-      const retryDirectly = !stopped && code === constrainedLanguageExitCode;
-      if (detached) stop();
-      resolve(retryDirectly ? constrainedLanguageExitCode : result);
-    });
-    timer = setTimeout(stop, timeout);
-    if (detached) activePosixProbes.add(stop);
-    deps.signal?.addEventListener('abort', stop, { once: true });
-    if (deps.signal?.aborted) stop();
-  }).finally(() => {
-    clearTimeout(timer);
-    if (detached) {
-      activePosixProbes.delete(stop);
-      if (!activePosixProbes.size) {
-        for (const signal of probeExitSignals) process.off(signal, stopProbesOnSignal);
-      }
-    }
-    deps.signal?.removeEventListener('abort', stop);
-  });
 }
 
 module.exports = { loadWorktrunkStatuses };
