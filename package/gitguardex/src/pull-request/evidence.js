@@ -179,13 +179,9 @@ function mergeEvidence(repoRoot, number, { post = false, runner = run } = {}) {
       {},
       runner
     )?.read();
-  const body = evidenceCard(
-    pr,
-    report,
-    receipt?.id === report?.id ? receipt : null,
-    dismissals,
-    observed
-  );
+  // The receipt verifies its own review ID and body on GitHub; the display-only
+  // report fetched earlier may be from a different observation.
+  const body = evidenceCard(pr, report, receipt, dismissals, observed);
   if (!post) return { body };
 
   // A failed lookup is not "no comment"; abort instead of creating a duplicate.

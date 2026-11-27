@@ -1,17 +1,26 @@
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
-const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
+const { execFileSync, spawnSync } = require('node:child_process');
+const { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { delimiter, join } = require('node:path');
 const { test } = require('node:test');
 
 test('the offline demo blocks an overlapping claim, permits disjoint work, and cleans up', () => {
   const temp = mkdtempSync(join(tmpdir(), 'gitguardex-demo-test-'));
   try {
+    const home = join(temp, 'home');
+    mkdirSync(home);
+    const toolchain = join(temp, 'toolchain');
+    mkdirSync(toolchain);
+    // Resolve Python before replacing HOME; developer shims may depend on it.
+    const python = execFileSync('python3', ['-c', 'import sys; print(sys.executable)'], {
+      encoding: 'utf8'
+    }).trim();
+    symlinkSync(python, join(toolchain, 'python3'));
     const demo = join(__dirname, '../examples/agent-collision-demo.js');
     const result = spawnSync(process.execPath, [demo], {
       cwd: temp,
-      env: { PATH: process.env.PATH, TMPDIR: temp },
+      env: { PATH: `${toolchain}${delimiter}${process.env.PATH}`, TMPDIR: temp, HOME: home },
       encoding: 'utf8',
       timeout: 45_000
     });
@@ -20,7 +29,8 @@ test('the offline demo blocks an overlapping claim, permits disjoint work, and c
     assert.match(result.stdout, /Codex: claimed and edited shared\.txt/);
     assert.match(result.stdout, /Claude: blocked before editing shared\.txt/);
     assert.match(result.stdout, /Claude: claimed and edited notes\.txt instead/);
-    assert.deepEqual(readdirSync(temp), []);
+    assert.deepEqual(readdirSync(temp).sort(), ['home', 'toolchain']);
+    assert.deepEqual(readdirSync(home), []);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

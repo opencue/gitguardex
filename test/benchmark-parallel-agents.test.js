@@ -102,3 +102,56 @@ test('a public repository with the sandbox name is rejected before any Git write
   assert.match(result.stderr, /must be a private, non-fork repository/);
   assert.equal(fs.existsSync(path.join(tmp, 'git-called')), false);
 });
+
+test('a failed hosted merge blocks a dependent PR but not independent PRs', (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-benchmark-dependency-test-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(tmp, 'git'),
+    '#!/bin/sh\n[ "$3" = push ] && exit 0\nPATH="$REAL_PATH" exec git "$@"\n',
+    { mode: 0o700 }
+  );
+  fs.writeFileSync(
+    path.join(tmp, 'gh'),
+    `#!/usr/bin/env node
+const { execFileSync } = require('node:child_process');
+const args = process.argv.slice(2);
+const endpoint = args.at(-1);
+const field = (name) => args.find((arg) => arg.startsWith(name + '=')).split('=')[1];
+const json = (value) => console.log(JSON.stringify(value));
+if (endpoint.endsWith('/gitguardex-benchmark')) {
+  json({full_name:'demo/gitguardex-benchmark',private:true,fork:false,permissions:{push:true},allow_merge_commit:true});
+} else if (args.includes('POST')) {
+  const agent = field('head').split('/').at(-1);
+  const sha = execFileSync('git', ['rev-parse', 'agent/benchmark/' + agent], {encoding:'utf8'}).trim();
+  json({number: agent === 'alpha' ? 1 : 2, head: {sha}, base: {ref:field('base')}});
+} else if (endpoint.endsWith('/1/merge')) {
+  console.error('mock: alpha rejected by GitHub');
+  process.exitCode = 1;
+} else if (endpoint.endsWith('/2/merge')) {
+  json({merged:true});
+} else {
+  process.exitCode = 99;
+}
+`,
+    { mode: 0o700 }
+  );
+  const result = run(['--pairs', '1', '--github-sandbox', 'demo/gitguardex-benchmark'], {
+    ...process.env,
+    REAL_PATH: process.env.PATH,
+    PATH: `${tmp}${path.delimiter}${process.env.PATH}`
+  });
+  assert.equal(result.status, 0, result.error || result.stderr);
+  const { trials } = JSON.parse(result.stdout);
+  const [[plain, guarded], disjoint] = trials.map(({ results }) => results);
+  assert.deepEqual(
+    plain.pullRequests.rows.map(({ state }) => state),
+    ['not-merged', 'merged']
+  );
+  assert.deepEqual(
+    guarded.pullRequests.rows.map(({ state }) => state),
+    ['not-merged', 'dependency-not-merged']
+  );
+  assert.equal(guarded.pullRequests.successful, 0);
+  assert.ok(disjoint.every(({ pullRequests }) => pullRequests.successful === 1));
+});

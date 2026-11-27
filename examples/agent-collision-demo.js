@@ -16,6 +16,9 @@ function main() {
       HOME: homedir(),
       PATH: process.env.PATH,
       XDG_CONFIG_HOME: sandbox,
+      GUARDEX_HOME_DIR: join(sandbox, 'guardex-home'),
+      GUARDEX_SKIP_UPDATE_CHECK: '1',
+      GUARDEX_SKIP_OPENSPEC_UPDATE_CHECK: '1',
       GIT_CONFIG_GLOBAL: devNull,
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_ALLOW_PROTOCOL: ''

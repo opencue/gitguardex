@@ -93,7 +93,22 @@ function githubResults(sandbox, repo, git, env, initial, outcomes) {
     ...refs
   );
   const rows = [];
-  for (const job of pushed) {
+  for (const [index, job] of pushed.entries()) {
+    const failedDependency = pushed
+      .slice(0, index)
+      .find(
+        (previous, previousIndex) =>
+          rows[previousIndex].state !== 'merged' &&
+          git(repo, 'merge-base', previous.commit, job.commit) === previous.commit
+      );
+    if (failedDependency) {
+      rows.push({
+        agent: job.agent,
+        state: 'dependency-not-merged',
+        dependency: failedDependency.agent
+      });
+      continue;
+    }
     const created = ghApi(
       `${sandbox}/pulls`,
       [

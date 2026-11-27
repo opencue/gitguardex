@@ -76,7 +76,9 @@ node scripts/benchmark-parallel-agents.js --pairs 1 \
 This **pushes fixture branches, opens PRs and attempts merges**. It never writes
 the default branch; each arm uses fresh `gx-benchmark/<uuid>/` refs and pins
 the PR head commit when merging. PR links and failed attempts appear in the
-raw results. The sandbox must not contain real work, secrets or active
+raw results. If a failed PR contributes commits to a later PR, the later
+attempt is marked `dependency-not-merged` instead of landing the failed edit.
+The sandbox must not contain real work, secrets or active
 automation. PRs and fixture branches remain on GitHub as evidence; delete the
 disposable repository when no longer needed. Don't publish private repo links
 unless you intend to share them.
