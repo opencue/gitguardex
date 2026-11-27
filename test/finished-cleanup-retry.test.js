@@ -21,6 +21,7 @@ const {
 } = require('../src/finish/post-branch-finish-cleanup');
 const { cp, runNode, withGuardexHome } = require('./helpers/install-test-helpers');
 const { once } = require('node:events');
+const { createHash } = require('node:crypto');
 
 async function holdProcess(t, command, args, cwd) {
   const child = cp.spawn(command, args, { cwd, env: withGuardexHome() });
@@ -70,25 +71,45 @@ function skillTrackerHooks() {
   ]));
 }
 
-test('the first hook write in a primary checkout can create the shared lock', (t) => {
-  const { repoRoot } = fixture(t, skillTrackerHooks());
-  assert.ok(!fs.existsSync(path.join(repoRoot, '.git/agent-file-locks.lock')));
+function runSkillTracker(repoRoot) {
   const result = cp.spawnSync('python3', ['.claude/hooks/skill_tracker.py'], {
     cwd: repoRoot,
     encoding: 'utf8',
     env: withGuardexHome(),
-    input: JSON.stringify({ session_id: 'test', tool_input: { name: 'my-skill' } })
+    input: JSON.stringify({ session_id: 'test', tool_input: { name: 'my-skill' } }),
+    timeout: 3000
   });
   assert.equal(result.status, 0, result.stderr);
   const log = path.join(repoRoot, '.claude/hooks/state/skills-used-test.json');
-  assert.deepEqual(JSON.parse(fs.readFileSync(log, 'utf8')).usedSkills, ['my-skill']);
+  return fs.existsSync(log) ? JSON.parse(fs.readFileSync(log, 'utf8')).usedSkills : null;
+}
+
+function laneHookMutex(plan) {
+  const digest = createHash('sha256').update(plan.worktreePath).digest('hex');
+  return path.join(plan.repoRoot, '.git', `gitguardex-hook-state-${digest}.lock`);
+}
+
+test('skill tracking works in standalone hooks, but not an incomplete managed checkout', (t) => {
+  const hooks = skillTrackerHooks();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-standalone-hooks-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const hooksDir = path.join(dir, '.claude/hooks');
+  fs.mkdirSync(hooksDir, { recursive: true });
+  for (const [name, source] of Object.entries(hooks)) {
+    fs.writeFileSync(path.join(hooksDir, name), source);
+  }
+  assert.deepEqual(runSkillTracker(dir), ['my-skill']);
+
+  const plan = fixture(t, hooks);
+  fs.unlinkSync(path.join(plan.worktreePath, '.git'));
+  assert.equal(runSkillTracker(plan.worktreePath), null);
 });
 
 test('a delayed hook writes only if its checkout survives an available cleanup lock', { timeout: 15000 }, async (t) => {
   const hooks = skillTrackerHooks();
   for (const outcome of ['retained', 'removed', 'busy']) {
     const plan = fixture(t, hooks);
-    const lock = path.join(plan.repoRoot, '.git/agent-file-locks.lock');
+    const lock = laneHookMutex(plan);
     const release = await holdProcess(t, 'python3', [
       '-c',
       "import fcntl,sys; f=open(sys.argv[1],'a+'); fcntl.flock(f,fcntl.LOCK_EX); print('ready',flush=True); sys.stdin.read()",
@@ -103,8 +124,6 @@ test('a delayed hook writes only if its checkout survives an available cleanup l
       'flock = fcntl.flock',
       'def observe(fd, op):',
       '    print("waiting", flush=True)',
-      '    if sys.argv[2] == "busy" and op & fcntl.LOCK_NB:',
-      '        raise BlockingIOError',
       '    return flock(fd, op)',
       'fcntl.flock = observe',
       'sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])',
@@ -123,9 +142,15 @@ test('a delayed hook writes only if its checkout survives an available cleanup l
       const result = runCmd('git', ['worktree', 'remove', plan.worktreePath], plan.repoRoot);
       assert.equal(result.status, 0, result.stderr);
     }
+    if (outcome === 'busy') {
+      // The primary checkout can record its first event while this lane is locked.
+      assert.deepEqual(runSkillTracker(plan.repoRoot), ['my-skill']);
+      assert.deepEqual(await exited, [0, null]);
+    }
     await release();
     assert.deepEqual(await exited, [0, null]);
     if (outcome === 'removed') assert.ok(!fs.existsSync(plan.worktreePath));
+    else if (outcome === 'busy') assert.ok(!fs.existsSync(log));
     else assert.deepEqual(JSON.parse(fs.readFileSync(log, 'utf8')).usedSkills, ['my-skill']);
   }
 });
@@ -347,8 +372,8 @@ test('blocked jobs rotate so the seventeenth pending job is not starved', (t) =>
   assert.equal(fs.existsSync(last.worktreePath), false);
 });
 
-test('live processes and held shared claims mutex prevent removal until released', async (t) => {
-  for (const mode of ['cwd', 'mutex']) {
+test('live processes and held claims or hook mutexes prevent removal until released', async (t) => {
+  for (const mode of ['cwd', 'claims', 'hooks']) {
     const plan = fixture(t);
     const log = seedHookState(plan);
     const queued = persistFinishedCleanup(plan);
@@ -369,7 +394,7 @@ test('live processes and held shared claims mutex prevent removal until released
             [
               '-c',
               "import fcntl,sys; f=open(sys.argv[1],'a+'); fcntl.flock(f,fcntl.LOCK_EX); print('ready',flush=True); sys.stdin.read()",
-              path.join(plan.repoRoot, '.git/agent-file-locks.lock')
+              mode === 'hooks' ? laneHookMutex(plan) : path.join(plan.repoRoot, '.git/agent-file-locks.lock')
             ],
             plan.repoRoot
           );

@@ -11,7 +11,7 @@ import time
 from fnmatch import fnmatch
 from pathlib import Path
 
-# gx-hook-state-lock-v1: never write import caches outside the lock.
+# gx-hook-state-lock-v2: never write import caches outside the lock.
 sys.dont_write_bytecode = True
 
 try:

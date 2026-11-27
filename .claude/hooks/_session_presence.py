@@ -26,6 +26,7 @@ Everything here is best-effort and fail-open: any error returns an empty/default
 result rather than raising, so a hook importing this never blocks a session.
 """
 
+import hashlib
 import json
 import os
 import stat
@@ -80,7 +81,7 @@ def _git(cwd: str, args: list[str], *, env=None) -> "str | None":
     return result.stdout.strip() or None
 
 
-# gx-hook-state-lock-v1
+# gx-hook-state-lock-v2
 @contextmanager
 def locked_hook_state():
     """Serialize hook writes with GX removing this particular checkout."""
@@ -101,8 +102,12 @@ def locked_hook_state():
             try:
                 before = git_entry.lstat()
             except FileNotFoundError:
-                # Standalone installations also track sessions locally.
-                allowed = Path(__file__).is_file()
+                # Standalone hooks also track sessions. In managed lanes Git
+                # may already have removed the .git pointer but not the files.
+                allowed = Path(__file__).is_file() and not any(
+                    parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
+                    for parent in root.parents
+                )
             else:
                 env = dict(os.environ)
                 for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
@@ -111,11 +116,22 @@ def locked_hook_state():
                     str(root), ["rev-parse", "--path-format=absolute", "--git-common-dir"], env=env
                 )
                 if common and os.path.isabs(common):
-                    lock = Path(common).resolve() / "agent-file-locks.lock"
+                    # The lane lock survives checkout removal, without
+                    # blocking hook writers in other worktrees.
+                    digest = hashlib.sha256(os.fsencode(root)).hexdigest()
+                    lock = Path(common).resolve() / f"gitguardex-hook-state-{digest}.lock"
                     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
                     info = os.fstat(fd)
                     if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                        fcntl.flock(fd, fcntl.LOCK_EX)
+                        deadline = time.monotonic() + 10
+                        while True:
+                            try:
+                                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                break
+                            except BlockingIOError:
+                                if time.monotonic() >= deadline:
+                                    raise
+                                time.sleep(0.05)
                         # A writer delayed by cleanup must not recreate the
                         # directory after Git removes or replaces the checkout.
                         after = git_entry.lstat()

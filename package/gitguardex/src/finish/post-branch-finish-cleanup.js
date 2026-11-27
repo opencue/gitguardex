@@ -132,7 +132,7 @@ function hasUncoordinatedHookRuntime(worktreePath) {
       if (
         !directories.includes(path.dirname(source)) ||
         !fs.statSync(source).isFile() ||
-        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v1')
+        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v2')
       ) {
         return true;
       }
@@ -543,13 +543,18 @@ function cleanupFinishedDetachedWorktree(input) {
     console.error(`[${TOOL_NAME}] pre-remove preserved finished worktree: ${error.message}`);
     return false;
   }
-  // Same OS mutex as hook-state writers, claims and prune; never release anyone's claims.
+  // Serialize with this lane's hook writers and separately with claims/prune.
+  const commonDir = commonGitDirectory(plan.repoRoot);
+  const lockRunner = path.join(__dirname, 'with-claims-lock.py');
+  const laneDigest = crypto.createHash('sha256').update(plan.worktreePath).digest('hex');
   const result = run(
     'python3',
     [
-      path.join(__dirname, 'with-claims-lock.py'),
+      lockRunner,
       '--try-lock',
-      path.join(commonGitDirectory(plan.repoRoot), 'agent-file-locks.lock'),
+      path.join(commonDir, `gitguardex-hook-state-${laneDigest}.lock`),
+      '--and-lock',
+      path.join(commonDir, 'agent-file-locks.lock'),
       process.execPath,
       __filename,
       '--remove-locked',

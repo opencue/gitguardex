@@ -19,7 +19,7 @@ Fail-open: any error → exit 0, never blocks the edit.
 import json
 import sys
 
-# gx-hook-state-lock-v1: never write import caches outside the lock.
+# gx-hook-state-lock-v2: never write import caches outside the lock.
 sys.dont_write_bytecode = True
 
 try:
