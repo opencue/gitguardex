@@ -103,6 +103,8 @@ test('a delayed hook writes only if its checkout survives an available cleanup l
       'flock = fcntl.flock',
       'def observe(fd, op):',
       '    print("waiting", flush=True)',
+      '    if sys.argv[2] == "busy" and op & fcntl.LOCK_NB:',
+      '        raise BlockingIOError',
       '    return flock(fd, op)',
       'fcntl.flock = observe',
       'sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])',
@@ -121,11 +123,9 @@ test('a delayed hook writes only if its checkout survives an available cleanup l
       const result = runCmd('git', ['worktree', 'remove', plan.worktreePath], plan.repoRoot);
       assert.equal(result.status, 0, result.stderr);
     }
-    if (outcome === 'busy') assert.deepEqual(await exited, [0, null]);
     await release();
     assert.deepEqual(await exited, [0, null]);
     if (outcome === 'removed') assert.ok(!fs.existsSync(plan.worktreePath));
-    else if (outcome === 'busy') assert.ok(!fs.existsSync(log));
     else assert.deepEqual(JSON.parse(fs.readFileSync(log, 'utf8')).usedSkills, ['my-skill']);
   }
 });

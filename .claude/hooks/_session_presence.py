@@ -98,36 +98,33 @@ def locked_hook_state():
             # the hook's state directory is actually in.
             root = state_dir().parents[2]
             git_entry = root / ".git"
-            before = git_entry.lstat()
-            env = dict(os.environ)
-            for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
-                env.pop(key, None)
-            common = _git(
-                str(root), ["rev-parse", "--path-format=absolute", "--git-common-dir"], env=env
-            )
-            if common and os.path.isabs(common):
-                lock = Path(common).resolve() / "agent-file-locks.lock"
-                fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-                info = os.fstat(fd)
-                if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                    deadline = time.monotonic() + 10
-                    while True:
-                        try:
-                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                            break
-                        except BlockingIOError:
-                            if time.monotonic() >= deadline:
-                                raise
-                            time.sleep(0.05)
-                    # A writer delayed by cleanup must not recreate the
-                    # directory after Git removes or replaces the checkout.
-                    after = git_entry.lstat()
-                    allowed = (
-                        (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
-                        # Creating the lock updates the primary .git directory
-                        # itself. Only pin ctime for the linked .git pointer.
-                        and (stat.S_ISDIR(before.st_mode) or before.st_ctime_ns == after.st_ctime_ns)
-                    )
+            try:
+                before = git_entry.lstat()
+            except FileNotFoundError:
+                # Standalone installations also track sessions locally.
+                allowed = Path(__file__).is_file()
+            else:
+                env = dict(os.environ)
+                for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+                    env.pop(key, None)
+                common = _git(
+                    str(root), ["rev-parse", "--path-format=absolute", "--git-common-dir"], env=env
+                )
+                if common and os.path.isabs(common):
+                    lock = Path(common).resolve() / "agent-file-locks.lock"
+                    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                    info = os.fstat(fd)
+                    if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                        fcntl.flock(fd, fcntl.LOCK_EX)
+                        # A writer delayed by cleanup must not recreate the
+                        # directory after Git removes or replaces the checkout.
+                        after = git_entry.lstat()
+                        allowed = (
+                            (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+                            # Creating the lock updates the primary .git directory
+                            # itself. Only pin ctime for the linked .git pointer.
+                            and (stat.S_ISDIR(before.st_mode) or before.st_ctime_ns == after.st_ctime_ns)
+                        )
     except (OSError, RuntimeError):
         pass
     try:
