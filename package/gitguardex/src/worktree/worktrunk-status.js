@@ -3,7 +3,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const activePosixProbes = new Set();
-const probeExitSignals = ['SIGHUP', 'SIGTERM'];
+const probeExitSignals = ['SIGHUP', 'SIGINT', 'SIGTERM'];
 
 function stopProbesOnSignal(signal) {
   for (const stop of activePosixProbes) stop();

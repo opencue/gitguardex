@@ -306,3 +306,47 @@ test('the Worktrunk deadline returns null and kills the probe descendant', { tim
   // A surviving descendant would keep the pipe open and prevent the close event.
   assert.deepEqual(await closed, [null, 'SIGKILL']);
 });
+
+test('terminating the picker process group stops detached Worktrunk descendants', { timeout: 12000 }, async (t) => {
+  if (process.platform === 'win32') return t.skip('requires POSIX process groups');
+  const { repo, bin, executable } = fixture(t);
+  fs.writeFileSync(executable(bin, 'wt'), '#!/bin/sh\n(printf "%s\\n" "$$" >&3; exec /bin/sleep 30) &\nwait\n');
+  const modulePath = require.resolve('../package/gitguardex/src/worktree/worktrunk-status');
+  const driverScript = `
+    const { spawn } = require('node:child_process');
+    require(process.argv[1]).loadWorktrunkStatuses(process.argv[2], [], {
+      pathEnv: process.argv[3],
+      spawn: (file, args, options) => spawn(file, args, { ...options, stdio: [...options.stdio, 3] })
+    });
+  `;
+  for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM']) {
+    await t.test(signal, async (t) => {
+      const driver = spawn(process.execPath, ['-e', driverScript, modulePath, repo, bin], {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'inherit', 'pipe']
+      });
+      let probeGroup;
+      t.after(() => {
+        driver.kill('SIGKILL');
+        if (!probeGroup) return;
+        try {
+          process.kill(-probeGroup, 'SIGKILL');
+        } catch (error) {
+          if (error.code !== 'ESRCH') throw error;
+        }
+      });
+      // The sleeping descendant retains fd 3 independently of the driver.
+      const output = driver.stdio[3];
+      const exit = once(driver, 'exit');
+      const [pid] = await once(output, 'data', { signal: AbortSignal.timeout(4000) });
+      probeGroup = Number(String(pid).trim());
+      assert.ok(Number.isSafeInteger(probeGroup) && probeGroup > 1);
+      const end = once(output, 'end', { signal: AbortSignal.timeout(2000) });
+      process.kill(-driver.pid, signal);
+      const [[code, exitSignal]] = await Promise.all([exit, end]);
+      probeGroup = null;
+      assert.equal(code, null);
+      assert.equal(exitSignal, signal);
+    });
+  }
+});
