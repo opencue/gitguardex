@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -33,19 +34,16 @@ function row(entry, changes = {}) {
   };
 }
 
-function result(items, base = 'main') {
-  return {
-    status: 0,
-    stdout: JSON.stringify({
-      schema: 2,
-      collected: { ci: false, summary: false },
-      repo: { default_branch: base },
-      items
-    })
-  };
+function output(items, base = 'main') {
+  return JSON.stringify({
+    schema: 2,
+    collected: { ci: false, summary: false },
+    repo: { default_branch: base },
+    items
+  });
 }
 
-test('uses schema 2 local facts only for unambiguous current GX entries', (t) => {
+test('uses schema 2 local facts only for unambiguous current GX entries', async (t) => {
   const { root, repo, bin, executable, entry } = fixture(t);
   const wt = executable(bin, 'wt');
   const lane = entry('lane with spaces', 'agent/test');
@@ -57,12 +55,13 @@ test('uses schema 2 local facts only for unambiguous current GX entries', (t) =>
   const foreign = entry('foreign', 'agent/foreign');
   const alias = path.join(root, 'alias');
   fs.symlinkSync(lane.path, alias, 'junction');
-  const hits = loadWorktrunkStatuses(
+  let stdinClosed = false;
+  const hits = await loadWorktrunkStatuses(
     repo,
     [lane, detached, stale, wrongBranch, duplicate, unknown],
     {
       pathEnv: bin,
-      spawn(file, args, options) {
+      execFile(file, args, options, done) {
         assert.equal(file, wt);
         assert.deepEqual(args, [
           '-C',
@@ -74,104 +73,133 @@ test('uses schema 2 local facts only for unambiguous current GX entries', (t) =>
           'list',
           '--format=json'
         ]);
-        assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
         assert.equal(options.timeout, 3000);
         assert.equal(options.maxBuffer, 1024 * 1024);
-        return result([
-          {
-            ...row({ ...lane, path: alias }, { untracked: true }),
-            default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
-          },
-          row(detached, { staged: true }),
-          row({ ...stale, head: 'old' }, { staged: true }),
-          row({ ...wrongBranch, branch: 'agent/replacement' }, { staged: true }),
-          row(duplicate, { staged: true }),
-          row(duplicate, { deleted: true }),
-          row(unknown, { modified: null, untracked: 'true' }),
-          row(foreign, { staged: true }),
-          null
-        ]);
+        assert.equal(options.killSignal, 'SIGKILL');
+        done(
+          null,
+          output([
+            {
+              ...row({ ...lane, path: alias }, { untracked: true }),
+              default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
+            },
+            row(detached, { staged: true }),
+            row({ ...stale, head: 'old' }, { staged: true }),
+            row({ ...wrongBranch, branch: 'agent/replacement' }, { staged: true }),
+            row(duplicate, { staged: true }),
+            row(duplicate, { deleted: true }),
+            row(unknown, { modified: null, untracked: 'true' }),
+            row(foreign, { staged: true }),
+            null
+          ])
+        );
+        return {
+          stdin: {
+            destroy: () => {
+              stdinClosed = true;
+            }
+          }
+        };
       }
     }
   );
+  assert.equal(stdinClosed, true);
   assert.deepEqual(
     [...hits],
     [
-      [lane, 'dirty · main: +2/-1 · possible merge conflict with main'],
-      [detached, 'dirty']
+      [
+        lane,
+        {
+          dirty: true,
+          conflict: true,
+          text: 'dirty · main: +2/-1 · possible merge conflict with main'
+        }
+      ],
+      [detached, { dirty: true, conflict: false, text: 'dirty' }]
     ]
   );
 });
 
-test('skips checkout and relative PATH entries, including symlinks back into a checkout', (t) => {
+test('skips checkout and relative PATH entries, including symlinks back into a checkout', async (t) => {
   const { repo, bin, executable, entry } = fixture(t);
   const lane = entry('lane', 'agent/test');
   const unsafe = executable(lane.path, 'wt');
   fs.symlinkSync(unsafe, path.join(bin, path.basename(unsafe)));
   const safe = executable(bin, 'git-wt');
   const pathEnv = ['', '.', lane.path, bin, repo].join(path.delimiter);
-  const statuses = loadWorktrunkStatuses(repo, [lane], {
+  const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv,
-    spawn(file, _args, options) {
+    execFile(file, _args, options, done) {
       assert.equal(file, safe);
       assert.equal(options.env.PATH, fs.realpathSync(bin));
-      return result([]);
+      done(null, output([]));
+      return {};
     }
   });
   assert.equal(statuses.size, 0);
 });
 
-test('degrades to native status on missing binary, invalid protocol, or failed probe', (t) => {
+test('degrades to native status on missing binary, invalid protocol, or failed probe', async (t) => {
   const { repo, bin, executable, entry } = fixture(t);
   const lane = entry('lane', 'agent/test');
   assert.equal(
-    loadWorktrunkStatuses(repo, [lane], {
+    await loadWorktrunkStatuses(repo, [lane], {
       pathEnv: '',
-      spawn: () => assert.fail('should not spawn')
+      execFile: () => assert.fail('should not spawn')
     }),
     null
   );
   const wt = executable(bin, 'wt');
   executable(bin, 'git-wt');
-  for (const failure of [
-    { status: 1, stdout: '', stderr: 'unclean output' },
-    { status: null, error: { code: 'ETIMEDOUT' } },
-    { status: null, error: { code: 'ENOBUFS' } },
-    { status: 0, stdout: 'not JSON' },
-    { status: 0, stdout: '[]' },
-    { status: 0, stdout: '{"schema":2,"items":[],"collected":{"ci":true,"summary":false}}' }
+  for (const [error, stdout] of [
+    [new Error('unclean output'), ''],
+    [{ code: 'ETIMEDOUT' }, ''],
+    [{ code: 'ENOBUFS' }, ''],
+    [null, 'not JSON'],
+    [null, '[]'],
+    [null, '{"schema":2,"items":[],"collected":{"ci":true,"summary":false}}']
   ]) {
     let calls = 0;
     assert.equal(
-      loadWorktrunkStatuses(repo, [lane], {
+      await loadWorktrunkStatuses(repo, [lane], {
         pathEnv: bin,
-        spawn(file) {
+        execFile(file, _args, _options, done) {
           assert.equal(file, wt);
           calls += 1;
-          return failure;
+          done(error, stdout);
+          return {};
         }
       }),
       null
     );
     assert.equal(calls, 1);
   }
-  const statuses = loadWorktrunkStatuses(repo, [lane], {
+  const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv: bin,
-    spawn: () =>
-      result(
-        [
-          {
-            ...row(lane, { modified: true }),
-            default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
-          }
-        ],
-        'main\u202e'
-      )
+    execFile: (_file, _args, _options, done) => {
+      done(
+        null,
+        output(
+          [
+            {
+              ...row(lane, { modified: true }),
+              default_branch: { ahead: 2, behind: 1, merge_conflicts: true }
+            }
+          ],
+          'main\u202e'
+        )
+      );
+      return {};
+    }
   });
-  assert.equal(statuses.get(lane), 'dirty');
+  assert.deepEqual(statuses.get(lane), {
+    dirty: true,
+    conflict: true,
+    text: 'dirty · possible merge conflict'
+  });
 });
 
-test('does not split expanded PATH symlinks into new search directories', (t) => {
+test('does not split expanded PATH symlinks into new search directories', async (t) => {
   const { root, repo, bin, executable, entry } = fixture(t);
   const lane = entry('lane', 'agent/test');
   const delimited = path.join(root, `bin${path.delimiter}with delimiter`);
@@ -181,12 +209,41 @@ test('does not split expanded PATH symlinks into new search directories', (t) =>
   fs.symlinkSync(delimited, alias, 'junction');
   const safe = executable(bin, 'git-wt');
 
-  loadWorktrunkStatuses(repo, [lane], {
+  const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv: [alias, bin].join(path.delimiter),
-    spawn(file, _args, options) {
+    execFile(file, _args, options, done) {
       assert.equal(file, safe);
       assert.equal(options.env.PATH, fs.realpathSync(bin));
-      return result([]);
+      done(null, output([]));
+      return {};
     }
   });
+  assert.equal(statuses.size, 0);
+});
+
+test('abort kills an active Worktrunk child and skips an already-aborted probe', async (t) => {
+  const { repo, bin, executable } = fixture(t);
+  executable(bin, 'wt');
+  const controller = new AbortController();
+  let closed;
+  const pending = loadWorktrunkStatuses(repo, [], {
+    pathEnv: bin,
+    signal: controller.signal,
+    execFile(_file, _args, options, done) {
+      const child = execFile(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], options, done);
+      closed = new Promise((resolve) => child.once('close', () => resolve(child.killed)));
+      return child;
+    }
+  });
+  controller.abort();
+  assert.equal(await pending, null);
+  assert.equal(await closed, true);
+  assert.equal(
+    await loadWorktrunkStatuses(repo, [], {
+      pathEnv: bin,
+      signal: controller.signal,
+      execFile: () => assert.fail('should not spawn')
+    }),
+    null
+  );
 });

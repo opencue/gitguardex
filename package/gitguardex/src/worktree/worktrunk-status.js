@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { execFile } = require('node:child_process');
 
 function canonicalPath(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
@@ -39,24 +39,24 @@ function findWorktrunk(dirs, roots) {
   return null;
 }
 
-function statusText(row, base) {
+function rowStatus(row, base) {
   const parts = [];
   const changes = row.worktree.changes;
-  if (
-    ['staged', 'modified', 'untracked', 'renamed', 'deleted', 'conflicted'].some(
-      (key) => changes?.[key] === true
-    )
-  ) {
-    parts.push('dirty');
-  }
+  const dirty = ['staged', 'modified', 'untracked', 'renamed', 'deleted', 'conflicted'].some(
+    (key) => changes?.[key] === true
+  );
+  if (dirty) parts.push('dirty');
   const { ahead, behind, merge_conflicts: conflicts } = row.default_branch || {};
   const validCount = (value) => Number.isSafeInteger(value) && value >= 0;
   if (base && validCount(ahead) && validCount(behind)) parts.push(`${base}: +${ahead}/-${behind}`);
-  if (base && conflicts === true) parts.push(`possible merge conflict with ${base}`);
-  return parts.join(' · ');
+  const conflict = conflicts === true;
+  if (conflict)
+    parts.push(base ? `possible merge conflict with ${base}` : 'possible merge conflict');
+  return { dirty, conflict, text: parts.join(' · ') };
 }
 
-function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
+async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
+  if (deps.signal?.aborted) return null;
   const candidates = new Map(entries.map((entry) => [entry, canonicalPath(entry.path)]));
   const roots = [canonicalPath(repoRoot), ...candidates.values()].filter(Boolean);
   const dirs = (deps.pathEnv ?? process.env.PATH ?? '')
@@ -67,31 +67,35 @@ function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   const executable = findWorktrunk(dirs, roots);
   if (!executable) return null;
 
-  const result = (deps.spawn || spawnSync)(
-    executable,
-    [
-      '-C',
-      repoRoot,
-      '--config-set',
-      'list.full=false',
-      '--config-set',
-      'list.json-schema=2',
-      'list',
-      '--format=json'
-    ],
-    {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: dirs.join(path.delimiter) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 3000,
-      killSignal: 'SIGKILL',
-      maxBuffer: 1024 * 1024
-    }
-  );
-  if (result.error || result.status !== 0) return null;
+  const stdout = await new Promise((resolve) => {
+    const child = (deps.execFile || execFile)(
+      executable,
+      [
+        '-C',
+        repoRoot,
+        '--config-set',
+        'list.full=false',
+        '--config-set',
+        'list.json-schema=2',
+        'list',
+        '--format=json'
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: dirs.join(path.delimiter) },
+        signal: deps.signal,
+        timeout: 3000,
+        killSignal: 'SIGKILL',
+        maxBuffer: 1024 * 1024
+      },
+      (error, output) => resolve(error ? null : output)
+    );
+    child.stdin?.destroy();
+  });
+  if (stdout === null || deps.signal?.aborted) return null;
   let data;
   try {
-    data = JSON.parse(result.stdout);
+    data = JSON.parse(stdout);
   } catch {
     return null;
   }
@@ -121,8 +125,8 @@ function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
       row.head?.sha !== entry.head
     )
       continue;
-    const text = statusText(row, safeBase);
-    if (text) statuses.set(entry, text);
+    const status = rowStatus(row, safeBase);
+    if (status.text) statuses.set(entry, status);
   }
   return statuses;
 }

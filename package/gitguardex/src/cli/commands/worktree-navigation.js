@@ -16,6 +16,7 @@ async function switchWorktree(args = [], deps = {}) {
         'Usage: gx switch [branch|path|-|pr:N|PR-URL] [--create] [--print|--json] [--target path]\n' +
           '       gx switch --worktrunk [--print|--json] [--target path]\n' +
           'No selector opens a TTY picker. --worktrunk adds local status from an installed wt/git-wt (JSON schema 2); falls back if unavailable.\n' +
+          'Worktrunk status loads in the background. In that picker, /dirty and /conflict filter known statuses; / clears the filter.\n' +
           'Use wt list for a standalone view, gx branch start to create agent worktrees, and gx ship to finish them.\n' +
           'Install shell navigation: eval "$(gx shell-init bash)" (also zsh/fish).'
       );

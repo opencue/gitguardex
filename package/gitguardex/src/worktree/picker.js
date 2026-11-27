@@ -1,4 +1,5 @@
 const readline = require('node:readline/promises');
+const { clearLine, cursorTo } = require('node:readline');
 const { listWorktrees, checkedRun } = require('./navigation');
 const { loadWorktrunkStatuses } = require('./worktrunk-status');
 
@@ -39,15 +40,14 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
     );
   const entries = (deps.listWorktrees || listWorktrees)(repoRoot);
   if (!entries.length) throw new Error('No worktrees available');
-  const statuses = options.worktrunk
-    ? (deps.loadWorktrunkStatuses || loadWorktrunkStatuses)(repoRoot, entries, deps)
-    : null;
-  if (options.worktrunk && !statuses)
-    output.write('Worktrunk status unavailable; using the GitGuardex picker.\n');
+  let statuses;
+  let pendingUpdate = false;
+  let choosing = false;
   let visible = entries;
+  const unavailable = 'Worktrunk status unavailable; using the GitGuardex picker.\n';
   const display = () =>
     visible.forEach((entry, index) => {
-      const status = statuses?.get(entry);
+      const status = statuses?.get(entry)?.text;
       output.write(
         `${index + 1}. ${terminalText(entry.branch || '(detached)')}  ${terminalText(entry.path)}${status ? `  [${terminalText(status)}]` : ''}\n`
       );
@@ -55,19 +55,65 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
   display();
   const rl = deps.question ? null : readline.createInterface({ input, output });
   const question = deps.question || ((prompt) => rl.question(prompt));
+  const controller = options.worktrunk ? new AbortController() : null;
+  const showStatusUpdate = () => {
+    pendingUpdate = false;
+    if (statuses) display();
+    else output.write(unavailable);
+  };
+  if (controller) {
+    output.write('Loading Worktrunk status (/dirty or /conflict to filter).\n');
+    rl?.once('close', () => controller.abort());
+    const settled = (result) => {
+      if (controller.signal.aborted) return;
+      statuses = result;
+      pendingUpdate = true;
+      // Only repaint a blank one-row choice prompt, never input the user is editing.
+      if (!rl || !choosing || rl.line || rl.getCursorPos().rows !== 0) return;
+      cursorTo(output, 0);
+      clearLine(output, 0);
+      showStatusUpdate();
+      rl.prompt(true);
+    };
+    Promise.resolve()
+      .then(() =>
+        (deps.loadWorktrunkStatuses || loadWorktrunkStatuses)(repoRoot, entries, {
+          ...deps,
+          signal: controller.signal
+        })
+      )
+      .then(settled, () => settled(null));
+  }
   try {
     while (true) {
+      if (pendingUpdate) showStatusUpdate();
+      choosing = true;
       const answer = (
         await question('Worktree number (/text filters, p N previews, q cancels): ')
       ).trim();
+      choosing = false;
       if (!answer || /^(?:q|quit|cancel)$/i.test(answer)) return null;
       if (answer.startsWith('/')) {
         const query = answer.slice(1).toLowerCase();
-        visible = entries.filter((entry) =>
-          `${entry.branch} ${entry.path}`.toLowerCase().includes(query)
-        );
+        const statusFilter = options.worktrunk && (query === 'dirty' || query === 'conflict');
+        if (statusFilter && !statuses) {
+          pendingUpdate = false;
+          output.write(
+            statuses === undefined
+              ? 'Worktrunk status is still loading; try again shortly.\n'
+              : unavailable
+          );
+          continue;
+        }
+        visible = statusFilter
+          ? entries.filter((entry) => statuses.get(entry)?.[query] === true)
+          : entries.filter((entry) =>
+              `${entry.branch} ${entry.path}`.toLowerCase().includes(query)
+            );
+        if (statuses) pendingUpdate = false; // The list below includes the latest status.
         display();
-        if (!visible.length) output.write('No matches. Use / to clear the filter.\n');
+        if (!visible.length)
+          output.write(`No ${statusFilter ? 'known ' : ''}matches. Use / to clear the filter.\n`);
         continue;
       }
       const match = answer.match(/^(p\s+)?([1-9]\d*)$/i);
@@ -89,6 +135,7 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
       if (/^(?:q|quit|cancel)$/i.test(confirm)) return null;
     }
   } finally {
+    controller?.abort();
     rl?.close();
   }
 }
