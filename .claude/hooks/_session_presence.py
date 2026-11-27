@@ -79,44 +79,65 @@ def _git(cwd: str, args: list[str]) -> "str | None":
     return result.stdout.strip() or None
 
 
-# gx-hook-state-lock-v4
-@contextmanager
-def locked_hook_state():
-    """Serialize hook writes with GX removing this particular checkout."""
+def _managed_git_entry() -> "Path | None":
     root = state_dir().parents[2]
-    managed = any(
+    if any(
         parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
         for parent in root.parents
-    )
-    if not managed:
+    ):
+        return root / ".git"
+    return None
+
+
+def _git_entry_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return info.st_dev, info.st_ino, info.st_ctime_ns
+
+
+def _try_exclusive_flock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    # Use the same kernel lock on supported POSIX hosts with a minimal Python build.
+    # If native flock is unavailable too, managed hook writes stay disabled.
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.flock(fd, 2 | 4) == -1:  # LOCK_EX | LOCK_NB on Linux/WSL and macOS
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+# gx-hook-state-lock-v4
+@contextmanager
+def locked_hook_state(expected: "os.stat_result | None" = None):
+    """Serialize hook writes with GX removing this particular checkout."""
+    git_entry = _managed_git_entry()
+    if git_entry is None:
         # Finished cleanup does not remove standalone or ordinary checkouts.
-        yield Path(__file__).is_file()
+        yield expected is None and Path(__file__).is_file()
         return
 
     fd = None
     allowed = False
     try:
-        if fcntl is not None:
-            git_entry = root / ".git"
+        info = git_entry.lstat() if expected is None else expected
+        if os.name == "posix" and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            identity = _git_entry_identity(info)
             # Lock this generation's existing .git pointer without writing it.
             fd = os.open(git_entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            info = os.fstat(fd)
-            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                deadline = time.monotonic() + 10
-                while True:
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        break
-                    except BlockingIOError:
-                        if time.monotonic() >= deadline:
-                            raise
-                        time.sleep(0.05)
-                # Check the checkout generation after waiting, before mkdir.
-                after = git_entry.lstat()
-                allowed = (info.st_dev, info.st_ino, info.st_ctime_ns) == (
-                    after.st_dev, after.st_ino, after.st_ctime_ns
-                )
-    except (OSError, RuntimeError):
+            if _git_entry_identity(os.fstat(fd)) != identity:
+                raise RuntimeError("checkout changed before locking")
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    _try_exclusive_flock(fd)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            allowed = _git_entry_identity(git_entry.lstat()) == identity
+    except (OSError, RuntimeError, ImportError, AttributeError):
         pass
     try:
         yield allowed
@@ -207,13 +228,15 @@ def record_edit(
     if not session_id:
         return None
     try:
+        git_entry = _managed_git_entry()
+        expected = git_entry.lstat() if git_entry is not None else None
         top = worktree_top(cwd) or cwd or ""
         rel = _relpath(file_path, top)
         if not rel or not is_trackable(rel):
             return None
 
         branch = current_branch(cwd)
-        with locked_hook_state() as writable:
+        with locked_hook_state(expected) as writable:
             if not writable:
                 return None
             record = _read_record(session_id)

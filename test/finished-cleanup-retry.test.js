@@ -122,6 +122,42 @@ test('managed hook tracking does not need a writable parent or common Git direct
   }
 });
 
+test('presence never writes unlocked or into a replacement checkout', (t) => {
+  const plan = fixture(t, skillTrackerHooks());
+  const result = runCmd(
+    'python3',
+    [
+      '-B',
+      '-c',
+      `import fcntl, os, sys
+from pathlib import Path
+sys.path.insert(0, ".claude/hooks")
+import _session_presence as presence
+presence.fcntl = None
+with presence.locked_hook_state() as writable:
+    assert writable, "native flock should work without the Python fcntl module"
+    with open(".git", "rb") as other:
+        try:
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise AssertionError("checkout admitted an unlocked writer")
+pointer = Path(".git")
+def replace_checkout(_cwd):
+    Path(".git-next").write_bytes(pointer.read_bytes())
+    os.replace(".git-next", pointer)
+    return "old-branch"
+presence.current_branch = replace_checkout
+assert presence.record_edit(session_id="old", cwd=os.getcwd(), file_path="sample.txt") is None
+assert not presence.state_dir().exists()
+`
+    ],
+    plan.worktreePath
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('the advisor records state without a helper only outside a managed worktree', (t) => {
   const hooks = Object.fromEntries(
     ['agent_branch_advisor.py', 'skill_guard.py'].map((name) => [
