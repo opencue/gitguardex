@@ -60,7 +60,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
     ], { cwd: repoRoot, timeout: 60_000 });
     if (result.status !== 0) throw new Error('GitHub review listing failed');
     const pending = new Map();
-    const historicalDismissals = new WeakMap();
+    const historicalDismissals = new WeakSet();
     const permissions = new Map();
     for (const line of String(result.stdout || '').split('\n').filter(Boolean)) {
       const review = JSON.parse(line);
@@ -98,7 +98,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         const item = pending.get(dismissedId);
         if (dismissalBase !== scope.base) {
           // A historical dismissal can explain a reissue on a new base.
-          historicalDismissals.set(item, dismissalBase);
+          historicalDismissals.add(item);
           continue;
         }
         if (item.head === scope.head && item.base === scope.base) {
@@ -125,8 +125,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
           scope.dismissalEvidence.delete(record.id);
         }
         const previous = pending.get(record.id);
-        const dismissedBase = historicalDismissals.get(previous);
-        if (previous && (!dismissedBase || !event.base || event.base === dismissedBase ||
+        if (previous && (!historicalDismissals.has(previous) || event.base !== scope.base ||
           review.commit_id !== scope.head)) continue;
         scope.dismissed?.delete(record.id);
         pending.set(record.id, { ...record, head: review.commit_id, base: event.base, reviewId: review.id });

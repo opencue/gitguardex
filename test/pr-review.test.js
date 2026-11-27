@@ -495,6 +495,17 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   assert.deepEqual(read(), []);
   assert.equal(dismissalEvidence.get(item.id)?.reviewId, 4);
 
+  const intermediateBase = '9'.repeat(40);
+  reviews.splice(2, 2, issued(3, intermediateBase), issued(4), {
+    ...reissueDismissal, id: 5, body: reissueDismissal.body.replace(' 3 ', ' 4 ')
+  });
+  assert.deepEqual(read({ head, base }), [], 'an intermediate-base reissue cannot shadow the current one');
+  assert.deepEqual(read(), []);
+  assert.deepEqual(dismissalEvidence.get(item.id), {
+    label: 'Keep the warning', reviewId: 5, reason: 'The warning is already retained.'
+  });
+  assert.equal(read({ head, base: intermediateBase })[0]?.reviewId, 3);
+
   for (const issuance of [issued(1, oldBase), issued(1, base, 'e'.repeat(40))]) {
     dismissalEvidence.clear();
     reviews.splice(0, reviews.length, issuance, dismissal);
