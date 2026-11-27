@@ -108,7 +108,10 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
     commit_id: head
   };
   const { runner } = fixture({ reviews: [{ id: 21, state: 'COMMENTED', scoping: true }] });
-  const render = (permission, targetBase, reissuedHead = head, reissuedBase = base, reissuedDismissal) =>
+  const render = (
+    permission, targetBase, reissuedHead = head, reissuedBase = base, reissuedDismissal,
+    dismissalBase = targetBase
+  ) =>
     mergeEvidence('/repo', '42', {
       runner: (bin, args) => {
         if (args[0] === 'repo') return { status: 0, stdout: 'opencue/example' };
@@ -127,7 +130,7 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
               {
                 ...review,
                 id: 21,
-                body: `/gx-dismiss-improvement 20 ${item.id} ${head} ${targetBase} Covered by integration tests.`
+                body: `/gx-dismiss-improvement 20 ${item.id} ${head} ${dismissalBase} Covered by integration tests.`
               },
               {
                 ...review,
@@ -155,6 +158,11 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
   const currentCard = render('write', 'd'.repeat(40), head, base, currentDismissal);
   assert.match(currentCard, currentReason);
   assert.doesNotMatch(currentCard, reason);
+  const cardAfterTwoBaseChanges = render(
+    'write', 'd'.repeat(40), head, base, currentDismissal, 'e'.repeat(40)
+  );
+  assert.match(cardAfterTwoBaseChanges, currentReason);
+  assert.doesNotMatch(cardAfterTwoBaseChanges, reason);
   assert.doesNotMatch(
     render('write', 'd'.repeat(40), head, base, currentDismissal.replace(' 22 ', ' 20 ')),
     currentReason

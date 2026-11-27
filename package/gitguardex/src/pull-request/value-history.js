@@ -77,7 +77,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         const item = pending.get(id);
         if (!plainText(reason) || String(item?.reviewId) !== issuance ||
             head !== review.commit_id || head !== scope.head || !scope.base ||
-            (base !== scope.base && (item.head !== head || item.base !== base))) continue;
+            (base !== scope.base && item.head !== head)) continue;
         dismissedId = id;
         dismissalReason = plainText(reason);
         dismissalBase = base;
