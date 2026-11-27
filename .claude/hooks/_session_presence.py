@@ -26,7 +26,6 @@ Everything here is best-effort and fail-open: any error returns an empty/default
 result rather than raising, so a hook importing this never blocks a session.
 """
 
-import errno
 import hashlib
 import json
 import os
@@ -63,14 +62,13 @@ def window_sec() -> int:
         return DEFAULT_WINDOW_SEC
 
 
-def _git(cwd: str, args: list[str], *, env=None) -> "str | None":
+def _git(cwd: str, args: list[str]) -> "str | None":
     if not cwd:
         return None
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
-            env=env,
             capture_output=True,
             text=True,
             timeout=5,
@@ -82,79 +80,47 @@ def _git(cwd: str, args: list[str], *, env=None) -> "str | None":
     return result.stdout.strip() or None
 
 
-# gx-hook-state-lock-v2
+# gx-hook-state-lock-v3
 @contextmanager
 def locked_hook_state():
     """Serialize hook writes with GX removing this particular checkout."""
-    if fcntl is None and os.name != "posix":
-        # The GX cleanup worker also requires POSIX flock and cannot remove
-        # worktrees on this platform. Preserve ordinary hook tracking.
-        yield True
+    root = state_dir().parents[2]
+    managed = any(
+        parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
+        for parent in root.parents
+    )
+    if not managed or (fcntl is None and os.name != "posix"):
+        # Finished cleanup does not remove standalone or ordinary checkouts.
+        yield Path(__file__).is_file()
         return
 
     fd = None
     allowed = False
     try:
         if fcntl is not None:
-            # The payload's cwd can name a different worktree. Lock the one
-            # the hook's state directory is actually in.
-            root = state_dir().parents[2]
             git_entry = root / ".git"
-            try:
-                before = git_entry.lstat()
-            except FileNotFoundError:
-                # Standalone hooks also track sessions. In managed lanes Git
-                # may already have removed the .git pointer but not the files.
-                allowed = Path(__file__).is_file() and not any(
-                    parent.name == "agent-worktrees" and parent.parent.name in (".omx", ".omc")
-                    for parent in root.parents
-                )
-            else:
-                env = dict(os.environ)
-                for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
-                    env.pop(key, None)
-                common = _git(
-                    str(root), ["rev-parse", "--path-format=absolute", "--git-common-dir"], env=env
-                )
-                if common and os.path.isabs(common):
-                    # The lane lock survives checkout removal, without
-                    # blocking hook writers in other worktrees.
-                    digest = hashlib.sha256(os.fsencode(root)).hexdigest()
-                    lock = Path(common).resolve() / f"gitguardex-hook-state-{digest}.lock"
+            before = git_entry.lstat()
+            # Keep the lock beside the checkout so it survives removal and
+            # still works when the common .git directory is read-only.
+            digest = hashlib.sha256(os.fsencode(root)).hexdigest()
+            lock = root.parent / f".gitguardex-hook-state-{digest}.lock"
+            fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                deadline = time.monotonic() + 10
+                while True:
                     try:
-                        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-                    except OSError as error:
-                        if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
                             raise
-                        # A read-only Git directory can have no lane lock yet.
-                        # If a lock exists, keep requiring it before writing.
-                        try:
-                            lock.lstat()
-                        except FileNotFoundError:
-                            pass
-                        else:
-                            raise
-                    info = os.fstat(fd) if fd is not None else None
-                    if info is None or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1):
-                        if fd is not None:
-                            deadline = time.monotonic() + 10
-                            while True:
-                                try:
-                                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                    break
-                                except BlockingIOError:
-                                    if time.monotonic() >= deadline:
-                                        raise
-                                    time.sleep(0.05)
-                        # A writer delayed by cleanup must not recreate the
-                        # directory after Git removes or replaces the checkout.
-                        after = git_entry.lstat()
-                        allowed = (
-                            (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
-                            # Creating the lock updates the primary .git directory
-                            # itself. Only pin ctime for the linked .git pointer.
-                            and (stat.S_ISDIR(before.st_mode) or before.st_ctime_ns == after.st_ctime_ns)
-                        )
+                        time.sleep(0.05)
+                # Check the checkout generation after waiting, before mkdir.
+                after = git_entry.lstat()
+                allowed = (before.st_dev, before.st_ino, before.st_ctime_ns) == (
+                    after.st_dev, after.st_ino, after.st_ctime_ns
+                )
     except (OSError, RuntimeError):
         pass
     try:

@@ -132,7 +132,7 @@ function hasUncoordinatedHookRuntime(worktreePath) {
       if (
         !directories.includes(path.dirname(source)) ||
         !fs.statSync(source).isFile() ||
-        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v2')
+        !fs.readFileSync(source, 'utf8').includes('# gx-hook-state-lock-v3')
       ) {
         return true;
       }
@@ -552,7 +552,7 @@ function cleanupFinishedDetachedWorktree(input) {
     [
       lockRunner,
       '--try-lock',
-      path.join(commonDir, `gitguardex-hook-state-${laneDigest}.lock`),
+      path.join(path.dirname(plan.worktreePath), `.gitguardex-hook-state-${laneDigest}.lock`),
       '--and-lock',
       path.join(commonDir, 'agent-file-locks.lock'),
       process.execPath,

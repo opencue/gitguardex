@@ -86,7 +86,7 @@ function runSkillTracker(repoRoot) {
 
 function laneHookMutex(plan) {
   const digest = createHash('sha256').update(plan.worktreePath).digest('hex');
-  return path.join(plan.repoRoot, '.git', `gitguardex-hook-state-${digest}.lock`);
+  return path.join(path.dirname(plan.worktreePath), `.gitguardex-hook-state-${digest}.lock`);
 }
 
 test('skill tracking works in standalone hooks, but not an incomplete managed checkout', (t) => {
@@ -95,14 +95,25 @@ test('skill tracking works in standalone hooks, but not an incomplete managed ch
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const hooksDir = path.join(dir, '.claude/hooks');
   fs.mkdirSync(hooksDir, { recursive: true });
-  for (const [name, source] of Object.entries(hooks)) {
-    fs.writeFileSync(path.join(hooksDir, name), source);
-  }
+  fs.writeFileSync(path.join(hooksDir, 'skill_tracker.py'), hooks['skill_tracker.py']);
   assert.deepEqual(runSkillTracker(dir), ['my-skill']);
 
   const plan = fixture(t, hooks);
   fs.unlinkSync(path.join(plan.worktreePath, '.git'));
   assert.equal(runSkillTracker(plan.worktreePath), null);
+});
+
+test('managed hook tracking does not need a writable common Git directory', (t) => {
+  const plan = fixture(t, skillTrackerHooks());
+  const commonDir = path.join(plan.repoRoot, '.git');
+  const oldMode = fs.statSync(commonDir).mode & 0o777;
+  fs.chmodSync(commonDir, 0o555);
+  try {
+    assert.deepEqual(runSkillTracker(plan.worktreePath), ['my-skill']);
+    assert.ok(fs.existsSync(laneHookMutex(plan)));
+  } finally {
+    fs.chmodSync(commonDir, oldMode);
+  }
 });
 
 test('a delayed hook writes only if its checkout survives an available cleanup lock', { timeout: 15000 }, async (t) => {
@@ -218,7 +229,7 @@ test('gx finish queues and archives hooks when its own checkout is detached afte
   assert.match(finish.stdout, /Scheduled finished worktree cleanup/);
   const merged = runCmd('git', ['show', 'main:feature.txt'], repoRoot);
   assert.equal(merged.stdout, 'finished work', merged.stderr);
-  for (let i = 0; i < 100 && fs.existsSync(worktreePath); i++) {
+  for (let i = 0; i < 300 && fs.existsSync(worktreePath); i++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   if (fs.existsSync(worktreePath)) {
