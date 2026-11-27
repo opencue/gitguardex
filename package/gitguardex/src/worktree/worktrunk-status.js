@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 function canonicalPath(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
@@ -68,16 +68,12 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   const executable = findWorktrunk(dirs, roots);
   if (!executable) return null;
 
-  let child;
-  // execFile's killSignal applies to its timeout, not to AbortSignal cancellation.
-  const abort = () => {
-    child.kill('SIGKILL');
-    // A Git subprocess can still hold these pipes open after Worktrunk exits.
-    child.stdout?.destroy();
-    child.stderr?.destroy();
-  };
+  const detached = process.platform !== 'win32';
+  const maxBuffer = 1024 * 1024;
+  let stop;
+  let timer;
   const stdout = await new Promise((resolve) => {
-    child = (deps.execFile || execFile)(
+    const child = (deps.spawn || spawn)(
       executable,
       [
         '-C',
@@ -90,18 +86,50 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
         '--format=json'
       ],
       {
-        encoding: 'utf8',
+        detached,
         env: { ...process.env, PATH: dirs.join(path.delimiter) },
-        timeout: 3000,
-        killSignal: 'SIGKILL',
-        maxBuffer: 1024 * 1024
-      },
-      (error, output) => resolve(error ? null : output)
+        stdio: ['ignore', 'pipe', 'pipe']
+      }
     );
-    child.stdin?.destroy();
-    deps.signal?.addEventListener('abort', abort, { once: true });
-    if (deps.signal?.aborted) abort();
-  }).finally(() => deps.signal?.removeEventListener('abort', abort));
+    let stopped = false;
+    stop = () => {
+      if (stopped) return;
+      stopped = true;
+      if (child.pid) {
+        try {
+          // Git subprocesses inherit Worktrunk's process group.
+          if (detached) process.kill(-child.pid, 'SIGKILL');
+          else child.kill('SIGKILL');
+        } catch (error) {
+          if (error.code !== 'ESRCH') child.kill('SIGKILL');
+        }
+      }
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const chunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBuffer) stop();
+      else chunks.push(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > maxBuffer) stop();
+    });
+    child.once('error', () => resolve(null));
+    child.once('close', (code) => {
+      resolve(code === 0 && !stopped ? Buffer.concat(chunks).toString('utf8') : null);
+    });
+    timer = setTimeout(stop, 3000);
+    deps.signal?.addEventListener('abort', stop, { once: true });
+    if (deps.signal?.aborted) stop();
+  }).finally(() => {
+    clearTimeout(timer);
+    deps.signal?.removeEventListener('abort', stop);
+  });
   if (stdout === null || deps.signal?.aborted) return null;
   let data;
   try {
