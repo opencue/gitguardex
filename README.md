@@ -4,13 +4,27 @@
 
 # GitGuardex
 
-**Run Codex, Claude, and human contributors in parallel without sharing a checkout.** GitGuardex adds file claims, PR review gates, and safe cleanup to Git worktrees. One task → one worktree → one PR.
+**Run Codex, Claude, and humans in parallel on one repo without overwriting each other's work.** Claim files before editing in isolated worktrees, then see what was checked before merging. One task → one worktree → one PR.
 
 [![npm](https://img.shields.io/npm/v/%40imdeadpool%2Fguardex)](https://www.npmjs.com/package/@imdeadpool/guardex)
 [![CI](https://github.com/opencue/gitguardex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/opencue/gitguardex/actions/workflows/ci.yml)
 [License](./LICENSE)
 
 [Quick start](#install) · [PR walkthrough](#pr-walkthrough) · [AI code review](#code-assist-review-gate) · [Impact Assist](#impact-assist) · [How it compares](#how-it-compares)
+
+## Try it in 60 seconds
+
+From a GitGuardex checkout (Node.js 18+, Git, Python 3; no tokens or installs):
+
+```sh
+node examples/agent-collision-demo.js
+```
+
+Two real Git worktrees, two simulated agents: Codex claims and edits a file,
+GitGuardex denies Claude's overlapping claim before editing, then Claude claims
+a different file. Everything runs in a temporary repo and cleans up on exit.
+
+[See the merge evidence card](./examples/README.md#see-why-a-pr-is-or-isnt-mergeable) · [Reproduce the comparison with plain Git worktrees](./examples/parallel-agent-benchmark/README.md)
 
 ## Install
 

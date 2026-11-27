@@ -454,11 +454,12 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   });
   const command = `/gx-dismiss-improvement 1 ${item.id} ${head} ${base}`;
   const dismissal = {
-    state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
+    id: 2, state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User', login: 'writer', commit_id: head,
     body: `${command} The warning is already retained.`
   };
   const reviews = [issued(1)];
-  const read = (scope = { head, base }) => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+  const dismissalEvidence = new Map();
+  const read = (scope = { head, base, dismissalEvidence }) => readPublishedImprovements('/repo', 42, (_cmd, args) => {
     if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
     if (args[1].endsWith('/permission')) {
       return { status: 0, stdout: args[1].includes('/writer/') ? 'write' : 'read' };
@@ -471,14 +472,19 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   ]) {
     reviews.push({ ...dismissal, ...invalid });
     assert.equal(read().length, 1);
+    assert.equal(dismissalEvidence.size, 0);
     reviews.pop();
   }
   reviews.push(dismissal);
   assert.deepEqual(read(), []);
+  assert.deepEqual(dismissalEvidence.get(item.id), {
+    label: 'Keep the warning', reviewId: 2, reason: 'The warning is already retained.'
+  });
   assert.equal(read({ head: 'f'.repeat(40), base }).length, 1);
   assert.equal(read({ head, base: 'f'.repeat(40) }).length, 1);
   reviews.push(issued(3), dismissal);
   assert.equal(read().length, 1, 'a dismissal cannot clear a later issuance with the same label');
+  assert.equal(dismissalEvidence.size, 0);
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {

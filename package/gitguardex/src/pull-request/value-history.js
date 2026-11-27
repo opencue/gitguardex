@@ -66,6 +66,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       if (review.state !== 'COMMENTED' || !TRUSTED_REVIEWERS.has(review.author_association)) continue;
       const [first, marker] = review.body?.split(/\r?\n/, 2) ?? [];
       let dismissedId;
+      let dismissalReason;
       if (first?.startsWith(DISMISS_PREFIX)) {
         const dismissal = DISMISS_ARGS.exec(first.slice(DISMISS_PREFIX.length));
         if (!dismissal || review.author_type !== 'User') continue;
@@ -73,6 +74,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         if (!plainText(reason) || String(pending.get(id)?.reviewId) !== issuance ||
             head !== review.commit_id || head !== scope.head || base !== scope.base) continue;
         dismissedId = id;
+        dismissalReason = plainText(reason);
       } else if (!marker?.startsWith(MARKER_PREFIX)) continue;
       if (!review.login) continue;
       if (!permissions.has(review.login)) {
@@ -88,6 +90,9 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       }
       if (!['admin', 'write'].includes(permissions.get(review.login))) continue;
       if (dismissedId) {
+        scope.dismissalEvidence?.set(dismissedId, {
+          label: pending.get(dismissedId).label, reviewId: review.id, reason: dismissalReason
+        });
         pending.delete(dismissedId);
         scope.dismissed?.add(dismissedId);
         continue;
@@ -105,6 +110,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       for (const record of improvementRecords(event.issued)) {
         if (pending.has(record.id)) continue;
         scope.dismissed?.delete(record.id);
+        scope.dismissalEvidence?.delete(record.id);
         pending.set(record.id, { ...record, head: review.commit_id, reviewId: review.id });
       }
     }

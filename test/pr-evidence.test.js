@@ -1,6 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { mergeEvidence } = require('../package/gitguardex/src/pull-request/evidence');
+const {
+  improvementItems,
+  improvementMarker
+} = require('../package/gitguardex/src/pull-request/value-history');
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -92,6 +96,53 @@ test('missing CI does not turn a clean GitHub merge state into a passing verdict
   assert.match(body, /No checks reported \(not a pass\)/);
   assert.match(body, /Confirm CI results/);
   assert.match(body, /No GitGuardex report found for this head/);
+});
+
+test('only revision-scoped, authorized GitGuardex dismissals are rendered with a reason', () => {
+  const [item] = improvementItems(['Cover retry'], 'c'.repeat(64));
+  const review = {
+    state: 'COMMENTED',
+    author_association: 'MEMBER',
+    author_type: 'User',
+    login: 'writer',
+    commit_id: head
+  };
+  const { runner } = fixture({ reviews: [{ id: 21, state: 'COMMENTED', scoping: true }] });
+  const render = (permission, targetBase) =>
+    mergeEvidence('/repo', '42', {
+      runner: (bin, args) => {
+        if (args[0] === 'repo') return { status: 0, stdout: 'opencue/example' };
+        if (args[1] === 'repos/opencue/example/collaborators/writer/permission') {
+          return { status: 0, stdout: permission };
+        }
+        if (args[1] === '--paginate') {
+          return {
+            status: 0,
+            stdout: [
+              {
+                ...review,
+                id: 20,
+                body: `<!-- gitguardex:pr-review -->\n${improvementMarker([item], [], base)}`
+              },
+              {
+                ...review,
+                id: 21,
+                body: `/gx-dismiss-improvement 20 ${item.id} ${head} ${targetBase} Covered by integration tests.`
+              }
+            ]
+              .map((entry) => JSON.stringify(entry))
+              .join('\n')
+          };
+        }
+        return runner(bin, args);
+      }
+    }).body;
+  assert.match(
+    render('write', base),
+    /GitGuardex dismissed improvement.*pullrequestreview-21\): `Cover retry` — `Covered by integration tests\.`/
+  );
+  assert.doesNotMatch(render('read', base), /Covered by integration tests/);
+  assert.doesNotMatch(render('write', head), /Covered by integration tests/);
 });
 
 test('posting updates only the viewer’s matching evidence comment or creates the first one', () => {
