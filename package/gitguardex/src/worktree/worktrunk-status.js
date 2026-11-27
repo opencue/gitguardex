@@ -62,7 +62,8 @@ function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   const dirs = (deps.pathEnv ?? process.env.PATH ?? '')
     .split(path.delimiter)
     .map(canonicalPath)
-    .filter((dir) => outsideWorktrees(dir, roots));
+    // Resolving a symlink can introduce a delimiter that would add new PATH entries.
+    .filter((dir) => outsideWorktrees(dir, roots) && !dir.includes(path.delimiter));
   const executable = findWorktrunk(dirs, roots);
   if (!executable) return null;
 

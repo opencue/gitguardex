@@ -170,3 +170,23 @@ test('degrades to native status on missing binary, invalid protocol, or failed p
   });
   assert.equal(statuses.get(lane), 'dirty');
 });
+
+test('does not split expanded PATH symlinks into new search directories', (t) => {
+  const { root, repo, bin, executable, entry } = fixture(t);
+  const lane = entry('lane', 'agent/test');
+  const delimited = path.join(root, `bin${path.delimiter}with delimiter`);
+  fs.mkdirSync(delimited);
+  executable(delimited, 'wt');
+  const alias = path.join(root, 'bin-alias');
+  fs.symlinkSync(delimited, alias, 'junction');
+  const safe = executable(bin, 'git-wt');
+
+  loadWorktrunkStatuses(repo, [lane], {
+    pathEnv: [alias, bin].join(path.delimiter),
+    spawn(file, _args, options) {
+      assert.equal(file, safe);
+      assert.equal(options.env.PATH, fs.realpathSync(bin));
+      return result([]);
+    }
+  });
+});
