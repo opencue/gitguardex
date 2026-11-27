@@ -6,7 +6,9 @@ const {
   os,
   runCmd,
   initRepo,
-  seedCommit
+  seedCommit,
+  attachOriginRemoteForBranch,
+  runNodeWithEnv
 } = require('./helpers/install-test-helpers');
 const {
   captureWorktreeIdentity,
@@ -41,8 +43,86 @@ function fixture(t) {
   return { repoRoot, worktreePath, worktreeIdentity: captureWorktreeIdentity(worktreePath) };
 }
 
+function seedHookState(plan) {
+  fs.appendFileSync(path.join(plan.repoRoot, '.git/info/exclude'), '\n/.claude/hooks/state/\n');
+  const log = path.join(plan.worktreePath, '.claude/hooks/state/session.json');
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  fs.writeFileSync(log, 'hook log');
+  return log;
+}
+
+test('finished cleanup archives only known ignored hook artifacts before removing the worktree', (t) => {
+  const plan = fixture(t);
+  const log = seedHookState(plan);
+  const cache = '.codex/hooks/__pycache__/hook.pyc';
+  fs.appendFileSync(path.join(plan.repoRoot, '.git/info/exclude'), '__pycache__/\n/.env\n');
+  fs.mkdirSync(path.dirname(path.join(plan.worktreePath, cache)), { recursive: true });
+  fs.writeFileSync(path.join(plan.worktreePath, cache), 'bytecode');
+  const userData = path.join(plan.worktreePath, '.env');
+  const archiveRoot = path.join(plan.repoRoot, '.git/gitguardex-finished-hook-archives');
+  fs.writeFileSync(userData, 'private data');
+  const queued = persistFinishedCleanup(plan);
+  assert.ok(queued);
+  retryPendingFinishedCleanup(plan.repoRoot);
+  assert.equal(fs.readFileSync(userData, 'utf8'), 'private data');
+  assert.equal(fs.readFileSync(log, 'utf8'), 'hook log');
+  assert.ok(!fs.existsSync(archiveRoot));
+
+  fs.unlinkSync(userData);
+  fs.symlinkSync(path.dirname(log), archiveRoot, 'dir');
+  retryPendingFinishedCleanup(plan.repoRoot);
+  assert.equal(fs.readFileSync(log, 'utf8'), 'hook log');
+  fs.unlinkSync(archiveRoot);
+
+  retryPendingFinishedCleanup(plan.repoRoot);
+  assert.ok(!fs.existsSync(plan.worktreePath));
+  assert.ok(!fs.existsSync(queued.jobFile));
+  const [name, ...duplicates] = fs.readdirSync(archiveRoot);
+  assert.deepEqual(duplicates, []);
+  assert.equal(fs.statSync(path.join(archiveRoot, name)).mode & 0o077, 0);
+  assert.equal(fs.readFileSync(path.join(archiveRoot, name, '.claude/hooks/state/session.json'), 'utf8'), 'hook log');
+  assert.equal(fs.readFileSync(path.join(archiveRoot, name, cache), 'utf8'), 'bytecode');
+});
+
+test('gx finish queues and archives hooks when its own checkout is detached after a merge', async (t) => {
+  const repoRoot = initRepo({ branch: 'main' });
+  seedCommit(repoRoot);
+  const origin = attachOriginRemoteForBranch(repoRoot, 'main');
+  t.after(() => fs.rmSync(path.dirname(repoRoot), { recursive: true, force: true }));
+  t.after(() => fs.rmSync(path.dirname(origin), { recursive: true, force: true }));
+  const worktreePath = path.join(repoRoot, '.omx/agent-worktrees/finish-cli');
+  const branch = 'agent/test/finish-cli';
+  const added = runCmd('git', ['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], repoRoot);
+  assert.equal(added.status, 0, added.stderr);
+  seedHookState({ repoRoot, worktreePath });
+  fs.appendFileSync(path.join(repoRoot, '.git/info/exclude'), '/.omx/\n');
+  fs.writeFileSync(path.join(worktreePath, 'feature.txt'), 'finished work');
+  const finish = runNodeWithEnv(
+    ['finish', '--base', 'main', '--branch', branch, '--direct-only', '--cleanup'],
+    worktreePath,
+    { GUARDEX_AUTO_SHIP: '0' }
+  );
+  assert.equal(finish.status, 0, finish.stderr || finish.stdout);
+  assert.match(finish.stdout, /Scheduled finished worktree cleanup/);
+  const merged = runCmd('git', ['show', 'main:feature.txt'], repoRoot);
+  assert.equal(merged.stdout, 'finished work', merged.stderr);
+  for (let i = 0; i < 100 && fs.existsSync(worktreePath); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (fs.existsSync(worktreePath)) {
+    const status = runCmd('git', ['status', '--porcelain=v1', '--ignored=matching'], worktreePath);
+    assert.fail(`deferred worktree still present: ${status.stdout || status.stderr}`);
+  }
+  const archiveRoot = path.join(repoRoot, '.git/gitguardex-finished-hook-archives');
+  const [archive] = fs.readdirSync(archiveRoot);
+  assert.equal(fs.readFileSync(path.join(archiveRoot, archive, '.claude/hooks/state/session.json'), 'utf8'), 'hook log');
+});
+
 test('finished cleanup persists across invocations and retries dirty then clean worktrees', (t) => {
   const plan = fixture(t);
+  const log = seedHookState(plan);
+  const config = runCmd('git', ['config', 'status.showUntrackedFiles', 'no'], plan.repoRoot);
+  assert.equal(config.status, 0, config.stderr);
   fs.writeFileSync(path.join(plan.worktreePath, 'keep.txt'), 'local work');
   const queued = persistFinishedCleanup(plan);
   assert.ok(queued?.jobFile);
@@ -50,6 +130,7 @@ test('finished cleanup persists across invocations and retries dirty then clean 
   retryPendingFinishedCleanup(plan.repoRoot);
   assert.ok(fs.existsSync(queued.jobFile));
   assert.ok(fs.existsSync(path.join(plan.worktreePath, 'keep.txt')));
+  assert.equal(fs.readFileSync(log, 'utf8'), 'hook log');
   fs.unlinkSync(path.join(plan.worktreePath, 'keep.txt'));
   retryPendingFinishedCleanup(plan.repoRoot);
   assert.equal(fs.existsSync(plan.worktreePath), false);
@@ -60,6 +141,7 @@ test('finished cleanup persists across invocations and retries dirty then clean 
 test('finished cleanup refuses changed HEAD, claims, git locks, and nested worktrees', (t) => {
   for (const obstacle of ['head', 'claims', 'locked', 'child']) {
     const plan = fixture(t);
+    const log = seedHookState(plan);
     const queued = persistFinishedCleanup(plan);
     assert.ok(queued);
     if (obstacle === 'head') {
@@ -94,6 +176,7 @@ test('finished cleanup refuses changed HEAD, claims, git locks, and nested workt
     }
     retryPendingFinishedCleanup(plan.repoRoot);
     assert.ok(fs.existsSync(plan.worktreePath), obstacle);
+    assert.equal(fs.readFileSync(log, 'utf8'), 'hook log', obstacle);
   }
 });
 
@@ -180,6 +263,7 @@ test('blocked jobs rotate so the seventeenth pending job is not starved', (t) =>
 test('live processes and held shared claims mutex prevent removal until released', async (t) => {
   for (const mode of ['cwd', 'mutex']) {
     const plan = fixture(t);
+    const log = seedHookState(plan);
     const queued = persistFinishedCleanup(plan);
     const release =
       mode === 'cwd'
@@ -205,6 +289,7 @@ test('live processes and held shared claims mutex prevent removal until released
     retryPendingFinishedCleanup(plan.repoRoot);
     assert.ok(fs.existsSync(plan.worktreePath), mode);
     assert.ok(fs.existsSync(queued.jobFile), mode);
+    assert.equal(fs.readFileSync(log, 'utf8'), 'hook log', mode);
     await release();
     const result = runNode(['worktree', 'retry-cleanup'], plan.repoRoot);
     assert.equal(result.status, 0, result.stderr);

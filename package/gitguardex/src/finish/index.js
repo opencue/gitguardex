@@ -717,6 +717,8 @@ function finish(rawArgs, defaults = {}) {
       // URL — a child on 'inherit' writes past that patch. assetStdio owns that
       // decision for every caller, so this path and invokePackageAsset cannot
       // drift apart.
+      const cleanup = options.cleanup ? require('./post-branch-finish-cleanup') : null;
+      const cleanupPlan = cleanup?.prepareActiveWorktreeCleanup(repoRoot, worktreePath, activeCwd);
       const finishResult = runPackageAsset('branchFinish', finishArgs, {
         cwd: repoRoot,
         stdio: options.agentQuiet ? 'pipe' : assetStdio('branchFinish'),
@@ -748,6 +750,10 @@ function finish(rawArgs, defaults = {}) {
       }
       if (finishResult.status !== 0) {
         throw new Error(`agent-branch-finish exited with status (${finishResult.status}); re-run: gx branch finish --branch "${branch}"`);
+      }
+      if (cleanupPlan) {
+        // Only a completed finish that detached this checkout can queue removal.
+        cleanup.scheduleFinishedDetachedWorktreeCleanup(cleanupPlan, { quiet: options.agentQuiet });
       }
 
       succeeded += 1;

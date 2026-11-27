@@ -101,12 +101,20 @@ function isManagedAgentWorktree(repoRoot, worktreePath) {
   );
 }
 
-function hasUnsafeWorktreeChanges(output) {
+const HOOK_RUNTIME_ENTRIES = new Set([
+  '!! .claude/hooks/state/',
+  '!! .claude/hooks/__pycache__/',
+  '!! .codex/hooks/state/',
+  '!! .codex/hooks/__pycache__/'
+]);
+
+function hasUnsafeWorktreeChanges(output, archivableEntries = []) {
   return String(output || '')
     .split('\0')
     .filter(Boolean)
     .some((entry) => {
       if (!entry.startsWith('!! ')) return true;
+      if (archivableEntries.includes(entry)) return false;
       const ignoredPath = entry.slice(3).replace(/\/$/, '');
       const segments = ignoredPath.split('/');
       return !(
@@ -187,18 +195,21 @@ function prepareBranchFinishCleanup(argv, activeCwd) {
 
   try {
     const { target, passthrough } = extractTargetedArgs(finishArgs, activeCwd);
-    const repoRoot = resolveSharedRepoRoot(target);
     const branch = flagValue(passthrough, '--branch') || currentBranchName(target);
-    const worktreePath = listAgentWorktrees(repoRoot).find(
+    const worktreePath = listAgentWorktrees(target).find(
       (entry) => entry.branch === branch
     )?.worktreePath;
-    if (
-      !worktreePath ||
-      !isManagedAgentWorktree(repoRoot, worktreePath) ||
-      !pathContains(worktreePath, activeCwd)
-    ) {
-      return null;
-    }
+    return prepareActiveWorktreeCleanup(target, worktreePath, activeCwd);
+  } catch {
+    return null;
+  }
+}
+
+function prepareActiveWorktreeCleanup(target, worktreePath, activeCwd) {
+  if (!worktreePath || !pathContains(worktreePath, activeCwd)) return null;
+  try {
+    const repoRoot = resolveSharedRepoRoot(target);
+    if (!isManagedAgentWorktree(repoRoot, worktreePath)) return null;
     const worktreeIdentity = captureWorktreeIdentity(worktreePath);
     return worktreeIdentity ? { repoRoot, worktreePath, worktreeIdentity } : null;
   } catch {
@@ -276,8 +287,8 @@ function previewDependencyCleanup(target, branchFilter) {
   );
 }
 
-function cleanupQueueDirectory(repoRoot, create = false) {
-  const directory = path.join(commonGitDirectory(repoRoot), 'gitguardex-pending-cleanup');
+function privateCleanupDirectory(repoRoot, name, create) {
+  const directory = path.join(commonGitDirectory(repoRoot), name);
   if (create) {
     try {
       fs.mkdirSync(directory, { mode: 0o700 });
@@ -292,8 +303,33 @@ function cleanupQueueDirectory(repoRoot, create = false) {
     stat.mode & 0o077 ||
     (process.getuid && stat.uid !== process.getuid())
   )
-    throw new Error('Unsafe cleanup queue directory');
+    throw new Error(`Unsafe cleanup directory: ${directory}`);
   return directory;
+}
+
+function cleanupQueueDirectory(repoRoot, create = false) {
+  return privateCleanupDirectory(repoRoot, 'gitguardex-pending-cleanup', create);
+}
+
+function archiveHookRuntime(plan, entries) {
+  const paths = entries.map((entry) => entry.slice(3, -1));
+  const tracked = run('git', ['-C', plan.worktreePath, 'ls-files', '-z', '--', ...paths]);
+  if (tracked.status !== 0 || tracked.stdout) return false;
+  for (const relative of paths) {
+    const source = path.join(plan.worktreePath, relative);
+    if (fs.realpathSync(source) !== source || !fs.lstatSync(source).isDirectory()) return false;
+  }
+
+  const root = privateCleanupDirectory(plan.repoRoot, 'gitguardex-finished-hook-archives', true);
+  const archive = fs.mkdtempSync(path.join(root, path.basename(plan.worktreePath).slice(0, 60) + '-'));
+  console.log(`[${TOOL_NAME}] Saving finished worktree hook artifacts to ${archive}`);
+  for (const relative of paths) {
+    const destination = path.join(archive, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+    // Rename without following symlinks or deleting the source on failure.
+    fs.renameSync(path.join(plan.worktreePath, relative), destination);
+  }
+  return true;
 }
 
 function readPrivateJob(file) {
@@ -459,8 +495,8 @@ function cleanupFinishedDetachedWorktree(input) {
     ],
     { cwd: plan.repoRoot }
   );
+  if (result.stdout) process.stdout.write(result.stdout);
   if (result.status === 0) {
-    if (result.stdout) process.stdout.write(result.stdout);
     retireCleanupJob(plan);
     try {
       require('../worktree/hooks').runLifecycleHookSync(plan.repoRoot, 'post-remove', {
@@ -500,23 +536,44 @@ function removeFinishedWorktreeLocked(plan) {
     if (commit.status !== 0 || commit.stdout.trim() !== plan.expectedHead) return false;
     if (probeWorktreeOwnership(plan.worktreePath).active) return false;
     if (!worktreeIdentityMatches(plan)) return false;
-    const status = run(
+    // Matching mode reports the ignored hook directory, not its untracked parent.
+    const readStatus = () => run(
       'git',
-      ['-C', plan.worktreePath, 'status', '--porcelain=v1', '-z', '--ignored'],
+      [
+        '-C',
+        plan.worktreePath,
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--ignored=matching',
+        '--untracked-files=normal',
+        '--ignore-submodules=none'
+      ],
       { cwd: plan.repoRoot }
     );
+    const status = readStatus();
+    const hookEntries = (status.stdout || '')
+      .split('\0')
+      .filter((entry) => HOOK_RUNTIME_ENTRIES.has(entry));
     const head = run('git', ['-C', plan.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: plan.repoRoot
     });
     if (
       status.status !== 0 ||
-      hasUnsafeWorktreeChanges(status.stdout) ||
+      hasUnsafeWorktreeChanges(status.stdout, hookEntries) ||
       head.status !== 0 ||
       String(head.stdout || '').trim() !== 'HEAD'
     ) {
       return false;
     }
     if (!worktreeIdentityMatches(plan)) return false;
+    if (hookEntries.length) {
+      if (!archiveHookRuntime(plan, hookEntries)) return false;
+      const remaining = readStatus();
+      if (remaining.status !== 0 || hasUnsafeWorktreeChanges(remaining.stdout)) return false;
+      if (!worktreeIdentityMatches(plan) || probeWorktreeOwnership(plan.worktreePath).active)
+        return false;
+    }
 
     const remove = run('git', ['-C', plan.repoRoot, 'worktree', 'remove', plan.worktreePath], {
       cwd: plan.repoRoot
@@ -582,9 +639,11 @@ function scheduleFinishedDetachedWorktreeCleanup(input, options = {}) {
       );
     });
     child.unref();
-    console.log(
-      `[${TOOL_NAME}] Scheduled finished worktree cleanup after active processes leave: ${plan.worktreePath}`
-    );
+    if (!options.quiet) {
+      console.log(
+        `[${TOOL_NAME}] Scheduled finished worktree cleanup after active processes leave: ${plan.worktreePath}`
+      );
+    }
     return true;
   } catch (error) {
     console.error(
@@ -641,6 +700,7 @@ module.exports = {
   isManagedAgentWorktree,
   probeLiveProcessInWorktree,
   probeWorktreeOwnership,
+  prepareActiveWorktreeCleanup,
   prepareBranchFinishCleanup,
   previewDependencyCleanup,
   persistFinishedCleanup,
