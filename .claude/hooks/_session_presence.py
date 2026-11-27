@@ -84,6 +84,12 @@ def _git(cwd: str, args: list[str], *, env=None) -> "str | None":
 @contextmanager
 def locked_hook_state():
     """Serialize hook writes with GX removing this particular checkout."""
+    if fcntl is None and os.name != "posix":
+        # The GX cleanup worker also requires POSIX flock and cannot remove
+        # worktrees on this platform. Preserve ordinary hook tracking.
+        yield True
+        return
+
     fd = None
     allowed = False
     try:
@@ -104,13 +110,24 @@ def locked_hook_state():
                 fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
                 info = os.fstat(fd)
                 if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    deadline = time.monotonic() + 10
+                    while True:
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except BlockingIOError:
+                            if time.monotonic() >= deadline:
+                                raise
+                            time.sleep(0.05)
                     # A writer delayed by cleanup must not recreate the
                     # directory after Git removes or replaces the checkout.
                     after = git_entry.lstat()
                     allowed = (
-                        before.st_dev, before.st_ino, before.st_ctime_ns
-                    ) == (after.st_dev, after.st_ino, after.st_ctime_ns)
+                        (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+                        # Creating the lock updates the primary .git directory
+                        # itself. Only pin ctime for the linked .git pointer.
+                        and (stat.S_ISDIR(before.st_mode) or before.st_ctime_ns == after.st_ctime_ns)
+                    )
     except (OSError, RuntimeError):
         pass
     try:

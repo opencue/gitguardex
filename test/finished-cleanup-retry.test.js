@@ -64,11 +64,29 @@ test('finished cleanup preserves legacy hooks even before they have written stat
   assert.ok(fs.existsSync(queued.jobFile));
 });
 
-test('a delayed hook writes only if its original checkout survives the cleanup lock', { timeout: 15000 }, async (t) => {
-  const hooks = Object.fromEntries(['_session_presence.py', 'skill_tracker.py'].map((name) => [
+function skillTrackerHooks() {
+  return Object.fromEntries(['_session_presence.py', 'skill_tracker.py'].map((name) => [
     name, fs.readFileSync(path.join(__dirname, '../.claude/hooks', name))
   ]));
-  for (const remove of [false, true]) {
+}
+
+test('the first hook write in a primary checkout can create the shared lock', (t) => {
+  const { repoRoot } = fixture(t, skillTrackerHooks());
+  assert.ok(!fs.existsSync(path.join(repoRoot, '.git/agent-file-locks.lock')));
+  const result = cp.spawnSync('python3', ['.claude/hooks/skill_tracker.py'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: withGuardexHome(),
+    input: JSON.stringify({ session_id: 'test', tool_input: { name: 'my-skill' } })
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const log = path.join(repoRoot, '.claude/hooks/state/skills-used-test.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(log, 'utf8')).usedSkills, ['my-skill']);
+});
+
+test('a delayed hook writes only if its checkout survives an available cleanup lock', { timeout: 15000 }, async (t) => {
+  const hooks = skillTrackerHooks();
+  for (const outcome of ['retained', 'removed', 'busy']) {
     const plan = fixture(t, hooks);
     const lock = path.join(plan.repoRoot, '.git/agent-file-locks.lock');
     const release = await holdProcess(t, 'python3', [
@@ -78,7 +96,10 @@ test('a delayed hook writes only if its original checkout survives the cleanup l
     ], plan.repoRoot);
     const hook = path.join(plan.worktreePath, '.claude/hooks/skill_tracker.py');
     const writer = cp.spawn('python3', ['-B', '-c', [
-      'import fcntl, runpy, sys',
+      'import fcntl, itertools, runpy, subprocess, sys, time',
+      'if sys.argv[2] == "busy":',
+      '    ticks = itertools.count(step=60)',
+      '    time.monotonic = lambda: next(ticks)',
       'flock = fcntl.flock',
       'def observe(fd, op):',
       '    print("waiting", flush=True)',
@@ -86,23 +107,25 @@ test('a delayed hook writes only if its original checkout survives the cleanup l
       'fcntl.flock = observe',
       'sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])',
       'runpy.run_path(sys.argv[1], run_name="__main__")'
-    ].join('\n'), hook], { cwd: plan.repoRoot, env: withGuardexHome() });
+    ].join('\n'), hook, outcome], { cwd: plan.repoRoot, env: withGuardexHome() });
     t.after(() => writer.kill());
-    const exited = once(writer, 'exit');
+    const exited = once(writer, 'close');
     writer.stdin.end(JSON.stringify({ session_id: 'test', tool_input: { name: 'my-skill' } }));
     assert.equal(await Promise.race([
-      once(writer.stdout, 'data').then(([chunk]) => chunk.toString().trim()),
+      once(writer.stdout, 'data').then(([chunk]) => chunk.toString().split('\n')[0]),
       exited.then(() => 'exited')
     ]), 'waiting');
     const log = path.join(plan.worktreePath, '.claude/hooks/state/skills-used-test.json');
     assert.ok(!fs.existsSync(log));
-    if (remove) {
+    if (outcome === 'removed') {
       const result = runCmd('git', ['worktree', 'remove', plan.worktreePath], plan.repoRoot);
       assert.equal(result.status, 0, result.stderr);
     }
+    if (outcome === 'busy') assert.deepEqual(await exited, [0, null]);
     await release();
     assert.deepEqual(await exited, [0, null]);
-    if (remove) assert.ok(!fs.existsSync(plan.worktreePath));
+    if (outcome === 'removed') assert.ok(!fs.existsSync(plan.worktreePath));
+    else if (outcome === 'busy') assert.ok(!fs.existsSync(log));
     else assert.deepEqual(JSON.parse(fs.readFileSync(log, 'utf8')).usedSkills, ['my-skill']);
   }
 });
@@ -129,6 +152,14 @@ test('finished cleanup archives only known ignored hook artifacts before removin
   retryPendingFinishedCleanup(plan.repoRoot);
   assert.equal(fs.readFileSync(log, 'utf8'), 'hook log');
   fs.unlinkSync(archiveRoot);
+
+  const linkedLog = path.join(path.dirname(log), 'linked-log.json');
+  fs.symlinkSync(log, linkedLog);
+  retryPendingFinishedCleanup(plan.repoRoot);
+  assert.equal(fs.readFileSync(linkedLog, 'utf8'), 'hook log');
+  assert.ok(fs.existsSync(queued.jobFile));
+  assert.ok(!fs.existsSync(archiveRoot));
+  fs.unlinkSync(linkedLog);
 
   retryPendingFinishedCleanup(plan.repoRoot);
   assert.ok(!fs.existsSync(plan.worktreePath));

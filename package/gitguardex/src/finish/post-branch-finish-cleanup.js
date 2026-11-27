@@ -348,6 +348,8 @@ function hookRuntimeSnapshot(worktreePath, paths) {
   const snapshot = [];
   const visit = (file) => {
     const stat = fs.lstatSync(file, { bigint: true });
+    // A preserved link could point back into the checkout being removed.
+    if (!stat.isFile() && !stat.isDirectory()) throw new Error('Unsupported hook artifact');
     // ctime catches in-place rewrites even if the writer restores mtime.
     snapshot.push([file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String));
     if (stat.isDirectory()) {
@@ -382,8 +384,7 @@ function archiveHookRuntime(plan, paths) {
       fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
       fs.cpSync(source, destination, {
         recursive: true,
-        preserveTimestamps: true,
-        verbatimSymlinks: true
+        preserveTimestamps: true
       });
     }
   } catch (error) {
