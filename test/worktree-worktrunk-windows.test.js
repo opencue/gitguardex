@@ -22,12 +22,14 @@ class WorktrunkFixture {
       Thread.Sleep(30000);
       return 0;
     }
-    if (args.Length < 2 || Path.GetFullPath(args[1]) != dir) return 2;
-    Process.Start(new ProcessStartInfo {
+    if (args.Length < 2 || !String.Equals(Path.GetFullPath(args[1]), dir, StringComparison.OrdinalIgnoreCase)) return 2;
+    var child = Process.Start(new ProcessStartInfo {
       FileName = typeof(WorktrunkFixture).Assembly.Location,
       Arguments = "--descendant",
-      UseShellExecute = false
+      UseShellExecute = false,
+      RedirectStandardInput = true
     });
+    child.StandardInput.Close();
     while (!File.Exists(marker) || new FileInfo(marker).Length == 0) Thread.Sleep(10);
     if (File.Exists(Path.Combine(dir, "hold"))) Thread.Sleep(30000);
     Console.WriteLine("{\"schema\":2,\"items\":[],\"collected\":{\"ci\":false,\"summary\":false}}");
@@ -70,7 +72,7 @@ test(
   { skip: process.platform !== 'win32' },
   async (t) => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gx-wt-win-')));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
     const source = path.join(root, 'wt.cs');
     fs.writeFileSync(source, fixture);
     const compiler = path.join(

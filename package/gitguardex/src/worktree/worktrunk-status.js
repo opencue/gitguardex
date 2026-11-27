@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 function canonicalPath(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
@@ -69,28 +69,49 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   if (!executable) return null;
 
   const detached = process.platform !== 'win32';
+  const args = [
+    '-C',
+    detached ? repoRoot : '.',
+    '--config-set',
+    'list.full=false',
+    '--config-set',
+    'list.json-schema=2',
+    'list',
+    '--format=json'
+  ];
+  const env = { ...process.env, PATH: dirs.join(path.delimiter) };
+  let command = executable;
+  let commandArgs = args;
+  if (!detached) {
+    const systemRoot = canonicalPath(process.env.SystemRoot);
+    if (!systemRoot) return null;
+    command = canonicalPath(
+      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    );
+    if (!outsideWorktrees(command, roots)) return null;
+    const script = fs.readFileSync(path.join(__dirname, 'worktrunk-job.ps1'), 'utf8');
+    commandArgs = [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64')
+    ];
+    env.GUARDEX_WORKTRUNK_EXE = executable;
+    env.GUARDEX_WORKTRUNK_ROOT = repoRoot;
+    // Every argument is constant here; the target path goes in WorkingDirectory.
+    env.GUARDEX_WORKTRUNK_ARGS = args.join(' ');
+  }
   const maxBuffer = 1024 * 1024;
   let stop;
   let timer;
   const stdout = await new Promise((resolve) => {
-    const child = (deps.spawn || spawn)(
-      executable,
-      [
-        '-C',
-        repoRoot,
-        '--config-set',
-        'list.full=false',
-        '--config-set',
-        'list.json-schema=2',
-        'list',
-        '--format=json'
-      ],
-      {
-        detached,
-        env: { ...process.env, PATH: dirs.join(path.delimiter) },
-        stdio: ['ignore', 'pipe', 'pipe']
-      }
-    );
+    const child = (deps.spawn || spawn)(command, commandArgs, {
+      detached,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(!detached && { cwd: path.dirname(command), windowsHide: true })
+    });
     let stopped = false;
     stop = () => {
       if (stopped) return;
@@ -99,18 +120,7 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
         try {
           // Git subprocesses inherit Worktrunk's process group.
           if (detached) process.kill(-child.pid, 'SIGKILL');
-          else {
-            const systemRoot = process.env.SystemRoot;
-            const killed =
-              systemRoot &&
-              path.win32.isAbsolute(systemRoot) &&
-              spawnSync(
-                path.win32.join(systemRoot, 'System32', 'taskkill.exe'),
-                ['/pid', String(child.pid), '/t', '/f'],
-                { stdio: 'ignore', windowsHide: true, timeout: 1000 }
-              ).status === 0;
-            if (!killed) child.kill('SIGKILL');
-          }
+          else child.kill('SIGKILL'); // Closing the launcher closes its Windows Job Object.
         } catch (error) {
           if (error.code !== 'ESRCH') child.kill('SIGKILL');
         }
