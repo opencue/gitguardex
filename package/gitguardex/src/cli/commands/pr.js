@@ -9,6 +9,7 @@
 //   gx pr list       list open PRs for the current repo
 //   gx pr ready      promote draft -> ready for review
 //   gx pr review     hand off to existing pr-review provider flow
+//   gx pr evidence   print or post a point-in-time merge evidence card
 //   gx pr respond    auto-fix blocking review threads on an agent PR
 //
 // This is the thin glue layer; logic lives in src/pr.js.
@@ -382,6 +383,26 @@ function cmdReady(opts) {
   }
 }
 
+function cmdEvidence(args) {
+  const usage = 'Usage: gx pr evidence <number> [--post] [--target <path>]';
+  let target = process.cwd();
+  let post = false;
+  let number;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--post') post = true;
+    else if (arg === '--target' && args[index + 1] && !args[index + 1].startsWith('--')) {
+      target = args[++index];
+    } else if (!number && /^[1-9]\d*$/.test(arg)) number = arg;
+    else throw new Error(usage);
+  }
+  if (!number) throw new Error(usage);
+  const { mergeEvidence } = require('../../pull-request/evidence');
+  const { repoRoot } = prModule.resolveRepoAndBranch(target);
+  const card = mergeEvidence(repoRoot, number, { post });
+  console.log(card.url || card.body);
+}
+
 /**
  * Parse `gx pr respond` arguments. Kept separate from parsePrArgs because the
  * respond subcommand has its own flag set and does not need most of the base
@@ -500,6 +521,7 @@ Subcommands:
   list                List open PRs in this repo.
   ready               Promote a draft PR to ready-for-review.
   review              Run AI PR review (codex/claude provider).
+  evidence <number>   Print a merge evidence card; --post updates your PR comment.
   respond             Auto-fix blocking review threads on an agent PR.
 
 Flags:
@@ -533,7 +555,6 @@ async function pr(rawArgs) {
   }
 
   const sub = subRaw || 'status';
-  const { opts } = parsePrArgs(rest);
 
   // Friendly error before any gh-dependent subcommand runs.
   if (!prModule.ghAvailable()) {
@@ -545,6 +566,11 @@ async function pr(rawArgs) {
   }
 
   try {
+    if (sub === 'evidence') {
+      if (rest.length === 1 && ['-h', '--help'].includes(rest[0])) return printUsage();
+      return cmdEvidence(rest);
+    }
+    const { opts } = parsePrArgs(rest);
     if (sub === 'status') return cmdStatus(opts);
     if (sub === 'open') return cmdOpen(opts);
     if (sub === 'sync') return cmdSync(opts);
