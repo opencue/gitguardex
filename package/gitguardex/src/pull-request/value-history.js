@@ -60,6 +60,7 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
     ], { cwd: repoRoot, timeout: 60_000 });
     if (result.status !== 0) throw new Error('GitHub review listing failed');
     const pending = new Map();
+    const historicalDismissals = new WeakMap();
     const permissions = new Map();
     for (const line of String(result.stdout || '').split('\n').filter(Boolean)) {
       const review = JSON.parse(line);
@@ -67,14 +68,17 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       const [first, marker] = review.body?.split(/\r?\n/, 2) ?? [];
       let dismissedId;
       let dismissalReason;
+      let dismissalBase;
       if (first?.startsWith(DISMISS_PREFIX)) {
         const dismissal = DISMISS_ARGS.exec(first.slice(DISMISS_PREFIX.length));
         if (!dismissal || review.author_type !== 'User') continue;
         const [, issuance, id, head, base, reason] = dismissal;
         if (!plainText(reason) || String(pending.get(id)?.reviewId) !== issuance ||
-            head !== review.commit_id || head !== scope.head || base !== scope.base) continue;
+            head !== review.commit_id || head !== scope.head ||
+            (base !== scope.base && !scope.dismissalEvidence)) continue;
         dismissedId = id;
         dismissalReason = plainText(reason);
+        dismissalBase = base;
       } else if (!marker?.startsWith(MARKER_PREFIX)) continue;
       if (!review.login) continue;
       if (!permissions.has(review.login)) {
@@ -90,6 +94,11 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       }
       if (!['admin', 'write'].includes(permissions.get(review.login))) continue;
       if (dismissedId) {
+        if (dismissalBase !== scope.base) {
+          // A historical dismissal can explain a reissue on a new base.
+          historicalDismissals.set(pending.get(dismissedId), dismissalBase);
+          continue;
+        }
         scope.dismissalEvidence?.set(dismissedId, {
           label: pending.get(dismissedId).label, reviewId: review.id, reason: dismissalReason
         });
@@ -108,7 +117,10 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         }
       }
       for (const record of improvementRecords(event.issued)) {
-        if (pending.has(record.id)) continue;
+        const previous = pending.get(record.id);
+        const dismissedBase = historicalDismissals.get(previous);
+        if (previous && (!dismissedBase || !event.base || event.base === dismissedBase ||
+          review.commit_id !== scope.head)) continue;
         scope.dismissed?.delete(record.id);
         if (scope.dismissalEvidence && review.commit_id === scope.head && event.base === scope.base) {
           scope.dismissalEvidence.delete(record.id);

@@ -108,7 +108,7 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
     commit_id: head
   };
   const { runner } = fixture({ reviews: [{ id: 21, state: 'COMMENTED', scoping: true }] });
-  const render = (permission, targetBase, reissuedHead = head, reissuedBase = base) =>
+  const render = (permission, targetBase, reissuedHead = head, reissuedBase = base, reissuedDismissal) =>
     mergeEvidence('/repo', '42', {
       runner: (bin, args) => {
         if (args[0] === 'repo') return { status: 0, stdout: 'opencue/example' };
@@ -122,7 +122,7 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
               {
                 ...review,
                 id: 20,
-                body: `<!-- gitguardex:pr-review -->\n${improvementMarker([item], [], base)}`
+                body: `<!-- gitguardex:pr-review -->\n${improvementMarker([item], [], targetBase)}`
               },
               {
                 ...review,
@@ -134,7 +134,8 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
                 id: 22,
                 commit_id: reissuedHead,
                 body: `<!-- gitguardex:pr-review -->\n${improvementMarker([item], [], reissuedBase)}`
-              }
+              },
+              ...(reissuedDismissal ? [{ ...review, id: 23, body: reissuedDismissal }] : [])
             ]
               .map((entry) => JSON.stringify(entry))
               .join('\n')
@@ -149,6 +150,15 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
   assert.doesNotMatch(render('write', base), reason);
   assert.doesNotMatch(render('read', base, 'd'.repeat(40)), reason);
   assert.doesNotMatch(render('write', head, 'd'.repeat(40)), reason);
+  const currentReason = /pullrequestreview-23\): `Cover retry` — `Covered on the new base\.`/;
+  const currentDismissal = `/gx-dismiss-improvement 22 ${item.id} ${head} ${base} Covered on the new base.`;
+  const currentCard = render('write', 'd'.repeat(40), head, base, currentDismissal);
+  assert.match(currentCard, currentReason);
+  assert.doesNotMatch(currentCard, reason);
+  assert.doesNotMatch(
+    render('write', 'd'.repeat(40), head, base, currentDismissal.replace(' 22 ', ' 20 ')),
+    currentReason
+  );
 });
 
 test('posting updates only the viewer’s matching evidence comment or creates the first one', () => {
