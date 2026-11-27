@@ -58,6 +58,10 @@ function mockProbe(stdout, { code = 0, error, stderr } = {}) {
   return child;
 }
 
+function providerExecutable(file, options) {
+  return process.platform === 'win32' ? options.env.GUARDEX_WORKTRUNK_EXE : file;
+}
+
 test('uses schema 2 local facts only for unambiguous current GX entries', async (t) => {
   const { root, repo, bin, executable, entry } = fixture(t);
   const wt = executable(bin, 'wt');
@@ -77,17 +81,25 @@ test('uses schema 2 local facts only for unambiguous current GX entries', async 
     {
       pathEnv: bin,
       spawn(file, args, options) {
-        assert.equal(file, wt);
-        assert.deepEqual(args, [
+        assert.equal(providerExecutable(file, options), wt);
+        const windows = process.platform === 'win32';
+        const expected = [
           '-C',
-          repo,
+          windows ? '.' : repo,
           '--config-set',
           'list.full=false',
           '--config-set',
           'list.json-schema=2',
           'list',
           '--format=json'
-        ]);
+        ];
+        if (windows) {
+          assert.equal(path.basename(file).toLowerCase(), 'powershell.exe');
+          assert.equal(options.env.GUARDEX_WORKTRUNK_ROOT, repo);
+          assert.equal(options.env.GUARDEX_WORKTRUNK_ARGS, expected.join(' '));
+        } else {
+          assert.deepEqual(args, expected);
+        }
         assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
         return mockProbe(
           output([
@@ -136,7 +148,7 @@ test('skips checkout and relative PATH entries, including symlinks back into a c
   const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv,
     spawn(file, _args, options) {
-      assert.equal(file, safe);
+      assert.equal(providerExecutable(file, options), safe);
       assert.equal(options.env.PATH, fs.realpathSync(bin));
       return mockProbe(output([]));
     }
@@ -170,8 +182,8 @@ test('degrades to native status on missing binary, invalid protocol, or failed p
     assert.equal(
       await loadWorktrunkStatuses(repo, [lane], {
         pathEnv: bin,
-        spawn(file) {
-          assert.equal(file, wt);
+        spawn(file, _args, options) {
+          assert.equal(providerExecutable(file, options), wt);
           calls += 1;
           return mockProbe(stdout, result);
         }
@@ -215,7 +227,7 @@ test('does not split expanded PATH symlinks into new search directories', async 
   const statuses = await loadWorktrunkStatuses(repo, [lane], {
     pathEnv: [alias, bin].join(path.delimiter),
     spawn(file, _args, options) {
-      assert.equal(file, safe);
+      assert.equal(providerExecutable(file, options), safe);
       assert.equal(options.env.PATH, fs.realpathSync(bin));
       return mockProbe(output([]));
     }
