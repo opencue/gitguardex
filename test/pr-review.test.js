@@ -514,8 +514,14 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   }
 
   reviews.splice(0, reviews.length, issued(1), dismissal, issued(3, oldBase), issued(4));
-  assert.equal(read().length, 1);
+  assert.equal(read({ head, base })[0]?.reviewId, 4);
+  assert.equal(read()[0]?.reviewId, 4);
   assert.equal(dismissalEvidence.size, 0);
+  reviews.push({
+    ...reissueDismissal, id: 5, body: reissueDismissal.body.replace(' 3 ', ' 4 ')
+  });
+  assert.deepEqual(read(), []);
+  assert.equal(dismissalEvidence.get(item.id)?.reviewId, 5);
 });
 
 test('an older overlapping review cannot replace newer impact history', (t) => {
