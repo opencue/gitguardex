@@ -621,10 +621,9 @@ function requirementEvidenceChecker(repoRoot, head, runner) {
     context(items) {
       const heads = new Set(items.map((item) => item.head).filter(canCompare));
       const patches = [...heads].map((issuedHead) => {
-        const files = compare(issuedHead);
-        const diff = files
-          ? files.filter(({ patch }) => /^-/m.test(patch || ''))
-          : directPatch(issuedHead);
+        // GitHub can omit files or patches even for an ahead comparison.
+        const diff = directPatch(issuedHead) ||
+          compare(issuedHead)?.filter(({ patch }) => /^-/m.test(patch || '')) || '';
         return { issuedHead, diff };
       });
       return patches.length ? capDiff(JSON.stringify(patches), 32_000).diff : '';
@@ -632,10 +631,9 @@ function requirementEvidenceChecker(repoRoot, head, runner) {
     verifies(item) {
       if (!canCompare(item.head)) return false;
       const { path: file, line, side } = item.evidence;
-      const files = compare(item.head);
-      // After a rebase, compare the issuance tree directly instead of the merge base.
-      const patch = files ? files.find(({ filename }) => filename === file)?.patch : directPatch(item.head, file);
-      if (!files && patch && side === 'LEFT') {
+      const remotePatch = compare(item.head)?.find(({ filename }) => filename === file)?.patch;
+      const patch = remotePatch || directPatch(item.head, file);
+      if (!remotePatch && patch && side === 'LEFT') {
         // A literal pathspec can also match a directory. Require a file in the issuance tree.
         const object = runner('git', ['cat-file', '-t', `${item.head}:${file}`], gitOptions);
         if (object.status !== 0 || object.stdout.trim() !== 'blob') return false;

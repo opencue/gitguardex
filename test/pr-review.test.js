@@ -258,7 +258,8 @@ test('re-review shows proven changes and leaves unseen opportunities unverified'
     impactHistory: true,
     env: {},
     run(cmd, args, runOptions) {
-      if (cmd === 'git' && comparisonStatus === 'diverged') {
+      if (cmd === 'git') {
+        if (comparisonStatus !== 'diverged') return { status: 1 };
         if (args[0] === 'cat-file') return { status: 0 };
         assert.deepEqual(args.slice(args.indexOf('--unified=0') + 1), [
           'a'.repeat(40), head, '--', ...(args.at(-1) === '--' ? [] : [evidence.path])
@@ -1117,11 +1118,19 @@ test('required improvement accepts a verified deletion after a file is reverted 
     body: `${prReview.MARKER}\n${improvementMarker([requirement], [], base)}`
   }];
   const file = 'a.js';
+  const patch = '@@ -1 +0,0 @@\n-dismiss()';
+  let files = [];
   let line = 2;
   let prompt;
   const review = () => prReview.runPrReview({ target, pr: 42, post: true, provider: 'codex', prLens: false, abide: false }, {
     env: {},
-    run(_cmd, args, options) {
+    run(cmd, args, options) {
+      if (cmd === 'git' && args[0] === 'cat-file') {
+        return { status: 0, stdout: args[1] === '-t' ? 'blob\n' : '' };
+      }
+      if (cmd === 'git' && args[0] === '--literal-pathspecs') {
+        return { status: 0, stdout: `diff --git a/${file} b/${file}\n${patch}` };
+      }
       if (args[0] === 'exec') {
         prompt = options.input;
         const evidence = { path: file, line, side: 'LEFT' };
@@ -1138,7 +1147,6 @@ test('required improvement accepts a verified deletion after a file is reverted 
       if (args.includes('--paginate')) return { status: 0, stdout: published.map((entry) => JSON.stringify(entry)).join('\n') };
       if (args[1].endsWith('/permission')) return { status: 0, stdout: 'write' };
       if (args[1].endsWith(`/compare/${issuedHead}...${head}`)) {
-        const files = [{ filename: file, patch: '@@ -1 +0,0 @@\n-dismiss()' }];
         return { status: 0, stdout: JSON.stringify({ status: 'ahead', files }) };
       }
       const { body } = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));
@@ -1147,10 +1155,15 @@ test('required improvement accepts a verified deletion after a file is reverted 
     }
   });
   assert.equal(review().pendingImprovements.length, 1);
-  line = 1;
-  assert.deepEqual(review().pendingImprovements, []);
   assert.match(prompt, /Requirement comparisons:.*dismiss\(\)/s);
-  assert.match(published.at(-1).body, /a&#46;js&#58;1 \(removed since issuance\)/);
+  line = 1;
+  for (const comparisonFiles of [[], [{ filename: file }], [{ filename: file, patch }]]) {
+    files = comparisonFiles;
+    published.splice(1);
+    assert.deepEqual(review().pendingImprovements, []);
+    assert.match(prompt, /Requirement comparisons:.*dismiss\(\)/s);
+    assert.match(published.at(-1).body, /a&#46;js&#58;1 \(removed since issuance\)/);
+  }
 });
 
 // --- abide verdicts in the review gate ---------------------------------------
