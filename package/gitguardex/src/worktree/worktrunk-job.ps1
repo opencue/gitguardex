@@ -1,6 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Tell the caller to launch Worktrunk directly when Reflection.Emit is unavailable by policy.
+if ($ExecutionContext.SessionState.LanguageMode -eq 'ConstrainedLanguage') { exit 125 }
+
 function Add-JobMethod($name, [type]$result, [type[]]$parameters) {
   $method = $typeBuilder.DefinePInvokeMethod(
     $name, 'kernel32.dll', [Reflection.MethodAttributes]'Public, Static, PinvokeImpl',
@@ -47,6 +50,8 @@ try {
   $child = [Diagnostics.Process]::Start($start)
   $child.StandardInput.Close()
   $child.WaitForExit()
+  # Reserve exit code 125 for the launcher handshake.
+  if ($child.ExitCode -eq 125) { exit 1 }
   exit $child.ExitCode
 } catch {
   [Console]::Error.WriteLine($_)
