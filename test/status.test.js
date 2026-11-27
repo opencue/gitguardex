@@ -556,6 +556,26 @@ test('openspec update prompt requires explicit y/n when approval is not preconfi
 });
 
 
+test('status counts registered agent worktrees without treating them as active sessions', () => {
+  const repoDir = initRepo();
+  seedCommit(repoDir);
+  const managed = path.join(repoDir, '.omx', 'agent-worktrees');
+  fs.mkdirSync(path.join(managed, 'leftover'), { recursive: true });
+  const agentTree = path.join(managed, 'named lane');
+  const detached = path.join(managed, 'detached lane');
+  runCmd('git', ['worktree', 'add', '-b', 'agent/codex/status', agentTree], repoDir);
+  runCmd('git', ['worktree', 'add', '--detach', detached], repoDir);
+
+  const result = runNode(['status', '--json'], agentTree);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout).repo.worktrees, { agent: 1, detached: 1 });
+
+  const readable = runNode(['status'], repoDir);
+  assert.match(readable.stdout, /Worktrees: 1 agent branch · 1 detached/);
+  assert.match(readable.stdout, /worktree prune --dry-run --keep-clean-unmerged --preserve-open-prs --include-pr-merged/);
+  assert.doesNotMatch(readable.stdout, /active agent worktree|finish --all/);
+});
+
 test('status --json returns cli, services, and repo summary', () => {
   const repoDir = initRepo();
 

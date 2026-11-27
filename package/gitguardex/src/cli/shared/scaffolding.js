@@ -507,19 +507,27 @@ function printStatusRepairHint(scanResult) {
   );
 }
 
-function countAgentWorktrees(repoRoot) {
-  if (!repoRoot || typeof repoRoot !== 'string') return 0;
-  const relPaths = ['.omc/agent-worktrees', '.omx/agent-worktrees'];
-  let count = 0;
-  for (const rel of relPaths) {
-    try {
-      const entries = fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true });
-      count += entries.filter((entry) => entry.isDirectory()).length;
-    } catch (_err) {
-      // missing dir or permission error; not an active-agent signal
+function summarizeAgentWorktrees(repoRoot) {
+  const result = gitRun(repoRoot, ['worktree', 'list', '--porcelain', '-z'], { allowFailure: true });
+  if (result.status !== 0) return null;
+  const [primary, ...linked] = String(result.stdout || '').split('\0\0');
+  const mainPath = primary.split('\0')[0].slice('worktree '.length);
+  const counts = { agent: 0, detached: 0 };
+  for (const record of linked) {
+    const fields = record.split('\0');
+    if (fields.some((field) => field === 'prunable' || field.startsWith('prunable '))) continue;
+    if (fields.some((field) => field.startsWith('branch refs/heads/agent/'))) {
+      counts.agent++;
+    } else if (fields.includes('detached')) {
+      const worktreePath = fields.find((field) => field.startsWith('worktree '));
+      if (!worktreePath) continue;
+      const relative = path.relative(mainPath, worktreePath.slice('worktree '.length));
+      if (/^\.(omc|omx)\/agent-worktrees\//.test(relative.split(path.sep).join('/'))) {
+        counts.detached++;
+      }
     }
   }
-  return count;
+  return counts;
 }
 
 function deriveNextStepHint({ scanResult, worktreeCount, invoked, inGitRepo }) {
@@ -537,8 +545,7 @@ function deriveNextStepHint({ scanResult, worktreeCount, invoked, inGitRepo }) {
     return `${invoked} branch finish --branch "${branch}" --via-pr --wait-for-merge --cleanup`;
   }
   if (worktreeCount > 0) {
-    const plural = worktreeCount === 1 ? 'worktree' : 'worktrees';
-    return `${invoked} finish --all   # ${worktreeCount} active agent ${plural}`;
+    return `${invoked} worktree prune --dry-run --keep-clean-unmerged --preserve-open-prs --include-pr-merged   # preview cleanup`;
   }
   if (scanResult.errors > 0 || scanResult.warnings > 0) {
     return `${invoked} doctor   # repair drift`;
@@ -558,6 +565,6 @@ module.exports = {
   printScanResult,
   setExitCodeFromScan,
   printStatusRepairHint,
-  countAgentWorktrees,
+  summarizeAgentWorktrees,
   deriveNextStepHint,
 };

@@ -23,7 +23,7 @@ const { parseCommonArgs } = require('../args');
 const { extractFlag } = require('../dispatch');
 const {
   runScanInternal,
-  countAgentWorktrees,
+  summarizeAgentWorktrees,
   deriveNextStepHint,
   printStatusRepairHint
 } = require('../shared/scaffolding');
@@ -208,6 +208,8 @@ function status(rawArgs) {
   const targetPath = path.resolve(options.target);
   const inGitRepo = isGitRepo(targetPath);
   const scanResult = inGitRepo ? runScanInternal({ target: targetPath, json: false }) : null;
+  const worktrees = scanResult ? summarizeAgentWorktrees(scanResult.repoRoot) : null;
+  const worktreeCount = worktrees ? worktrees.agent + worktrees.detached : 0;
   const repoServiceStatus = scanResult
     ? scanResult.guardexEnabled === false
       ? 'disabled'
@@ -227,6 +229,7 @@ function status(rawArgs) {
       target: targetPath,
       inGitRepo,
       serviceStatus: repoServiceStatus,
+      worktrees,
       guardexEnabled: scanResult ? scanResult.guardexEnabled !== false : null,
       guardexToggle: scanResult ? scanResult.guardexToggle || null : null,
       scan: scanResult
@@ -347,16 +350,8 @@ function status(rawArgs) {
     );
     console.log(`[${TOOL_NAME}] Repo: ${scanResult.repoRoot}`);
     console.log(`[${TOOL_NAME}] Branch: ${scanResult.branch}`);
-    const worktreeCountDisabled = countAgentWorktrees(scanResult.repoRoot);
-    if (worktreeCountDisabled > 0) {
-      const plural = worktreeCountDisabled === 1 ? 'worktree' : 'worktrees';
-      console.log(
-        `[${TOOL_NAME}] ⚠ ${worktreeCountDisabled} active agent ${plural} under .omc/agent-worktrees or .omx/agent-worktrees.`
-      );
-    }
     const disabledHint = deriveNextStepHint({
       scanResult,
-      worktreeCount: worktreeCountDisabled,
       invoked: invokedBasename,
       inGitRepo
     });
@@ -390,16 +385,14 @@ function status(rawArgs) {
       `[${TOOL_NAME}] Review watcher: ${statusDot('active')} running (pid ${payload.repo.reviewDaemon.pid})`
     );
   }
-  const worktreeCountActive = countAgentWorktrees(scanResult.repoRoot);
-  if (worktreeCountActive > 0) {
-    const plural = worktreeCountActive === 1 ? 'worktree' : 'worktrees';
+  if (worktreeCount > 0) {
     console.log(
-      `[${TOOL_NAME}] ⚠ ${worktreeCountActive} active agent ${plural} → ${invokedBasename} finish --all`
+      `[${TOOL_NAME}] Worktrees: ${worktrees.agent} agent branch${worktrees.agent === 1 ? '' : 'es'} · ${worktrees.detached} detached`
     );
   }
   const activeHint = deriveNextStepHint({
     scanResult,
-    worktreeCount: worktreeCountActive,
+    worktreeCount,
     invoked: invokedBasename,
     inGitRepo
   });
