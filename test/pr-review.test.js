@@ -450,7 +450,7 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   const base = 'd'.repeat(40);
   const issued = (id) => ({
     id, state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head,
-    body: `${prReview.MARKER}\n${improvementMarker([item], [])}`
+    body: `${prReview.MARKER}\n${improvementMarker([item], [], base)}`
   });
   const command = `/gx-dismiss-improvement 1 ${item.id} ${head} ${base}`;
   const dismissal = {

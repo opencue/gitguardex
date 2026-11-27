@@ -110,7 +110,9 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       for (const record of improvementRecords(event.issued)) {
         if (pending.has(record.id)) continue;
         scope.dismissed?.delete(record.id);
-        scope.dismissalEvidence?.delete(record.id);
+        if (scope.dismissalEvidence && review.commit_id === scope.head && event.base === scope.base) {
+          scope.dismissalEvidence.delete(record.id);
+        }
         pending.set(record.id, { ...record, head: review.commit_id, reviewId: review.id });
       }
     }

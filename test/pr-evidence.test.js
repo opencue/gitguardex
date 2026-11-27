@@ -108,7 +108,7 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
     commit_id: head
   };
   const { runner } = fixture({ reviews: [{ id: 21, state: 'COMMENTED', scoping: true }] });
-  const render = (permission, targetBase) =>
+  const render = (permission, targetBase, reissuedHead = head, reissuedBase = base) =>
     mergeEvidence('/repo', '42', {
       runner: (bin, args) => {
         if (args[0] === 'repo') return { status: 0, stdout: 'opencue/example' };
@@ -128,6 +128,12 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
                 ...review,
                 id: 21,
                 body: `/gx-dismiss-improvement 20 ${item.id} ${head} ${targetBase} Covered by integration tests.`
+              },
+              {
+                ...review,
+                id: 22,
+                commit_id: reissuedHead,
+                body: `<!-- gitguardex:pr-review -->\n${improvementMarker([item], [], reissuedBase)}`
               }
             ]
               .map((entry) => JSON.stringify(entry))
@@ -137,12 +143,12 @@ test('only revision-scoped, authorized GitGuardex dismissals are rendered with a
         return runner(bin, args);
       }
     }).body;
-  assert.match(
-    render('write', base),
-    /GitGuardex dismissed improvement.*pullrequestreview-21\): `Cover retry` — `Covered by integration tests\.`/
-  );
-  assert.doesNotMatch(render('read', base), /Covered by integration tests/);
-  assert.doesNotMatch(render('write', head), /Covered by integration tests/);
+  const reason = /GitGuardex dismissed improvement.*pullrequestreview-21\): `Cover retry` — `Covered by integration tests\.`/;
+  assert.match(render('write', base, 'd'.repeat(40)), reason);
+  assert.match(render('write', base, head, 'd'.repeat(40)), reason);
+  assert.doesNotMatch(render('write', base), reason);
+  assert.doesNotMatch(render('read', base, 'd'.repeat(40)), reason);
+  assert.doesNotMatch(render('write', head, 'd'.repeat(40)), reason);
 });
 
 test('posting updates only the viewer’s matching evidence comment or creates the first one', () => {
