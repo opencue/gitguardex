@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
-const { EventEmitter } = require('node:events');
+const { EventEmitter, once } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -273,4 +273,36 @@ test('abort kills the Worktrunk process group and skips an already-aborted probe
     }),
     null
   );
+});
+
+test('the Worktrunk deadline returns null and kills the probe descendant', { timeout: 8000 }, async (t) => {
+  if (process.platform === 'win32') return t.skip('requires POSIX process groups');
+  const { repo, bin, executable } = fixture(t);
+  const wt = executable(bin, 'wt');
+  // The descendant signals readiness and holds fd 3 open while it sleeps.
+  fs.writeFileSync(wt, '#!/bin/sh\n(printf ready >&3; exec /bin/sleep 30) &\nwait\n');
+  let probe;
+  let ready;
+  let closed;
+  const pending = loadWorktrunkStatuses(repo, [], {
+    pathEnv: bin,
+    spawn(file, args, options) {
+      probe = spawn(file, args, { ...options, stdio: [...options.stdio, 'pipe'] });
+      ready = once(probe.stdio[3], 'data');
+      closed = once(probe, 'close');
+      t.after(() => {
+        if (!probe.pid) return;
+        try {
+          process.kill(-probe.pid, 'SIGKILL');
+        } catch (error) {
+          if (error.code !== 'ESRCH') throw error;
+        }
+      });
+      return probe;
+    }
+  });
+  assert.equal(String((await ready)[0]), 'ready');
+  assert.equal(await pending, null);
+  // A surviving descendant would keep the pipe open and prevent the close event.
+  assert.deepEqual(await closed, [null, 'SIGKILL']);
 });

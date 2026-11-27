@@ -2,6 +2,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
+const activePosixProbes = new Set();
+
+function stopProbesOnHangup() {
+  for (const stop of activePosixProbes) stop();
+  if (process.listenerCount('SIGHUP') === 1) {
+    // Restore the default signal behavior when no caller handles SIGHUP.
+    process.off('SIGHUP', stopProbesOnHangup);
+    process.kill(process.pid, 'SIGHUP');
+  }
+}
+
 function canonicalPath(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
   try {
@@ -106,6 +117,7 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   let stop;
   let timer;
   const stdout = await new Promise((resolve) => {
+    if (detached && !activePosixProbes.size) process.prependListener('SIGHUP', stopProbesOnHangup);
     const child = (deps.spawn || spawn)(command, commandArgs, {
       detached,
       env,
@@ -144,12 +156,16 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
     child.once('close', (code) => {
       resolve(code === 0 && !stopped ? Buffer.concat(chunks).toString('utf8') : null);
     });
-    // Windows PowerShell may compile the job launcher on a cold start.
     timer = setTimeout(stop, detached ? 3000 : 8000);
+    if (detached) activePosixProbes.add(stop);
     deps.signal?.addEventListener('abort', stop, { once: true });
     if (deps.signal?.aborted) stop();
   }).finally(() => {
     clearTimeout(timer);
+    if (detached) {
+      activePosixProbes.delete(stop);
+      if (!activePosixProbes.size) process.off('SIGHUP', stopProbesOnHangup);
+    }
     deps.signal?.removeEventListener('abort', stop);
   });
   if (stdout === null || deps.signal?.aborted) return null;
