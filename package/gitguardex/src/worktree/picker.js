@@ -1,5 +1,6 @@
 const readline = require('node:readline/promises');
 const { listWorktrees, checkedRun } = require('./navigation');
+const { loadWorktrunkStatuses } = require('./worktrunk-status');
 
 function terminalText(value) {
   return String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, '');
@@ -38,13 +39,19 @@ async function pickWorktree(repoRoot, options = {}, deps = {}) {
     );
   const entries = (deps.listWorktrees || listWorktrees)(repoRoot);
   if (!entries.length) throw new Error('No worktrees available');
+  const statuses = options.worktrunk
+    ? (deps.loadWorktrunkStatuses || loadWorktrunkStatuses)(repoRoot, entries, deps)
+    : null;
+  if (options.worktrunk && !statuses)
+    output.write('Worktrunk status unavailable; using the GitGuardex picker.\n');
   let visible = entries;
   const display = () =>
-    visible.forEach((entry, index) =>
+    visible.forEach((entry, index) => {
+      const status = statuses?.get(entry);
       output.write(
-        `${index + 1}. ${terminalText(entry.branch || '(detached)')}  ${terminalText(entry.path)}\n`
-      )
-    );
+        `${index + 1}. ${terminalText(entry.branch || '(detached)')}  ${terminalText(entry.path)}${status ? `  [${terminalText(status)}]` : ''}\n`
+      );
+    });
   display();
   const rl = deps.question ? null : readline.createInterface({ input, output });
   const question = deps.question || ((prompt) => rl.question(prompt));

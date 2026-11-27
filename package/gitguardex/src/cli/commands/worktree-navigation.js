@@ -8,17 +8,23 @@ async function switchWorktree(args = [], deps = {}) {
   let target = options.cwd;
   let json = false;
   let print = false;
+  let worktrunk = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--help' || arg === '-h') {
       console.log(
-        'Usage: gx switch [branch|path|-|pr:N|PR-URL] [--create] [--print|--json] [--target path]\nNo selector opens a TTY picker. Creation uses guarded GX branch start, never raw checkout.\nInstall shell navigation: eval "$(gx shell-init bash)" (also zsh/fish).'
+        'Usage: gx switch [branch|path|-|pr:N|PR-URL] [--create] [--print|--json] [--target path]\n' +
+          '       gx switch --worktrunk [--print|--json] [--target path]\n' +
+          'No selector opens a TTY picker. --worktrunk adds local status from an installed wt/git-wt (JSON schema 2); falls back if unavailable.\n' +
+          'Use wt list for a standalone view, gx branch start to create agent worktrees, and gx ship to finish them.\n' +
+          'Install shell navigation: eval "$(gx shell-init bash)" (also zsh/fish).'
       );
       return;
     }
     if (arg === '--create') options.create = true;
     else if (arg === '--json') json = true;
     else if (arg === '--print') print = true;
+    else if (arg === '--worktrunk') worktrunk = true;
     else if (arg === '--target') {
       target = args[++index];
       if (!target || target.startsWith('-')) throw new Error('--target requires a path');
@@ -28,11 +34,13 @@ async function switchWorktree(args = [], deps = {}) {
     else selector = arg;
   }
   if (json && print) throw new Error('--json and --print are mutually exclusive');
+  if (worktrunk && (selector !== undefined || options.create))
+    throw new Error('--worktrunk requires the interactive picker without a selector or --create');
   if (options.create && !selector) throw new Error('--create requires an explicit selector');
   const repoRoot = (deps.resolveRepoRoot || resolveRepoRoot)(target);
   const entry = selector
     ? resolveWorktree(repoRoot, selector, options, deps)
-    : await (deps.pickWorktree || pickWorktree)(repoRoot, {}, deps);
+    : await (deps.pickWorktree || pickWorktree)(repoRoot, { worktrunk }, deps);
   if (!entry) return null;
   if (/[\x00-\x1f\x7f]/.test(entry.path))
     throw new Error('Navigation path contains unsupported control characters');
@@ -66,7 +74,9 @@ function shellInit(args = []) {
   }
   const shells = args.filter((arg) => arg !== '--agent-updates');
   if (shells.length > 1) throw new Error('Usage: gx shell-init [bash|zsh|fish] [--agent-updates]');
-  process.stdout.write(shellIntegration(shells[0] || 'bash', { agentUpdates: args.includes('--agent-updates') }));
+  process.stdout.write(
+    shellIntegration(shells[0] || 'bash', { agentUpdates: args.includes('--agent-updates') })
+  );
 }
 
 module.exports = { switchWorktree, shellInit };

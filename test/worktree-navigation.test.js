@@ -4,7 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { listWorktrees, resolveWorktree, shellIntegration } = require('../package/gitguardex/src/worktree/navigation');
+const {
+  listWorktrees,
+  resolveWorktree,
+  shellIntegration
+} = require('../package/gitguardex/src/worktree/navigation');
 const { switchWorktree } = require('../src/cli/commands/worktree-navigation');
 
 function fixture(t) {
@@ -266,7 +270,31 @@ test('CLI JSON is clean, pre-switch blocks output, cancellation prints no destin
     }
   });
   assert.deepEqual(events, ['pre-switch', 'post-switch']);
-  assert.equal(JSON.parse(logs.pop()).path, repo);
+  const nativeEntry = JSON.parse(logs.pop());
+  assert.equal(nativeEntry.path, repo);
+  const pickWorktree = async (root, options) => {
+    assert.equal(root, repo);
+    assert.equal(options.worktrunk, true);
+    return nativeEntry;
+  };
+  await switchWorktree(['--worktrunk', '--json', '--target', repo], {
+    pickWorktree,
+    runLifecycleHook: async () => ({ ok: true })
+  });
+  assert.deepEqual(JSON.parse(logs.pop()), nativeEntry);
+  await assert.rejects(
+    switchWorktree(['--worktrunk', '--print', '--target', repo], {
+      pickWorktree,
+      runLifecycleHook: async () => ({ ok: false, status: 'pre hook refused' })
+    }),
+    /pre hook refused/
+  );
+  for (const args of [['main'], ['--create']]) {
+    await assert.rejects(
+      switchWorktree(['--worktrunk', ...args]),
+      /requires the interactive picker/
+    );
+  }
   await assert.rejects(
     switchWorktree(['main', '--print', '--target', repo], {
       runLifecycleHook: async () => ({ ok: false, status: 'pre hook refused' })

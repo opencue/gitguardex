@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pickWorktree, worktreePreview, terminalText } = require('../package/gitguardex/src/worktree/picker');
+const {
+  pickWorktree,
+  worktreePreview,
+  terminalText
+} = require('../package/gitguardex/src/worktree/picker');
 
 test('picker refuses non-TTY instead of silently choosing a worktree', async () => {
   await assert.rejects(
@@ -71,4 +75,46 @@ test('picker filters branch and path without changing selection identities', asy
   );
   assert.equal(selected, entries[1]);
   assert.match(output.join(''), /No matches/);
+});
+
+test('picker decorates only GX rows, once, and falls back without changing a choice', async () => {
+  const entry = { path: '/lane with spaces', branch: 'agent/test' };
+  const options = { input: { isTTY: true }, output: { isTTY: true } };
+  const output = [];
+  options.output.write = (text) => output.push(text);
+  let calls = 0;
+  let statuses = new Map([[entry, 'dirty · main: +2/-1 · possible merge conflict']]);
+  const deps = {
+    listWorktrees: () => [entry],
+    loadWorktrunkStatuses: (repo, entries) => {
+      calls += 1;
+      assert.equal(repo, '/repo');
+      assert.deepEqual(entries, [entry]);
+      return statuses;
+    },
+    worktreePreview: () => ({ diff: 'Diff', pr: null })
+  };
+  const answers = ['/agent', '1', 'y'];
+  assert.equal(
+    await pickWorktree(
+      '/repo',
+      { ...options, worktrunk: true },
+      { ...deps, question: async () => answers.shift() }
+    ),
+    entry
+  );
+  assert.equal(calls, 1);
+  assert.match(output.join(''), /dirty · main: \+2\/-1 · possible merge conflict/);
+  output.length = 0;
+  statuses = null;
+  const cancel = { ...deps, question: async () => 'q' };
+  assert.equal(await pickWorktree('/repo', { ...options, worktrunk: true }, cancel), null);
+  assert.match(output.join(''), /Worktrunk status unavailable/);
+  assert.match(output.join(''), /1\. agent\/test/);
+  assert.equal(await pickWorktree('/repo', options, cancel), null);
+  await assert.rejects(
+    pickWorktree('/repo', { ...options, input: { isTTY: false }, worktrunk: true }, cancel),
+    /requires a TTY/
+  );
+  assert.equal(calls, 2);
 });
