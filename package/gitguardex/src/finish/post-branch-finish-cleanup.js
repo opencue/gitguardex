@@ -323,11 +323,36 @@ function archiveHookRuntime(plan, entries) {
   const root = privateCleanupDirectory(plan.repoRoot, 'gitguardex-finished-hook-archives', true);
   const archive = fs.mkdtempSync(path.join(root, path.basename(plan.worktreePath).slice(0, 60) + '-'));
   console.log(`[${TOOL_NAME}] Saving finished worktree hook artifacts to ${archive}`);
-  for (const relative of paths) {
-    const destination = path.join(archive, relative);
-    fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-    // Rename without following symlinks or deleting the source on failure.
-    fs.renameSync(path.join(plan.worktreePath, relative), destination);
+  const moved = [];
+  try {
+    for (const relative of paths) {
+      const source = path.join(plan.worktreePath, relative);
+      const destination = path.join(archive, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+      fs.renameSync(source, destination);
+      moved.push({ source, destination });
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const { source, destination } of moved.reverse()) {
+      try {
+        const parent = path.dirname(source);
+        if (fs.realpathSync(parent) !== parent || fs.lstatSync(source, { throwIfNoEntry: false })) {
+          throw new Error(`Unsafe hook state restore path: ${source}`);
+        }
+        fs.renameSync(destination, source);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError.message);
+      }
+    }
+    if (rollbackErrors.length) {
+      console.error(
+        `[${TOOL_NAME}] Warning: hook archive rollback incomplete; remaining artifacts at ${archive}: ${rollbackErrors.join('; ')}`
+      );
+    } else {
+      fs.rmSync(archive, { recursive: true, force: true });
+    }
+    throw error;
   }
   return true;
 }
