@@ -524,6 +524,36 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   assert.equal(dismissalEvidence.get(item.id)?.reviewId, 5);
 });
 
+test('replaying improvement history clears waiver evidence after write access is revoked', () => {
+  const [item] = improvementItems(['Keep the warning'], 'a'.repeat(64));
+  const head = 'c'.repeat(40);
+  const base = 'd'.repeat(40);
+  const entry = (id, login, commit_id, body) => ({
+    id, login, commit_id, body, state: 'COMMENTED', author_association: 'MEMBER', author_type: 'User'
+  });
+  const issued = `${prReview.MARKER}\n${improvementMarker([item], [], base)}`;
+  const reviews = [
+    entry(1, 'maintainer', 'e'.repeat(40), issued),
+    entry(2, 'contributor', head, issued),
+    entry(3, 'contributor', head, `/gx-dismiss-improvement 2 ${item.id} ${head} ${base} Reviewed.`)
+  ];
+  let contributorPermission = 'write';
+  const dismissalEvidence = new Map();
+  const read = () => readPublishedImprovements('/repo', 42, (_cmd, args) => {
+    if (args[0] === 'repo') return { status: 0, stdout: 'opencue/gitguardex' };
+    if (args[1].endsWith('/permission')) {
+      return { status: 0, stdout: args[1].includes('/contributor/') ? contributorPermission : 'write' };
+    }
+    return { status: 0, stdout: reviews.map((review) => JSON.stringify(review)).join('\n') };
+  }, { head, base, dismissalEvidence });
+
+  assert.deepEqual(read(), []);
+  assert.equal(dismissalEvidence.get(item.id)?.reviewId, 3);
+  contributorPermission = 'read';
+  assert.equal(read()[0]?.reviewId, 1);
+  assert.equal(dismissalEvidence.size, 0);
+});
+
 test('an older overlapping review cannot replace newer impact history', (t) => {
   const target = initRepo();
   t.after(() => fs.rmSync(target, { recursive: true, force: true }));

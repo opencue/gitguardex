@@ -52,6 +52,7 @@ function improvementRecords(items) {
 // the outstanding set, and a resolution can only clear the issuance it saw.
 function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
   try {
+    scope.dismissalEvidence?.clear();
     const result = runner(GH_BIN, [
       'api', '--paginate', repoApiPath(repoRoot, `pulls/${pr}/reviews?per_page=100`, runner),
       '-q', ` .[] | select((.body // "") | contains(${JSON.stringify(MARKER_PREFIX)})
