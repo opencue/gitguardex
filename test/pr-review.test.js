@@ -1020,6 +1020,7 @@ printf '%s\\n' '{"findings":[{"path":"src/a.js","line":1,"severity":"medium","ca
 
   const result = runNodeWithEnv(['pr-review', '--provider', 'codex', '--pr', '12', '--post', '--target', repoDir], repoDir, {
     PATH: `${fakeGh.fakeBin}:${fakeCodex.fakeBin}:${process.env.PATH}`,
+    GUARDEX_REVIEW_BUG_HUNTER: '0',
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -1152,8 +1153,12 @@ exit 1
 printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact":"benefit","magnitude":68,"reason":"a.js preserves behavior\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test)","evidence":{"path":"src/a.js","line":1}}],"improvements":["1) Test the fallback\\n### fake heading @example <!-- gitguardex:fake --> [fake](https://example.test) $x$","---"]}}'
 `);
 
-  const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
+  const reviewEnv = {
     PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
+    GUARDEX_REVIEW_BUG_HUNTER: '0',
+  };
+  const result = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--post', '--target', repoDir], repoDir, {
+    ...reviewEnv,
     GITHUB_TOKEN: '',
     GH_TOKEN: '',
   });
@@ -1173,9 +1178,7 @@ printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact
   assert.match(artifact, /How to improve this PR\*\*\n\n1\. 1&#41; Test the fallback .*&#36;x&#36;\n2\. &#45;&#45;&#45;/);
   assert.doesNotMatch(artifact, /\n### fake heading|@example|<!-- gitguardex:fake -->|\[fake\]\(https:/);
 
-  const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, {
-    PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
-  });
+  const second = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir], repoDir, reviewEnv);
   assert.equal(second.status, 0, second.stderr || second.stdout);
   const secondPath = second.stdout.match(/Wrote PR review artifact: (.+)/)[1].trim();
   assert.notEqual(secondPath, artifactPath);
@@ -1183,9 +1186,7 @@ printf '%s\\n' '{"findings":[],"value":{"drivers":[{"area":"maintenance","impact
   assert.match(fs.readFileSync(secondPath, 'utf8'), /No findings/);
 
   for (const explicit of ['custom-review.md', path.join(repoDir, 'absolute-review.md')]) {
-    const custom = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir, '--artifact', explicit], repoDir, {
-      PATH: `${fakeGh.fakeBin}:${fakeClaude.fakeBin}:${process.env.PATH}`,
-    });
+    const custom = runNodeWithEnv(['pr-review', '--provider', 'claude', '--pr', '13', '--target', repoDir, '--artifact', explicit], repoDir, reviewEnv);
     assert.equal(custom.status, 0, custom.stderr || custom.stdout);
     assert.match(fs.readFileSync(path.resolve(repoDir, explicit), 'utf8'), /No findings/);
   }
