@@ -228,30 +228,39 @@ test('abort kills an active Worktrunk child and skips an already-aborted probe',
   const { repo, bin, executable } = fixture(t);
   executable(bin, 'wt');
   const controller = new AbortController();
+  let probe;
   let ready;
   let closed;
   const pending = loadWorktrunkStatuses(repo, [], {
     pathEnv: bin,
     signal: controller.signal,
     execFile(_file, _args, options, done) {
-      const child = execFile(
+      probe = execFile(
         process.execPath,
         [
           '-e',
-          "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setTimeout(() => {}, 2000);"
+          [
+            "process.on('SIGTERM', () => {});",
+            "require('node:child_process').spawn(process.execPath,",
+            "['-e', 'setTimeout(() => {}, 1000)'], { stdio: ['ignore', 1, 2] })",
+            ".once('spawn', () => process.stdout.write('ready'));",
+            'setTimeout(() => {}, 2000);'
+          ].join(' ')
         ],
         options,
         done
       );
-      ready = new Promise((resolve) => child.stdout.once('data', resolve));
-      closed = new Promise((resolve) => child.once('close', (_code, signal) => resolve(signal)));
-      return child;
+      ready = new Promise((resolve) => probe.stdout.once('data', resolve));
+      closed = new Promise((resolve) => probe.once('close', (_code, signal) => resolve(signal)));
+      return probe;
     }
   });
   await ready;
   controller.abort();
+  const closedOutput = probe.stdout.destroyed && probe.stderr.destroyed;
   assert.equal(await pending, null);
   assert.equal(await closed, 'SIGKILL');
+  assert.equal(closedOutput, true, 'output pipes must not wait for a descendant to exit');
   assert.equal(
     await loadWorktrunkStatuses(repo, [], {
       pathEnv: bin,

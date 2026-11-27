@@ -70,7 +70,12 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
 
   let child;
   // execFile's killSignal applies to its timeout, not to AbortSignal cancellation.
-  const abort = () => child?.kill('SIGKILL');
+  const abort = () => {
+    child.kill('SIGKILL');
+    // A Git subprocess can still hold these pipes open after Worktrunk exits.
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  };
   const stdout = await new Promise((resolve) => {
     child = (deps.execFile || execFile)(
       executable,
