@@ -70,6 +70,8 @@ function rowStatus(row, base) {
 
 async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   if (deps.signal?.aborted) return null;
+  const detached = process.platform !== 'win32';
+  if (!detached) repoRoot = path.resolve(repoRoot);
   const candidates = new Map(entries.map((entry) => [entry, canonicalPath(entry.path)]));
   const roots = [canonicalPath(repoRoot), ...candidates.values()].filter(Boolean);
   const dirs = (deps.pathEnv ?? process.env.PATH ?? '')
@@ -80,7 +82,6 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
   const executable = findWorktrunk(dirs, roots);
   if (!executable) return null;
 
-  const detached = process.platform !== 'win32';
   const args = [
     '-C',
     detached ? repoRoot : '.',
@@ -157,7 +158,9 @@ async function loadWorktrunkStatuses(repoRoot, entries, deps = {}) {
     });
     child.once('error', () => resolve(null));
     child.once('close', (code) => {
-      resolve(code === 0 && !stopped ? Buffer.concat(chunks).toString('utf8') : null);
+      const result = code === 0 && !stopped ? Buffer.concat(chunks).toString('utf8') : null;
+      if (detached) stop();
+      resolve(result);
     });
     timer = setTimeout(stop, detached ? 3000 : 8000);
     if (detached) activePosixProbes.add(stop);
