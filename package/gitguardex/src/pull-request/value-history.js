@@ -73,9 +73,10 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         const dismissal = DISMISS_ARGS.exec(first.slice(DISMISS_PREFIX.length));
         if (!dismissal || review.author_type !== 'User') continue;
         const [, issuance, id, head, base, reason] = dismissal;
-        if (!plainText(reason) || String(pending.get(id)?.reviewId) !== issuance ||
-            head !== review.commit_id || head !== scope.head ||
-            (base !== scope.base && !scope.dismissalEvidence)) continue;
+        const item = pending.get(id);
+        if (!plainText(reason) || String(item?.reviewId) !== issuance ||
+            head !== review.commit_id || head !== scope.head || !scope.base ||
+            (base !== scope.base && (item.head !== head || item.base !== base))) continue;
         dismissedId = id;
         dismissalReason = plainText(reason);
         dismissalBase = base;
@@ -94,14 +95,17 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
       }
       if (!['admin', 'write'].includes(permissions.get(review.login))) continue;
       if (dismissedId) {
+        const item = pending.get(dismissedId);
         if (dismissalBase !== scope.base) {
           // A historical dismissal can explain a reissue on a new base.
-          historicalDismissals.set(pending.get(dismissedId), dismissalBase);
+          historicalDismissals.set(item, dismissalBase);
           continue;
         }
-        scope.dismissalEvidence?.set(dismissedId, {
-          label: pending.get(dismissedId).label, reviewId: review.id, reason: dismissalReason
-        });
+        if (item.head === scope.head && item.base === scope.base) {
+          scope.dismissalEvidence?.set(dismissedId, {
+            label: item.label, reviewId: review.id, reason: dismissalReason
+          });
+        }
         pending.delete(dismissedId);
         scope.dismissed?.add(dismissedId);
         continue;
@@ -117,15 +121,15 @@ function readPublishedImprovements(repoRoot, pr, runner = run, scope = {}) {
         }
       }
       for (const record of improvementRecords(event.issued)) {
+        if (scope.dismissalEvidence && review.commit_id === scope.head && event.base === scope.base) {
+          scope.dismissalEvidence.delete(record.id);
+        }
         const previous = pending.get(record.id);
         const dismissedBase = historicalDismissals.get(previous);
         if (previous && (!dismissedBase || !event.base || event.base === dismissedBase ||
           review.commit_id !== scope.head)) continue;
         scope.dismissed?.delete(record.id);
-        if (scope.dismissalEvidence && review.commit_id === scope.head && event.base === scope.base) {
-          scope.dismissalEvidence.delete(record.id);
-        }
-        pending.set(record.id, { ...record, head: review.commit_id, reviewId: review.id });
+        pending.set(record.id, { ...record, head: review.commit_id, base: event.base, reviewId: review.id });
       }
     }
     return [...pending.values()];

@@ -448,9 +448,9 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   const [item] = improvementItems(['Keep the warning'], 'a'.repeat(64));
   const head = 'c'.repeat(40);
   const base = 'd'.repeat(40);
-  const issued = (id) => ({
-    id, state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: head,
-    body: `${prReview.MARKER}\n${improvementMarker([item], [], base)}`
+  const issued = (id, issuedBase = base, issuedHead = head) => ({
+    id, state: 'COMMENTED', author_association: 'MEMBER', login: 'writer', commit_id: issuedHead,
+    body: `${prReview.MARKER}\n${improvementMarker([item], [], issuedBase)}`
   });
   const command = `/gx-dismiss-improvement 1 ${item.id} ${head} ${base}`;
   const dismissal = {
@@ -484,6 +484,26 @@ test('only a submitted, scoped write-authorized dismissal clears its exact issua
   assert.equal(read({ head, base: 'f'.repeat(40) }).length, 1);
   reviews.push(issued(3), dismissal);
   assert.equal(read().length, 1, 'a dismissal cannot clear a later issuance with the same label');
+  assert.equal(dismissalEvidence.size, 0);
+
+  const oldBase = 'f'.repeat(40);
+  const reissueDismissal = { ...dismissal, id: 4, body: dismissal.body.replace(' 1 ', ' 3 ') };
+  reviews.splice(0, reviews.length, issued(1, oldBase), {
+    ...dismissal, body: dismissal.body.replace(base, oldBase)
+  }, issued(3), reissueDismissal);
+  assert.deepEqual(read({ head, base }), []);
+  assert.deepEqual(read(), []);
+  assert.equal(dismissalEvidence.get(item.id)?.reviewId, 4);
+
+  for (const issuance of [issued(1, oldBase), issued(1, base, 'e'.repeat(40))]) {
+    dismissalEvidence.clear();
+    reviews.splice(0, reviews.length, issuance, dismissal);
+    assert.deepEqual(read(), []);
+    assert.equal(dismissalEvidence.size, 0);
+  }
+
+  reviews.splice(0, reviews.length, issued(1), dismissal, issued(3, oldBase), issued(4));
+  assert.equal(read().length, 1);
   assert.equal(dismissalEvidence.size, 0);
 });
 
